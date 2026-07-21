@@ -1,0 +1,21 @@
+# Build output
+build/
+compile_commands.json
+
+# Map test data — large, separately distributed, never committed.
+# See "Test data" in README.md.
+TestData/
+test_data/
+testdata/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Editor / tooling
+.cache/
+.vscode/
+.idea/
