@@ -116,6 +116,109 @@ class CRgn;
 typedef struct tagPOINT { LONG x; LONG y; } POINT;
 typedef struct tagRECT { LONG left; LONG top; LONG right; LONG bottom; } RECT;
 typedef struct tagSIZE { LONG cx; LONG cy; } SIZE;
+
+// MFC's CPoint/CSize derive from POINT/SIZE and add constructors — 1:1
+// semantics, needed by every GDI-adjacent module we compile in place
+// (GeoSymServer CGMFile now; SanSymbol/SymText and VPF's vpfelem/VPFText at
+// phase V5). Only the members CGM parsing touches are provided; grow on
+// demand rather than mirroring all of MFC's arithmetic helpers.
+struct CSize;
+
+struct CPoint : public POINT {
+  CPoint() { x = y = 0; }
+  CPoint(LONG ix, LONG iy) { x = ix; y = iy; }
+  CPoint(const POINT& pt) { x = pt.x; y = pt.y; }
+  inline CPoint(const SIZE& s);  // MFC: CPoint from a CSize
+  void Offset(LONG dx, LONG dy) { x += dx; y += dy; }
+  bool operator==(const POINT& p) const { return x == p.x && y == p.y; }
+  bool operator!=(const POINT& p) const { return !(*this == p); }
+  // MFC: point - point is a CSize (a displacement); point +/- size is a
+  // point. CGM's elliptical-object math relies on the first form assigning
+  // straight back into a CPoint, which works via the SIZE constructor above.
+  inline CSize operator-(const POINT& p) const;
+  CPoint operator+(const POINT& p) const { return CPoint(x + p.x, y + p.y); }
+  CPoint& operator+=(const POINT& p) { x += p.x; y += p.y; return *this; }
+  CPoint& operator-=(const POINT& p) { x -= p.x; y -= p.y; return *this; }
+  CPoint operator-() const { return CPoint(-x, -y); }
+};
+
+struct CSize : public SIZE {
+  CSize() { cx = cy = 0; }
+  CSize(LONG icx, LONG icy) { cx = icx; cy = icy; }
+  CSize(const SIZE& s) { cx = s.cx; cy = s.cy; }
+  bool operator==(const SIZE& s) const { return cx == s.cx && cy == s.cy; }
+  bool operator!=(const SIZE& s) const { return !(*this == s); }
+};
+
+inline CPoint::CPoint(const SIZE& s) { x = s.cx; y = s.cy; }
+inline CSize CPoint::operator-(const POINT& p) const {
+  return CSize(x - p.x, y - p.y);
+}
+
+// GDI background modes (wingdi.h). Parsed CGM state carries these even in a
+// headless build, so the constants must exist independently of any drawing.
+#ifndef TRANSPARENT
+#define TRANSPARENT 1
+#endif
+#ifndef OPAQUE
+#define OPAQUE 2
+#endif
+
+// Interlocked* map to the compiler's atomic builtins. MFC/COM reference
+// counts (CCGMFile::AddRef/Release) are the only users; both return the NEW
+// value, matching the Win32 contract.
+inline LONG InterlockedIncrement(LONG volatile* addend) {
+  return __atomic_add_fetch(addend, 1, __ATOMIC_SEQ_CST);
+}
+inline LONG InterlockedDecrement(LONG volatile* addend) {
+  return __atomic_sub_fetch(addend, 1, __ATOMIC_SEQ_CST);
+}
+inline long InterlockedIncrement(long volatile* addend) {
+  return __atomic_add_fetch(addend, 1, __ATOMIC_SEQ_CST);
+}
+inline long InterlockedDecrement(long volatile* addend) {
+  return __atomic_sub_fetch(addend, 1, __ATOMIC_SEQ_CST);
+}
+
+// Win32 rect helpers (windef/winuser). Only the ones our ported sources call.
+inline void SetRectEmpty(RECT* rc) {
+  if (rc != nullptr) rc->left = rc->top = rc->right = rc->bottom = 0;
+}
+inline void SetRect(RECT* rc, LONG l, LONG t, LONG r, LONG b) {
+  if (rc == nullptr) return;
+  rc->left = l; rc->top = t; rc->right = r; rc->bottom = b;
+}
+// UnionRect: smallest rect containing both. NOTE Win32 treats an EMPTY source
+// rect as contributing nothing (it does not drag the union to 0,0) — CGM's
+// bounding-box accumulation starts from an empty rect and depends on that.
+inline bool IsRectEmptyRect(const RECT* rc) {
+  return rc == nullptr || rc->left >= rc->right || rc->top >= rc->bottom;
+}
+inline int UnionRect(RECT* dst, const RECT* a, const RECT* b) {
+  if (dst == nullptr) return 0;
+  const bool ea = IsRectEmptyRect(a), eb = IsRectEmptyRect(b);
+  if (ea && eb) { SetRectEmpty(dst); return 0; }
+  if (ea) { *dst = *b; return 1; }
+  if (eb) { *dst = *a; return 1; }
+  dst->left = a->left < b->left ? a->left : b->left;
+  dst->top = a->top < b->top ? a->top : b->top;
+  dst->right = a->right > b->right ? a->right : b->right;
+  dst->bottom = a->bottom > b->bottom ? a->bottom : b->bottom;
+  return 1;
+}
+
+struct CRect : public RECT {
+  CRect() { left = top = right = bottom = 0; }
+  CRect(LONG l, LONG t, LONG r, LONG b) {
+    left = l; top = t; right = r; bottom = b;
+  }
+  CRect(const RECT& rc) { *static_cast<RECT*>(this) = rc; }
+  // MFC's Width/Height are plain differences and may go negative on an
+  // unnormalized rect — kept as-is, callers rely on the signed result.
+  LONG Width() const { return right - left; }
+  LONG Height() const { return bottom - top; }
+  bool IsRectEmpty() const { return left >= right || top >= bottom; }
+};
 #ifndef TRUE
 #define TRUE 1
 #define FALSE 0
@@ -136,6 +239,9 @@ typedef struct tagSIZE { LONG cx; LONG cy; } SIZE;
 
 // MFC-style assert
 #include <cassert>
+#ifndef _ASSERTE
+#define _ASSERTE assert   // CRT debug assert; same contract as ASSERT here
+#endif
 #ifndef ASSERT
 #define ASSERT assert
 #endif
@@ -169,6 +275,27 @@ inline int _taccess(const char* path, int mode) {
 #define _stprintf_s snprintf
 #define _strnicmp strncasecmp
 #define _snprintf snprintf
+#define _tcschr strchr
+#define _tcsstr strstr
+#define _tcstol strtol
+#define _tcstod strtod
+// MSVC's 3-argument strtok_s (str, delimiters, &context) is POSIX strtok_r.
+// (Not C11 Annex K's 4-argument strtok_s, which this is NOT.)
+#define strtok_s strtok_r
+// strnlen_s here is the plain bounded length (Annex K's runtime-constraint
+// handler is not emulated; a null pointer is treated as length 0).
+inline size_t strnlen_s(const char* s, size_t n) {
+  return s ? strnlen(s, n) : 0;
+}
+// _tcsncpy_s (narrow build): the bounded copy already provided by strncpy_s
+// above (dst, size, src, count) — both null-terminate and don't emulate Annex
+// K truncation aborts.
+#define _tcsncpy_s strncpy_s
+
+// Win32 character classification (narrow/ASCII). GeoSym's CAEValue::Convert
+// uses these to decide whether a token is an attribute name vs a literal.
+inline BOOL IsCharAlpha(char c) { return isalpha((unsigned char)c) ? TRUE : FALSE; }
+inline BOOL IsCharLower(char c) { return islower((unsigned char)c) ? TRUE : FALSE; }
 
 // MSVC "secure" CRT variants. The size argument maps onto the standard
 // bounded functions; behavior on truncation differs (MSVC aborts, these
@@ -354,7 +481,9 @@ class CFile {
     shareDenyWrite = 0x0020,
     shareDenyRead = 0x0030,
     shareDenyNone = 0x0040,
-    typeBinary = 0x8000
+    typeText = 0x4000,
+    typeBinary = 0x8000,
+    osSequentialScan = 0x40000000
   };
   CFile() : m_fp(nullptr) {}
   ~CFile() { Close(); }
@@ -368,6 +497,45 @@ class CFile {
   }
   UINT Read(void* buf, UINT count) {
     return m_fp ? (UINT)fread(buf, 1, count, m_fp) : 0;
+  }
+  void Close() {
+    if (m_fp) {
+      fclose(m_fp);
+      m_fp = nullptr;
+    }
+  }
+
+ private:
+  FILE* m_fp;
+};
+
+// Minimal MFC CStdioFile: text-mode line reader. GeoSym's CDelimitedParser
+// uses only Open/Close/ReadString(LPTSTR, UINT). ReadString mirrors MFC's
+// LPTSTR/UINT overload, which is fgets: it reads up to nMax-1 chars through
+// (and INCLUDING) the newline, returns NULL at EOF. Windows text mode
+// translates CRLF->LF; we replicate that here (strip a trailing '\r' before
+// the '\n') so buffers are byte-identical to the Windows build on the CRLF
+// GeoSym tables.
+class CStdioFile {
+ public:
+  CStdioFile() : m_fp(nullptr) {}
+  ~CStdioFile() { Close(); }
+  BOOL Open(const char* path, UINT /*flags*/) {
+    Close();
+    const std::string resolved = fv::FvResolveWin32Path(path);
+    m_fp = fopen(resolved.c_str(), "r");
+    return m_fp != nullptr;
+  }
+  // Returns lpsz on success, NULL at end-of-file.
+  char* ReadString(char* lpsz, UINT nMax) {
+    if (m_fp == nullptr || nMax == 0) return nullptr;
+    if (fgets(lpsz, (int)nMax, m_fp) == nullptr) return nullptr;
+    size_t n = strlen(lpsz);
+    if (n >= 2 && lpsz[n - 1] == '\n' && lpsz[n - 2] == '\r') {
+      lpsz[n - 2] = '\n';
+      lpsz[n - 1] = '\0';
+    }
+    return lpsz;
   }
   void Close() {
     if (m_fp) {

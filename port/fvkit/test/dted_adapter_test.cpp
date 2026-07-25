@@ -8,14 +8,22 @@
 //     runs; verifies path->bounds mapping, meters/NaN conversion (D4), and
 //     out-of-coverage behavior.
 //  2. Real data via FVW_TESTDATA_DIR (skipped if absent): enumerates the
-//     22-cell TestData tree (incl. the case-odd W084 dir and the prototype
-//     .DT3 the reader rejects) and re-pins the n31.dt1 elevations through
-//     the FvKit surface as floats.
+//     TestData tree (incl. the case-odd W084 dir and the prototype .DT3 the
+//     reader rejects) and re-pins the n31.dt1 elevations through the FvKit
+//     surface as floats.
+//
+// The real-data expectations are derived from the tree on disk, not hardcoded
+// counts: TestData grows (22 -> 24 cells 2026-07-21, +2 DTED2 2026-07-23) and
+// a magic number turns every data drop into a spurious failure. What is pinned
+// is the mapping (path -> bounds/series) and the elevation values.
 
 #include "fvkit/formats/dted.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -142,7 +150,23 @@ std::string TestDataDted() {
   return path;
 }
 
-TEST(RealDtedEnumerate, TwentyTwoCells) {
+// Independent (non-enumerator) inventory of the tree: cells[n] = number of
+// .dt<n> files on disk, so the expectations track whatever data is present.
+// Extension case varies in TestData (n40.DT3 vs n30.dt1).
+std::array<int, 4> CellsOnDisk(const std::string& root) {
+  std::array<int, 4> cells{};
+  for (const auto& ent : fs::recursive_directory_iterator(root)) {
+    if (!ent.is_regular_file()) continue;
+    std::string ext = ent.path().extension().string();
+    for (char& c : ext) c = static_cast<char>(tolower(c));
+    if (ext.size() == 4 && ext.compare(0, 3, ".dt") == 0 && ext[3] >= '1' &&
+        ext[3] <= '3')
+      ++cells[ext[3] - '0'];
+  }
+  return cells;
+}
+
+TEST(RealDtedEnumerate, EveryCellOnDisk) {
   std::string root = TestDataDted();
   if (root.empty()) GTEST_SKIP();
 
@@ -152,16 +176,24 @@ TEST(RealDtedEnumerate, TwentyTwoCells) {
   fv::FrameInfo info;
   while (e.Next(&info)) frames.push_back(info);
 
-  // 21 .dt1 cells (w081-W084 x n30-n35) + the w106 prototype .DT3
-  ASSERT_EQ(frames.size(), 22u);
-  int dt1 = 0, dt3 = 0;
+  // Every .dt1/.dt2/.dt3 on disk is enumerated at its own level, and nothing
+  // else is. As of 2026-07-23 that is 23 .dt1 (w081-w083 x n30-n34, W084 x
+  // n30-n35, w085/n33, w086/n33), 2 .dt2 (w080/n32, w081/n32 — Charleston SC),
+  // and the w106 prototype .DT3.
+  const std::array<int, 4> on_disk = CellsOnDisk(root);
+  ASSERT_GT(on_disk[1], 0) << "no .dt1 cells under " << root;
+  ASSERT_EQ(frames.size(),
+            static_cast<size_t>(on_disk[1] + on_disk[2] + on_disk[3]));
+  int dt1 = 0, dt2 = 0, dt3 = 0;
   for (const auto& f : frames) {
     if (f.series_key == "DTED1") ++dt1;
+    if (f.series_key == "DTED2") ++dt2;
     if (f.series_key == "DTED3") ++dt3;
     EXPECT_GT(f.size_bytes, 0) << f.path;
   }
-  EXPECT_EQ(dt1, 21);
-  EXPECT_EQ(dt3, 1);
+  EXPECT_EQ(dt1, on_disk[1]);
+  EXPECT_EQ(dt2, on_disk[2]);
+  EXPECT_EQ(dt3, on_disk[3]);
 
   // spot-check path->bounds on the pinned cell
   auto it = std::find_if(frames.begin(), frames.end(), [](const fv::FrameInfo& f) {
@@ -189,12 +221,30 @@ TEST(RealDtedSource, PinnedElevationsThroughFvKit) {
 
   fv::DtedElevationSource src(root);
 
-  // Union box: lat [30, 41] x lon [-106, -80] (n35 in W084, n40 in w106)
+  // The source's union box must equal the union of the enumerator's per-cell
+  // boxes (two independent walks of the same tree). Hardcoding the corners
+  // breaks on every data drop — 2026-07-23's w080/n32.dt2 pushed ur.lon from
+  // -80 to -79.
+  fv::DtedFrameEnumerator cells;
+  ASSERT_TRUE(cells.Begin(root).ok());
+  fv::FrameInfo info;
+  fv::GeoRect want{{90.0, 180.0}, {-90.0, -180.0}};
+  while (cells.Next(&info)) {
+    want.ll.lat = std::min(want.ll.lat, info.bounds.ll.lat);
+    want.ll.lon = std::min(want.ll.lon, info.bounds.ll.lon);
+    want.ur.lat = std::max(want.ur.lat, info.bounds.ur.lat);
+    want.ur.lon = std::max(want.ur.lon, info.bounds.ur.lon);
+  }
   fv::GeoRect b = src.Bounds();
-  EXPECT_DOUBLE_EQ(b.ll.lat, 30.0);
-  EXPECT_DOUBLE_EQ(b.ll.lon, -106.0);
-  EXPECT_DOUBLE_EQ(b.ur.lat, 41.0);
-  EXPECT_DOUBLE_EQ(b.ur.lon, -80.0);
+  EXPECT_DOUBLE_EQ(b.ll.lat, want.ll.lat);
+  EXPECT_DOUBLE_EQ(b.ll.lon, want.ll.lon);
+  EXPECT_DOUBLE_EQ(b.ur.lat, want.ur.lat);
+  EXPECT_DOUBLE_EQ(b.ur.lon, want.ur.lon);
+
+  // ...and it must still cover the cells the pins below live in.
+  EXPECT_LE(b.ll.lat, 31.0);
+  EXPECT_LE(b.ll.lon, -82.0);
+  EXPECT_GE(b.ur.lat, 36.0);
 
   // Same pins as dted_cell_test.cpp RealDted1Pins, through the adapter
   struct { double lat, lon; float meters; } pins[] = {
@@ -221,6 +271,65 @@ TEST(RealDtedSource, PinnedElevationsThroughFvKit) {
   // the prototype .DT3 is indexed but unreadable in this snapshot:
   // kIoError (file exists), NOT kOutOfCoverage
   EXPECT_EQ(src.GetElevation({40.5, -105.5}, &e).code, fv::kIoError);
+}
+
+// w081/n32 exists at BOTH levels (.dt1 plus the .dt2 added 2026-07-23), the
+// first real cell in TestData to do so. DtedElevationSource sorts each cell's
+// candidates finest-level-first (dted.cpp), so the DTED2 posts must win where
+// the levels disagree — before this data drop nothing exercised that ordering
+// with real files. Isolating each level in its own tree is what makes the
+// assertion meaningful: it shows the full-tree answer IS the DTED2 answer and
+// is NOT the DTED1 answer, rather than the two happening to agree.
+TEST(RealDtedSource, FinerLevelWinsInOverlappingCell) {
+  std::string root = TestDataDted();
+  if (root.empty()) GTEST_SKIP();
+  const fs::path dt1 = fs::path(root) / "w081" / "n32.dt1";
+  const fs::path dt2 = fs::path(root) / "w081" / "n32.dt2";
+  if (!fs::exists(dt1) || !fs::exists(dt2)) GTEST_SKIP();
+
+  const fs::path tmp = fs::temp_directory_path() /
+                       ("fvkit_dted_lvl_" + std::to_string(::getpid()));
+  fs::remove_all(tmp);
+  fs::create_directories(tmp / "lvl1" / "w081");
+  fs::create_directories(tmp / "lvl2" / "w081");
+  fs::copy_file(dt1, tmp / "lvl1" / "w081" / "n32.dt1");
+  fs::copy_file(dt2, tmp / "lvl2" / "w081" / "n32.dt2");
+
+  fv::DtedElevationSource both(root);
+  fv::DtedElevationSource only1((tmp / "lvl1").string());
+  fv::DtedElevationSource only2((tmp / "lvl2").string());
+
+  // Points where the two levels genuinely disagree (DTED1 / DTED2 metres).
+  struct { double lat, lon; float l1, l2; } pins[] = {
+      {32.75, -80.25, 10.0f, 17.0f},
+      {32.12, -80.88, 3.0f, 21.0f},
+  };
+  for (const auto& p : pins) {
+    float a = 0, b = 0, c = 0;
+    ASSERT_TRUE(only1.GetElevation({p.lat, p.lon}, &a).ok());
+    ASSERT_TRUE(only2.GetElevation({p.lat, p.lon}, &b).ok());
+    ASSERT_TRUE(both.GetElevation({p.lat, p.lon}, &c).ok());
+    EXPECT_FLOAT_EQ(a, p.l1) << p.lat << "," << p.lon << " DTED1";
+    EXPECT_FLOAT_EQ(b, p.l2) << p.lat << "," << p.lon << " DTED2";
+    ASSERT_NE(a, b) << "pin no longer distinguishes the levels";
+    EXPECT_FLOAT_EQ(c, b) << p.lat << "," << p.lon << ": finer level must win";
+  }
+
+  fs::remove_all(tmp);
+}
+
+// w080/n32 is DTED2-only (2026-07-23) — coverage that did not exist before,
+// so a level-2 cell alone must satisfy a lookup.
+TEST(RealDtedSource, Dted2OnlyCellProvidesCoverage) {
+  std::string root = TestDataDted();
+  if (root.empty()) GTEST_SKIP();
+  if (!fs::exists(fs::path(root) / "w080" / "n32.dt2")) GTEST_SKIP();
+
+  fv::DtedElevationSource src(root);
+  float e = 0;
+  fv::Status s = src.GetElevation({32.5, -79.5}, &e);
+  EXPECT_TRUE(s.ok()) << s.message;
+  EXPECT_FALSE(std::isnan(e));
 }
 
 }  // namespace

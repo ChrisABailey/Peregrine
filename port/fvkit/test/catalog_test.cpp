@@ -28,6 +28,20 @@ std::string TestDataDir() {
   return d ? d : "";
 }
 
+// Frames a registered format's own enumerator yields over `dir` — the count
+// Catalog::Scan is expected to reproduce as rows. Requires the builtin
+// formats to be registered.
+int CountFrames(const std::string& format_key, const std::string& dir) {
+  const fv::FormatFactories* f = fv::FindFormat(format_key);
+  if (f == nullptr || f->make_enumerator == nullptr) return -1;
+  auto e = f->make_enumerator();
+  if (!e->Begin(dir).ok()) return -1;
+  int n = 0;
+  fv::FrameInfo info;
+  while (e->Next(&info)) ++n;
+  return n;
+}
+
 // ---------------------------------------------------------------------------
 // Synthetic format: three frames, one crossing the antimeridian
 // ---------------------------------------------------------------------------
@@ -176,12 +190,17 @@ TEST(CatalogReal, ScanAndSelectAtlanta) {
   ASSERT_TRUE(cat.AddDataSource(td + "/rpf", "cadrg", 0, &rpf).ok());
   ASSERT_TRUE(cat.Scan(rpf, &n_rpf).ok());
   EXPECT_GT(n_rpf, 500);  // ~523 RPF frames
+  // Scan must insert exactly one row per frame the format's own enumerator
+  // yields. Comparing against the enumerator instead of a literal keeps this
+  // honest as TestData grows (geotiff 15 -> 29, dted 24 -> 26 on 2026-07-23).
   ASSERT_TRUE(cat.AddDataSource(td + "/geotiff", "geotiff", 0, &gtif).ok());
   ASSERT_TRUE(cat.Scan(gtif, &n_gtif).ok());
-  EXPECT_EQ(n_gtif, 15);
+  EXPECT_EQ(n_gtif, CountFrames("geotiff", td + "/geotiff"));
   ASSERT_TRUE(cat.AddDataSource(td + "/dted", "dted", 0, &dted).ok());
   ASSERT_TRUE(cat.Scan(dted, &n_dted).ok());
-  EXPECT_EQ(n_dted, 22);
+  EXPECT_EQ(n_dted, CountFrames("dted", td + "/dted"));
+  EXPECT_GT(n_gtif, 0);
+  EXPECT_GT(n_dted, 0);
 
   // Atlanta viewport -> LFC coverage (the frame the pan demo uses)
   fv::GeoRect atlanta{{33.6, -84.5}, {33.9, -84.2}};

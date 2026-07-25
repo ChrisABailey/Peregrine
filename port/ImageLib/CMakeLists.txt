@@ -14,17 +14,17 @@
 
 set(IL ${CMAKE_SOURCE_DIR}/fvw_core/ImageLib)
 
-# --- zlib ---
-file(GLOB ZLIB_SRC ${IL}/zlib/*.c)
-list(FILTER ZLIB_SRC EXCLUDE REGEX "example\\.c$")
-add_library(fv_z STATIC ${ZLIB_SRC})
-target_include_directories(fv_z PUBLIC ${IL}/zlib)
-# The vendored copy calls MSVC CRT names (_open/_lseek/...) directly; map
-# them back to POSIX without touching the sources.
-target_compile_definitions(fv_z PRIVATE
-  _open=open _lseek=lseek _read=read _write=write _close=close)
-target_compile_options(fv_z PRIVATE -include unistd.h)
-target_compile_options(fv_z PRIVATE -w)
+# --- zlib: MODERNISED 2026-07-25 (per Chris) ---
+# Was the vendored fork at ${IL}/zlib — zlib 1.2.5 (2010), which also needed
+# MSVC-CRT-name remapping (_open/_lseek/...) and an -include unistd.h to build
+# on POSIX. The port now builds against the current upstream release fetched
+# in port/third_party/CMakeLists.txt; zlib's API has been stable since 1.2.x,
+# so libpng and libtiff below consume it unchanged.
+#
+# `fv_z` is kept as the name every consumer links, so this swap is one edit.
+# fvw_core/ImageLib/zlib stays on disk untouched for the Windows product build.
+add_library(fv_z INTERFACE)
+target_link_libraries(fv_z INTERFACE fv_zlib)
 
 # --- libpng (uses zlib) ---
 file(GLOB PNG_SRC ${IL}/png/*.c)

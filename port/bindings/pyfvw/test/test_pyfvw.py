@@ -27,6 +27,20 @@ def _testdata(sub):
     return p if os.path.isdir(p) else None
 
 
+def _count_by_ext(root, exts):
+    """Independent (non-enumerator) inventory: {ext: file count} under root.
+
+    Extension case varies in TestData (n40.DT3 vs n30.dt1), so match folded.
+    """
+    counts = {e: 0 for e in exts}
+    for _, _, files in os.walk(root):
+        for name in files:
+            ext = os.path.splitext(name)[1].lower()
+            if ext in counts:
+                counts[ext] += 1
+    return counts
+
+
 # ---------------------------------------------------------------------------
 # geo primitives (always run)
 # ---------------------------------------------------------------------------
@@ -107,8 +121,15 @@ def test_dted_enumerate():
     if root is None:
         pytest.skip("no TestData")
     frames = pyfvw.formats.DtedFrameEnumerator().frames(root)
-    assert len(frames) == 22
-    assert sum(1 for f in frames if f.series_key == "DTED1") == 21
+    # Counted from the tree, not hardcoded — TestData grows (22 -> 24 cells
+    # 2026-07-21, +2 DTED2 2026-07-23) and a literal makes every data drop a
+    # spurious failure. Level n on disk must show up as series DTED<n>.
+    on_disk = _count_by_ext(root, (".dt1", ".dt2", ".dt3"))
+    assert on_disk[".dt1"] > 0, f"no .dt1 cells under {root}"
+    assert len(frames) == sum(on_disk.values())
+    for ext, n in on_disk.items():
+        series = "DTED" + ext[-1]
+        assert sum(1 for f in frames if f.series_key == series) == n
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +141,11 @@ def test_geotiff_enumerate():
     if root is None:
         pytest.skip("no TestData")
     frames = pyfvw.formats.GeoTiffFrameEnumerator().frames(root)
-    assert len(frames) == 15  # 14 Chesapeake quads + chocta.tif (2026-07-16)
+    # Every .tif on disk must be recognized (15 -> 29 samples on 2026-07-23,
+    # when the Charleston SC set arrived); see the DTED note above.
+    n_tif = sum(_count_by_ext(root, (".tif", ".tiff")).values())
+    assert n_tif > 0, f"no .tif samples under {root}"
+    assert len(frames) == n_tif
     paths = [f.path for f in frames]
     assert paths == sorted(paths)
     for f in frames:
@@ -307,6 +332,66 @@ def test_engine_render():
         assert e.get_elevation(31.5, -81.5) == 9.0
 
 
+def test_engine_physical_scale():
+    # A cartographic series draws at its denominator; the mm_per_pixel knob
+    # zooms; and the projection has physically-correct aspect (dpp_lon/dpp_lat
+    # ~ 1/cos(lat)), not the distorted ratio the old scale path produced.
+    root = _testdata("rpf")
+    if root is None:
+        pytest.skip("no TestData")
+    pyfvw.catalog.register_builtin_formats()
+    c = pyfvw.catalog.Catalog()
+    c.scan(c.add_data_source(root, "cadrg"))
+    lfc = next(s for s in c.series() if s.series_key == "LFC")
+    e = pyfvw.engine.MapEngine(c)
+    e.set_surface(200, 150)
+    e.set_center(pyfvw.geo.GeoPoint(35.0, -116.0))
+
+    native = pyfvw.engine.NATIVE_DISPLAY_MM_PER_PIXEL
+    e.set_physical_scale(lfc.scale, lfc.scale_units, native)
+    assert e.proj.scale == lfc.scale_denom          # denominator passes through
+    assert abs(e.proj.mm_per_pixel - native) < 1e-12
+    ratio = e.proj.deg_per_pixel_lon / e.proj.deg_per_pixel_lat
+    assert abs(ratio - 1.0 / math.cos(math.radians(35.0))) < 0.02
+
+    # Zoom out 2x: twice the ground per pixel.
+    dpp0 = e.proj.deg_per_pixel_lat
+    e.set_physical_scale(lfc.scale, lfc.scale_units, native * 2)
+    assert abs(e.proj.deg_per_pixel_lat - 2 * dpp0) < 1e-12
+
+    # A metres-resolution series (imagery) is displayed at 100% at the native
+    # pitch: one screen pixel spans one source metre (for 1 m data).
+    e.set_physical_scale(1.0, 4, native)            # units 4 == MAP_SCALE_METERS
+    m_per_deg_lat = 111132.92 - 559.82 * math.cos(math.radians(2 * 35.0))
+    assert abs(e.proj.deg_per_pixel_lat * m_per_deg_lat - 1.0) < 1e-2
+
+
+def test_vpf_enumerate_and_catalog():
+    root = _testdata("vpf/dnc17")
+    if root is None:
+        pytest.skip("no TestData")
+    frames = pyfvw.formats.VpfFrameEnumerator().frames(root)
+    assert len(frames) > 40
+    libs = {f.series_key for f in frames}
+    assert "h1707330" in libs and "coa17c" in libs  # harbor + coastal
+    assert "browse" not in libs  # untiled/degenerate library is skipped
+    assert all(f.bounds.ll.lat < f.bounds.ur.lat for f in frames)
+
+    pyfvw.catalog.register_builtin_formats()
+    cat = pyfvw.catalog.Catalog()
+    n = cat.scan(cat.add_data_source(root, "vpf"))
+    assert n > 40
+    # Nantucket Sound -> harbor coverage
+    around = pyfvw.geo.GeoRect(ll=pyfvw.geo.GeoPoint(41.3, -70.2),
+                               ur=pyfvw.geo.GeoPoint(41.4, -70.0))
+    rows = cat.select_by_geo_rect(around)
+    assert rows and any(r.series_key.startswith("h") for r in rows)
+    # Atlanta -> nothing (this DNC library is Cape Cod)
+    atl = pyfvw.geo.GeoRect(ll=pyfvw.geo.GeoPoint(33.6, -84.5),
+                            ur=pyfvw.geo.GeoPoint(33.9, -84.2))
+    assert cat.select_by_geo_rect(atl) == []
+
+
 def test_tile_pack_write_and_render(tmp_path):
     root = _testdata("rpf")
     if root is None:
@@ -411,3 +496,196 @@ def test_cadrg_cache_lru():
     assert cache.get(frames[0].path) is a  # hit returns same object
     cache.get(frames[2].path)              # evicts frames[1]
     assert cache.size == 2
+
+
+# ---------------------------------------------------------------------------
+# vector charting: VPF/DNC -> GeoSym -> VectorRenderer (V5c pyfvw slice)
+# ---------------------------------------------------------------------------
+
+def _harbor():
+    return _testdata(os.path.join("vpf", "dnc17", "h1707300"))
+
+
+def test_vpf_source_open_layers_bounds():
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    s = pyfvw.vector.VpfVectorSource()
+    s.open(lib)
+    assert s.is_open()
+    layers = s.layers()
+    assert len(layers) == 36                 # 25 point/line + 11 area (V5c)
+    for want in ("coastl", "hydline", "soundp", "hydarea", "ecrarea"):
+        assert want in layers
+    b = s.bounds                              # Cape Cod / Nantucket Sound
+    assert 41.5 < b.ll.lat < b.ur.lat < 41.9
+    assert -70.1 < b.ll.lon < b.ur.lon < -69.7
+
+
+def test_vpf_render_through_geosym():
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+
+    src = pyfvw.vector.VpfVectorSource()
+    src.open(lib)
+    style = pyfvw.vector.GeoSymStyleEngine()
+    style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(256, 256)
+    proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+    proj.set_physical_scale(300000, 0.25)
+    # Correct latitude-dependent aspect: a lon pixel spans 1/cos(lat) more
+    # degrees than a lat pixel, so ground cells are square.
+    ratio = proj.deg_per_pixel_lon / proj.deg_per_pixel_lat
+    assert math.isclose(ratio, 1.0 / math.cos(math.radians(41.70)), rel_tol=0.02)
+
+    canvas = pyfvw.canvas.CpuCanvas(256, 256)
+    canvas.clear((255, 255, 255))
+    r = pyfvw.vector.VectorRenderer(src, style)
+    r.render(proj, canvas)
+
+    assert r.features_queried > 100
+    assert r.draws_emitted > 100
+    arr = np.asarray(canvas.buffer)
+    nonwhite = int((arr[:, :, :3] != 255).any(axis=2).sum())
+    assert nonwhite > 1000, "chart came out blank"
+
+
+def test_vpf_scale_and_feature_zoom_are_independent():
+    """The demo's two knobs: map scale keeps symbol pixel-size fixed; feature
+    zoom changes it without moving the map."""
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+
+    def render(scale, fscale):
+        src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+        style = pyfvw.vector.GeoSymStyleEngine(); style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+        proj = pyfvw.engine.MapProjection()
+        proj.set_surface_size(200, 200)
+        proj.set_center(pyfvw.geo.GeoPoint(41.69, -69.95))
+        proj.set_physical_scale(scale, 0.25)
+        cv = pyfvw.canvas.CpuCanvas(200, 200); cv.clear((255, 255, 255))
+        r = pyfvw.vector.VectorRenderer(src, style)
+        r.set_symbol_scale(fscale); r.set_device_dpi(96 * fscale)
+        r.render(proj, cv)
+        arr = np.asarray(cv.buffer)
+        return int((arr[:, :, :3] != 255).any(axis=2).sum())
+
+    base = render(150000, 1.0)
+    zoomed_features = render(150000, 2.5)   # bigger symbology, same ground
+    smaller_scale = render(400000, 1.0)     # more ground, same symbol size
+    assert zoomed_features > base           # features grew -> more ink
+    assert base > 0 and smaller_scale > 0
+
+
+# ---------------------------------------------------------------------------
+# identify: pick index over the drawn scene + Describe (plan §5.3, R1)
+# ---------------------------------------------------------------------------
+
+def test_vpf_describe_decodes_a_feature():
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    s = pyfvw.vector.VpfVectorSource()
+    s.open(lib)
+
+    ref = pyfvw.vector.FeatureRef()
+    ref.layer = s.layers().index("hydline")
+    ref.feature = 1
+    d = s.describe(ref)
+
+    assert d.title == "Depth Curve"          # CHAR.VDT decode of f_code BE010
+    assert d.layer_name == "hydline"
+    assert "h1707300" in d.source_note
+    by_code = {a.code: a for a in d.attributes}
+    assert by_code["f_code"].raw == "BE010"
+    assert by_code["f_code"].display == "Depth Curve"
+    assert by_code["acc"].name == "Accuracy Category"
+    assert "id" not in by_code and "edg_id" not in by_code   # join keys hidden
+
+    bad = pyfvw.vector.FeatureRef()           # layer -1 -> invalid
+    with pytest.raises(pyfvw.FvError):
+        s.describe(bad)
+
+
+def test_vpf_click_to_identify_end_to_end():
+    """What the pan-viewer does on a click: render, hit-test the DRAWN scene,
+    describe each hit."""
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+
+    src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+    style = pyfvw.vector.GeoSymStyleEngine()
+    style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(256, 256)
+    proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+    proj.set_physical_scale(300000, 0.25)
+
+    canvas = pyfvw.canvas.CpuCanvas(256, 256)
+    canvas.clear((255, 255, 255))
+    r = pyfvw.vector.VectorRenderer(src, style)
+    assert r.pick_enabled
+    r.render(proj, canvas)
+    assert len(r.pick_index) > 100, "nothing was indexed"
+
+    # Sweep the canvas: every pixel with ink should be tappable, and every hit
+    # must resolve to a description.
+    arr = np.asarray(canvas.buffer)
+    described, hit_points = 0, 0
+    for y in range(0, 256, 8):
+        for x in range(0, 256, 8):
+            hits = r.pick_index.hit_test(x, y, 4.0)
+            if not hits:
+                continue
+            hit_points += 1
+            # Topmost first, by display priority.
+            assert hits[0].priority >= hits[-1].priority
+            d = src.describe(hits[0].ref)
+            assert d.title and d.layer_name
+            described += 1
+    assert hit_points > 20, "the chart drew but nothing is pickable"
+    assert described == hit_points
+
+    # White space away from the chart hits nothing.
+    empty = [ (x, y) for y in range(0, 256, 4) for x in range(0, 256, 4)
+              if (arr[y, x, :3] == 255).all() ]
+    assert empty
+    misses = sum(1 for x, y in empty if not r.pick_index.hit_test(x, y, 0.0))
+    assert misses > len(empty) * 0.5, "blank pixels are reporting hits"
+
+
+def test_pick_index_can_be_disabled():
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+    src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+    style = pyfvw.vector.GeoSymStyleEngine()
+    style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(128, 128)
+    proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+    proj.set_physical_scale(300000, 0.25)
+    cv = pyfvw.canvas.CpuCanvas(128, 128); cv.clear((255, 255, 255))
+    r = pyfvw.vector.VectorRenderer(src, style)
+    r.set_pick_enabled(False)
+    r.render(proj, cv)
+    assert r.draws_emitted > 0
+    assert len(r.pick_index) == 0

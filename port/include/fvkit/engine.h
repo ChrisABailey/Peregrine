@@ -43,6 +43,20 @@ class MapEngine {
   Status SetCenter(const GeoPoint& center);
   Status SetScale(double scale_denominator);
   Status SetResolution(double dpp_lat, double dpp_lon);  // tile-pyramid mode
+
+  // Physical-display scale for a whole SERIES, given how that series reports
+  // its scale in the catalog (SeriesRow.scale / SeriesRow.scale_units):
+  //   * a cartographic denominator (MAP_SCALE_DENOMINATOR) is used directly,
+  //     so a 1:N map draws at 1:N on an mm_per_pixel screen;
+  //   * a ground resolution (MAP_SCALE_METERS / _KILOMETER — what imagery
+  //     like a 1 m DOQ reports) is displayed at 100% (one source pixel per
+  //     screen pixel) at the reference pitch kNativeDisplayMmPerPixel, and
+  //     scaled from there by mm_per_pixel.
+  // Either way mm_per_pixel is the single zoom knob (larger = zoomed out).
+  // See MapProjection::SetPhysicalScale for the aspect/scale guarantees.
+  Status SetPhysicalScale(double series_scale, int series_scale_units,
+                          double mm_per_pixel);
+
   const MapProjection& CurrentProj() const { return proj_; }
 
   // Composites all catalog coverage intersecting the viewport (restricted

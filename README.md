@@ -30,20 +30,24 @@ ctest --test-dir build  # run tests
 Verified on macOS (Apple Silicon, AppleClang). See *Known limitations* for the
 state of Linux.
 
-Without sample map data you should see **176 tests passing and 54 skipped** —
-the skipped ones are those that need real map data, which is not distributed
-here.
+Without sample map data you should see **341 tests passing, none failing**. A
+large share of those skip themselves at run time because they need real map
+data, which is not distributed here (`ctest` reports a skipped test as passing;
+the `[  SKIPPED ]` lines in `ctest -V` show which).
 
 ## What works
 
 | Layer | Capability |
 |-------|-----------|
 | Geodesy | Geoid separation, GEOTRANS datum/ellipsoid conversion, MGRS/UTM/DMS parsing, great-circle and rhumb-line geodesics |
-| Raster formats | DTED elevation, CADRG/RPF (VQ decode), GeoTIFF, TIROS, GeoPackage tile packs |
-| Vector formats | VPF/DNC reader — libraries, coverages, tile grids, feature classes and feature tables |
+| Raster formats | DTED elevation, DTED shaded relief (hill-shading, elevation/slope bands, contours, time-of-day sun), CADRG/RPF (VQ decode), GeoTIFF, TIROS, GeoPackage tile packs |
+| Vector formats | VPF/DNC — libraries, coverages, tile grids, feature classes, and point/line/area features with face topology; ENC (S-57 over an ISO 8211 reader, base editions) |
+| Symbology | GeoSym rule engine (ATTEXP conditions, COLOR/TEXT tables) and CGM symbol parsing, driving a shared vector renderer: styled strokes, area fills, depth-shaded bathymetry, point symbols and labels |
+| Identify | Click-to-identify over a pick index built from the primitives actually drawn, with VPF value dictionaries decoding codes to text |
 | Catalog | SQLite + R-tree coverage catalog, scale-aware series selection, antimeridian-correct queries |
-| Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), equal-arc projection, a map engine that resamples frames into a viewport, and an overlay system |
-| Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays |
+| Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), equal-arc projection at true physical scale, a map engine that resamples frames into a viewport, and an overlay system |
+| Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays, vector sources and style engines |
+| Apps | `PythonView.py` — a desktop map viewer over the bindings (family menus, coverage overlay, identify) |
 | Tools | `fvrender` renders a map to PNG; `fvpack` builds offline GeoPackage tile packs |
 
 Render a chart headlessly (needs map data — see *Test data* below):

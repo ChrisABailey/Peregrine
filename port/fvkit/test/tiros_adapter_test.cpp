@@ -37,7 +37,7 @@ TEST(TirosRegistry, Registered) {
   EXPECT_TRUE(t->make_enumerator != nullptr);
   EXPECT_TRUE(t->make_raster_source != nullptr);
   auto keys = fv::RegisteredFormatKeys();
-  EXPECT_EQ(keys.size(), 5u);  // cadrg, dted, geotiff, gpkg, tiros
+  EXPECT_EQ(keys.size(), 7u);  // cadrg, dted, dted-shaded, geotiff, gpkg, tiros, vpf
   fv::ClearFormatRegistryForTest();
 }
 

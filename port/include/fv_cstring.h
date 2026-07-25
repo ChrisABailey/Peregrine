@@ -27,6 +27,14 @@ class CString {
  public:
   CString() : m_p(dup("")) {}
   CString(const char* s) : m_p(dup(s ? s : "")) {}
+  // MFC CString(LPCTSTR, int): first n chars (n<=strlen). Used by GeoSym's
+  // token slicing (CVPFFormatHandler::GetOrdinalEntry, CAEValue::Init).
+  CString(const char* s, int n) : m_p(nullptr) {
+    if (s == nullptr || n < 0) n = 0;
+    m_p = (char*)malloc((size_t)n + 1);
+    if (n > 0) memcpy(m_p, s, (size_t)n);
+    m_p[n] = '\0';
+  }
   CString(const std::string& s) : m_p(dup(s.c_str())) {}
   CString(const CString& o) : m_p(dup(o.m_p)) {}
   CString(CString&& o) noexcept : m_p(o.m_p) { o.m_p = dup(""); }
@@ -139,6 +147,17 @@ class CString {
   void TrimLeft() {
     char* q = m_p;
     while (*q && isspace((unsigned char)*q)) ++q;
+    if (q != m_p) memmove(m_p, q, strlen(q) + 1);
+  }
+  // MFC overloads that trim a specific character (not whitespace). Used by
+  // GeoSym's CAEValue::Convert to strip surrounding quotes.
+  void TrimRight(char ch) {
+    size_t len = strlen(m_p);
+    while (len > 0 && m_p[len - 1] == ch) m_p[--len] = 0;
+  }
+  void TrimLeft(char ch) {
+    char* q = m_p;
+    while (*q == ch && *q) ++q;
     if (q != m_p) memmove(m_p, q, strlen(q) + 1);
   }
 

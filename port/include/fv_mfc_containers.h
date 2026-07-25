@@ -60,6 +60,17 @@ class CList {
     pos = (it == m_l.end()) ? nullptr : to_pos(it);
     return v;
   }
+  // const overload (MFC has both); used by const walks like
+  // CVPFFormatHandler::GetFieldOrdinal.
+  const TYPE& GetNext(POSITION& pos) const {
+    typename impl_t::const_iterator it = from_pos(pos);
+    const TYPE& v = *it;
+    ++it;
+    pos = (it == m_l.end())
+              ? nullptr
+              : reinterpret_cast<POSITION>(const_cast<TYPE*>(&*it));
+    return v;
+  }
   TYPE& GetPrev(POSITION& pos) {
     typename impl_t::iterator it = from_pos(pos);
     TYPE& v = *it;
@@ -84,6 +95,11 @@ class CList {
   TYPE RemoveHead() {
     TYPE v = m_l.front();
     m_l.pop_front();
+    return v;
+  }
+  TYPE RemoveTail() {
+    TYPE v = m_l.back();
+    m_l.pop_back();
     return v;
   }
 
@@ -116,11 +132,22 @@ class CArray {
  public:
   int GetSize() const { return (int)m_v.size(); }
   int GetCount() const { return (int)m_v.size(); }
-  void SetSize(int n) { m_v.resize((size_t)n); }
+  // MFC: SetSize(nNewSize, nGrowBy). nGrowBy is only an allocation hint, so
+  // it maps to reserve() — CCGMPolyLine::SetVertCount calls SetSize(0, n) to
+  // pre-size an empty vertex array, which must stay EMPTY (size 0).
+  void SetSize(int n, int grow_by = -1) {
+    if (grow_by > 0) m_v.reserve((size_t)grow_by);
+    m_v.resize((size_t)n);
+  }
   void RemoveAll() { m_v.clear(); }
   int Add(ARG_TYPE v) {
     m_v.push_back(v);
     return (int)m_v.size() - 1;
+  }
+  // MFC: grows the array (value-initializing any gap) instead of asserting.
+  void SetAtGrow(int i, ARG_TYPE v) {
+    if ((size_t)i >= m_v.size()) m_v.resize((size_t)i + 1);
+    m_v[(size_t)i] = v;
   }
   TYPE& GetAt(int i) { return m_v[(size_t)i]; }
   const TYPE& GetAt(int i) const { return m_v[(size_t)i]; }
@@ -200,5 +227,33 @@ class CMap {
 
 // MFC's CStringList is exactly CList<CString, LPCTSTR>.
 typedef CList<CString, LPCTSTR> CStringList;
+// (CStringArray lives in fv_cstring.h, next to CString itself.)
+
+// CObject is MFC's root class. Everything we compile in place uses it purely
+// as a base for the runtime-class/serialization machinery we never invoke, so
+// an empty polymorphic base is the whole shim — it only has to make
+// "class X : public CObject" compile and give X a virtual destructor.
+class CObject {
+ public:
+  virtual ~CObject() {}
+};
+
+// CTypedPtrList/CTypedPtrArray are MFC's type-safe wrappers over the untyped
+// CPtrList/CPtrArray. The BASE_CLASS parameter selects the untyped container
+// MFC would store into; here it is inert (kept only so shared headers declare
+// members identically on both platforms) and the typed container does the
+// storing itself. CPtrList/CPtrArray therefore exist as tag types only.
+//
+// NOTE: like MFC, these own NOTHING — destroying the list does not delete the
+// pointed-to objects. CCGMPicture::~CCGMPicture walks m_drawing_objects and
+// deletes each element itself; that stays correct here.
+class CPtrList {};
+class CPtrArray {};
+
+template <class BASE_CLASS, class TYPE>
+class CTypedPtrList : public CList<TYPE, TYPE> {};
+
+template <class BASE_CLASS, class TYPE>
+class CTypedPtrArray : public CArray<TYPE, TYPE> {};
 
 #endif  // !_WIN32

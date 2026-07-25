@@ -22,15 +22,19 @@ add_library(fv_vpf STATIC
   ${VPF}/variant.cpp
   ${VPF}/vpfdb.cpp
   ${VPF}/vpfrcset.cpp
+  fv_vpf_vector_source.cpp
+  fv_vpf_vdt.cpp
 )
 target_include_directories(fv_vpf PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}   # fv_vpf_vector_source.h (V5a IVectorSource)
   ${VPF}
   ${CMAKE_SOURCE_DIR}/fvw_core/MapDataServer/VpfMapServer  # StdAfx.h
 )
 target_link_libraries(fv_vpf PUBLIC fv_compat)
 
 if(FVW_BUILD_TESTS)
-  add_executable(fv_vpf_test test/vpf_test.cpp)
+  add_executable(fv_vpf_test test/vpf_test.cpp test/vpf_vector_source_test.cpp
+    test/vpf_identify_test.cpp)
   target_link_libraries(fv_vpf_test PRIVATE fv_vpf GTest::gtest_main)
   gtest_discover_tests(fv_vpf_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")

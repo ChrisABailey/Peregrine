@@ -11,8 +11,10 @@
 
 #include "fvkit/formats/cadrg.h"
 #include "fvkit/formats/dted.h"
+#include "fvkit/formats/dted_shaded.h"
 #include "fvkit/formats/geotiff.h"
 #include "fvkit/formats/tiros.h"
+#include "fvkit/formats/vpf.h"
 #include "fvkit/store/tile_pack.h"
 
 namespace fv {
@@ -90,6 +92,25 @@ void RegisterBuiltinFormats() {
       return std::make_shared<TilePackRasterSource>();
     };
     RegisterFormat(gpkg);
+  }
+  if (FindFormat("dted-shaded") == nullptr) {
+    FormatFactories shaded;
+    shaded.format_key = "dted-shaded";
+    // Same cell tree as "dted" (the elevation-query format); this format is
+    // the rendering path over those cells.
+    shaded.make_enumerator = [] {
+      return std::make_shared<DtedFrameEnumerator>();
+    };
+    shaded.make_raster_source = [] {
+      return std::make_shared<DtedShadedRasterSource>();
+    };
+    RegisterFormat(shaded);
+  }
+  if (FindFormat("vpf") == nullptr) {
+    FormatFactories vpf;
+    vpf.format_key = "vpf";
+    vpf.make_enumerator = [] { return std::make_shared<VpfFrameEnumerator>(); };
+    RegisterFormat(vpf);
   }
   if (FindFormat("tiros") == nullptr) {
     FormatFactories tiros;

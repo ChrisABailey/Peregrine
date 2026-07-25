@@ -117,6 +117,105 @@ TEST(MapProjection, NotConfiguredErrors) {
 }
 
 // ---------------------------------------------------------------------------
+// Physical-display scale (the native-scale / correct-aspect path)
+// ---------------------------------------------------------------------------
+
+// The user's worked example: 1:1,000,000 on a 0.25 mm/px screen puts ~10 km
+// of ground under 1 cm (40 px) of screen at the center.
+TEST(MapProjection, PhysicalScalePutsNativeGroundUnderTheRuler) {
+  fv::MapProjection p;
+  ASSERT_TRUE(p.SetSurfaceSize(800, 600).ok());
+  ASSERT_TRUE(p.SetCenter({33.75, -84.39}).ok());
+  ASSERT_TRUE(p.SetPhysicalScale(1000000.0, 0.25).ok());
+  ASSERT_TRUE(p.Ready());
+  EXPECT_DOUBLE_EQ(p.Scale(), 1000000.0);
+  EXPECT_DOUBLE_EQ(p.MmPerPixel(), 0.25);
+
+  // 40 px = 1 cm of screen. Measure the ground span north-south through the
+  // center via surface_to_geo, then convert degrees of latitude to metres
+  // (~111.32 km/deg). Expect ~10 km, generously toleranced for the ellipsoid.
+  fv::GeoPoint a, b;
+  ASSERT_TRUE(p.SurfaceToGeo(400, 300 - 20, &a).ok());
+  ASSERT_TRUE(p.SurfaceToGeo(400, 300 + 20, &b).ok());
+  const double ground_m = std::fabs(a.lat - b.lat) * 111320.0;
+  EXPECT_NEAR(ground_m, 10000.0, 400.0);
+}
+
+// Correct aspect: one screen pixel must cover the SAME ground distance
+// vertically and horizontally, at a latitude where dpp_lat != dpp_lon.
+// This is the crux of the user's "aspect ratio is off" report: the ratio
+// dpp_lon/dpp_lat must be ~1/cos(lat) (a degree of longitude is physically
+// shorter away from the equator), NOT the ~2.1 that MapScaleUtil's Vincenty
+// path produced.
+TEST(MapProjection, PhysicalScaleHasSquareGroundPixels) {
+  const double lat = 45.0;
+  fv::MapProjection p;
+  ASSERT_TRUE(p.SetSurfaceSize(512, 512).ok());
+  ASSERT_TRUE(p.SetCenter({lat, 10.0}).ok());
+  ASSERT_TRUE(p.SetPhysicalScale(2000000.0, 0.25).ok());
+
+  // Convert each pixel's degrees to ground metres via the same WGS84 series
+  // the projection uses; the two must be within a fraction of a percent.
+  const double m_per_deg_lat = 111132.92 - 559.82 * std::cos(2 * lat * M_PI / 180);
+  const double m_per_deg_lon = 111412.84 * std::cos(lat * M_PI / 180) -
+                               93.5 * std::cos(3 * lat * M_PI / 180);
+  const double ground_lat = p.DegPerPixelLat() * m_per_deg_lat;
+  const double ground_lon = p.DegPerPixelLon() * m_per_deg_lon;
+  // Square to ~1e-5 (the test drops one high-order term the projection keeps).
+  EXPECT_NEAR(ground_lon, ground_lat, ground_lat * 1e-4);
+
+  // Aspect ratio ~ 1/cos(45) = 1.414, and firmly NOT the ~1.99 the old
+  // Vincenty path returned here.
+  const double ratio = p.DegPerPixelLon() / p.DegPerPixelLat();
+  EXPECT_NEAR(ratio, 1.0 / std::cos(lat * M_PI / 180), 0.01);
+  EXPECT_LT(ratio, 1.6);
+}
+
+// mm_per_pixel is the zoom knob: doubling it doubles ground per pixel.
+TEST(MapProjection, MmPerPixelZooms) {
+  fv::MapProjection near_, far_;
+  for (fv::MapProjection* p : {&near_, &far_}) {
+    ASSERT_TRUE(p->SetSurfaceSize(256, 256).ok());
+    ASSERT_TRUE(p->SetCenter({0.0, 0.0}).ok());
+  }
+  ASSERT_TRUE(near_.SetPhysicalScale(1000000.0, 0.25).ok());
+  ASSERT_TRUE(far_.SetPhysicalScale(1000000.0, 0.50).ok());
+  EXPECT_NEAR(far_.DegPerPixelLat(), 2.0 * near_.DegPerPixelLat(), 1e-12);
+}
+
+TEST(MapProjection, PhysicalScaleRejectsBadArgs) {
+  fv::MapProjection p;
+  ASSERT_TRUE(p.SetSurfaceSize(64, 64).ok());
+  ASSERT_TRUE(p.SetCenter({0, 0}).ok());
+  EXPECT_EQ(p.SetPhysicalScale(-1.0, 0.25).code, fv::kInvalidArg);
+  EXPECT_EQ(p.SetPhysicalScale(1000000.0, 0.0).code, fv::kInvalidArg);
+}
+
+// Engine convenience: a cartographic series passes its denominator straight
+// through; a metres-resolution series (imagery) lands at exactly 100% at the
+// reference pitch — one source pixel per screen pixel.
+TEST(MapEnginePhysical, ImageryRendersAtNativeResolution) {
+  auto catalog = std::make_shared<fv::Catalog>();
+  fv::MapEngine engine(catalog);
+  ASSERT_TRUE(engine.SetSurfaceDimensions(512, 512).ok());
+  ASSERT_TRUE(engine.SetCenter({40.0, -80.0}).ok());
+
+  // 1 m/px imagery at the native pitch must render at 100%: one screen pixel
+  // spans one ground metre north-south.
+  ASSERT_TRUE(engine.SetPhysicalScale(1.0, MAP_SCALE_METERS,
+                                      fv::kNativeDisplayMmPerPixel)
+                  .ok());
+  const double lat = 40.0;
+  const double m_per_deg_lat = 111132.92 - 559.82 * std::cos(2 * lat * M_PI / 180);
+  const double ground_m = engine.CurrentProj().DegPerPixelLat() * m_per_deg_lat;
+  EXPECT_NEAR(ground_m, 1.0, 1e-3);
+
+  // A cartographic series: denominator used directly.
+  ASSERT_TRUE(engine.SetPhysicalScale(500000.0, MAP_SCALE_DENOMINATOR, 0.25).ok());
+  EXPECT_DOUBLE_EQ(engine.CurrentProj().Scale(), 500000.0);
+}
+
+// ---------------------------------------------------------------------------
 // MapEngine synthetic: a dateline-crossing frame composites on both sides
 // ---------------------------------------------------------------------------
 

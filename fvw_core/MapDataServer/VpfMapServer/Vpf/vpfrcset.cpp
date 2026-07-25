@@ -532,8 +532,17 @@ int VPFRecordset::read_field(const VPFFieldInfo &field, VPFVariant* new_variant)
    // need to read it from the disk first.
    else
    {
-		length = *(long int *)m_current_file_pos;
-      m_current_file_pos += sizeof(long int);
+      // A VPF variable-length field is prefixed by a 4-byte count. `long int`
+      // is 4 bytes on Win32 but 8 on LP64, so this read used to take 8 bytes
+      // and advance 8. The count still came out right (it is the LOW half of
+      // the little-endian 64-bit read, and `length` is an int), which hid the
+      // real damage: the cursor skipped the first 4 bytes of the payload, so
+      // every coordinate tuple came back as (lat[i], lon[i+1]) and the last
+      // one read past the end. Same class as the 2026-07-20 int32_t fixes in
+      // read_in_header / VPF_INT_LONG -- this variable-length path was missed
+      // because V1 never read a coordinate field.
+		length = *(int32_t *)m_current_file_pos;
+      m_current_file_pos += sizeof(int32_t);
 
       // If the data that the length is describing is a coordinate string
       // or array, then the length is describing the number of coordinate

@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -28,6 +29,44 @@ std::string TestDataGeoTiff() {
   std::string p = std::string(d) + "/geotiff";
   if (!fs::exists(p)) return {};
   return p;
+}
+
+// Independent (non-enumerator) inventory of the sample tree.
+size_t TiffsOnDisk(const std::string& root) {
+  size_t n = 0;
+  for (const auto& ent : fs::recursive_directory_iterator(root)) {
+    if (!ent.is_regular_file()) continue;
+    std::string ext = ent.path().extension().string();
+    for (char& c : ext) c = static_cast<char>(tolower(c));
+    if (ext == ".tif" || ext == ".tiff") ++n;
+  }
+  return n;
+}
+
+// The geographic blocks the samples come from. Every frame must sit inside
+// its block's box; a name matching no block fails the test, so a new data
+// drop is reported as "unclassified sample" instead of silently being bounds-
+// checked against some other region (which is what the old if/else did).
+struct Block {
+  const char* name;
+  fv::GeoRect box;
+};
+
+const Block* BlockFor(const std::string& base) {
+  // 38N/76-77W: 3.75' quarter-quads ('3') plus the wider f-prefixed full
+  // quads (f38076a1 reaches -78.06).
+  static const Block kChesapeake{"Chesapeake", {{37.9, -78.1}, {39.1, -75.8}}};
+  // Charleston SC, added 2026-07-23: 10 '22...e...n' DOQQ tiles + 4
+  // 'C3208....<quad>.<id>' sheets. Same area as the new w080/w081 DTED2 cells.
+  static const Block kCharleston{"Charleston", {{32.4, -80.3}, {32.7, -79.9}}};
+  // chocta.tif: Choctawhatchee Bay, FL (arrived with the full-tree copy
+  // 2026-07-16; generic GeoTIFF series).
+  static const Block kChocta{"Choctawhatchee", {{30.3, -86.7}, {30.5, -86.4}}};
+
+  if (base[0] == '3' || base[0] == 'f') return &kChesapeake;
+  if (base[0] == '2' || base[0] == 'C') return &kCharleston;
+  if (base.compare(0, 6, "chocta") == 0) return &kChocta;
+  return nullptr;
 }
 
 const char* kPinnedQuad = "38076g81.tif";  // same frame the reader tests pin
@@ -46,12 +85,14 @@ TEST_F(RegistryTest, BuiltinsRegisterIdempotently) {
   fv::RegisterBuiltinFormats();
   fv::RegisterBuiltinFormats();  // idempotent, no duplicate error
   auto keys = fv::RegisteredFormatKeys();
-  ASSERT_EQ(keys.size(), 5u);
+  ASSERT_EQ(keys.size(), 7u);
   EXPECT_EQ(keys[0], "cadrg");    // map order: sorted
   EXPECT_EQ(keys[1], "dted");
-  EXPECT_EQ(keys[2], "geotiff");
-  EXPECT_EQ(keys[3], "gpkg");
-  EXPECT_EQ(keys[4], "tiros");
+  EXPECT_EQ(keys[2], "dted-shaded");
+  EXPECT_EQ(keys[3], "geotiff");
+  EXPECT_EQ(keys[4], "gpkg");
+  EXPECT_EQ(keys[5], "tiros");
+  EXPECT_EQ(keys[6], "vpf");
 
   const fv::FormatFactories* dted = fv::FindFormat("dted");
   ASSERT_NE(dted, nullptr);
@@ -65,7 +106,7 @@ TEST_F(RegistryTest, BuiltinsRegisterIdempotently) {
   EXPECT_TRUE(gtif->make_raster_source != nullptr);
   EXPECT_TRUE(gtif->make_elevation_source == nullptr);
 
-  EXPECT_EQ(fv::FindFormat("vpf"), nullptr);
+  EXPECT_EQ(fv::FindFormat("nitf"), nullptr);  // not yet registered
 }
 
 TEST_F(RegistryTest, RejectsDuplicatesAndEmptyKey) {
@@ -101,28 +142,28 @@ TEST(GeoTiffEnumerate, AllQuadsRecognized) {
   fv::FrameInfo info;
   while (e.Next(&info)) frames.push_back(info);
 
-  // 15 samples, all recognized (mirrors geotiff_frame_test's supported ==
-  // total): the 14 Chesapeake quads + chocta.tif (Choctawhatchee Bay, FL,
-  // arrived with the full-tree copy 2026-07-16; generic GeoTIFF series)
-  ASSERT_EQ(frames.size(), 15u);
+  // Every .tif on disk is recognized (mirrors geotiff_frame_test's supported
+  // == total). Counted from the tree rather than hardcoded: the sample set
+  // grows (15 -> 29 on 2026-07-23) and a magic number turns every data drop
+  // into a spurious failure.
+  ASSERT_EQ(frames.size(), TiffsOnDisk(root));
   for (const auto& f : frames) {
     EXPECT_LT(f.bounds.ll.lat, f.bounds.ur.lat) << f.path;
     EXPECT_LT(f.bounds.ll.lon, f.bounds.ur.lon) << f.path;
     EXPECT_FALSE(f.series_key.empty()) << f.path;
     EXPECT_GT(f.size_bytes, 0) << f.path;
+
     std::string base = f.path.substr(f.path.find_last_of('/') + 1);
-    if (base[0] == '3' || base[0] == 'f') {
-      // 38N/76-77W block: 3.75' quarter-quads plus the wider f-prefixed
-      // full quads (f38076a1 reaches -78.06)
-      EXPECT_GT(f.bounds.ll.lat, 37.9) << f.path;
-      EXPECT_LT(f.bounds.ur.lat, 39.1) << f.path;
-      EXPECT_GT(f.bounds.ll.lon, -78.1) << f.path;
-      EXPECT_LT(f.bounds.ur.lon, -75.8) << f.path;
-    } else {
-      // chocta.tif: Choctawhatchee Bay, ~30.4N -86.6W
-      EXPECT_NEAR(f.bounds.ll.lat, 30.35, 0.05) << f.path;
-      EXPECT_NEAR(f.bounds.ur.lon, -86.48, 0.05) << f.path;
+    const Block* blk = BlockFor(base);
+    if (blk == nullptr) {
+      ADD_FAILURE() << "unclassified sample " << base
+                    << " — add its prefix to BlockFor()";
+      continue;
     }
+    EXPECT_GE(f.bounds.ll.lat, blk->box.ll.lat) << base << " in " << blk->name;
+    EXPECT_GE(f.bounds.ll.lon, blk->box.ll.lon) << base << " in " << blk->name;
+    EXPECT_LE(f.bounds.ur.lat, blk->box.ur.lat) << base << " in " << blk->name;
+    EXPECT_LE(f.bounds.ur.lon, blk->box.ur.lon) << base << " in " << blk->name;
   }
 
   // deterministic, sorted by path

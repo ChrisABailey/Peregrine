@@ -78,7 +78,16 @@ TEST(Codecs, ZlibRoundTripAndCrc) {
 
   // crc32 pinned value for "123456789" (standard check vector)
   EXPECT_EQ(0xCBF43926u, crc32(0, (const Bytef*)"123456789", 9));
-  EXPECT_STREQ(zlibVersion(), "1.2.5");
+
+  // The port tracks a current upstream zlib (fetched by
+  // port/third_party/CMakeLists.txt), NOT fvw_core/ImageLib/zlib's 1.2.5 fork,
+  // so a hardcoded version literal here would just have to be bumped on every
+  // upgrade — the same drift the 2026-07-23 TestData refresh got caught by.
+  // Assert the property that actually matters instead: the zlib.h we compiled
+  // against and the libz we linked are the same build. A stale-header/stale-lib
+  // mismatch is the real bug class, and this catches it without ever drifting.
+  EXPECT_STREQ(zlibVersion(), ZLIB_VERSION);
+  EXPECT_GE(ZLIB_VERNUM, 0x1300);  // >= 1.3.0: we are off the 2010 fork
 }
 
 TEST(Codecs, PngWriteReadRoundTrip) {

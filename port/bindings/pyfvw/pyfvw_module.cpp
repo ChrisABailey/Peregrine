@@ -32,8 +32,15 @@
 #include "fvkit/formats/geotiff.h"
 #include "fvkit/formats/registry.h"
 #include "fvkit/formats/tiros.h"
+#include "fvkit/formats/vpf.h"
 #include "fvkit/geo.h"
 #include "fvkit/raster.h"
+#include "fvkit/vector/vector.h"
+#include "fvkit/vector/style.h"
+#include "fvkit/vector/renderer.h"
+
+#include "fv_vpf_vector_source.h"  // fv::VpfVectorSource
+#include "fv_geosym_style.h"       // fv::GeoSymStyleEngine
 
 #include "geo_tool.h"  // GEO_string_to_lat_lon (fv_geo_tool)
 
@@ -330,6 +337,11 @@ PYBIND11_MODULE(pyfvw, m) {
       "One TIROS JPEG tile (1350x1350): open, then read RGBA blocks. Equal-arc "
       "pixel<->geo from the filename-derived bounds.");
 
+  BindEnumerator<fv::VpfFrameEnumerator>(
+      formats, "VpfFrameEnumerator",
+      "Enumerates a VPF/DNC database's library tiles into FrameInfo rows "
+      "(series_key = library; path = db|library|tile locator).");
+
   BindEnumerator<fv::TirosFrameEnumerator>(
       formats, "TirosFrameEnumerator",
       "Recursively lists TIROS *.wld tiles; bounds from the filename grid.");
@@ -590,8 +602,8 @@ PYBIND11_MODULE(pyfvw, m) {
 
   catalog.def("register_builtin_formats", &fv::RegisterBuiltinFormats,
               "Register the built-in format adapters (dted, geotiff, cadrg, "
-              "tiros) with the scan registry. Idempotent; call before "
-              "Catalog.scan.");
+              "tiros, vpf, gpkg) with the scan registry. Idempotent; call "
+              "before Catalog.scan.");
 
   py::class_<fv::SeriesRow>(catalog, "SeriesRow")
       .def_readonly("id", &fv::SeriesRow::id)
@@ -679,9 +691,46 @@ PYBIND11_MODULE(pyfvw, m) {
   py::module_ eng = m.def_submodule(
       "engine", "L3 map engine: catalog-driven viewport compositing");
 
+  // Reference display pitch (mm/pixel) that defines "100%" for imagery.
+  eng.attr("NATIVE_DISPLAY_MM_PER_PIXEL") = fv::kNativeDisplayMmPerPixel;
+
   py::class_<fv::MapProjection>(eng, "MapProjection")
+      // Constructable + configurable from Python so a vector viewer can drive
+      // the projection directly (the raster path gets one from the engine).
+      .def(py::init<>())
+      .def("set_surface_size",
+           [](fv::MapProjection& p, int w, int h) {
+             ThrowIfError(p.SetSurfaceSize(w, h));
+           },
+           "width"_a, "height"_a)
+      .def("set_center",
+           [](fv::MapProjection& p, const fv::GeoPoint& c) {
+             ThrowIfError(p.SetCenter(c));
+           },
+           "center"_a)
+      .def("set_scale",
+           [](fv::MapProjection& p, double denom) {
+             ThrowIfError(p.SetScale(denom));
+           },
+           "scale_denominator"_a,
+           "1:N equal-arc (dpp via MapScaleUtil). Mutually exclusive with the "
+           "other set_* scale calls; last one wins.")
+      .def("set_resolution",
+           [](fv::MapProjection& p, double dpp_lat, double dpp_lon) {
+             ThrowIfError(p.SetResolution(dpp_lat, dpp_lon));
+           },
+           "dpp_lat"_a, "dpp_lon"_a, "Explicit degrees-per-pixel per axis.")
+      .def("set_physical_scale",
+           [](fv::MapProjection& p, double denom, double mm_per_pixel) {
+             ThrowIfError(p.SetPhysicalScale(denom, mm_per_pixel));
+           },
+           "scale_denominator"_a, "mm_per_pixel"_a,
+           "1:N at a known display pitch, with correct latitude-dependent "
+           "aspect (WGS84 metres-per-degree, not MapScaleUtil).")
       .def_property_readonly("deg_per_pixel_lat", &fv::MapProjection::DegPerPixelLat)
       .def_property_readonly("deg_per_pixel_lon", &fv::MapProjection::DegPerPixelLon)
+      .def_property_readonly("scale", &fv::MapProjection::Scale)
+      .def_property_readonly("mm_per_pixel", &fv::MapProjection::MmPerPixel)
       .def_property_readonly("bounds", &fv::MapProjection::VmapBounds)
       .def("geo_to_surface",
            [](const fv::MapProjection& p, const fv::GeoPoint& g) {
@@ -717,6 +766,17 @@ PYBIND11_MODULE(pyfvw, m) {
       .def("set_scale",
            [](fv::MapEngine& e, double d) { ThrowIfError(e.SetScale(d)); },
            "scale_denominator"_a)
+      .def("set_physical_scale",
+           [](fv::MapEngine& e, double series_scale, int series_scale_units,
+              double mm_per_pixel) {
+             ThrowIfError(
+                 e.SetPhysicalScale(series_scale, series_scale_units, mm_per_pixel));
+           },
+           "series_scale"_a, "series_scale_units"_a, "mm_per_pixel"_a,
+           "Display a series at its native physical scale on an mm_per_pixel "
+           "screen: a 1:N map draws at 1:N, imagery draws at 100% at the "
+           "reference pitch. Pass a SeriesRow's .scale and .scale_units; "
+           "mm_per_pixel is the zoom knob (larger = zoomed out).")
       .def_property_readonly("proj", &fv::MapEngine::CurrentProj,
                              py::return_value_policy::reference_internal)
       .def(
@@ -800,4 +860,183 @@ PYBIND11_MODULE(pyfvw, m) {
           "path"_a, "Opened source for path (cached; LRU-evicted).")
       .def_property_readonly("size", &fv::CadrgFrameCache::Size)
       .def_property_readonly("capacity", &fv::CadrgFrameCache::Capacity);
+
+  // --- vector charting: IVectorSource -> IStyleEngine -> VectorRenderer -----
+  py::module_ vec = m.def_submodule(
+      "vector",
+      "Vector charting seam: a product source (VPF/DNC) styled by an engine "
+      "(GeoSym) and drawn by the shared VectorRenderer onto an ICanvas.");
+
+  // GeoSym product ids (fullsym.txt's pid column).
+  vec.attr("GEOSYM_VMAP0") = static_cast<int>(fv::kGeoSymVmapLevel0);
+  vec.attr("GEOSYM_VMAP1") = static_cast<int>(fv::kGeoSymVmapLevel1);
+  vec.attr("GEOSYM_VMAP2") = static_cast<int>(fv::kGeoSymVmapLevel2);
+  vec.attr("GEOSYM_DNC") = static_cast<int>(fv::kGeoSymDnc);
+
+  // --- identify (plan §5.3) ------------------------------------------------
+
+  py::class_<fv::FeatureRef>(
+      vec, "FeatureRef",
+      "Handle naming one feature in one source: what the render path and the "
+      "pick index carry instead of a bag of attributes. Pass it to "
+      "IVectorSource.describe().")
+      .def(py::init<>())
+      .def_readwrite("source", &fv::FeatureRef::source)
+      .def_readwrite("layer", &fv::FeatureRef::layer)
+      .def_readwrite("tile", &fv::FeatureRef::tile)
+      .def_readwrite("feature", &fv::FeatureRef::feature)
+      .def_property_readonly("valid", &fv::FeatureRef::valid)
+      .def("__eq__",
+           [](const fv::FeatureRef& a, const fv::FeatureRef& b) {
+             return a == b;
+           },
+           py::is_operator())
+      .def("__hash__",
+           [](const fv::FeatureRef& r) {
+             return py::hash(py::make_tuple(r.source, r.layer, r.tile,
+                                            r.feature));
+           })
+      .def("__repr__", [](const fv::FeatureRef& r) {
+        return "FeatureRef(layer=" + std::to_string(r.layer) + ", tile=" +
+               std::to_string(r.tile) + ", feature=" +
+               std::to_string(r.feature) + ")";
+      });
+
+  py::class_<fv::FeatureAttribute>(
+      vec, "FeatureAttribute",
+      "One attribute as a popup shows it: code (column name), name (the "
+      "product's own description), raw (stored text) and display (raw decoded "
+      "through the product dictionary, falling back to raw).")
+      .def_readonly("code", &fv::FeatureAttribute::code)
+      .def_readonly("name", &fv::FeatureAttribute::name)
+      .def_readonly("raw", &fv::FeatureAttribute::raw)
+      .def_readonly("display", &fv::FeatureAttribute::display)
+      .def("__repr__", [](const fv::FeatureAttribute& a) {
+        return "FeatureAttribute(" + a.code + "=" + a.display + ")";
+      });
+
+  py::class_<fv::FeatureDescription>(
+      vec, "FeatureDescription", "The answer to 'what did I just click on?'")
+      .def_readonly("ref", &fv::FeatureDescription::ref)
+      .def_readonly("title", &fv::FeatureDescription::title)
+      .def_readonly("class_name", &fv::FeatureDescription::class_name)
+      .def_readonly("layer_name", &fv::FeatureDescription::layer_name)
+      .def_readonly("attributes", &fv::FeatureDescription::attributes)
+      .def_readonly("source_note", &fv::FeatureDescription::source_note)
+      .def("__repr__", [](const fv::FeatureDescription& d) {
+        return "FeatureDescription('" + d.title + "', " + d.layer_name + ", " +
+               std::to_string(d.attributes.size()) + " attrs)";
+      });
+
+  py::class_<fv::PickHit>(vec, "PickHit",
+                          "One feature under a hit-test point.")
+      .def_readonly("ref", &fv::PickHit::ref)
+      .def_readonly("priority", &fv::PickHit::priority)
+      .def_readonly("distance", &fv::PickHit::distance);
+
+  py::class_<fv::PickIndex>(
+      vec, "PickIndex",
+      "Hit-testing over what was actually DRAWN by the last render, in canvas "
+      "pixels — so a tap agrees with what is on screen.")
+      .def("hit_test", &fv::PickIndex::HitTest, "x"_a, "y"_a,
+           "tolerance"_a = 3.0,
+           "Features whose ink is within `tolerance` px of (x, y), TOPMOST "
+           "FIRST. One entry per feature.")
+      .def_property_readonly("shape_count", &fv::PickIndex::shape_count)
+      .def("__len__", &fv::PickIndex::shape_count);
+
+  py::class_<fv::IVectorSource, std::shared_ptr<fv::IVectorSource>>(
+      vec, "IVectorSource", "A product-specific reader of drawable features.")
+      .def("is_open", &fv::IVectorSource::IsOpen)
+      .def("layers", &fv::IVectorSource::Layers)
+      .def_property_readonly("bounds", &fv::IVectorSource::Bounds)
+      .def("describe",
+           [](fv::IVectorSource& s, const fv::FeatureRef& ref) {
+             fv::FeatureDescription d;
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = s.Describe(ref, &d);
+             }
+             ThrowIfError(st);
+             return d;
+           },
+           "ref"_a,
+           "Full, decoded metadata for one feature (identify/tap). Raises "
+           "FvError if the source cannot describe it.");
+
+  py::class_<fv::VpfVectorSource, fv::IVectorSource,
+             std::shared_ptr<fv::VpfVectorSource>>(
+      vec, "VpfVectorSource",
+      "DNC/VPF as a vector source. open() takes a DNC LIBRARY directory "
+      "(e.g. .../dnc17/h1707300). Serves point, line and (V5c) area features.")
+      .def(py::init<>())
+      .def("open",
+           [](fv::VpfVectorSource& s, const std::string& path) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = s.Open(path);
+             }
+             ThrowIfError(st);
+           },
+           "library_dir"_a);
+
+  py::class_<fv::IStyleEngine, std::shared_ptr<fv::IStyleEngine>>(
+      vec, "IStyleEngine", "Maps (feature, scale) to draw passes.");
+
+  py::class_<fv::GeoSymStyleEngine, fv::IStyleEngine,
+             std::shared_ptr<fv::GeoSymStyleEngine>>(
+      vec, "GeoSymStyleEngine",
+      "GeoSym rule-table style engine (SymAssign/Graphics under data_dir). "
+      "Labels are off by default (they need a host font on the canvas).")
+      .def(py::init<>())
+      .def("open",
+           [](fv::GeoSymStyleEngine& e, const std::string& data_dir,
+              int product_id) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = e.Open(data_dir, product_id);
+             }
+             ThrowIfError(st);
+           },
+           "data_dir"_a, "product_id"_a = static_cast<int>(fv::kGeoSymDnc))
+      .def("set_draw_labels", &fv::GeoSymStyleEngine::SetDrawLabels, "on"_a)
+      .def("set_color_adjust", &fv::GeoSymStyleEngine::SetColorAdjust,
+           "brightness"_a, "contrast"_a);
+
+  py::class_<fv::VectorRenderer>(
+      vec, "VectorRenderer",
+      "Queries the viewport, styles + sorts by priority, projects, clips and "
+      "draws onto an ICanvas. Does NOT clear the canvas.")
+      .def(py::init<fv::VectorSourcePtr, fv::StyleEnginePtr>(),
+           "source"_a, "style"_a)
+      // Line widths / text sizes go through device DPI; point-symbol size
+      // goes through symbol_scale. Split so a demo can hold the map scale
+      // fixed while growing feature symbology, or vice versa.
+      .def("set_device_dpi", &fv::VectorRenderer::SetDeviceDpi, "dpi"_a)
+      .def("set_symbol_scale", &fv::VectorRenderer::SetSymbolScale, "scale"_a)
+      .def("set_max_features", &fv::VectorRenderer::SetMaxFeatures, "n"_a)
+      // Identify: the pick index is built from the primitives the renderer
+      // emits, so it is only valid for the LAST render.
+      .def("set_pick_enabled", &fv::VectorRenderer::SetPickEnabled, "on"_a)
+      .def_property_readonly("pick_enabled", &fv::VectorRenderer::pick_enabled)
+      .def_property_readonly("pick_index", &fv::VectorRenderer::pick_index,
+                             py::return_value_policy::reference_internal)
+      .def("render",
+           [](fv::VectorRenderer& r, const fv::MapProjection& proj,
+              fv::ICanvas& canvas) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = r.Render(proj, &canvas);
+             }
+             ThrowIfError(st);
+           },
+           "proj"_a, "canvas"_a)
+      .def_property_readonly("features_queried",
+                             &fv::VectorRenderer::features_queried)
+      .def_property_readonly("draws_emitted",
+                             &fv::VectorRenderer::draws_emitted);
 }

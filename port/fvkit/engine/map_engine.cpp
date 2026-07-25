@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "fv_map_enums.h"  // MapScaleUnitsEnum
 #include "fvkit/formats/registry.h"
 
 namespace fv {
@@ -32,6 +33,29 @@ Status MapEngine::SetScale(double scale_denominator) {
 }
 Status MapEngine::SetResolution(double dpp_lat, double dpp_lon) {
   return proj_.SetResolution(dpp_lat, dpp_lon);
+}
+
+Status MapEngine::SetPhysicalScale(double series_scale, int series_scale_units,
+                                   double mm_per_pixel) {
+  if (series_scale <= 0)
+    return Status::Error(kInvalidArg, "series scale must be positive");
+
+  double denominator = series_scale;
+  if (series_scale_units != MAP_SCALE_DENOMINATOR) {
+    // A ground-resolution series (imagery). Convert to metres/pixel, then to
+    // the denominator that makes it 100% (one source pixel per screen pixel)
+    // at the reference display pitch: 1 source px covers `metres` of ground,
+    // shown across kNativeDisplayMmPerPixel of screen, i.e. scale =
+    // metres / (kNativeDisplayMmPerPixel / 1000). mm_per_pixel then scales
+    // from there, so at the reference pitch imagery lands exactly at 100%.
+    double metres = series_scale;
+    if (series_scale_units == MAP_SCALE_KILOMETER)
+      metres = series_scale * 1000.0;
+    else if (series_scale_units != MAP_SCALE_METERS)
+      return Status::Error(kInvalidArg, "unsupported series scale units");
+    denominator = metres * 1000.0 / kNativeDisplayMmPerPixel;
+  }
+  return proj_.SetPhysicalScale(denominator, mm_per_pixel);
 }
 
 void MapEngine::SetElevationSource(std::shared_ptr<IElevationSource> src) {
