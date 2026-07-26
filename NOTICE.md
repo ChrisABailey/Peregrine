@@ -20,11 +20,18 @@ the demos and all tests.
 
 ## 2. FalconView — LGPL-3.0-or-later
 
-Everything under `fvw_core/` is part of FalconView(tm),
-Copyright (c) 1994–2011 Georgia Tech Research Corporation, Atlanta, GA,
-released under the GNU Lesser General Public License version 3 or later
-(`COPYING.LESSER`). Original copyright and license headers are preserved
-verbatim in every file.
+FalconView(tm) itself is Copyright (c) 1994–2011 Georgia Tech Research
+Corporation, Atlanta, GA, released under the GNU Lesser General Public License
+version 3 or later (`COPYING.LESSER`). Original copyright and license headers
+are preserved verbatim in every file.
+
+**This covers most, but not all, of `fvw_core/`.** FalconView vendored several
+third-party libraries *inside* its own source tree, and those keep their own
+(permissive, GPL-compatible) licenses rather than the GTRC LGPL — chiefly
+`fvw_core/ImageLib/{jpeg,jpeg12,tiff,png,zlib}` and `fvw_core/Utility/SVD/`.
+They are itemised in section 4 below, which governs them. As a rough measure of
+the split, of the `fvw_core/` files present here roughly a third carry the GTRC
+notice and the rest belong to those vendored libraries.
 
 Only the subset of FalconView that this port actually compiles or includes is
 present here. The upstream project is the authoritative and complete source.
