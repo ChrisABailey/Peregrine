@@ -42,6 +42,8 @@
 #include <string>
 #include <vector>
 
+#include "fvkit/vector/lookup_engine.h"
+#include "fvkit/vector/rules.h"
 #include "fvkit/vector/style.h"
 
 namespace fv {
@@ -57,7 +59,13 @@ enum GeoSymProduct {
   kGeoSymVvod = 16,
 };
 
-class GeoSymStyleEngine : public IStyleEngine {
+// The open flag, the label switch, the R2 rule layer (rules() /
+// viewing_groups() / rule_predicate_evaluations()) and the symbol display-list
+// cache all live in fv::LookupTableStyleEngine as of E3c — this class is the
+// GeoSym LOADER over that core: the fullsym.txt/ATTEXP/COLOR/TEXT tables plus
+// the assignment semantics above. `rules()` matches on the FACC as style_key
+// and the VPF feature class as layer.
+class GeoSymStyleEngine : public LookupTableStyleEngine {
  public:
   GeoSymStyleEngine();
   ~GeoSymStyleEngine() override;
@@ -69,25 +77,23 @@ class GeoSymStyleEngine : public IStyleEngine {
   // composes <data_dir>\GeoSymbol\SymAssign\… and \GeoSymbol\Graphics\.
   // Backslashes and case resolve at the file-open boundary as everywhere else.
   Status Open(const std::string& data_dir, int product_id = kGeoSymDnc);
-  bool IsOpen() const;
 
   // CSymColorAdjuster knobs, -100..100 each. Applied to every colour the
   // engine hands out, exactly where sld.m_ColorAdjuster sat on Windows.
   void SetColorAdjust(int brightness, int contrast);
 
-  // Draw labels when a row names a label attribute. Off by default: label
-  // text goes through the canvas's host font, so it makes golden hashes
-  // machine-dependent.
-  void SetDrawLabels(bool on);
-
-  Status Style(const VectorFeature& f, const StyleContext& ctx,
-               std::vector<StyleResult>* out) override;
-  const VectorSymbol* Symbol(const std::string& symbol_id) override;
-
   // Diagnostics / tests.
   size_t row_count() const;             // assignment rows kept for the product
   size_t symbols_loaded() const;        // CGM files parsed so far
   const std::string& data_dir() const;
+
+ protected:
+  Status StyleFeature(const VectorFeature& f, const StyleContext& ctx,
+                     const StylePass& rule_pass,
+                     std::vector<StyleResult>* out) override;
+  bool LoadSymbol(const std::string& symbol_id, VectorSymbol* out) override;
+  // SanSymbol/SymText's "make sure it is something viewable" cutoff.
+  bool AcceptContext(const StyleContext& ctx) const override;
 
  private:
   struct Impl;

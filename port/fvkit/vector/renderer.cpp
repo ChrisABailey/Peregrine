@@ -6,7 +6,9 @@
 #include "fvkit/vector/renderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstring>
 
 namespace fv {
 namespace {
@@ -100,6 +102,31 @@ std::vector<std::vector<PixelPoint>> ClipPolyline(
   if (pts.size() < 2 || width <= 0 || height <= 0) return runs;
 
   const double xmax = width - 1.0, ymax = height - 1.0;
+
+  // FAST PATH (R3b): a path wholly inside the canvas is not clipped at all —
+  // it is the common case on a chart drawn at its own scale, and it was
+  // costing a Cohen-Sutherland set-up per segment. When every point is inside,
+  // ClipSegment returns each segment unchanged and every segment joins the
+  // previous one end to end, so the loop below provably emits exactly ONE run:
+  // the points in order with consecutive duplicate PIXELS suppressed. Same
+  // output, byte for byte, including the >= 2 point rule.
+  bool all_in = true;
+  for (const SurfacePoint& p : pts)
+    if (OutCode(p.x, p.y, xmax, ymax) != kInside) {
+      all_in = false;
+      break;
+    }
+  if (all_in) {
+    std::vector<PixelPoint> run;
+    run.reserve(pts.size());
+    for (const SurfacePoint& p : pts) {
+      const PixelPoint px = ToPixel(p.x, p.y);
+      if (run.empty() || !SamePixel(run.back(), px)) run.push_back(px);
+    }
+    if (run.size() >= 2) runs.push_back(std::move(run));
+    return runs;
+  }
+
   std::vector<PixelPoint> current;
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
     double x0 = pts[i].x, y0 = pts[i].y;
@@ -137,31 +164,238 @@ std::vector<PixelPoint> ClipPolygon(const std::vector<SurfacePoint>& ring,
   if (ring.size() < 3 || width <= 0 || height <= 0) return out;
 
   const double xmax = width - 1.0, ymax = height - 1.0;
-  std::vector<SurfacePoint> in = ring;
-  std::vector<SurfacePoint> work;
-  for (int side = 0; side < 4 && !in.empty(); ++side) {
-    work.clear();
-    for (size_t i = 0; i < in.size(); ++i) {
-      const SurfacePoint& cur = in[i];
-      const SurfacePoint& prev = in[(i + in.size() - 1) % in.size()];
-      const bool cur_in = InsideEdge(cur, side, xmax, ymax);
-      const bool prev_in = InsideEdge(prev, side, xmax, ymax);
-      if (cur_in) {
-        if (!prev_in) work.push_back(IntersectEdge(prev, cur, side, xmax, ymax));
-        work.push_back(cur);
-      } else if (prev_in) {
-        work.push_back(IntersectEdge(prev, cur, side, xmax, ymax));
-      }
+
+  // FAST PATH (R3b): when every vertex is inside all four edges, each of the
+  // four Sutherland-Hodgman passes is the identity (cur_in and prev_in are
+  // both true, so the pass emits `cur` and nothing else), and the ring was
+  // being copied five times to prove it. A DNC depth area can carry thousands
+  // of vertices, and clipping measured as the single largest cost in a vector
+  // frame — larger than the fill it feeds. Skipping straight to the pixel
+  // conversion is the same output by construction.
+  bool all_in = true;
+  for (const SurfacePoint& p : ring)
+    if (!InsideEdge(p, 0, xmax, ymax) || !InsideEdge(p, 1, xmax, ymax) ||
+        !InsideEdge(p, 2, xmax, ymax) || !InsideEdge(p, 3, xmax, ymax)) {
+      all_in = false;
+      break;
     }
-    in.swap(work);
+
+  // Scratch reused across calls: the clipper is hot and per-call vectors were
+  // a measurable share of it. Not re-entrant, which it never was.
+  static thread_local std::vector<SurfacePoint> in, work;
+  if (!all_in) {
+    in.assign(ring.begin(), ring.end());
+    for (int side = 0; side < 4 && !in.empty(); ++side) {
+      work.clear();
+      work.reserve(in.size() + 4);
+      for (size_t i = 0; i < in.size(); ++i) {
+        const SurfacePoint& cur = in[i];
+        const SurfacePoint& prev = in[(i + in.size() - 1) % in.size()];
+        const bool cur_in = InsideEdge(cur, side, xmax, ymax);
+        const bool prev_in = InsideEdge(prev, side, xmax, ymax);
+        if (cur_in) {
+          if (!prev_in)
+            work.push_back(IntersectEdge(prev, cur, side, xmax, ymax));
+          work.push_back(cur);
+        } else if (prev_in) {
+          work.push_back(IntersectEdge(prev, cur, side, xmax, ymax));
+        }
+      }
+      in.swap(work);
+    }
   }
-  out.reserve(in.size());
-  for (const SurfacePoint& p : in) {
+  const std::vector<SurfacePoint>& clipped = all_in ? ring : in;
+  out.reserve(clipped.size());
+  for (const SurfacePoint& p : clipped) {
     const PixelPoint px = ToPixel(p.x, p.y);
     if (out.empty() || !SamePixel(out.back(), px)) out.push_back(px);
   }
   if (out.size() > 1 && SamePixel(out.front(), out.back())) out.pop_back();
   if (out.size() < 3) out.clear();
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The shared along-path / area placer (E3b). Pure geometry; see renderer.h.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+// Ceiling on stamps from one PlaceOverArea call. A 4000x4000 area at 2 px
+// spacing would otherwise ask for four million symbol draws.
+constexpr size_t kMaxPatternStamps = 20000;
+
+// Point and unit tangent at arc-length `s` along the polyline. Returns the
+// index of the segment holding `s`, which the caller reuses as the starting
+// point of the next search — the walk only ever moves forward, so this keeps
+// a whole pattern walk linear in the number of vertices instead of searching
+// (or worse, rescanning) the path once per run.
+size_t SampleAt(const std::vector<SurfacePoint>& path,
+                const std::vector<double>& cum, double s, size_t from,
+                SurfacePoint* p, double* tx, double* ty) {
+  // Segment i runs from cum[i] to cum[i+1]; find the one holding s.
+  size_t i = from < path.size() - 1 ? from : path.size() - 2;
+  while (i + 2 < path.size() && cum[i + 1] < s) ++i;
+  const double seg = cum[i + 1] - cum[i];
+  const double t = seg > 0.0 ? (s - cum[i]) / seg : 0.0;
+  const double dx = path[i + 1].x - path[i].x;
+  const double dy = path[i + 1].y - path[i].y;
+  p->x = path[i].x + dx * t;
+  p->y = path[i].y + dy * t;
+  const double len = std::hypot(dx, dy);
+  *tx = len > 0.0 ? dx / len : 1.0;
+  *ty = len > 0.0 ? dy / len : 0.0;
+  return i;
+}
+
+// The piece of the polyline between two arc lengths, endpoints interpolated.
+// `from` is the segment holding s0, as returned by SampleAt.
+std::vector<SurfacePoint> Subpath(const std::vector<SurfacePoint>& path,
+                                  const std::vector<double>& cum, double s0,
+                                  double s1, size_t from) {
+  std::vector<SurfacePoint> out;
+  SurfacePoint p;
+  double tx = 0.0, ty = 0.0;
+  SampleAt(path, cum, s0, from, &p, &tx, &ty);
+  out.push_back(p);
+  for (size_t i = from + 1; i + 1 < path.size(); ++i) {
+    if (cum[i] <= s0) continue;
+    if (cum[i] >= s1) break;
+    out.push_back(path[i]);
+  }
+  SampleAt(path, cum, s1, from, &p, &tx, &ty);
+  out.push_back(p);
+  return out;
+}
+
+bool PointInRing(const std::vector<PixelPoint>& ring, double x, double y) {
+  bool in = false;
+  for (size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
+    const double yi = ring[i].y, yj = ring[j].y;
+    if ((yi > y) == (yj > y)) continue;
+    const double xi = ring[i].x, xj = ring[j].x;
+    const double cut = xi + (y - yi) * (xj - xi) / (yj - yi);
+    if (x < cut) in = !in;
+  }
+  return in;
+}
+
+}  // namespace
+
+PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
+                             const std::vector<PathRun>& runs, double phase) {
+  PathPlacement out;
+  if (path.size() < 2 || runs.empty()) return out;
+
+  std::vector<double> cum(path.size(), 0.0);
+  for (size_t i = 1; i < path.size(); ++i) {
+    cum[i] = cum[i - 1] + std::hypot(path[i].x - path[i - 1].x,
+                                     path[i].y - path[i - 1].y);
+  }
+  const double total = cum.back();
+  if (!(total > 0.0)) return out;
+
+  double pattern_len = 0.0;
+  for (const PathRun& r : runs) pattern_len += (std::max)(0.0, r.length);
+
+  // Where in the cycle the path starts.
+  size_t ri = 0;
+  double into = 0.0;
+  if (phase > 0.0 && pattern_len > 0.0) {
+    double p = std::fmod(phase, pattern_len);
+    for (size_t n = 0; n < runs.size() && p > 0.0; ++n) {
+      const double len = (std::max)(0.0, runs[ri].length);
+      if (p < len) {
+        into = p;
+        break;
+      }
+      p -= len;
+      ri = (ri + 1) % runs.size();
+    }
+  }
+
+  // Cycles x runs, saturated: a pathological run list must not overflow the
+  // budget into a negative number and disable it.
+  const long max_steps = (std::min)(
+      static_cast<long>(kMaxPatternCycles) * static_cast<long>(runs.size()),
+      static_cast<long>(1) << 24);
+  double s = 0.0;
+  size_t seg = 0;  // the segment the walk has reached; only moves forward
+  for (long step = 0; s < total; ++step) {
+    if (step >= max_steps) {
+      out.truncated = true;
+      break;
+    }
+    const PathRun& r = runs[ri];
+    // A kDash with no length is GeoSym's "run to the end of the line".
+    const bool to_end = r.type == PathRunType::kDash && r.length <= 0.0;
+    const double len =
+        to_end ? total - s : (std::max)(0.0, r.length - into);
+    into = 0.0;
+    const double e = (std::min)(total, s + len);
+
+    if (r.type == PathRunType::kDash) {
+      if (e > s) {
+        SurfacePoint ignore;
+        double itx = 0.0, ity = 0.0;
+        seg = SampleAt(path, cum, s, seg, &ignore, &itx, &ity);
+        out.dashes.push_back(Subpath(path, cum, s, e, seg));
+      }
+    } else if (r.type == PathRunType::kSymbol) {
+      SurfacePoint p;
+      double tx = 0.0, ty = 0.0;
+      seg = SampleAt(path, cum, s, seg, &p, &tx, &ty);
+      PlacedSymbol ps;
+      ps.symbol_id = r.symbol_id;
+      // Symbol +y maps to screen (ty, -tx) once the renderer's y flip is
+      // applied, which is the left-hand normal of the direction of travel.
+      ps.x = p.x + r.offset * ty;
+      ps.y = p.y - r.offset * tx;
+      ps.rotation_deg = std::atan2(-ty, tx) * 180.0 / kPi + r.rotation_deg;
+      ps.scale = r.symbol_scale > 0.0 ? r.symbol_scale : 1.0;
+      out.symbols.push_back(std::move(ps));
+    }
+
+    s = e;
+    if (to_end) break;
+    ri = (ri + 1) % runs.size();
+  }
+  return out;
+}
+
+std::vector<SurfacePoint> PlaceOverArea(const std::vector<PixelPoint>& ring,
+                                        double spacing_x, double spacing_y,
+                                        bool staggered) {
+  std::vector<SurfacePoint> out;
+  if (ring.size() < 3 || !(spacing_x > 0.0) || !(spacing_y > 0.0)) return out;
+
+  double minx = ring[0].x, maxx = ring[0].x;
+  double miny = ring[0].y, maxy = ring[0].y;
+  for (const PixelPoint& p : ring) {
+    minx = (std::min)(minx, static_cast<double>(p.x));
+    maxx = (std::max)(maxx, static_cast<double>(p.x));
+    miny = (std::min)(miny, static_cast<double>(p.y));
+    maxy = (std::max)(maxy, static_cast<double>(p.y));
+  }
+
+  // The grid is anchored to the canvas origin, not to the ring's own corner,
+  // so two adjacent areas sharing a pattern line up instead of each starting
+  // its own grid. (It still shifts when the map pans — a geographic anchor is
+  // an R3 concern, along with the retained scene.)
+  const double x0 = std::floor(minx / spacing_x) * spacing_x;
+  const double y0 = std::floor(miny / spacing_y) * spacing_y;
+
+  int row = 0;
+  for (double y = y0; y <= maxy && out.size() < kMaxPatternStamps;
+       y += spacing_y, ++row) {
+    const double shift = (staggered && (row & 1)) ? spacing_x * 0.5 : 0.0;
+    for (double x = x0 + shift; x <= maxx && out.size() < kMaxPatternStamps;
+         x += spacing_x) {
+      if (PointInRing(ring, x, y)) out.push_back(SurfacePoint{x, y});
+    }
+  }
   return out;
 }
 
@@ -172,23 +406,29 @@ VectorRenderer::VectorRenderer(VectorSourcePtr source, StyleEnginePtr style)
 
 namespace {
 
-// One styled pass over one feature, ready to sort.
-struct DrawItem {
-  int priority = 0;
-  size_t order = 0;     // query order, for a stable tie-break
-  size_t feature = 0;
-  size_t result = 0;
-};
+// The viewport grown by `margin` on each side, clamped to the sphere. Used to
+// retain slightly more than is on screen so a small pan is a scene hit.
+GeoRect GrowRect(const GeoRect& r, double margin) {
+  if (!(margin > 0.0) || r.CrossesAntimeridian()) return r;
+  const double dlat = (r.ur.lat - r.ll.lat) * margin;
+  const double dlon = (r.ur.lon - r.ll.lon) * margin;
+  GeoRect out;
+  out.ll.lat = std::max(-90.0, r.ll.lat - dlat);
+  out.ur.lat = std::min(90.0, r.ur.lat + dlat);
+  out.ll.lon = std::max(-180.0, r.ll.lon - dlon);
+  out.ur.lon = std::min(180.0, r.ur.lon + dlon);
+  return out;
+}
 
-// Projects a feature part; returns false if the projection rejected a point
-// (out of the surface's valid domain), in which case the part is skipped.
-bool ProjectPart(const MapProjection& proj, const std::vector<GeoPoint>& part,
+// Projects a run of scene vertices; returns false if the projection rejected a
+// point (out of the surface's valid domain), in which case the part is skipped.
+bool ProjectPart(const MapProjection& proj, const GeoPoint* pts, size_t n,
                  std::vector<SurfacePoint>* out) {
   out->clear();
-  out->reserve(part.size());
-  for (const GeoPoint& g : part) {
+  out->reserve(n);
+  for (size_t i = 0; i < n; ++i) {
     double sx = 0.0, sy = 0.0;
-    if (!proj.GeoToSurface(g, &sx, &sy).ok()) return false;
+    if (!proj.GeoToSurface(pts[i], &sx, &sy).ok()) return false;
     out->push_back(SurfacePoint{sx, sy});
   }
   return true;
@@ -326,102 +566,317 @@ void DrawSymbolAt(ICanvas* canvas, const VectorSymbol& sym, double ax,
   }
 }
 
+// Draws a pixmap symbol so that its PIVOT lands on (ax, ay).
+//
+// The tile is authored in pixels, so the identity case — no user zoom, no
+// rotation — is a straight blit at an integer offset and the sheet's own
+// anti-aliased edges reach the canvas untouched. That is the case that must
+// stay exact, and it is also every point symbol on a default chart.
+//
+// Otherwise the tile is resampled NEAREST-NEIGHBOUR into a temporary buffer by
+// inverse-mapping each destination pixel. Nearest, not bilinear: these glyphs
+// are 9-46 px of hard-edged chart symbology, and interpolating them smears the
+// one-pixel strokes a buoy is drawn with. A rotated raster symbol is a
+// degradation either way — the vector twin is what a product should ship — so
+// the cheap sampler is the honest one.
+void DrawPixmapSymbolAt(ICanvas* canvas, const SymbolPixmap& sym, double ax,
+                        double ay, double scale, double rotation_rad,
+                        InkBox* ink) {
+  const int sw = sym.tile.Width(), sh = sym.tile.Height();
+  if (sw <= 0 || sh <= 0) return;
+
+  // The anchor is snapped to a whole pixel FIRST, for both paths. D4 puts a
+  // pixel's centre ON the integer, so a symbol at a half-pixel anchor has no
+  // "correct" sub-pixel placement to preserve without resampling — and
+  // snapping is what makes the two paths agree: at scale 1 with no rotation
+  // the resampler below reproduces the straight blit exactly instead of
+  // shifting the glyph by a pixel as the zoom crosses 1.
+  const double cx = std::round(ax), cy = std::round(ay);
+
+  const bool plain = std::fabs(scale - 1.0) < 1e-6 &&
+                     std::fabs(rotation_rad) < 1e-9;
+  if (plain) {
+    const int x = static_cast<int>(std::lround(cx - sym.pivot_x));
+    const int y = static_cast<int>(std::lround(cy - sym.pivot_y));
+    canvas->DrawPixmap(sym.tile, x, y);
+    if (ink != nullptr) {
+      ink->Add(x, y);
+      ink->Add(x + sw, y + sh);
+    }
+    return;
+  }
+  if (!(scale > 0.0)) return;
+
+  // Corners of the tile relative to the pivot, forward-mapped, to size the
+  // destination. A pixel covers half a unit either side of its centre, so the
+  // painted extent runs from -0.5 to size-0.5. Rotation is clockwise on screen
+  // for a positive angle, the same sense DrawSymbolAt applies (its symbol
+  // space is y up, this one is y down, hence the sign in the y row).
+  const double cs = std::cos(rotation_rad), sn = std::sin(rotation_rad);
+  auto fwd = [&](double sx, double sy, double* dx, double* dy) {
+    const double px = (sx - sym.pivot_x) * scale;
+    const double py = (sy - sym.pivot_y) * scale;
+    *dx = px * cs + py * sn;
+    *dy = -px * sn + py * cs;
+  };
+  double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+  const double corners[4][2] = {{-0.5, -0.5},
+                                {sw - 0.5, -0.5},
+                                {-0.5, sh - 0.5},
+                                {sw - 0.5, sh - 0.5}};
+  for (const auto& c : corners) {
+    double dx = 0, dy = 0;
+    fwd(c[0], c[1], &dx, &dy);
+    x0 = std::min(x0, dx); x1 = std::max(x1, dx);
+    y0 = std::min(y0, dy); y1 = std::max(y1, dy);
+  }
+  // One pixel of slack on each side: the destination grid is not aligned to
+  // the rotated source grid, so a boundary sample can fall just outside a
+  // tight box. Slack pixels that sample outside the tile stay transparent and
+  // blit as nothing, which is cheaper than losing an edge row.
+  const int ox = static_cast<int>(std::floor(cx + x0)) - 1;
+  const int oy = static_cast<int>(std::floor(cy + y0)) - 1;
+  const int dw = static_cast<int>(std::ceil(cx + x1)) - ox + 2;
+  const int dh = static_cast<int>(std::ceil(cy + y1)) - oy + 2;
+  if (dw <= 0 || dh <= 0) return;
+  // A symbol scaled past this is a bug in the caller's units, not a symbol.
+  if (dw > 4096 || dh > 4096) return;
+
+  PixelBuffer dst(dw, dh);
+  const double inv = 1.0 / scale;
+  for (int y = 0; y < dh; ++y) {
+    unsigned char* drow = dst.Row(y);
+    const double ry = (oy + y) - cy;  // destination pixel centre, D4
+    for (int x = 0; x < dw; ++x) {
+      const double rx = (ox + x) - cx;
+      // Inverse rotation (the transpose) then inverse scale, back to the
+      // tile's own grid; nearest sample. floor(t + 0.5), NOT lround: they
+      // differ at exactly -0.5, which is where a 2x upscale puts the first
+      // column of the tile, and lround's round-half-away-from-zero drops it.
+      const double px = rx * cs - ry * sn;
+      const double py = rx * sn + ry * cs;
+      const int sx =
+          static_cast<int>(std::floor(px * inv + sym.pivot_x + 0.5));
+      const int sy =
+          static_cast<int>(std::floor(py * inv + sym.pivot_y + 0.5));
+      if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) continue;
+      std::memcpy(drow + x * 4, sym.tile.Row(sy) + sx * 4, 4);
+    }
+  }
+  canvas->DrawPixmap(dst, ox, oy);
+  if (ink != nullptr) {
+    ink->Add(ox, oy);
+    ink->Add(ox + dw, oy + dh);
+  }
+}
+
+// A symbol id resolved to whichever form the engine has for it. Looked up
+// ONCE and then stamped as many times as the placer asks — an area pattern is
+// hundreds of stamps of the same id, and R3b did not make the fill fast so a
+// hash lookup could be added back per stamp.
+struct ResolvedSymbol {
+  const VectorSymbol* vec = nullptr;
+  const SymbolPixmap* pix = nullptr;
+  bool drawable() const { return vec != nullptr || pix != nullptr; }
+};
+
+// Display list first: a product that authors a symbol both ways keeps its
+// vector definition, which scales and rotates without resampling.
+ResolvedSymbol ResolveSymbol(IStyleEngine* style, const std::string& id) {
+  ResolvedSymbol r;
+  const VectorSymbol* sym = style->Symbol(id);
+  if (sym != nullptr && !sym->primitives.empty()) {
+    r.vec = sym;
+    return r;
+  }
+  const SymbolPixmap* pix = style->Pixmap(id);
+  if (pix != nullptr && !pix->tile.Empty()) r.pix = pix;
+  return r;
+}
+
+// Draws a resolved symbol at (ax, ay). Returns true when something reached the
+// canvas, so a caller only records a pick box for ink that exists.
+//
+// `px_per_himetric` sizes a display list; `pixmap_scale` sizes a tile, which is
+// already in pixels. They are the same zoom in each form's own units and are
+// passed SEPARATELY rather than derived from one another: a tile's scale must
+// be exact (2.0, not 2.0 divided and re-multiplied by 25.4), because the
+// nearest sampler decides the tile's first row and column on a boundary that
+// lands exactly on a half-pixel at integer zooms.
+bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
+                        double ay, double px_per_himetric, double pixmap_scale,
+                        double rotation_rad, InkBox* ink) {
+  if (sym.vec != nullptr) {
+    DrawSymbolAt(canvas, *sym.vec, ax, ay, px_per_himetric, rotation_rad, ink);
+    return true;
+  }
+  if (sym.pix == nullptr) return false;
+  DrawPixmapSymbolAt(canvas, *sym.pix, ax, ay, pixmap_scale, rotation_rad, ink);
+  return true;
+}
+
+using Clock = std::chrono::steady_clock;
+
+double MsSince(Clock::time_point t0) {
+  return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+}
+
 }  // namespace
 
 Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   features_queried_ = 0;
   draws_emitted_ = 0;
+  query_ms_ = style_ms_ = draw_ms_ = 0.0;
   pick_.Clear();
   if (canvas == nullptr) return Status::Error(kInvalidArg, "null canvas");
   if (!source_ || !style_)
     return Status::Error(kInvalidArg, "renderer needs a source and a style");
   if (!proj.Ready()) return Status::Error(kInvalidArg, "projection not ready");
 
-  VectorQuery q;
-  q.area = proj.VmapBounds();
-  q.scale_denominator = proj.Scale();
-  q.max_features = max_features_;
-
-  std::vector<VectorFeature> features;
-  Status s = source_->Query(q, &features);
-  if (!s.ok()) return s;
-  features_queried_ = features.size();
-
   StyleContext ctx;
   ctx.scale_denominator = proj.Scale();
   ctx.device_dpi = dpi_;
   ctx.symbol_scale = symbol_scale_;
 
-  // Style everything first: the draw order is by display priority ACROSS
-  // features, so nothing can be drawn until every feature has been styled.
-  std::vector<std::vector<StyleResult>> styled(features.size());
-  std::vector<DrawItem> items;
-  for (size_t i = 0; i < features.size(); ++i) {
-    Status ss = style_->Style(features[i], ctx, &styled[i]);
-    if (!ss.ok()) return ss;
-    for (size_t r = 0; r < styled[i].size(); ++r) {
-      if (!styled[i][r].visible) continue;
-      DrawItem it;
-      it.priority = styled[i][r].priority;
-      it.order = items.size();
-      it.feature = i;
-      it.result = r;
-      items.push_back(it);
-    }
+  const GeoRect view = proj.VmapBounds();
+  scene_reused_ = scene_.CanServe(view, ctx, style_->style_epoch());
+  if (!scene_reused_) {
+    SceneBuildParams p;
+    p.area = GrowRect(view, scene_margin_);
+    p.ctx = ctx;
+    p.max_features = max_features_;
+    p.simplify_px = simplify_px_;
+    p.dpp_x = proj.DegPerPixelLon();
+    p.dpp_y = proj.DegPerPixelLat();
+    Status s = scene_.Build(source_.get(), style_.get(), p);
+    if (!s.ok()) return s;
   }
-  std::stable_sort(items.begin(), items.end(),
-                   [](const DrawItem& a, const DrawItem& b) {
-                     if (a.priority != b.priority) return a.priority < b.priority;
-                     return a.order < b.order;
-                   });
+  // Styling is by priority ACROSS features, so the scene is already in draw
+  // order; a reused one cost nothing to get there.
+  query_ms_ = scene_reused_ ? 0.0 : scene_.query_ms();
+  style_ms_ = scene_reused_ ? 0.0 : scene_.style_ms();
+  features_queried_ = scene_.features();
 
+  const Clock::time_point t_draw = Clock::now();
   const PixelSize size = canvas->Size();
   const double px_per_himetric = symbol_scale_ / kHimetricPerHundredthInch;
+  // The same zoom in the other symbol form's units: a tile is authored in
+  // pixels, so the user's symbol scale IS its scale factor.
+  const double pixmap_scale = symbol_scale_;
   std::vector<SurfacePoint> proj_part;
 
-  for (const DrawItem& it : items) {
-    const VectorFeature& f = features[it.feature];
-    const StyleResult& sr = styled[it.feature][it.result];
+  const std::vector<GeoPoint>& pts = scene_.points();
+  const std::vector<uint32_t>& part_first = scene_.part_first();
 
-    for (size_t p = 0; p < f.parts.size(); ++p) {
-      const std::vector<GeoPoint>& part = f.parts[p];
-      if (part.empty()) continue;
-      if (!ProjectPart(proj, part, &proj_part)) continue;
+  for (const SceneItem& it : scene_.items()) {
+    const StyleResult& sr = scene_.styles()[it.style];
 
-      if (f.type == VectorGeometryType::kArea && sr.fill.valid && p == 0) {
+    for (size_t p = 0; p < it.part_count; ++p) {
+      const uint32_t k = it.first_part + static_cast<uint32_t>(p);
+      const uint32_t begin = part_first[k], end = part_first[k + 1];
+      if (end <= begin) continue;
+      if (!ProjectPart(proj, &pts[begin], end - begin, &proj_part)) continue;
+
+      if (it.type == VectorGeometryType::kArea &&
+          (sr.fill.valid || sr.area_pattern.valid) && p == 0) {
         // Outer ring only for now; holes arrive with V5c's face topology.
         std::vector<PixelPoint> ring =
             ClipPolygon(proj_part, size.width, size.height);
         if (ring.size() >= 3) {
           std::vector<std::vector<PixelPoint>> rings{std::move(ring)};
-          canvas->DrawPolyPolygon(rings, &sr.fill.brush,
-                                  sr.stroke.valid ? &sr.stroke.pen : nullptr);
-          ++draws_emitted_;
-          if (pick_enabled_) pick_.AddFill(f.ref, sr.priority, rings[0]);
+          // A patterned area may carry a boundary pen and no fill at all
+          // (S-52's MARCUL row is AP(MARCUL02);LS(DASH,1,CHGRD)), so the pen
+          // is drawn whether or not there is a brush — otherwise entering
+          // this branch for the pattern would silently swallow the boundary
+          // the stroke branch below would have drawn.
+          if (sr.fill.valid || sr.stroke.valid) {
+            canvas->DrawPolyPolygon(rings, sr.fill.valid ? &sr.fill.brush
+                                                         : nullptr,
+                                    sr.stroke.valid ? &sr.stroke.pen : nullptr);
+            ++draws_emitted_;
+          }
+          if (sr.area_pattern.valid) {
+            // Resolved once, before the placement walk: an unresolvable
+            // pattern must not cost a grid of stamps that all fail, and a
+            // resolvable one must not cost a lookup per stamp.
+            const ResolvedSymbol pat =
+                ResolveSymbol(style_.get(), sr.area_pattern.symbol_id);
+            if (pat.drawable()) {
+              for (const SurfacePoint& at :
+                   PlaceOverArea(rings[0], sr.area_pattern.spacing_x,
+                                 sr.area_pattern.spacing_y,
+                                 sr.area_pattern.staggered)) {
+                DrawResolvedSymbol(
+                    canvas, pat, at.x, at.y,
+                    px_per_himetric * sr.area_pattern.symbol_scale,
+                    pixmap_scale * sr.area_pattern.symbol_scale, 0.0, nullptr);
+                ++draws_emitted_;
+              }
+            }
+          }
+          if (pick_enabled_) pick_.AddFill(it.ref, sr.priority, rings[0]);
         }
-      } else if (sr.stroke.valid && part.size() >= 2) {
+      } else if (sr.stroke.valid && proj_part.size() >= 2) {
         const double half = std::max(0.5, sr.stroke.pen.width / 2.0);
         for (auto& run : ClipPolyline(proj_part, size.width, size.height)) {
           canvas->DrawLines(run, sr.stroke.pen);
           ++draws_emitted_;
-          if (pick_enabled_) pick_.AddStroke(f.ref, sr.priority, run, half);
+          if (pick_enabled_) pick_.AddStroke(it.ref, sr.priority, run, half);
         }
       }
 
-      // Point symbology anchors at the first vertex of each part (a line's
-      // symbol, when a row carries one, marks its start — GeoSym's
-      // along-path SAMI placement is V5c).
+      // A patterned line (GeoSym SAMI, S-52 LC) is laid along the WHOLE
+      // projected path and clipped afterwards, not along the clipped runs:
+      // clipping first would restart the pattern at the canvas edge, so a
+      // dash would jump every time the map panned by one pixel.
+      if (sr.line_pattern.valid && !sr.line_pattern.runs.empty() &&
+          proj_part.size() >= 2) {
+        const PathPlacement placed =
+            PlaceAlongPath(proj_part, sr.line_pattern.runs,
+                           sr.line_pattern.phase);
+        const double half = (std::max)(0.5, sr.line_pattern.pen.width / 2.0);
+        for (const std::vector<SurfacePoint>& dash : placed.dashes) {
+          for (auto& run : ClipPolyline(dash, size.width, size.height)) {
+            canvas->DrawLines(run, sr.line_pattern.pen);
+            ++draws_emitted_;
+            if (pick_enabled_) pick_.AddStroke(it.ref, sr.priority, run, half);
+          }
+        }
+        for (const PlacedSymbol& ps : placed.symbols) {
+          if (ps.x < -1e3 || ps.y < -1e3 || ps.x > size.width + 1e3 ||
+              ps.y > size.height + 1e3)
+            continue;
+          InkBox ink;
+          // Resolved per stamp: a pattern's runs can name different symbols.
+          if (!DrawResolvedSymbol(canvas,
+                                  ResolveSymbol(style_.get(), ps.symbol_id),
+                                  ps.x, ps.y, px_per_himetric * ps.scale,
+                                  pixmap_scale * ps.scale,
+                                  ps.rotation_deg * kPi / 180.0,
+                                  pick_enabled_ ? &ink : nullptr))
+            continue;
+          ++draws_emitted_;
+          if (pick_enabled_) {
+            ink.Add(ps.x, ps.y);
+            pick_.AddBox(it.ref, sr.priority, ink.ToRect(1.0));
+          }
+        }
+      }
+
+      // A single point symbol anchors at the first vertex of each part (a
+      // line's symbol, when a row carries one, marks its start). Repeated
+      // symbology along the path is line_pattern, above.
       if (sr.symbol.valid) {
-        const VectorSymbol* sym = style_->Symbol(sr.symbol.symbol_id);
-        if (sym != nullptr && !sym->primitives.empty()) {
-          const SurfacePoint& a = proj_part.front();
-          if (a.x >= -1e4 && a.y >= -1e4 && a.x <= size.width + 1e4 &&
-              a.y <= size.height + 1e4) {
-            InkBox ink;
-            DrawSymbolAt(canvas, *sym, a.x, a.y,
-                         px_per_himetric * sr.symbol.scale,
-                         sr.symbol.rotation_deg * 3.14159265358979323846 / 180.0,
-                         pick_enabled_ ? &ink : nullptr);
+        const SurfacePoint& a = proj_part.front();
+        if (a.x >= -1e4 && a.y >= -1e4 && a.x <= size.width + 1e4 &&
+            a.y <= size.height + 1e4) {
+          InkBox ink;
+          if (DrawResolvedSymbol(
+                  canvas, ResolveSymbol(style_.get(), sr.symbol.symbol_id),
+                  a.x, a.y, px_per_himetric * sr.symbol.scale,
+                  pixmap_scale * sr.symbol.scale,
+                  sr.symbol.rotation_deg * kPi / 180.0,
+                  pick_enabled_ ? &ink : nullptr)) {
             ++draws_emitted_;
             if (pick_enabled_) {
               // A symbol that degenerates to a couple of pixels is still
@@ -438,7 +893,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                 box.y -= (kMinPickBox - box.height) / 2;
                 box.height = kMinPickBox;
               }
-              pick_.AddBox(f.ref, sr.priority, box);
+              pick_.AddBox(it.ref, sr.priority, box);
             }
           }
         }
@@ -462,13 +917,14 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
               box.y = ly - ext.height;
               box.width = ext.width;
               box.height = ext.height;
-              pick_.AddBox(f.ref, sr.priority, box);
+              pick_.AddBox(it.ref, sr.priority, box);
             }
           }
         }
       }
     }
   }
+  draw_ms_ = MsSince(t_draw);
   return Status::Ok();
 }
 

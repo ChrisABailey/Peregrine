@@ -15,6 +15,8 @@
 #include <gtest/gtest.h>
 #include <png.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -153,6 +155,126 @@ TEST(CpuCanvasGolden, CompositeScene) {
   else
     EXPECT_EQ(h, kHashScene);
   WriteAndCheckPng(c.Buffer(), "canvas_scene");
+}
+
+// --- the R3b edge-table fill, against the algorithm it replaced ------------
+//
+// FillScanlines used to walk every edge of every ring for every scanline in
+// the bounding box. R3b buckets edges by the first scanline they can cross,
+// which measured as the largest single saving in a vector frame — and which
+// is only worth having if it is EXACTLY the same picture. The golden hashes
+// above are one guard; this is the direct one, over the shapes that actually
+// exercise the bucketing: horizontal edges (never cross a scanline and are
+// dropped from the table entirely), edges that start above the canvas or end
+// below it (clamped into the drawn range), several rings at once, and a
+// self-intersecting ring whose crossings must still pair up even-odd.
+//
+// The oracle is the pre-R3b loop, transcribed. It is deliberately the naive
+// O(scanlines * edges) version — that is the point.
+void ReferenceFill(fv::PixelBuffer* buf,
+                   const std::vector<std::vector<fv::PixelPoint>>& rings,
+                   const fv::FvColor& c) {
+  int y_min = buf->Height(), y_max = -1;
+  for (const auto& ring : rings)
+    for (const auto& p : ring) {
+      y_min = std::min(y_min, p.y);
+      y_max = std::max(y_max, p.y);
+    }
+  y_min = std::max(y_min, 0);
+  y_max = std::min(y_max, buf->Height() - 1);
+
+  std::vector<double> xs;
+  for (int y = y_min; y <= y_max; ++y) {
+    xs.clear();
+    const double yc = y + 0.5;
+    for (const auto& ring : rings) {
+      const size_t n = ring.size();
+      if (n < 3) continue;
+      for (size_t i = 0; i < n; ++i) {
+        const fv::PixelPoint& a = ring[i];
+        const fv::PixelPoint& b = ring[(i + 1) % n];
+        if ((a.y <= yc) == (b.y <= yc)) continue;
+        const double t = (yc - a.y) / (double)(b.y - a.y);
+        xs.push_back(a.x + t * (b.x - a.x));
+      }
+    }
+    std::sort(xs.begin(), xs.end());
+    for (size_t i = 0; i + 1 < xs.size(); i += 2) {
+      const int x0 = (int)std::ceil(xs[i] - 0.5);
+      const int x1 = (int)std::floor(xs[i + 1] - 0.5);
+      for (int x = std::max(x0, 0); x <= std::min(x1, buf->Width() - 1); ++x) {
+        unsigned char* p = buf->Row(y) + 4 * x;
+        if (c.a == 0) continue;
+        if (c.a == 255) {
+          p[0] = c.r; p[1] = c.g; p[2] = c.b; p[3] = 255;
+          continue;
+        }
+        const int a = c.a;
+        p[0] = (unsigned char)((c.r * a + p[0] * (255 - a)) / 255);
+        p[1] = (unsigned char)((c.g * a + p[1] * (255 - a)) / 255);
+        p[2] = (unsigned char)((c.b * a + p[2] * (255 - a)) / 255);
+        p[3] = (unsigned char)(a + p[3] * (255 - a) / 255);
+      }
+    }
+  }
+}
+
+std::vector<std::vector<std::vector<fv::PixelPoint>>> FillCases() {
+  return {
+      // plain convex
+      {{{8, 8}, {56, 16}, {16, 56}}},
+      // horizontal top and bottom edges — never cross a scanline
+      {{{10, 10}, {50, 10}, {50, 40}, {10, 40}}},
+      // self-intersecting: even-odd leaves a hole
+      {{{32, 4}, {13, 60}, {60, 25}, {4, 25}, {51, 60}}},
+      // two disjoint rings in one call
+      {{{4, 4}, {28, 4}, {28, 28}, {4, 28}},
+       {{36, 36}, {60, 36}, {60, 60}, {36, 60}}},
+      // ring with a hole (outer + inner, even-odd)
+      {{{4, 4}, {60, 4}, {60, 60}, {4, 60}},
+       {{20, 20}, {44, 20}, {44, 44}, {20, 44}}},
+      // hangs off the top and the bottom: edges clamped into the drawn range
+      {{{-30, -40}, {90, -40}, {70, 120}, {-10, 120}}},
+      // entirely above the canvas
+      {{{10, -80}, {50, -80}, {30, -40}}},
+      // a sliver one scanline tall
+      {{{5, 30}, {58, 30}, {58, 31}, {5, 31}}},
+      // degenerate: all points on one scanline, no crossings at all
+      {{{5, 20}, {40, 20}, {58, 20}}},
+  };
+}
+
+TEST(CpuCanvas, EdgeTableFillMatchesTheNaiveScanline) {
+  int case_index = 0;
+  for (const auto& rings : FillCases()) {
+    for (const fv::FvColor& color :
+         {Rgb(255, 0, 0), fv::FvColor{0, 128, 255, 96}}) {
+      fv::CpuCanvas c(64, 64);
+      c.Clear(Rgb(20, 30, 40));
+      fv::PixelBuffer want(64, 64);
+      for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x) {
+          unsigned char* p = want.Row(y) + 4 * x;
+          p[0] = 20; p[1] = 30; p[2] = 40; p[3] = 255;
+        }
+
+      fv::Brush brush{color};
+      c.DrawPolyPolygon(rings, &brush, nullptr);  // may reject; oracle agrees
+      ReferenceFill(&want, rings, color);
+
+      for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x) {
+          const unsigned char* g = Px(c.Buffer(), x, y);
+          const unsigned char* w = want.Row(y) + 4 * x;
+          ASSERT_EQ(g[0], w[0]) << "case " << case_index << " at " << x << ","
+                                << y;
+          ASSERT_EQ(g[1], w[1]);
+          ASSERT_EQ(g[2], w[2]);
+          ASSERT_EQ(g[3], w[3]);
+        }
+    }
+    ++case_index;
+  }
 }
 
 TEST(CpuCanvas, BlendExactness) {

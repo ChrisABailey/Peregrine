@@ -30,10 +30,10 @@ ctest --test-dir build  # run tests
 Verified on macOS (Apple Silicon, AppleClang). See *Known limitations* for the
 state of Linux.
 
-Without sample map data you should see **341 tests passing, none failing**. A
-large share of those skip themselves at run time because they need real map
-data, which is not distributed here (`ctest` reports a skipped test as passing;
-the `[  SKIPPED ]` lines in `ctest -V` show which).
+Without sample map data you should see **565 tests passing, none failing**, of
+which **235 skip themselves** at run time because they need real map data,
+which is not distributed here (`ctest` reports a skipped test as passing; the
+`(Skipped)` lines in its output show which).
 
 ## What works
 
@@ -91,6 +91,30 @@ rather than fixed. Read it before touching a module.
 - **Win32 idioms get one shared implementation.** File mapping, directory
   enumeration and Win32 path semantics (backslashes, case-insensitive lookup)
   are emulated once in `port/include/`, so legacy call sites compile unmodified.
+
+## PythonView (Python test App)
+
+PythonView is a small Python / Tkinter GUI that exercises the bindings. It is a
+desktop map viewer with coverage overlay and identify. It is not a full
+FalconView clone, but it is a good test harness for the ported core. Build the
+bindings, then run it from the repo root — it locates the built `pyfvw` next to
+the checkout itself:
+
+```sh
+cmake --build build -j
+python3 port/apps/PythonView.py
+```
+
+It needs NumPy and Tkinter at run time. `--help` lists the rest: `--scan` to
+build the catalog, `--at`/`--series` to open somewhere specific, `--shot` to
+render straight to a PNG.
+
+### Screenshots
+![CADRG](Screenshots/CADRG.png)
+![DTED](Screenshots/DTED.png)
+![GeoTIFF](Screenshots/GeoTIFF.png)
+![VPF/DNC](Screenshots/DNC.png)
+![ENC](Screenshots/ENC.png)
 
 ## Test data
 

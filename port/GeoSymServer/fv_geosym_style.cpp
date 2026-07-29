@@ -5,6 +5,8 @@
 
 #include "fv_geosym_style.h"
 
+#include <climits>
+
 // NOTE: GeoSymServer's StdAfx POSIX block defines the Win32 min/max MACROS
 // (scoped to this tree, see the 2026-07-21 ledger entry), so every std::min /
 // std::max call below is parenthesized to stop macro expansion.
@@ -41,6 +43,17 @@ constexpr const char* kFallbackUnknownLine = "line";    // symbol 5001
 constexpr const char* kFallbackNoMatchPoint = "defpt";  // 0051 black dot
 constexpr const char* kFallbackNoMatchLine = "defln";   // 3113 black line
 
+// A SAMI point-symbol element names its symbol as a FILE ("5010.cgm"), while
+// every other symbol reference in GeoSym is a bare number. Symbol() keys on
+// the number, so the extension comes off here.
+std::string StripCgmExtension(const std::string& s) {
+  if (s.size() > 4) {
+    const std::string tail = s.substr(s.size() - 4);
+    if (tail == ".cgm" || tail == ".CGM") return s.substr(0, s.size() - 4);
+  }
+  return s;
+}
+
 FvColor FromColorRef(COLORREF c) {
   FvColor out;
   out.r = static_cast<unsigned char>(c & 0xFF);
@@ -72,6 +85,11 @@ struct SymRow {
   int priority = 0;
   std::string label_att;
   long text_row = -1;
+  // The IHO/IMO visibility columns (R2). Zero means the row left them blank,
+  // which the rule layer reads as "ungrouped" and "no category" — always on.
+  int viewing_group = 0;
+  int text_group = 0;
+  int display_category = kDisplayCategoryNone;
 };
 
 // One TEXT.TXT row.
@@ -132,6 +150,30 @@ void FlattenArc(const CgmElement& e, SymbolPrimitive* out) {
     out->points.push_back(SymbolPoint{static_cast<double>(e.center.x),
                                       static_cast<double>(e.center.y)});
   }
+}
+
+// Applies the picture's VDC direction multipliers, which is what Windows does
+// in CCGMDrawingObject::RotateVDC ("Need to do VDC adjustments for reflection
+// even if zero rotation angle") when it builds the m_disp_vertices the GDI
+// path draws. The parser already applied them ONCE while reading coordinates
+// (CCGMFile::ReadVDCScaledY), and CgmSymbol keeps those once-applied values,
+// so without this second application the symbol is mirrored — for the
+// standard lly<ury extent every GeoSym symbol uses, dir_y is -1 and the
+// display list is y-DOWN while VectorSymbol's contract (and VectorRenderer's
+// flip) is y-UP, which drew every DNC point symbol upside down.
+//
+// Rotation still matches: Windows rotates BEFORE the multipliers, we rotate
+// after, and diag(1,-1)*R(a) == R(-a)*diag(1,-1) — the same net transform.
+void ApplyVdcDir(const CgmSymbol& cgm, SymbolPrimitive* p) {
+  const double dx = static_cast<double>(cgm.dir_x());
+  const double dy = static_cast<double>(cgm.dir_y());
+  for (SymbolPoint& pt : p->points) { pt.x *= dx; pt.y *= dy; }
+  p->center.x *= dx;
+  p->center.y *= dy;
+  p->radius1.x *= dx;
+  p->radius1.y *= dy;
+  p->radius2.x *= dx;
+  p->radius2.y *= dy;
 }
 
 VectorSymbol ToVectorSymbol(const CgmSymbol& cgm,
@@ -206,15 +248,21 @@ VectorSymbol ToVectorSymbol(const CgmSymbol& cgm,
       default:
         continue;
     }
+    ApplyVdcDir(cgm, &p);
     out.primitives.push_back(std::move(p));
   }
+  // bounds() is in the parser's once-applied space too, so the extent takes
+  // the same multipliers; min/max stay order-agnostic rather than copying the
+  // `top`/`bottom` names across a sign change.
   const CgmRect& b = cgm.bounds();
-  out.min_x = static_cast<double>(b.left);
-  out.max_x = static_cast<double>(b.right);
-  // CgmRect is in VDC (y up), where `top` is the larger value; keep min/max
-  // honest rather than copying the names across.
-  out.min_y = static_cast<double>((std::min)(b.top, b.bottom));
-  out.max_y = static_cast<double>((std::max)(b.top, b.bottom));
+  const double dx = static_cast<double>(cgm.dir_x());
+  const double dy = static_cast<double>(cgm.dir_y());
+  const double x0 = b.left * dx, x1 = b.right * dx;
+  const double y0 = b.top * dy, y1 = b.bottom * dy;
+  out.min_x = (std::min)(x0, x1);
+  out.max_x = (std::max)(x0, x1);
+  out.min_y = (std::min)(y0, y1);
+  out.max_y = (std::max)(y0, y1);
   return out;
 }
 
@@ -236,12 +284,18 @@ struct GeoSymStyleEngine::Impl {
   CAttributeExpressions att_exp;
   CSymColors colors;
   CSymColorAdjuster adjuster;
+  // Sentinels, NOT 0: the first SetColorAdjust must reach the adjuster even
+  // when it asks for (0,0), because a default-constructed CSymColorAdjuster
+  // never ran Setup at all (see the UB note in the ledger). Only a REPEATED
+  // set with the same numbers is skipped.
+  int brightness = INT_MIN;
+  int contrast = INT_MIN;
   CECDISValues ecdis;
 
-  // Symbol caches. `symbols` holds the converted display lists handed out by
-  // Symbol(); `line_pens` the derived stroke for a LINE symbol number.
-  std::unordered_map<std::string, std::unique_ptr<VectorSymbol>> symbols;
-  std::unordered_map<std::string, bool> symbol_failed;
+  // The R2 rule layer and the VectorSymbol display-list cache live in the
+  // shared LookupTableStyleEngine core (E3c). What stays here is GeoSym's own
+  // DERIVED caches, which are not display lists: a LINE symbol number resolves
+  // to a stroke description and an AREA symbol number to a brush.
   struct LineStroke {
     bool valid = false;
     std::vector<CgmLineComponent> components;
@@ -306,8 +360,25 @@ bool GeoSymStyleEngine::Impl::LoadAssignments() {
         && parser.ParseString(label_att)     // Label attribute
         && parser.ParseLong(text_row, true)) {
       line_good = true;
+
+      // The remaining columns (vgroup | txtgroup | radar | dispcat | feadesc)
+      // are read SEPARATELY and non-fatally: before R2 the parse chain simply
+      // stopped at txrowid, and folding these into the required chain would
+      // turn a row that ends early into "the whole table failed". A field
+      // that does not parse stays 0 = ungrouped/no category = always visible,
+      // which is the same behaviour as before this was read at all.
+      long vgroup = 0, txtgroup = 0, radar = 0, dispcat = 0;
+      parser.ParseLong(vgroup, true);
+      parser.ParseLong(txtgroup, true);
+      parser.ParseLong(radar, true);  // IHO radar category: parsed, unused
+      parser.ParseLong(dispcat, true);
+      (void)radar;
+
       if (pid != product_id) continue;
       SymRow r;
+      r.viewing_group = static_cast<int>(vgroup);
+      r.text_group = static_cast<int>(txtgroup);
+      r.display_category = static_cast<int>(dispcat);
       r.id = id;
       r.delin = static_cast<int>(delin);
       r.point_sym = point_sym;
@@ -446,12 +517,12 @@ GeoSymStyleEngine::GeoSymStyleEngine() : impl_(new Impl) {}
 GeoSymStyleEngine::~GeoSymStyleEngine() = default;
 
 Status GeoSymStyleEngine::Open(const std::string& data_dir, int product_id) {
-  impl_->open = false;
+  set_open(false);
   impl_->rows.clear();
   impl_->row_count = 0;
   impl_->text_rows.clear();
-  impl_->symbols.clear();
-  impl_->symbol_failed.clear();
+  ClearSymbolCache();
+  ResetUnresolvedSymbols();
   impl_->line_strokes.clear();
   impl_->area_fills.clear();
   impl_->data_dir = data_dir;
@@ -466,38 +537,42 @@ Status GeoSymStyleEngine::Open(const std::string& data_dir, int product_id) {
   // TEXT.TXT only drives labels; a missing one is not fatal.
   impl_->LoadTextTable();
 
-  impl_->open = true;
+  set_open(true);
   return Status::Ok();
 }
 
-bool GeoSymStyleEngine::IsOpen() const { return impl_->open; }
-
 void GeoSymStyleEngine::SetColorAdjust(int brightness, int contrast) {
+  // A no-op set must stay a no-op: an interactive caller pushes its current
+  // brightness/contrast down on EVERY frame, and bumping unconditionally would
+  // throw the retained scene away once per redraw (R3a).
+  if (brightness == impl_->brightness && contrast == impl_->contrast) return;
+  impl_->brightness = brightness;
+  impl_->contrast = contrast;
   impl_->adjuster.Setup(brightness, contrast);
-  // Cached display lists baked the old adjustment in.
-  impl_->symbols.clear();
+  // Cached display lists baked the old adjustment in — and so did any retained
+  // VectorScene, which is what the epoch bump tells it.
+  ClearSymbolCache();
+  BumpStyleEpoch();
 }
 
-void GeoSymStyleEngine::SetDrawLabels(bool on) { impl_->draw_labels = on; }
-
 size_t GeoSymStyleEngine::row_count() const { return impl_->row_count; }
-size_t GeoSymStyleEngine::symbols_loaded() const { return impl_->symbols.size(); }
+size_t GeoSymStyleEngine::symbols_loaded() const { return symbols_cached(); }
 const std::string& GeoSymStyleEngine::data_dir() const { return impl_->data_dir; }
 
-const VectorSymbol* GeoSymStyleEngine::Symbol(const std::string& symbol_id) {
-  if (symbol_id.empty()) return nullptr;
-  auto it = impl_->symbols.find(symbol_id);
-  if (it != impl_->symbols.end()) return it->second.get();
-  if (impl_->symbol_failed.count(symbol_id) != 0) return nullptr;
-
+bool GeoSymStyleEngine::LoadSymbol(const std::string& symbol_id,
+                                   VectorSymbol* out) {
   CgmSymbol cgm;
-  if (!cgm.LoadFile(impl_->GraphicsFile(symbol_id)).ok()) {
-    impl_->symbol_failed[symbol_id] = true;
-    return nullptr;
-  }
-  std::unique_ptr<VectorSymbol> vs(
-      new VectorSymbol(ToVectorSymbol(cgm, impl_->adjuster)));
-  return impl_->symbols.emplace(symbol_id, std::move(vs)).first->second.get();
+  if (!cgm.LoadFile(impl_->GraphicsFile(symbol_id)).ok()) return false;
+  *out = ToVectorSymbol(cgm, impl_->adjuster);
+  return true;
+}
+
+// Every drawing entry point in SanSymbol/SymText computes
+// `dblScaleZoomFactor = scale * zoom / 100` and bails below 0.20 ("make sure it
+// is something viewable"). Same cutoff, same place in the flow — which is why
+// the core evaluates AcceptContext before the rule plan.
+bool GeoSymStyleEngine::AcceptContext(const StyleContext& ctx) const {
+  return !(ctx.symbol_scale > 0.0 && ctx.symbol_scale < 0.20);
 }
 
 namespace {
@@ -522,16 +597,17 @@ std::string AttributeString(const VectorFeature& f) {
 
 }  // namespace
 
-Status GeoSymStyleEngine::Style(const VectorFeature& f,
-                                const StyleContext& ctx,
-                                std::vector<StyleResult>* out) {
-  if (out == nullptr) return Status::Error(kInvalidArg, "null out");
-  if (!impl_->open) return Status::Error(kNotFound, "style engine not open");
-
-  // Every drawing entry point in SanSymbol/SymText computes
-  // `dblScaleZoomFactor = scale * zoom / 100` and bails below 0.20 ("make
-  // sure it is something viewable"). Same cutoff, same place in the flow.
-  if (ctx.symbol_scale > 0.0 && ctx.symbol_scale < 0.20) return Status::Ok();
+Status GeoSymStyleEngine::StyleFeature(const VectorFeature& f,
+                                      const StyleContext& ctx,
+                                      const StylePass& rule_pass,
+                                      std::vector<StyleResult>* out) {
+  // A rule may scale this feature's symbology on top of the engine-wide zoom;
+  // the original's "make sure it is something viewable" cutoff then applies
+  // to the product, not just the caller's half (AcceptContext checked that).
+  const double symbol_scale = rule_pass.symbol_scale;
+  if (symbol_scale > 0.0 && symbol_scale < 0.20) return Status::Ok();
+  const bool draw_labels = rule_pass.draw_labels;
+  const ViewingGroupSet& groups = viewing_groups();
 
   const int delin = DelinFor(f.type);
   const std::string attrs = AttributeString(f);
@@ -560,8 +636,17 @@ Status GeoSymStyleEngine::Style(const VectorFeature& f,
       if (!impl_->att_exp.Evaluate(r.id, atts)) continue;
       any_matched = true;
 
+      // Viewing-group / display-category filtering (R2) sits AFTER
+      // any_matched, deliberately. A group the operator switched off means
+      // "do not draw this", not "the FACC had no matching row" — running it
+      // before would fire the 2nd-chance fallback and paint a default black
+      // dot in place of every hidden feature, the same failure the label
+      // comment above records.
+      if (!groups.Enabled(r.viewing_group)) continue;
+      if (!groups.CategoryEnabled(r.display_category)) continue;
+
       StyleResult sr;
-      sr.priority = r.priority;
+      sr.priority = rule_pass.PriorityOr(r.priority);
 
       // AREA rows carry a brush in the `areasym` column — this is what makes
       // DNC land buff and water blue, and it is also the whole depth-shading
@@ -603,30 +688,74 @@ Status GeoSymStyleEngine::Style(const VectorFeature& f,
               one.stroke.valid = true;
               one.stroke.pen.color =
                   FromColorRef(impl_->adjuster.Adjust(color));
-              const double w_px = width_himetric * ctx.symbol_scale *
+              const double w_px = width_himetric * symbol_scale *
                                   ctx.device_dpi / kHimetricPerInch;
               one.stroke.pen.width =
                   (std::max)(1, static_cast<int>(std::lround(w_px)));
               if (comp != nullptr) {
-                // Dash runs, in the original's units (see the note above).
-                for (const CgmLineElement& el : comp->elements) {
-                  if (el.type == CgmLineElementType::kDash &&
-                      el.length == 0.0) {
-                    // "to the end of the line" — a solid run.
-                    one.stroke.pen.dash.clear();
-                    break;
+                bool stamps = false;
+                for (const CgmLineElement& el : comp->elements)
+                  if (el.type == CgmLineElementType::kPointSymbol) stamps = true;
+
+                if (stamps) {
+                  // SAMI's real primitive: a cycle that stamps symbols as well
+                  // as strokes, which no pen can express. Goes to the shared
+                  // along-path placer (E3b) — the same one S-52's LC uses.
+                  // 89 of the 757 delivered CGM line symbols need this; before
+                  // E3b their symbol runs degraded to gaps.
+                  one.line_pattern.valid = true;
+                  one.line_pattern.pen = one.stroke.pen;
+                  one.stroke.valid = false;  // the placer draws the dashes
+                  for (const CgmLineElement& el : comp->elements) {
+                    PathRun run;
+                    run.length = el.length * symbol_scale;
+                    switch (el.type) {
+                      case CgmLineElementType::kDash:
+                        run.type = PathRunType::kDash;
+                        // length 0 = "to the end of the line", carried through
+                        // as the placer's own zero-length dash convention.
+                        break;
+                      case CgmLineElementType::kPointSymbol: {
+                        run.type = PathRunType::kSymbol;
+                        // The element names a FILE ("5010.cgm"); Symbol() keys
+                        // on the bare number and appends the extension itself.
+                        run.symbol_id = StripCgmExtension(el.symbol_definition);
+                        run.symbol_scale =
+                            el.symbol_scale > 0.0 ? el.symbol_scale : 1.0;
+                        run.rotation_deg =
+                            static_cast<double>(el.symbol_orientation);
+                        // Vertical displacement IS scaled to HIMETRIC by the
+                        // reader (unlike ElementLength — see the note at the
+                        // top of this file), so it converts like a line width.
+                        run.offset = el.vertical_displacement * symbol_scale *
+                                     ctx.device_dpi / kHimetricPerInch;
+                        break;
+                      }
+                      default:
+                        run.type = PathRunType::kGap;
+                        break;
+                    }
+                    one.line_pattern.runs.push_back(std::move(run));
                   }
-                  const int run = (std::max)(
-                      1, static_cast<int>(std::lround(el.length *
-                                                      ctx.symbol_scale)));
-                  // kPointSymbol runs become gaps: along-path symbol
-                  // placement is V5c.
-                  one.stroke.pen.dash.push_back(run);
+                } else {
+                  // Dash runs, in the original's units (see the note above).
+                  for (const CgmLineElement& el : comp->elements) {
+                    if (el.type == CgmLineElementType::kDash &&
+                        el.length == 0.0) {
+                      // "to the end of the line" — a solid run.
+                      one.stroke.pen.dash.clear();
+                      break;
+                    }
+                    const int run = (std::max)(
+                        1, static_cast<int>(std::lround(el.length *
+                                                        symbol_scale)));
+                    one.stroke.pen.dash.push_back(run);
+                  }
+                  // Pen::dash is on/off pairs; an odd count would flip the
+                  // phase every cycle, so drop a trailing lone run.
+                  if (one.stroke.pen.dash.size() % 2 == 1)
+                    one.stroke.pen.dash.pop_back();
                 }
-                // Pen::dash is on/off pairs; an odd count would flip the
-                // phase every cycle, so drop a trailing lone run.
-                if (one.stroke.pen.dash.size() % 2 == 1)
-                  one.stroke.pen.dash.pop_back();
               }
               if (ci + 1 == n) {
                 // Symbol/label ride on the last component only, so they are
@@ -652,7 +781,10 @@ Status GeoSymStyleEngine::Style(const VectorFeature& f,
           sr.symbol.rotation_deg = static_cast<double>(dof->LongValue());
       }
 
-      if (impl_->draw_labels && !r.label_att.empty()) {
+      // The row's IHO TEXT group gates the label alone: turning text group
+      // 23 off drops DNC's name labels while every symbol stays put.
+      if (draw_labels && !r.label_att.empty() &&
+          groups.Enabled(r.text_group)) {
         // CCGMSymbol::DrawLabel: a comma-separated label attribute
         // concatenates each attribute's value, comma-joined; a label whose
         // attribute is ABSENT is not drawn at all. Values are NOT filtered
@@ -688,12 +820,12 @@ Status GeoSymStyleEngine::Style(const VectorFeature& f,
           // a negative CreateFont height is character height in DEVICE
           // units. So the column behaves as pixels, not points, and that is
           // preserved here rather than converted at 72 dpi.
-          sr.label.style.size = tr->second.size_pt * ctx.symbol_scale;
+          sr.label.style.size = tr->second.size_pt * symbol_scale;
           sr.label.style.color = FromColorRef(
               impl_->adjuster.Adjust(impl_->colors.GetColor(tr->second.color_index)));
           // tdist is mm from the feature, tdir an azimuth in degrees
           // (CSymText::DrawText: x = sin, y = -cos, mm -> HIMETRIC -> device).
-          const double px = tr->second.dist_mm * ctx.symbol_scale *
+          const double px = tr->second.dist_mm * symbol_scale *
                             ctx.device_dpi / 25.4;
           const double rad = tr->second.dir_deg * 3.14159265358979323846 / 180.0;
           sr.label.dx = static_cast<int>(std::lround(px * std::sin(rad)));
@@ -702,7 +834,7 @@ Status GeoSymStyleEngine::Style(const VectorFeature& f,
       }
 
       if (sr.stroke.valid || sr.fill.valid || sr.symbol.valid ||
-          sr.label.valid)
+          sr.label.valid || sr.line_pattern.valid)
         out->push_back(std::move(sr));
     }
 

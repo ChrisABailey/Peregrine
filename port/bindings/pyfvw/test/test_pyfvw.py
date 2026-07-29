@@ -10,6 +10,7 @@ Run via ctest (pyfvw_pytest) or directly:
   PYTHONPATH=build/port/bindings/pyfvw pytest -q port/bindings/pyfvw/test
 """
 
+import glob
 import math
 import os
 
@@ -689,3 +690,296 @@ def test_pick_index_can_be_disabled():
     r.render(proj, cv)
     assert r.draws_emitted > 0
     assert len(r.pick_index) == 0
+
+
+# --- R2: the cross-product rule layer --------------------------------------
+
+def test_rules_parse_errors_raise_fverror():
+    """The rule syntax is hand-authored, so a bad line must fail loudly and
+    leave the set untouched (all-or-nothing, same as the C++ side)."""
+    rs = pyfvw.vector.RuleSet()
+    rs.load_text("hide layer=hydline\n")
+    assert len(rs) == 1
+    with pytest.raises(pyfvw.FvError) as e:
+        rs.load_text("hide key=BE010\nhide colour=red\n")
+    assert "line 2" in str(e.value)
+    assert len(rs) == 1, "the failed load must not have added anything"
+
+
+def test_geosym_rules_and_viewing_groups_change_the_render():
+    """The engine's rules() and viewing_groups() are live references, and both
+    knobs visibly thin a real DNC chart."""
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+
+    def render(configure=None):
+        src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+        style = pyfvw.vector.GeoSymStyleEngine()
+        style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+        if configure is not None:
+            configure(style)
+        proj = pyfvw.engine.MapProjection()
+        proj.set_surface_size(256, 256)
+        proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+        proj.set_physical_scale(300000, 0.25)
+        cv = pyfvw.canvas.CpuCanvas(256, 256); cv.clear((255, 255, 255))
+        r = pyfvw.vector.VectorRenderer(src, style)
+        r.render(proj, cv)
+        return r.draws_emitted, style.rule_predicate_evaluations
+
+    base, evals = render()
+    assert base > 100
+    assert evals == 0, "no rules means no predicate work"
+
+    # A key-only rule file still costs zero predicate evaluations.
+    def with_rules(style):
+        style.rules().load_text("hide key=BE010\n")
+    hidden, evals = render(with_rules)
+    assert hidden < base
+    assert evals == 0
+
+    # Display Base only: far less survives than the full Other set.
+    def base_only(style):
+        style.viewing_groups().set_max_category(pyfvw.vector.DISPLAY_BASE)
+    decluttered, _ = render(base_only)
+    assert 0 < decluttered < base
+
+
+# --- settings (the registry replacement) ------------------------------------
+
+def test_settings_read_the_r3a_knobs(tmp_path):
+    """The knobs a user is meant to try out, reached from a hand-edited file."""
+    ini = tmp_path / "peregrine.ini"
+    ini.write_text(
+        "# a comment\n"
+        "[vector]\n"
+        "scene_margin    = 0.5   # trailing comment\n"
+        "simplify_pixels = 1.0\n")
+
+    cfg = pyfvw.Settings()
+    cfg.load(str(ini))
+    assert cfg.path == str(ini)
+    assert cfg.get_float("vector.scene_margin", 0.0) == 0.5
+    assert cfg.get_float("vector.simplify_pixels", 0.0) == 1.0
+    # A key nobody set keeps the caller's default, silently.
+    assert cfg.get_float("vector.nope", 0.25) == 0.25
+    assert cfg.warnings == []
+
+
+def test_settings_typo_warns_and_falls_back(tmp_path):
+    ini = tmp_path / "peregrine.ini"
+    ini.write_text("[vector]\nsimplify_pixels = 0.5px\n")
+    cfg = pyfvw.Settings()
+    cfg.load(str(ini))
+    assert cfg.get_float("vector.simplify_pixels", 0.0) == 0.0
+    assert len(cfg.warnings) == 1
+    assert "simplify_pixels" in cfg.warnings[0]
+
+
+def test_settings_malformed_file_raises_with_the_line_number(tmp_path):
+    ini = tmp_path / "peregrine.ini"
+    ini.write_text("[vector]\nnot a setting\n")
+    cfg = pyfvw.Settings()
+    with pytest.raises(pyfvw.FvError) as e:
+        cfg.load(str(ini))
+    assert ":2:" in e.value.message
+
+
+def test_settings_no_file_anywhere_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("FVW_SETTINGS", str(tmp_path / "nope.ini"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "nohome"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "nohome"))
+    cfg = pyfvw.Settings()
+    cfg.load()  # '' = the default search path
+    assert cfg.path == ""
+    assert cfg.keys() == []
+    assert pyfvw.default_settings_paths()[0].endswith("nope.ini")
+
+
+def test_settings_drive_a_real_renderer(tmp_path):
+    """End to end: the file changes what the renderer does."""
+    lib = _harbor()
+    data_dir = os.environ.get("FVW_TESTDATA_DIR")
+    if not lib or not data_dir or not _testdata("GeoSymbol"):
+        pytest.skip("no dnc17 / GeoSym test data")
+
+    ini = tmp_path / "peregrine.ini"
+    ini.write_text("[vector]\nsimplify_pixels = 1.0\n")
+    cfg = pyfvw.Settings()
+    cfg.load(str(ini))
+
+    src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+    style = pyfvw.vector.GeoSymStyleEngine()
+    style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(256, 256)
+    proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+    proj.set_resolution(0.0008, 0.0008)
+    cv = pyfvw.canvas.CpuCanvas(256, 256); cv.clear((255, 255, 255))
+
+    r = pyfvw.vector.VectorRenderer(src, style)
+    r.set_simplify_pixels(cfg.get_float("vector.simplify_pixels", 0.0))
+    r.render(proj, cv)
+    assert r.simplify_pixels == 1.0
+    assert r.scene_vertices < r.scene_vertices_in
+
+
+# ---------------------------------------------------------------------------
+# ENC (S-57 + S-52) through the same seam — phase E4
+# ---------------------------------------------------------------------------
+#
+# The point of these is not that ENC works (the gtests pin that over the same
+# cells); it is that ENC reaches Python through the SAME classes DNC does, so
+# an app can switch products without a second code path. Each test below has a
+# VPF twin above it.
+
+
+def _enc():
+    return _testdata("enc")
+
+
+def test_enc_registers_as_a_scannable_format():
+    pyfvw.catalog.register_builtin_formats()
+    # One call registers ENC too, even though C++ has to register it from a
+    # different library (fv_enc links fv_fvkit, so fvkit cannot name it).
+    assert "enc" in pyfvw.catalog.registered_format_keys()
+
+
+def test_enc_source_open_layers_bounds():
+    root = _enc()
+    if root is None:
+        pytest.skip("no ENC TestData")
+    s = pyfvw.vector.EncVectorSource()
+    s.open(root)
+    assert s.is_open()
+    # The corpus under TestData/enc grows (four coarser cells arrived
+    # 2026-07-28 beside the four Charleston harbour ones), so this counts what
+    # is on disk rather than pinning a total that a data drop moves.
+    on_disk = len(glob.glob(os.path.join(root, "**", "*.000"), recursive=True))
+    assert on_disk >= 4
+    assert s.cell_count == on_disk
+    # Layers are S-57 object-class ACRONYMS, not VPF table names.
+    layers = s.layers()
+    for want in ("DEPARE", "SOUNDG", "LNDARE", "COALNE"):
+        assert want in layers
+    # Whatever else is loaded, the Charleston harbour is inside the union.
+    b = s.bounds
+    assert b.ll.lat <= 32.70 and b.ur.lat >= 32.85
+    assert b.ll.lon <= -80.025 and b.ur.lon >= -79.875
+    # These cells ship update files the reader does not apply, and saying so
+    # is a navigational duty, not a diagnostic nicety.
+    assert "BASE EDITION" in s.staleness_warning
+
+
+def test_enc_open_cells_is_one_usage_band():
+    """A series is a usage band, and only naming its cells can say which one.
+
+    TestData/enc holds bands 2-5 over the same water, so a source opened on
+    the directory serves all of them at once — which is how the app came to
+    draw a 1:1,000,000 general cell under a 1:12,000 harbour chart.
+    """
+    root = _enc()
+    if root is None:
+        pytest.skip("no ENC TestData")
+    harbour = sorted(glob.glob(os.path.join(root, "US5CHS*", "US5CHS*.000")))
+    if not harbour:
+        pytest.skip("no Charleston harbour cells")
+
+    band = pyfvw.vector.EncVectorSource()
+    band.open_cells(harbour, root)
+    assert band.cell_count == len(harbour)
+    b = band.bounds
+    assert 32.6 < b.ll.lat < b.ur.lat < 32.9
+    assert -80.1 < b.ll.lon < b.ur.lon < -79.8
+
+    whole = pyfvw.vector.EncVectorSource()
+    whole.open(root, root)
+    assert whole.cell_count >= band.cell_count
+    if whole.cell_count > band.cell_count:
+        # The coarser bands reach well past the harbour box.
+        assert whole.bounds.ur.lat > b.ur.lat
+
+    with pytest.raises(pyfvw.FvError):
+        pyfvw.vector.EncVectorSource().open_cells([], root)
+
+
+def test_enc_render_through_s52():
+    root = _enc()
+    if root is None:
+        pytest.skip("no ENC TestData")
+    if not os.path.isfile(os.path.join(root, "chartsymbols.xml")):
+        pytest.skip("no S-52 presentation library")
+
+    src = pyfvw.vector.EncVectorSource()
+    src.open(root)
+    style = pyfvw.vector.S52StyleEngine()
+    style.open(root)
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(256, 256)
+    proj.set_center(pyfvw.geo.GeoPoint(32.775, -79.95))
+    proj.set_resolution(0.0004, 0.0004)
+
+    canvas = pyfvw.canvas.CpuCanvas(256, 256)
+    canvas.clear((255, 255, 255))
+    # Same renderer class, same call, as the VPF/GeoSym test above.
+    r = pyfvw.vector.VectorRenderer(src, style)
+    r.render(proj, canvas)
+
+    assert r.features_queried > 100
+    assert r.draws_emitted > 100
+    arr = np.asarray(canvas.buffer)
+    nonwhite = int((arr[:, :, :3] != 255).any(axis=2).sum())
+    assert nonwhite > 1000, "chart came out blank"
+    # Every CS procedure the Charleston cells reach is implemented (E3b).
+    assert dict(style.unhandled_cs) == {}
+
+
+def test_enc_mariner_safety_contour_changes_the_chart():
+    """S-52's safety contour is a MARINER setting that changes what is drawn,
+    not a preference — moving it must move pixels."""
+    root = _enc()
+    if root is None:
+        pytest.skip("no ENC TestData")
+    if not os.path.isfile(os.path.join(root, "chartsymbols.xml")):
+        pytest.skip("no S-52 presentation library")
+
+    src = pyfvw.vector.EncVectorSource()
+    src.open(root)
+    style = pyfvw.vector.S52StyleEngine()
+    style.open(root)
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(200, 200)
+    proj.set_center(pyfvw.geo.GeoPoint(32.775, -79.95))
+    proj.set_resolution(0.0004, 0.0004)
+    r = pyfvw.vector.VectorRenderer(src, style)
+
+    def shot(contour):
+        style.mariner().safety_contour = contour
+        cv = pyfvw.canvas.CpuCanvas(200, 200)
+        cv.clear((255, 255, 255))
+        r.render(proj, cv)
+        return np.asarray(cv.buffer).copy()
+
+    shallow = shot(2.0)
+    deep = shot(30.0)
+    assert not np.array_equal(shallow, deep), \
+        "the safety contour did not move the depth ramp"
+
+
+def test_enc_color_scheme_round_trips():
+    root = _enc()
+    if root is None:
+        pytest.skip("no ENC TestData")
+    if not os.path.isfile(os.path.join(root, "chartsymbols.xml")):
+        pytest.skip("no S-52 presentation library")
+    style = pyfvw.vector.S52StyleEngine()
+    style.open(root)
+    assert style.color_scheme == pyfvw.vector.S52_DAY
+    style.set_color_scheme(pyfvw.vector.S52_NIGHT)
+    assert style.color_scheme == pyfvw.vector.S52_NIGHT

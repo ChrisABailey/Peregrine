@@ -195,6 +195,8 @@ Status CgmSymbol::LoadBuffer(const void* data, size_t size) {
   line_style_ = CgmLineStyle();
   area_style_ = CgmAreaStyle();
   vdc_width_ = vdc_height_ = 0;
+  dir_x_ = 1;
+  dir_y_ = -1;
   name_.clear();
 
   if (data == nullptr || size == 0)
@@ -231,6 +233,8 @@ Status CgmSymbol::LoadBuffer(const void* data, size_t size) {
     if (p == 0) {
       CopyLineStyle(pic, &line_style_);
       CopyAreaStyle(pic, &area_style_);
+      dir_x_ = static_cast<int>(pic->m_iDirX);
+      dir_y_ = static_cast<int>(pic->m_iDirY);
       // Symbol sizing uses the VDC EXTENT, not the drawn extent — see
       // CCGMSymbol::DrawSymbol, which maps a nMaxDim-square window onto the
       // device box.
@@ -265,6 +269,8 @@ Status CgmSymbol::LoadFile(const std::string& path) {
   line_style_ = CgmLineStyle();
   area_style_ = CgmAreaStyle();
   vdc_width_ = vdc_height_ = 0;
+  dir_x_ = 1;
+  dir_y_ = -1;
   name_.clear();
 
   std::string resolved = FvResolveWin32Path(path.c_str());

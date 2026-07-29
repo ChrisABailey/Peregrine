@@ -110,6 +110,23 @@ Status CpuCanvas::DrawLines(const std::vector<PixelPoint>& pts, const Pen& pen) 
   return Status::Ok();
 }
 
+// Even-odd scanline fill = GDI's ALTERNATE mode.
+//
+// PERFORMANCE (R3b). The straightforward version walked EVERY edge of every
+// ring for EVERY scanline in the bounding box — O(scanlines * edges), which on
+// a DNC depth area (thousands of vertices over hundreds of scanlines) is
+// millions of crossing tests to produce a few thousand spans, and measured as
+// the single largest cost in a vector frame. This is the classic edge table:
+// each edge is bucketed by the first scanline it can cross and retired after
+// its last, so a scanline only visits the edges that actually span it.
+//
+// BIT-FAITHFUL. The crossing test and the x it produces are unchanged, down to
+// the order of the arithmetic: `x` is recomputed from the edge's own endpoints
+// on every scanline rather than stepped by a dx/dy increment, because an
+// incremental x accumulates floating-point error and would move pixels. The
+// scanline's active set is a different ORDER than the old ring-by-ring walk,
+// but the crossings are then sorted, and a sorted sequence of doubles does not
+// depend on the order they arrived in. Output is byte-identical.
 void CpuCanvas::FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
                               const FvColor& c) {
   int y_min = buf_.Height(), y_max = -1;
@@ -120,29 +137,107 @@ void CpuCanvas::FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
     }
   y_min = std::max(y_min, 0);
   y_max = std::min(y_max, buf_.Height() - 1);
+  // Nothing to draw into. Checked up front because the span loop below
+  // resolves a row pointer per scanline, where the old per-pixel BlendPixel
+  // would have bounds-checked its way out of a zero-width buffer.
+  if (y_max < y_min || buf_.Width() <= 0) return;
 
+  // An edge crosses scanline y exactly when (a.y <= y+0.5) != (b.y <= y+0.5);
+  // both endpoints are integers, so that is min(a.y,b.y) <= y < max(a.y,b.y) —
+  // a half-open span of scanlines, which is what makes bucketing exact.
+  struct Edge {
+    int ax, ay, bx, by;
+    int y_last;  // inclusive
+  };
+  std::vector<Edge> edges;
+  for (const auto& ring : rings) {
+    const size_t n = ring.size();
+    if (n < 3) continue;
+    edges.reserve(edges.size() + n);
+    for (size_t i = 0; i < n; ++i) {
+      const PixelPoint& a = ring[i];
+      const PixelPoint& b = ring[(i + 1) % n];  // implicit closure
+      if (a.y == b.y) continue;                 // never crosses
+      Edge e;
+      e.ax = a.x;
+      e.ay = a.y;
+      e.bx = b.x;
+      e.by = b.y;
+      e.y_last = std::max(a.y, b.y) - 1;
+      if (e.y_last < y_min) continue;
+      const int y_first = std::min(a.y, b.y);
+      if (y_first > y_max) continue;
+      edges.push_back(e);
+    }
+  }
+  if (edges.empty()) return;
+
+  // Bucket by first crossed scanline (clamped into the drawn range, so an edge
+  // that starts above the canvas becomes active on the first row).
+  const size_t rows = static_cast<size_t>(y_max - y_min) + 1;
+  std::vector<uint32_t> bucket_head(rows, UINT32_MAX);
+  std::vector<uint32_t> bucket_next(edges.size(), UINT32_MAX);
+  for (size_t i = 0; i < edges.size(); ++i) {
+    const int y_first =
+        std::max(std::min(edges[i].ay, edges[i].by), y_min) - y_min;
+    bucket_next[i] = bucket_head[static_cast<size_t>(y_first)];
+    bucket_head[static_cast<size_t>(y_first)] = static_cast<uint32_t>(i);
+  }
+
+  std::vector<uint32_t> active;
   std::vector<double> xs;
   for (int y = y_min; y <= y_max; ++y) {
+    for (uint32_t i = bucket_head[static_cast<size_t>(y - y_min)];
+         i != UINT32_MAX; i = bucket_next[i])
+      active.push_back(i);
+    active.erase(std::remove_if(active.begin(), active.end(),
+                                [&](uint32_t i) {
+                                  return edges[i].y_last < y;
+                                }),
+                 active.end());
+    if (active.empty()) continue;
+
+    const double yc = y + 0.5;  // sample scanline at pixel centers
     xs.clear();
-    double yc = y + 0.5;  // sample scanline at pixel centers
-    for (const auto& ring : rings) {
-      size_t n = ring.size();
-      if (n < 3) continue;
-      for (size_t i = 0; i < n; ++i) {
-        const PixelPoint& a = ring[i];
-        const PixelPoint& b = ring[(i + 1) % n];  // implicit closure
-        if ((a.y <= yc) == (b.y <= yc)) continue;  // no crossing
-        double t = (yc - a.y) / (double)(b.y - a.y);
-        xs.push_back(a.x + t * (b.x - a.x));
-      }
+    for (uint32_t i : active) {
+      const Edge& e = edges[i];
+      const double t = (yc - e.ay) / (double)(e.by - e.ay);
+      xs.push_back(e.ax + t * (e.bx - e.ax));
     }
     std::sort(xs.begin(), xs.end());
+
+    unsigned char* row = buf_.Row(y);
     for (size_t i = 0; i + 1 < xs.size(); i += 2) {  // even-odd pairs
-      int x0 = (int)std::ceil(xs[i] - 0.5);
-      int x1 = (int)std::floor(xs[i + 1] - 0.5);
-      for (int x = std::max(x0, 0); x <= std::min(x1, buf_.Width() - 1); ++x)
-        BlendPixel(x, y, c);
+      const int x0 = std::max((int)std::ceil(xs[i] - 0.5), 0);
+      const int x1 = std::min((int)std::floor(xs[i + 1] - 0.5),
+                              buf_.Width() - 1);
+      if (x1 < x0) continue;
+      BlendSpan(row, x0, x1, c);
     }
+  }
+}
+
+// One horizontal run of BlendPixel, hoisting the per-pixel bounds check and
+// Row() lookup out of the loop. x0/x1 are already clamped and y is inside the
+// canvas, which is exactly what BlendPixel's guard would have tested.
+void CpuCanvas::BlendSpan(unsigned char* row, int x0, int x1, const FvColor& c) {
+  if (c.a == 0) return;
+  unsigned char* p = row + 4 * x0;
+  if (c.a == 255) {
+    for (int x = x0; x <= x1; ++x, p += 4) {
+      p[0] = c.r;
+      p[1] = c.g;
+      p[2] = c.b;
+      p[3] = 255;
+    }
+    return;
+  }
+  const int a = c.a;  // src-over, non-premultiplied — same as BlendPixel
+  for (int x = x0; x <= x1; ++x, p += 4) {
+    p[0] = (unsigned char)((c.r * a + p[0] * (255 - a)) / 255);
+    p[1] = (unsigned char)((c.g * a + p[1] * (255 - a)) / 255);
+    p[2] = (unsigned char)((c.b * a + p[2] * (255 - a)) / 255);
+    p[3] = (unsigned char)(a + p[3] * (255 - a) / 255);
   }
 }
 

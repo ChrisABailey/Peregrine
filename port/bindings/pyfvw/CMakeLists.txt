@@ -16,7 +16,7 @@ FetchContent_MakeAvailable(pybind11)
 pybind11_add_module(pyfvw pyfvw_module.cpp)
 # fv_vpf = VpfVectorSource, fv_geosym = GeoSymStyleEngine; both link fv_fvkit
 # (the shared VectorRenderer + canvas + projection).
-target_link_libraries(pyfvw PRIVATE fv_fvkit fv_geo_tool fv_vpf fv_geosym)
+target_link_libraries(pyfvw PRIVATE fv_fvkit fv_geo_tool fv_vpf fv_geosym fv_enc)
 
 if(FVW_BUILD_TESTS)
   # pytest suite (skips itself when numpy/TestData are absent)

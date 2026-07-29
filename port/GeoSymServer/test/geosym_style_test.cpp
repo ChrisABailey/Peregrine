@@ -112,6 +112,26 @@ const fv::FillStyle* FirstFill(const std::vector<fv::StyleResult>& rs) {
   return nullptr;
 }
 
+// Two REAL DNC features whose fullsym.txt rows actually fire, so these tests
+// exercise product rows rather than the "no condition matched" fallback:
+//   acc=1  -> row 2249 "depth curve - accurate" (vgroup 33020, dispcat 3)
+//   cvl=9.1 -> row 2257 "depth area (medium shallow)" (vgroup 13030, dispcat 1)
+fv::VectorFeature DepthCurve() { return LineFeature("BE010", {{"acc", "1"}}); }
+fv::VectorFeature DepthArea() {
+  return AreaFeature("BE010", {{"cvl", "9.1"}});
+}
+
+// A DNC bridge, which is the tree's cleanest LABELLED row: fullsym.txt 1110
+// carries labatt=nam with txrowid 1 (a TEXT.TXT row that exists) and IHO text
+// group 21, while 1108/1109 put two strokes under it. NOTE the depth-curve
+// label row 2251 cannot be used for this — its txrowid is 34 and TEXT.TXT
+// stops at 33, so GetTextByID misses and no label is ever drawn. That is the
+// shipped data, not a port bug; see the "no default styling to fall back on"
+// comment in fv_geosym_style.cpp.
+fv::VectorFeature LabelledBridge() {
+  return LineFeature("AQ040", {{"nam", "Bourne"}, {"bsc", "12"}});
+}
+
 fv::StyleContext Ctx() {
   fv::StyleContext c;
   c.scale_denominator = 50000.0;
@@ -410,7 +430,10 @@ TEST(GeoSymStyle, UnknownFaccFallsBackToIconAndLine) {
   std::vector<fv::StyleResult> ln;
   ASSERT_TRUE(e->Style(LineFeature("ZZ999"), Ctx(), &ln).ok());
   ASSERT_FALSE(ln.empty());
-  EXPECT_TRUE(ln[0].stroke.valid);
+  // Symbol 5001 is a SAMI line whose cycle stamps a point symbol, so since
+  // E3b it comes back as a line PATTERN for the shared placer rather than as
+  // a plain pen. Either way it must put linework down.
+  EXPECT_TRUE(ln[0].stroke.valid || ln[0].line_pattern.valid);
   EXPECT_EQ(ln[0].priority, 9);
 }
 
@@ -540,6 +563,44 @@ TEST(GeoSymStyle, SymbolLoadsACgmDisplayListAndCachesIt) {
     EXPECT_TRUE(p.has_fill || p.has_stroke || !p.text.empty());
 }
 
+// Orientation, pinned independently of the golden hash: a golden can be
+// re-pinned by hand, a mirrored symbol cannot sneak past this.
+//
+// 0003.cgm is authored (CGM VDC, y up) with extent ll=(-175,-58),
+// ur=(304,628) — nearly all of its ink is ABOVE the anchor. The parser
+// applies the picture's y multiplier (-1) as it reads, and ToVectorSymbol
+// applies it a second time exactly as CCGMDrawingObject::RotateVDC does on
+// Windows, so a VectorSymbol must come back out in the authored y-up frame.
+// Without that second application (the state this shipped in until
+// 2026-07-27) max_y and min_y swap sign and every DNC symbol renders upside
+// down.
+TEST(GeoSymStyle, SymbolComesBackInTheAuthoredYUpFrame) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_NE(e, nullptr);
+
+  const fv::VectorSymbol* s = e->Symbol("0003");
+  ASSERT_NE(s, nullptr);
+  EXPECT_DOUBLE_EQ(s->min_x, -175.0);
+  EXPECT_DOUBLE_EQ(s->max_x, 304.0);
+  EXPECT_DOUBLE_EQ(s->min_y, -58.0);
+  EXPECT_DOUBLE_EQ(s->max_y, 628.0);
+  // The point of the four above, stated once more as intent: the body of this
+  // symbol sits above its anchor, not below it.
+  EXPECT_GT(s->max_y, -s->min_y);
+
+  // And the vertex the V4 parser test pins (m_vertices y = -415, i.e. the
+  // once-applied frame) must arrive negated.
+  bool saw = false;
+  for (const auto& p : s->primitives) {
+    for (const auto& pt : p.points) {
+      if (pt.y == 415.0) saw = true;
+      EXPECT_NE(pt.y, -415.0) << "vertex arrived in the parser's y-down frame";
+    }
+  }
+  EXPECT_TRUE(saw) << "0003.cgm's pinned polyline vertex went missing";
+}
+
 TEST(GeoSymStyle, UnknownSymbolIdIsNullAndIsNotRetried) {
   SKIP_WITHOUT_ASSETS();
   auto e = OpenDnc();
@@ -548,6 +609,16 @@ TEST(GeoSymStyle, UnknownSymbolIdIsNullAndIsNotRetried) {
   EXPECT_EQ(e->Symbol("9999"), nullptr);
   EXPECT_EQ(e->Symbol(""), nullptr);
   EXPECT_EQ(e->symbols_loaded(), 0u);
+
+  // E3c: the shared core COUNTS the miss, which GeoSym previously only
+  // remembered. A product naming a .cgm the delivered Graphics dir does not
+  // have is a data fact, and it is now reportable — the same accounting S-52's
+  // raster-only symbol names already had.
+  ASSERT_EQ(e->unresolved_symbols().count("9999"), 1u);
+  EXPECT_EQ(e->unresolved_symbols().at("9999"), 1u)
+      << "two requests, one load attempt";
+  EXPECT_EQ(e->unresolved_symbols().count(""), 0u)
+      << "an empty id is not a missing symbol";
 }
 
 // The whole shipped symbol set must convert without a crash or an empty
@@ -585,8 +656,56 @@ TEST(GeoSymStyle, EveryShippedSymbolConverts) {
 // Re-pinned 2026-07-25 when Style() started reading the `areasym` column (the
 // fills and the depth ramp are new; before that areas were outline-only).
 // Visually re-checked geosym_harbor.png before updating.
+// Re-pinned 2026-07-27: point symbols were being drawn UPSIDE DOWN (the VDC
+// direction multipliers were applied once by the parser instead of twice —
+// see ApplyVdcDir in fv_geosym_style.cpp). Everything else is unchanged;
+// SymbolComesBackInTheAuthoredYUpFrame guards the orientation directly.
+// Re-pinned 2026-07-27 (E3b): SAMI line symbols are placed along the path for
+// the first time. Where a cable/limit line used to come out as a black dashed
+// run — the old code pushed a point-symbol element's LENGTH into the pen's
+// dash array, so the symbol became a dash — it is now the magenta chain the
+// CGM actually authors. 972 pixels moved; nothing else in the scene did.
+// Visually re-checked geosym_harbor.png before updating.
 // 0 = probe mode (prints hash, no assert).
-constexpr uint64_t kHashHarbor = 0x71724acb5cb517aull;
+constexpr uint64_t kHashHarbor = 0x33b43456964b19daull;
+
+// E3b: a SAMI line component whose cycle stamps a point symbol becomes a
+// LINE PATTERN for the shared placer, not a pen. Before E3b the symbol run's
+// LENGTH was pushed into the pen's dash array, so the symbol silently became
+// a dash — 89 of the 757 delivered CGM line symbols carry such a run.
+TEST(GeoSymStyle, SamiLineWithPointSymbolsBecomesALinePattern) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_NE(e, nullptr);
+
+  // Symbol 5001 is the "unknown FACC" line fallback and is one of them.
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(LineFeature("ZZ999"), Ctx(), &out).ok());
+  ASSERT_FALSE(out.empty());
+
+  const fv::LinePatternStyle* lp = nullptr;
+  for (const fv::StyleResult& r : out)
+    if (r.line_pattern.valid) lp = &r.line_pattern;
+  ASSERT_NE(lp, nullptr) << "the SAMI cycle came back as a plain pen";
+
+  size_t stamps = 0;
+  for (const fv::PathRun& run : lp->runs) {
+    if (run.type != fv::PathRunType::kSymbol) continue;
+    ++stamps;
+    EXPECT_FALSE(run.symbol_id.empty());
+    // The CGM names the symbol as a FILE; the id handed to the renderer must
+    // be the bare number Symbol() resolves.
+    EXPECT_EQ(run.symbol_id.find(".cgm"), std::string::npos);
+    EXPECT_NE(e->Symbol(run.symbol_id), nullptr)
+        << run.symbol_id << " does not resolve";
+  }
+  EXPECT_GT(stamps, 0u);
+
+  // A pattern that stamps must not ALSO be drawn as a stroke, or the dashes
+  // would be painted twice — once by the pen and once by the placer.
+  for (const fv::StyleResult& r : out)
+    if (r.line_pattern.valid) EXPECT_FALSE(r.stroke.valid);
+}
 
 TEST(GeoSymRender, NantucketSoundHarborViewport) {
   SKIP_WITHOUT_ASSETS();
@@ -649,6 +768,98 @@ TEST(GeoSymRender, RenderIsDeterministic) {
     hashes[i] = Fnv1a(canvas.Buffer());
   }
   EXPECT_EQ(hashes[0], hashes[1]);
+}
+
+// --- the retained scene (R3a) ----------------------------------------------
+//
+// The hermetic scene tests live in port/fvkit/test/vector_scene_test.cpp. What
+// can only be checked here, over real data and a real style engine, is the one
+// claim that matters: retaining must not change the picture.
+
+TEST(GeoSymRender, AReusedSceneRendersTheHarborIdentically) {
+  SKIP_WITHOUT_ASSETS();
+  const std::string lib = HarborLibrary();
+  if (lib.empty()) GTEST_SKIP() << "no dnc17 test data";
+
+  auto MakeSource = [&] {
+    auto s = std::make_shared<fv::VpfVectorSource>();
+    EXPECT_TRUE(s->Open(lib).ok());
+    return s;
+  };
+  auto MakeStyle = [&] {
+    auto s = std::make_shared<fv::GeoSymStyleEngine>();
+    EXPECT_TRUE(s->Open(TestDataDir(), fv::kGeoSymDnc).ok());
+    return s;
+  };
+  auto Viewport = [](double lat, double lon) {
+    fv::MapProjection p;
+    p.SetSurfaceSize(384, 384);
+    p.SetCenter(fv::GeoPoint{lat, lon});
+    p.SetResolution(0.0006, 0.0006);
+    return p;
+  };
+
+  // A: no margin, so the target viewport is queried and styled from scratch.
+  fv::CpuCanvas fresh(384, 384);
+  fresh.Clear(fv::FvColor{255, 255, 255, 255});
+  fv::VectorRenderer a(MakeSource(), MakeStyle());
+  ASSERT_TRUE(a.Render(Viewport(41.7020, -69.9020), &fresh).ok());
+  ASSERT_FALSE(a.scene_reused());
+
+  // B: a margin, warmed at a different centre, then panned onto the same
+  // viewport — which must now be a scene HIT and the same pixels.
+  fv::CpuCanvas warm(384, 384), reused(384, 384);
+  reused.Clear(fv::FvColor{255, 255, 255, 255});
+  fv::VectorRenderer b(MakeSource(), MakeStyle());
+  b.SetSceneMargin(0.5);
+  ASSERT_TRUE(b.Render(Viewport(41.70, -69.90), &warm).ok());
+  ASSERT_TRUE(b.Render(Viewport(41.7020, -69.9020), &reused).ok());
+  ASSERT_TRUE(b.scene_reused()) << "the pan should have stayed inside the margin";
+
+  EXPECT_EQ(Fnv1a(fresh.Buffer()), Fnv1a(reused.Buffer()));
+  EXPECT_GT(NonBackgroundPixels(reused.Buffer(), 255), 1000u);
+}
+
+// Simplification is opt-in and render-only. Over the real harbour it should
+// drop most vertices (DNC coastlines are far denser than a 900 px viewport can
+// show) while leaving the chart recognisably the same amount of ink.
+TEST(GeoSymRender, SimplifyingTheSceneKeepsTheChart) {
+  SKIP_WITHOUT_ASSETS();
+  const std::string lib = HarborLibrary();
+  if (lib.empty()) GTEST_SKIP() << "no dnc17 test data";
+
+  size_t ink[2] = {0, 0};
+  size_t verts[2] = {0, 0};
+  for (int simplify = 0; simplify < 2; ++simplify) {
+    auto source = std::make_shared<fv::VpfVectorSource>();
+    ASSERT_TRUE(source->Open(lib).ok());
+    auto style = std::make_shared<fv::GeoSymStyleEngine>();
+    ASSERT_TRUE(style->Open(TestDataDir(), fv::kGeoSymDnc).ok());
+
+    fv::MapProjection proj;
+    proj.SetSurfaceSize(512, 512);
+    proj.SetCenter(fv::GeoPoint{41.70, -69.90});
+    proj.SetResolution(0.0004, 0.0004);
+
+    fv::CpuCanvas canvas(512, 512);
+    canvas.Clear(fv::FvColor{255, 255, 255, 255});
+    fv::VectorRenderer r(source, style);
+    if (simplify) r.SetSimplifyPixels(0.5);
+    ASSERT_TRUE(r.Render(proj, &canvas).ok());
+    ink[simplify] = NonBackgroundPixels(canvas.Buffer(), 255);
+    verts[simplify] = r.scene().vertices_kept();
+    EXPECT_EQ(r.scene().vertices_in(), 112330u)
+        << "the source's own vertex count moved; re-check the tolerance below";
+  }
+
+  EXPECT_EQ(verts[0], 112330u) << "exact must keep every vertex";
+  EXPECT_LT(verts[1], verts[0] / 2) << "half a pixel should thin DNC a lot";
+
+  // Same chart: the inked area moves by a sub-pixel jitter on dense linework,
+  // not by features appearing or disappearing.
+  const double ratio = static_cast<double>(ink[1]) / static_cast<double>(ink[0]);
+  EXPECT_GT(ratio, 0.97);
+  EXPECT_LT(ratio, 1.03);
 }
 
 // Labels are off by default precisely so the golden above stays
@@ -714,4 +925,276 @@ TEST(GeoSymRender, ColorAdjustChangesTheOutput) {
   EXPECT_NE(hashes[0], hashes[1]);
 }
 
+// ---------------------------------------------------------------------------
+// R2: the cross-product rule layer, retrofitted (plan §5.2)
+//
+// The values pinned below are REAL fullsym.txt rows for DNC (pid 5):
+//   BE010 delin 2 (depth curve, line)  vgroup 33020, dispcat 3 (Other)
+//   BE010 delin 2 label row            vgroup 33022, txtgroup 20
+//   BE010 delin 3 (depth area)         vgroup 13030, dispcat 1 (Base)
+//   BH140 delin 2 (river/stream)       vgroup 22010, dispcat 2 (Standard)
+// ---------------------------------------------------------------------------
+
+TEST(GeoSymRules, DefaultsChangeNothing) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_TRUE(e);
+  EXPECT_EQ(0u, e->rules().size());
+  EXPECT_TRUE(e->viewing_groups().default_on());
+  EXPECT_EQ(fv::kDisplayOther, e->viewing_groups().max_category());
+
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(DepthCurve(), Ctx(), &out).ok());
+  EXPECT_FALSE(out.empty()) << "an unconfigured engine must symbolize as before";
+  EXPECT_EQ(0u, e->rule_predicate_evaluations());
+}
+
+// ViewingGroupSet is ONE number space, so GeoSym's two kinds of group must
+// not collide in it. That is a property of the shipped table, so pin it here
+// rather than assuming it: viewing groups are 5-digit, text groups are 1..29.
+TEST(GeoSymRules, ViewingAndTextGroupNumberingDoNotOverlap) {
+  SKIP_WITHOUT_ASSETS();
+  const std::string path = TestDataDir() + "/GeoSymbol/SymAssign/fullsym.txt";
+  FILE* f = fopen(path.c_str(), "r");
+  ASSERT_NE(f, nullptr) << path;
+  char line[1024];
+  long min_vgroup = 0, max_txtgroup = 0;
+  bool past_header = false;
+  while (fgets(line, sizeof(line), f) != nullptr) {
+    if (!past_header) {
+      if (line[0] == ';') past_header = true;
+      continue;
+    }
+    // Fields 13 (vgroup) and 14 (txtgroup), 1-based, '|' delimited.
+    int field = 1;
+    const char* p = line;
+    const char* f13 = nullptr;
+    const char* f14 = nullptr;
+    for (const char* c = line; *c != '\0'; ++c) {
+      if (*c != '|') continue;
+      if (field == 13) f13 = p;
+      if (field == 14) f14 = p;
+      ++field;
+      p = c + 1;
+    }
+    if (f13 != nullptr && *f13 != '|') {
+      const long v = strtol(f13, nullptr, 10);
+      if (v > 0 && (min_vgroup == 0 || v < min_vgroup)) min_vgroup = v;
+    }
+    if (f14 != nullptr && *f14 != '|') {
+      const long v = strtol(f14, nullptr, 10);
+      if (v > max_txtgroup) max_txtgroup = v;
+    }
+  }
+  fclose(f);
+  ASSERT_GT(min_vgroup, 0);
+  ASSERT_GT(max_txtgroup, 0);
+  EXPECT_GT(min_vgroup, max_txtgroup)
+      << "vgroup " << min_vgroup << " collides with txtgroup " << max_txtgroup
+      << " — the two would need separate ViewingGroupSets";
+}
+
+TEST(GeoSymRules, ViewingGroupTogglesTheRowsThatBelongToIt) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_TRUE(e);
+
+  std::vector<fv::StyleResult> before;
+  ASSERT_TRUE(e->Style(DepthCurve(), Ctx(), &before).ok());
+  ASSERT_FALSE(before.empty());
+  ASSERT_EQ(5, before[0].priority) << "row 2249 (dispri 5), not the fallback";
+
+  e->viewing_groups().Set(33020, false);  // depth curves off
+  std::vector<fv::StyleResult> after;
+  ASSERT_TRUE(e->Style(DepthCurve(), Ctx(), &after).ok());
+  EXPECT_TRUE(after.empty()) << "the depth-curve rows should have dropped out";
+
+  // …and it must NOT resurrect the 2nd-chance fallback. That is the failure
+  // mode the label fix of V5b already found once: a hidden feature must draw
+  // nothing, not a default black line at dispri 9.
+  for (const fv::StyleResult& r : after)
+    EXPECT_NE(9, r.priority) << "the defln fallback came back";
+
+  // Another FACC's rows are untouched.
+  std::vector<fv::StyleResult> other;
+  ASSERT_TRUE(e->Style(LineFeature("BH140"), Ctx(), &other).ok());
+  EXPECT_FALSE(other.empty());
+}
+
+TEST(GeoSymRules, DisplayCategoryIsAThresholdOverTheRealTable) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_TRUE(e);
+
+  // Base only: BE010's depth AREAS are dispcat 1 and survive; BH140 (2) and
+  // BE010's depth CURVES (3) do not.
+  e->viewing_groups().SetMaxCategory(fv::kDisplayBase);
+
+  std::vector<fv::StyleResult> areas;
+  ASSERT_TRUE(e->Style(DepthArea(), Ctx(), &areas).ok());
+  EXPECT_FALSE(areas.empty()) << "a Display Base row must survive";
+
+  std::vector<fv::StyleResult> standard;
+  ASSERT_TRUE(e->Style(LineFeature("BH140"), Ctx(), &standard).ok());
+  EXPECT_TRUE(standard.empty());
+
+  std::vector<fv::StyleResult> other;
+  ASSERT_TRUE(e->Style(DepthCurve(), Ctx(), &other).ok());
+  EXPECT_TRUE(other.empty());
+
+  e->viewing_groups().SetMaxCategory(fv::kDisplayStandard);
+  standard.clear();
+  ASSERT_TRUE(e->Style(LineFeature("BH140"), Ctx(), &standard).ok());
+  EXPECT_FALSE(standard.empty());
+}
+
+// The dense-label problem (Q6c item 3): GeoSym's txtgroup drops the LABEL
+// without touching the symbology the row also carries.
+TEST(GeoSymRules, TextGroupDropsLabelsOnly) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_TRUE(e);
+  e->SetDrawLabels(true);
+
+  const fv::VectorFeature f = LabelledBridge();
+  std::vector<fv::StyleResult> with;
+  ASSERT_TRUE(e->Style(f, Ctx(), &with).ok());
+  size_t labels = 0, strokes = 0;
+  for (const fv::StyleResult& r : with) {
+    if (r.label.valid) ++labels;
+    if (r.stroke.valid) ++strokes;
+  }
+  ASSERT_GT(labels, 0u) << "the nam label row should have fired";
+  ASSERT_GT(strokes, 0u);
+
+  e->viewing_groups().Set(21, false);  // IHO text group 21
+  std::vector<fv::StyleResult> without;
+  ASSERT_TRUE(e->Style(f, Ctx(), &without).ok());
+  size_t labels2 = 0, strokes2 = 0;
+  for (const fv::StyleResult& r : without) {
+    if (r.label.valid) ++labels2;
+    if (r.stroke.valid) ++strokes2;
+  }
+  EXPECT_EQ(0u, labels2);
+  EXPECT_EQ(strokes, strokes2) << "symbology must be untouched";
+}
+
+TEST(GeoSymRules, UserRuleFileHidesAndReprioritizes) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_TRUE(e);
+
+  std::string err;
+  ASSERT_TRUE(e->rules()
+                  .LoadText(
+                      "hide key=BE010 geom=line\n"
+                      "set  key=BH140 priority=42\n",
+                      &err)
+                  .ok())
+      << err;
+
+  std::vector<fv::StyleResult> hidden;
+  ASSERT_TRUE(e->Style(DepthCurve(), Ctx(), &hidden).ok());
+  EXPECT_TRUE(hidden.empty());
+
+  // The geometry selector means the AREA rows of the same FACC still draw.
+  std::vector<fv::StyleResult> areas;
+  ASSERT_TRUE(e->Style(DepthArea(), Ctx(), &areas).ok());
+  EXPECT_FALSE(areas.empty());
+
+  std::vector<fv::StyleResult> bumped;
+  ASSERT_TRUE(e->Style(LineFeature("BH140"), Ctx(), &bumped).ok());
+  ASSERT_FALSE(bumped.empty());
+  for (const fv::StyleResult& r : bumped) EXPECT_EQ(42, r.priority);
+}
+
+// Scale-banded thinning: the same rule set behaves differently at two
+// viewport scales, and the switch costs one recompile, not a per-feature test.
+TEST(GeoSymRules, ScaleBandedRuleThinsWhenZoomedOut) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_TRUE(e);
+  e->SetDrawLabels(true);
+  std::string err;
+  ASSERT_TRUE(e->rules().LoadText("set labels=off scale=250000..\n", &err).ok())
+      << err;
+
+  const fv::VectorFeature f = LabelledBridge();
+  auto label_count = [&](double denom) {
+    fv::StyleContext c = Ctx();
+    c.scale_denominator = denom;
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, c, &out).ok());
+    size_t n = 0;
+    for (const fv::StyleResult& r : out)
+      if (r.label.valid) ++n;
+    return n;
+  };
+  EXPECT_GT(label_count(50000.0), 0u);
+  EXPECT_EQ(0u, label_count(1000000.0));
+  EXPECT_GT(label_count(50000.0), 0u) << "and back again";
+}
+
+// The plan's headline claim, measured on the real harbor render: a key-only
+// rule set costs ZERO predicate evaluations across thousands of features.
+TEST(GeoSymRules, KeyOnlyRulesCostNoPredicatesOverRealDnc) {
+  SKIP_WITHOUT_ASSETS();
+  const std::string lib = HarborLibrary();
+  if (lib.empty()) GTEST_SKIP() << "no dnc17 test data";
+
+  auto source = std::make_shared<fv::VpfVectorSource>();
+  ASSERT_TRUE(source->Open(lib).ok());
+  auto style = std::make_shared<fv::GeoSymStyleEngine>();
+  ASSERT_TRUE(style->Open(TestDataDir(), fv::kGeoSymDnc).ok());
+  std::string err;
+  ASSERT_TRUE(style->rules()
+                  .LoadText("hide key=BE010\nshow key=BH140\n", &err)
+                  .ok())
+      << err;
+
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(256, 256);
+  proj.SetCenter(fv::GeoPoint{41.70, -69.90});
+  proj.SetResolution(0.0008, 0.0008);
+  fv::CpuCanvas canvas(256, 256);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  fv::VectorRenderer r(source, style);
+  ASSERT_TRUE(r.Render(proj, &canvas).ok());
+
+  EXPECT_GT(r.features_queried(), 100u);
+  EXPECT_EQ(0u, style->rule_predicate_evaluations());
+}
+
+// The same render with an ATTRIBUTE rule: predicates are evaluated, but only
+// for the keys the rule actually names.
+TEST(GeoSymRules, AttributeRulesEvaluateOnlyForTheirOwnKeys) {
+  SKIP_WITHOUT_ASSETS();
+  const std::string lib = HarborLibrary();
+  if (lib.empty()) GTEST_SKIP() << "no dnc17 test data";
+
+  auto source = std::make_shared<fv::VpfVectorSource>();
+  ASSERT_TRUE(source->Open(lib).ok());
+  auto style = std::make_shared<fv::GeoSymStyleEngine>();
+  ASSERT_TRUE(style->Open(TestDataDir(), fv::kGeoSymDnc).ok());
+  std::string err;
+  ASSERT_TRUE(
+      style->rules().LoadText("hide key=BE010 where cvl > 100\n", &err).ok())
+      << err;
+
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(256, 256);
+  proj.SetCenter(fv::GeoPoint{41.70, -69.90});
+  proj.SetResolution(0.0008, 0.0008);
+  fv::CpuCanvas canvas(256, 256);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  fv::VectorRenderer r(source, style);
+  ASSERT_TRUE(r.Render(proj, &canvas).ok());
+
+  const size_t evals = style->rule_predicate_evaluations();
+  EXPECT_GT(evals, 0u);
+  EXPECT_LT(evals, r.features_queried())
+      << "only BE010 features should have been tested, not every feature";
+}
+
 }  // namespace
+

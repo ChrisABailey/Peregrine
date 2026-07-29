@@ -52,6 +52,19 @@ Full strategy: `/Users/chrisbailey/.claude/plans/this-project-is-extreamly-enume
 | R1 | Identify: `FeatureRef` + `Describe()` + VPF VDT decoding + pick index + click→info panel | 4 | P | First session of the ACTIVE TRACK (plan §5.3), 2026-07-25. **The seam**: `fvkit/vector/vector.h` gains `FeatureRef{source,layer,tile,feature}` (4×int32 — replaces `VectorFeature`'s loose `tile_id`/`feature_id`; `layer` indexes `Layers()`), `FeatureAttribute{code,name,raw,display}`, `FeatureDescription{ref,title,class_name,layer_name,attributes,source_note}`, and a **virtual `IVectorSource::Describe()` defaulting to kUnsupported** — so ENC/OSM/test sources need not implement it and a caller can tell "no such feature" from "this product cannot describe". **VPF**: new `port/VpfMapServer/fv_vpf_vdt.{h,cpp}` (`fv::VpfValueDescriptions`) reads a coverage's `INT.VDT`/`CHAR.VDT` through the V1 recordset layer — only the unported VPFDataLib fork read these — and `VpfVectorSource::Describe` joins them with the column's own header description (`VPFFieldInfo::m_desc`) and the FCA class description: `BE010` → "Depth Curve", `acc` 1 → "Accurate", `dat` → "Information as of ____". Dictionaries load lazily per coverage; the render path never touches them. **The pick index** (`port/include/fvkit/vector/pick.h` + `fvkit/vector/pick.cpp`, `fv::PickIndex`) is filled by `VectorRenderer` from the primitives it EMITS — strokes at their pen half-width, clipped fill rings, symbol ink boxes, label boxes — so a tap agrees with what is on screen (a hairline styled 5 px wide is 5 px wide to the cursor; a clipped-away feature is not there to hit). `HitTest` returns the whole stack topmost-first, one entry per feature. On by default; `SetPickEnabled(false)` for bulk/offline. **pyfvw**: `FeatureRef`/`FeatureAttribute`/`FeatureDescription`/`PickHit`/`PickIndex`, `IVectorSource.describe()`, `VectorRenderer.pick_index`. **pan_viewer `--vpf`**: click identifies (info panel lists the stack, decoded); shift+click re-centers. 9 PickIndex + 6 renderer-pick + 9 VPF identify gtests + 3 pytests. ASan-clean; UBSan reports only the pre-existing VPF unaligned loads. **291 total.** New helper `fv_vpf_detail.h` (ToStd/Trim/Upper/Lower/VariantInt/VariantText shared by the module's TUs). Quirk/guard notes in Decisions below. |
 | E1 | ENC E1 (Q8): ISO 8211 container + S-57 cell reader | 4 | T | Second session of the ACTIVE TRACK, 2026-07-25 — **the port's second real vector product**. Port-native code, not an in-place compile: FalconView has no S-57 reader, and `Applications/GeoRect/adrg/iso.cpp` (the only ISO 8211 in the tree) is the ADRG-era C library with ASCII subfields only, while S-57 is almost entirely binary — so plan §7's "spec-driven reader of our own" stands. **`port/Enc/fv_iso8211.{h,cpp}`** = a chart-agnostic ISO 8211 reader: DDR field definitions, format-control expansion (`(b11,b14,2b11,3A,2A(8),R(4),A)` → typed subfield specs), LSB-first binary ints/floats per S-57 Part 3, `B(nn)` bit strings kept verbatim, repeating fields as rows, and S-57's **all-bits-set null** carried on every value so "absent" ≠ "zero". **`port/Enc/fv_s57.{h,cpp}`** = `fv::S57Cell` (DSID/DSSI/DSPM, vector records, features with ATTF/NATF attributes + FFPT relations, chain-node geometry assembly: point/sounding-array/line-run/area-rings-with-holes), plus `ReadS57Catalog` (CATALOG.031 is *also* ISO 8211 — its CATD rows give a cell's box and long name without opening the cell, and it exercises the reader's ASCII `I`/`R` path), `EnumerateEncCells` (**`*.000` scan, never the `ENC_ROOT/<producer>/<cell>/` path** — the delivered sets have their cell dirs lifted out) and `ParseCellName` (`US5CHSDC` → producer/usage-band/region/id; the band is S-52's scale band, DNC's library role). Reads all four real Charleston cells: **4,487 features, 205,678 vertices, and every one of the 1,850 rings across 1,525 area features closes — 0 incomplete geometries.** 43 gtests (19 hermetic container tests over byte-built files + 24 real-data), ASan+UBSan-clean. **334 total.** **BASE EDITION ONLY and loud about it** — see Decisions. **NOT here**: `.001…` updates (E5), the `IVectorSource`/`FrameInfo` adapters and catalog rows (E3/E4), S-52 styling (E2/E3), and **object-class/attribute acronyms** — S-57 Appendix A is not in the data and was not guessed at (new blocker), which also costs DSSI's meta/geo record split. |
 | F1 | Two rendering-fidelity fixes found through PythonView (2026-07-25, per Chris): DTED hill-shading + DNC area fill | 5 | T | Both were **unit/convention bugs in ported code, not missing features**, and both were invisible to the existing tests. (1) **DTED shaded relief rendered flat green.** `CDtedReader`'s constructor seeds `m_elev_breakpts` with `{2500,5000,7500,10000,12500}` but skips the **feet→metres conversion its own `set_elevation_bands()` setter performs** (`FEET_TO_METERS`, DtedReader.cpp:2415), so the raw defaults act as METRES — band 0 runs to 2500 m (8200 ft) and every CONUS elevation lands in it, collapsing the 6-colour ramp to one hue. On Windows `CDtedRenderOptions::InitElevationBands` always pushes the feet array in, so the bad defaults never reach the screen; headless, nothing did. `fv::DtedShadedRenderer::Render` now applies FalconView's own defaults through the converting setter when the caller sets none. **The hill-shading itself was always correct** — verified by reading back the light vector (NW az315/alt45 → (0.577,−0.577,−0.577), flat ground at shade 18/32) and the palette histogram; the Appalachians now render as lit ridge-and-valley terrain. Exaggeration (1.0, 3.0 for time-shading) already matched disp.cpp and was left alone. **Why the tests missed it**: the fixture cell is w082/n31, tidal Georgia, flat enough that every elevation sits in band 0 *whatever* the breakpoints are — so a visual check AND a pinned FNV hash both passed. Added a second fixture on **w084/n35** (southern Appalachians, ~300–1700 m) with 3 tests that assert band behaviour over real relief: default == FalconView's feet bands, breakpoints move the ramp, and luminance spread > 60. Band counting is by **15° HUE buckets** (a band varies only brightness, so hue identifies it; a per-channel chromaticity ratio fails on 8-bit rounding — measured 19 spurious "bands" before switching). (2) **DNC areas drew as outlines** — the `areasym` column was parsed into `SymRow::area_sym` and never read (row 14s correction, Q6c item 5). `fv::CgmSymbol` gained `area_style()` (`CgmAreaStyle{fill_color, fill_style, patterns}` — the picture-level brush `CCGMSymbol::DrawArea` actually uses, plus `CgmPattern` with its bits) and `GeoSymStyleEngine::Style` now sets `StyleResult::fill` from it, cached per symbol number like `LineStrokeFor`. **The depth shading came along for free**: BE010's rows name a different area symbol per depth band and the ATTEXP conditions (`cvl` vs `ssdc`/`msdc`/`mssc`) were already being evaluated — 500 of 502 harbor areas now fill, land buff `0822`, water `0821`, and BE010 ramping deep→shallow 0805/0820/0821/0810 by the feature's own `cvl`. **Second bug inside the first**: `CCGMPattern::AddMonochromeBit` stores bits **INVERTED** ("add new bit. Invert pattern.") and GDI's monochrome brush paints the **ZERO** bits in the foreground colour, so ink coverage is the fraction of CLEAR bits — reading it uninverted turned DNC's ~5%-ink shallow-water stipple into a 95% grey slab covering the depth shading (that grey was the first render's most obvious defect). **DEVIATION**: `ICanvas` has only a solid `Brush`, so a non-solid pattern is approximated by carrying its ink coverage in the fill ALPHA (5.5% stipple → alpha 14); a real pattern brush is an ICanvas addition and `AreaFillFor` is the one place to change. 5 new GeoSym tests (land-vs-water colours pinned from the CGMs, depth ramp ordering, no-areasym → no fill, stipple coverage < 25%) + the harbor golden **re-pinned after visual check** (`0x5f2407aab641322f` → `0x71724acb5cb517a`). 341 gtests green; ASan clean, UBSan shows only the pre-existing VPF unaligned loads. **Still open** (unchanged): the `MarinerSettings` API on `StyleContext` — the depth ramp currently uses `CECDISValues`' default-constructed ssdc/msdc/mssc, so a vessel draft still cannot be set. That is R2, as planned. |
+| F2 | DNC point symbols drew UPSIDE DOWN (2026-07-27, found by Chris in PythonView) | 1 | T | A **one-multiplier** fidelity bug in the CGM→VectorSymbol conversion, present since V5b and invisible to every test because the harbor golden was pinned over it. The CGM VDC EXTENT's direction multipliers (`m_iDirX`/`m_iDirY`; for the standard `lly<ury` extent that **every** GeoSym symbol uses, `dirY = -1`) are applied **TWICE** on Windows: once by `CCGMFile::ReadVDCScaledY` as coordinates are read, and again by `CCGMDrawingObject::RotateVDC` (CGMFile.cpp:2246, "Need to do VDC adjustments for reflection even if zero rotation angle") when it builds the `m_disp_vertices` the GDI path actually draws — after which `CSanSymbol`'s DC (`SetViewportExt(k,-k)`, SanSymbol.cpp:280) flips a third time onto the screen. Row 14o deliberately reads `m_vertices`, NOT `m_disp_vertices` (the rotated copy), which is right for geometry but silently dropped that second multiplier — so `CgmSymbol`'s display list is **y-DOWN**, while `fvkit/vector/style.h` documents `VectorSymbol` as y-UP and `VectorRenderer` flips on the way to pixels. Two flips instead of three = every DNC point symbol mirrored. Fix: `CgmSymbol` now exposes `dir_x()`/`dir_y()` and `ToVectorSymbol` applies them (`ApplyVdcDir`) exactly where `RotateVDC` does, extent included. **Rotation was already consistent and needed no change** — Windows rotates *before* the multipliers and we rotate after, but `diag(1,-1)·R(a) == R(-a)·diag(1,-1)`, the same net transform. The `fv_cgm_symbol.h` header comment claiming "Y is VDC-up" was **wrong** and is corrected: `bounds().top` is the SMALLER value (0003.cgm parses to top=-628, bottom=58), which is exactly the evidence the old comment contradicted. New test `GeoSymStyle.SymbolComesBackInTheAuthoredYUpFrame` pins the orientation **independently of the golden hash** — 0003.cgm's authored extent ll=(-175,-58)/ur=(304,628) must come back out sign-for-sign, and the V4-pinned vertex y=-415 must arrive as +415 — so a future re-pin cannot hide a flip again. Harbor golden re-pinned after visual check (`0x71724acb5cb517a` → `0x8f9cc78e521ed986`); nothing else moved. **377 total.** **Lesson for the pending list**: the V5b golden was "visually verified", and upside-down symbology survived it — asymmetric symbols need a directional assertion, not an eyeball. Unrelated flake noticed: `TilePackReal.{WriteReadRoundTrip,EnumeratedAndRenderedThroughEngine}` fail under `ctest -j8` and pass serially (shared output path). |
+| E3a | ENC E3a (Q11, first slice): `EncVectorSource` + `S52StyleEngine` + CS registry + golden Charleston chart | 6 | T | Fifth session of the ACTIVE TRACK, 2026-07-27, sliced per Chris (Q11 as written was five items — the placer and the `LookupTableStyleEngine` extraction are E3b/E3c). **ENC now renders.** New `port/Enc/fv_enc_vector_source.{h,cpp}`: `fv::EncVectorSource` over E1's `S57Cell` + E2's `S57ObjectCatalog` — one cell = one `FeatureRef::tile`, `style_key` and `layer` are both the object-class ACRONYM (the catalogue is REQUIRED, not optional: without it every feature would be unsymbolizable, so Open fails instead), attributes arrive under their acronyms, and **SCAMIN** thinning lives here rather than in the style engine because it is a property of the DATA (S-52 §8.4.4) — honoured only when the query names a scale, so a bulk query never loses features. Serves the four Charleston cells: **4,470 features (931 point + 2,014 line + 1,525 area) across 58 object classes**, `Describe()` decoding through Appendix A. New `port/Enc/fv_s52_style.{h,cpp}`: **`fv::S52StyleEngine`**, the SECOND implementation of the `IStyleEngine` seam — and the proof of §5.1, since **nothing in fvkit changed to accept it**: same `VectorSymbol`, same `VectorRenderer`, same R2 `RuleSet`/`ViewingGroupSet` (S-52's BASE/STANDARD/OTHER is the same axis GeoSym's `dispcat` feeds). Five lookup tables → table chosen by geometry + mariner display settings; first matching row wins; instructions SY/LS/AC/TX/TE executed, **LC and AP approximated** (dashed pen / ink-colour-at-alpha — the same deviation GeoSym's stipple fills carry, and both become exact with the shared along-path placer in E3b). **`S52MarinerSettings` closes the ENC half of the MarinerSettings item F1 left open** — safety/shallow/deep contour, safety depth, two-shade mode — and the depth ramp really moves when the mariner moves the contour (pinned). **CS registry**: procedures are registered by name and return an INSTRUCTION STRING (what the spec says a procedure produces), executed by the same executor. Implemented by weight over the real cells: DEPARE01 (SEABED01 ramp), DEPCNT02, SLCONS03, QUAPOS01, SOUNDG02. Unimplemented ones (LIGHTS05, OBSTRN04, TOPMAR01, WRECKS02, RESTRN01, RESARE01/02, DATCVR01) are **counted, not silent**, and draw the library's own QUESMRK1 — but ONLY when the row put no other ink down, so a beacon that drew its own symbol is not overstamped. **Golden PNG pinned after visual check** (`0xc9dc204d07759233`): Charleston Harbor as a real ENC — buff land, the depth ramp deep to shoal, black point symbology, magenta marks. 13 source + 22 style/render gtests. **456 total.** ASan+UBSan clean. **Three findings, all in Decisions below**: the `?` lookup condition is S-57's UNKNOWN-VALUE marker and NOT a wildcard (read as a wildcard it paints the whole harbour no-data grey); 17 symbol names the cells reach are RASTER-ONLY definitions, not dangling references, so a vector-only path cannot draw them; and a feature legitimately draws nothing in exactly two data-given cases, which the corpus sweep asserts rather than tolerates. |
+| E3b | ENC E3b (of Q11): the shared along-path/area placer + the 7 remaining CS procedures | 6 | T | Sixth session of the ACTIVE TRACK, 2026-07-27. **Two halves, both of them cross-product.** (1) **The placer §5.1 promised.** `fvkit/vector/style.h` gains `PathRun{kGap/kDash/kSymbol}` + `LinePatternStyle` (a CYCLE of runs measured in pixels, plus the pen its dashes take) + `AreaPatternStyle`, and `fvkit/vector/renderer.h` gains **`PlaceAlongPath`** and **`PlaceOverArea`** — pure geometry over pixels, no product, no canvas, no style engine, which is what lets 10 hermetic gtests pin them. GeoSym's SAMI line style, S-52's `LC` and S-52's `AP` are now three callers of two functions instead of three approximations: **`GeoSymStyleEngine`** routes a component to the placer when its cycle contains a point-symbol element (89 of the 757 delivered CGM line symbols do; a pure dash/gap component keeps the cheaper pen, and draws identically), and **`S52StyleEngine`**'s `LC` stamps the line-style at its definition's own `vector_width` period while `AP` stamps the pattern on a `distance_min`-pitched grid, staggered when `filltype` is `S`. **Found a real bug doing it**: the pre-E3b GeoSym code pushed a point-symbol element's LENGTH into `Pen::dash`, so every SAMI symbol run silently became a DASH — the DNC cable/limit lines were black dashes where the CGM authors a magenta chain of symbols. (2) **The CS worklist is closed**: DATCVR01, LIGHTS05, OBSTRN04, RESARE02, RESTRN01, TOPMAR01, WRECKS02 join E3a's five, and `unhandled_cs()` over the four Charleston cells is now **empty** — the corpus test asserts the empty set rather than listing what is owed. 281 features that drew a question mark now draw their own symbology: 100 lights take a coloured flare, 105 obstructions and 14 wrecks their hazard marks against the mariner's safety contour, 42+14 restricted areas their boundary line. **E3a's stated blocker on TOPMAR01 dissolved** — the TOPSHP→symbol table is not missing, it is the JOIN between `s57expectedinput.csv`'s TOPSHP enumeration ("cone, point up") and the library's own symbol descriptions ("topmark for buoys, cone point up"), both of which E2 already loads. Golden PNGs **re-pinned after visual checks**: Charleston (`0xc9dc204d07759233` → `0xdabc9bc116c24d88`) now shows red/green/white light flares over the navaids; the DNC harbor (`0x8f9cc78e521ed986` → `0x33b43456964b19da`) moved by 972 pixels, all of them the cable line becoming its real symbol chain. 10 placer + 2 renderer-integration + 1 GeoSym + 12 S-52 gtests. **479 total.** ASan+UBSan clean (only the pre-existing VPF unaligned loads and ImageLib's jpeg shifts; `pyfvw_pytest` aborts under ASan at extension-import time, which is the uninstrumented-interpreter failure, not a finding). Six deviations and three data findings in Decisions below. **NOT here**: E3c, the `LookupTableStyleEngine` extraction. |
+| E3c | ENC E3c (of Q11): the `LookupTableStyleEngine` extraction | 4 | T | Seventh session of the ACTIVE TRACK, 2026-07-27, and the last item Q11 was carrying. **The abstraction §5.1 asked for, cut third — deliberately.** It was not cut against GeoSym alone (R2's decision), and not cut when only the second TABLE existed (E2's decision); it is cut now that two real engines are written and rendering, so it describes what they share instead of guessing. New `port/include/fvkit/vector/lookup_engine.h` + `port/fvkit/vector/lookup_engine.cpp`: **`fv::LookupTableStyleEngine`**, a template-method base owning the parts that were literally duplicated — the R2 rule layer (`RuleSet`/`ViewingGroupSet`/the memoized `ResolvedPlan` with its recompile-when-it-moved test), the label switch, the open flag, the `VectorSymbol` display-list cache (negative results cached too) and an `unresolved_symbols()` counter. `Style()` is **final** in the base: null/open checks -> `AcceptContext` -> plan -> a **`StylePass`** (the rule layer's whole answer for one feature: `symbol_scale` already multiplied out, `draw_labels` after the rule's veto, `PriorityOr`/`SymbolScaleOr`), then the product's `StyleFeature`. The two engines became LOADERS: `GeoSymStyleEngine` and `S52StyleEngine` are ~110 and ~170 lines shorter and neither mentions `RuleEffect`. **What deliberately did NOT move**: the row table itself, because the two dispatch rules are not special cases of each other — GeoSym matches FACC+delineation and lets EVERY row whose ATTEXP condition holds contribute a pass, S-52 takes the FIRST matching row of one of five tables and executes its instruction list. Also extracted: S-52's `ResultBuilder` -> `fv::StyleResultBuilder` (it names only style.h's slots, never an S-52 instruction), and the ONE comparison rule rules.h documents is now callable (`RuleValueAsNumber`/`CompareRuleValues`/`RuleValuesEqual`) instead of S-52 carrying a private copy that could drift from the comment. `AcceptContext` exists for one reason and says so: GeoSym's 0.20 "make sure it is something viewable" cutoff runs BEFORE the rule plan in SanSymbol, and a base that compiled the plan first would move it. **Both goldens are UNMOVED** (Charleston `0xdabc9bc116c24d88`, DNC harbor `0x33b43456964b19da`) — the refactor is behaviour-preserving, which is the only acceptable outcome for an extraction session. 10 new **hermetic** gtests (`port/fvkit/test/vector_lookup_engine_test.cpp`): the engine under test is a ~40-line third product invented in the file — no VPF, no GeoSym, no ENC, no canvas, so a seam leak fails the build — pinning the error pair, the neutral state (zero predicate evaluations), the rule veto never reaching the product, StylePass arithmetic, the AcceptContext-before-the-plan ordering, the symbol cache's load-once/remember-failures contract, StyleResultBuilder's merge-and-flush, and the comparison rule. Plus 1 GeoSym test for the counter it gained. **489 total.** ASan+UBSan clean (only the two pre-existing knowns: the `TilePackReal` shared-output-path flake under `-j`, and `pyfvw_pytest` aborting at extension-import under an uninstrumented interpreter). **One stated behaviour change**: `S52StyleEngine::Open` used to drop the RuleSet and ViewingGroupSet with its Impl; they now survive a reopen, which is what GeoSym always did and what an application-owned rule set should do. |
+| R3a | Perf (of R3, first slice): the retained `VectorScene` + per-band simplification + style epochs | 5 | P | Eighth session of the ACTIVE TRACK, 2026-07-28. **The plan's `TileDisplayList`, cut against a measurement rather than a guess.** New `port/include/fvkit/vector/scene.h` + `port/fvkit/vector/scene.cpp`: **`fv::VectorScene`** is a retained, already-styled, already-sorted snapshot — geometry flattened COLUMNAR (one `points_` array + `part_first_` offsets, replacing the `vector<vector<GeoPoint>>` that cost an allocation per part per feature), items in draw order, one `StyleResult` per pass. `VectorRenderer::Render` now ALWAYS goes through one (no second code path to diverge — E3c's lesson) and reuses it when `CanServe` says the viewport is still inside the built area and nothing the styles baked has moved. **Measured on the real 900x650 DNC harbour**: 133 ms/frame = query 38 + style 17 + draw 78; a retained pan is **76 ms (-43%)**, and with `SetSimplifyPixels(0.5)` — Douglas-Peucker at build time, 112,330 vertices -> 24,284 — **33 ms (-75%)**. `VectorRenderer` gained `query_ms()/style_ms()/draw_ms()`, which is how those numbers were got and what the demo status line reports. Simplification is **render-only and off by default** (identify walks back through the `FeatureRef`); at 0.5 px it moves 1.16% of pixels on the densest chart in the tree, visually re-checked against the exact render. `IStyleEngine` gained **`style_epoch()`**, implemented properly in `LookupTableStyleEngine` (RuleSet epoch + ViewingGroupSet epoch + an own counter, FNV-mixed) so both real products invalidate correctly; `SetColorAdjust`/`SetDrawLabels` learned to ignore a no-op set, and S-52's mariner/colour setters bump. Bound to pyfvw; **PythonView opts into a 0.25 margin**, so a drag-pan re-projects without re-querying VPF or re-running GeoSym. 26 hermetic gtests (`vector_scene_test.cpp` — a ~30-line source and style engine invented in the file, so a seam leak fails the build: DP behaviour incl. the ring-collapse guard, flatten offsets, draw order, every arm of the reuse predicate, and the epoch composition) + 2 real-data GeoSym tests (**a reused scene renders the harbour byte-identically to a rebuilt one**; simplification keeps the chart within 3% of its ink). **Both goldens UNMOVED**; 517 total. ASan clean, UBSan shows only the pre-existing VPF unaligned loads. Four decisions + one found-in-passing UB below. **NOT here (R3b)**: the symbol atlas and the columnar `FeatureBatch` — the 78 ms draw half, now the clear majority of a frame. |
+| R3b | Perf (of R3, second slice): the rasterizer, cut where the profiler pointed — edge-table fill + clip fast paths | 4 | T | Ninth session of the ACTIVE TRACK, 2026-07-28. **R3a handed R3b a plan; the profiler said the plan was aimed at the wrong thing, and the measurement won.** R3a left "draw = 78 of 133 ms" with the symbol atlas and the columnar `FeatureBatch` named as the fix. Instrumenting the draw loop on the same real 900x650 DNC harbour split it for the first time: **clip 15.9 + fill 10.9 (after the fill fix below; ~38 before it) + symbols 9.1 + project 6.0 + lines 1.1**. Point symbols were **20%**, and **the two biggest costs were the two nobody had named** — so R3b is the fill and the clipper, and the atlas is deferred with a reason (below). Neither change is an approximation: **every pinned golden is byte-identical and none was re-pinned**, which is the only acceptable outcome for a pure optimization. (1) **`CpuCanvas::FillScanlines` is now an edge table.** It walked EVERY edge of every ring for EVERY scanline in the bounding box — O(scanlines x edges), so a DNC depth area of thousands of vertices over hundreds of scanlines cost millions of crossing tests to produce a few thousand spans. Edges are bucketed by the first scanline they can cross and retired after the last, which is exact because both endpoints are integers: `(a.y <= y+0.5) != (b.y <= y+0.5)` is precisely `min <= y < max`, a half-open span. **x is recomputed from the edge's own endpoints per scanline rather than stepped by a dx/dy increment** — an incremental x accumulates float error and would move pixels, which is the whole reason to say so out loud. The active set arrives in a different ORDER than the old ring-by-ring walk, but the crossings are then sorted and a sorted sequence of doubles does not remember how it arrived. New `BlendSpan` hoists BlendPixel's per-pixel bounds check and `Row()` out of the span loop. (2) **Both clippers get an all-inside fast path.** `ClipPolygon` copied the ring five times to run four Sutherland-Hodgman passes that are each the IDENTITY when every vertex is inside; `ClipPolyline` set up Cohen-Sutherland per segment. When nothing is outside, the polygon goes straight to the pixel conversion and the polyline provably emits exactly one run (each segment survives whole and joins the last end to end, so only the consecutive-duplicate-pixel suppression survives). Slow-path scratch is now reused across calls. **Result on the harbour: draw 73.2 -> 33.8 ms (-54%), a retained pan frame 73.5 -> 34.1, and simplified 33.3 -> 21.4.** The R3a headline number, 133 ms cold, is now 90; the fully warm simplified pan is **21 ms**. New split at 32.2 ms: fill 10.9, symbols 7.5, project 5.9, clip 5.2, lines 1.1. 5 gtests, all **equivalence tests against the algorithm each one replaced** — the pre-R3b naive scanline and the pre-R3b Sutherland-Hodgman are transcribed into the test files as oracles, so an optimization that is merely close fails rather than silently re-pinning a golden (F2's lesson, applied to perf instead of orientation). The fill oracle runs 9 shapes x 2 alphas: horizontal edges (dropped from the table entirely), rings hanging off the top and bottom (clamped into the drawn range), multiple rings, a hole, a self-intersecting star, a one-scanline sliver, and a ring with no crossings at all. The clip oracle covers boundary-exact vertices, points that round to the same pixel, and a sweep that nudges each vertex one unit past each edge in turn to prove the shortcut does NOT fire. **541 total.** ASan+UBSan clean (only the pre-existing VPF unaligned loads). **One regression caught in self-review, not by a test**: the span loop resolves a row pointer per scanline, where the old per-pixel BlendPixel would have bounds-checked its way out of a zero-width buffer — guarded. Two decisions below, including why the symbol atlas is now a deliberate NON-goal. **Also fixed in passing** (it was failing the suite on arrival, unrelated to this work): `GeoTiffEnumerate.AllQuadsRecognized` broke on two GeoTIFFs dropped into TestData the same morning (`choctb.tif`, `eglin1.tif`) — the **third** time a data drop has moved a hardcoded test inventory, so the Choctawhatchee sanity box is now a Florida-panhandle box that both new sheets fall inside, rather than a bay-sized one nudged again next time. |
+| E4 | ENC into PythonView: `EncFrameEnumerator` + format registration + bindings + menu (2026-07-28, per Chris) | 5 | P | Tenth session of the ACTIVE TRACK. **The payoff session for E1/E2/E3: ENC has rendered a golden chart since E3a, and until now it could not be reached from the application.** Three things stood in the way and this closes all three. (1) **`port/Enc/fv_enc_format.{h,cpp}` — `fv::EncFrameEnumerator`**, one catalog row per CELL (`path` is the cell file itself, which `EncVectorSource::Open` already takes, so ENC needs no locator of VPF's `db\|library\|tile` kind). **Series = the S-57 usage band** — "US5CHSDC" is band 5, Harbour — because band is S-57's scale ladder and plays exactly the role DNC's library plays, which is the mapping `fv_enc_vector_source.h` already documented. `scale` is the band's NOMINAL denominator (Overview 3M → Berthing 4k) and **not** the cell's own CSCL: the authoritative figure needs a full cell parse, and enumeration has to stay a header scan — a real NOAA set is ~1000 cells, and the measured difference here is 3 ms for the whole tree via catalogues vs 41 ms for a single cell parsed. Bounds come from **every `CATALOG.031` at or below the root**, not just the root one: TestData holds four downloads whose catalogues stayed in their own `ENC_ROOT-N` shells, so reading only the root one would have covered a quarter of the tree; a cell in no catalogue is parsed for its own extent, and the two paths are cross-checked by a test. (2) **`RegisterEncFormat()` rather than a line in `RegisterBuiltinFormats()`** — see the decision below; `fv_enc` links `fv_fvkit`, so fvkit naming ENC would close a dependency cycle. The registry was built multi-slot and public for exactly this. `pyfvw.catalog.register_builtin_formats()` calls both, so **the layering detail does not leak into Python**. (3) **Bindings**: `EncVectorSource` (+ `cell_count`/`cell_path`/`staleness_warning`/`last_query_scamin_skipped`), `S52StyleEngine` (colour scheme, point/area style, `rules()`/`viewing_groups()` off the shared E3c core, `unhandled_cs`, the diagnostics counters) and **`S52MarinerSettings` by reference**, so `engine.mariner().safety_contour = 10` re-styles the chart — F1's ENC half is now reachable from an application for the first time. Plus `registered_format_keys()`. (4) **PythonView**: ENC joins the Vector Charts family, gets its own coverage colour and an `enc` scan probe, and the Map menu's stale disabled entry ("reader ported, styling next" — three sessions out of date) is gone. `_open_vector` is now the ONLY place that forks per product, which is the vector seam's whole claim; it opens the band's containing DIRECTORY rather than the single cell a row names, so panning across a band's cells needs no source swap. New `[enc] data_dir` settings key (chartsymbols.xml + the Appendix A CSVs), documented in `peregrine.ini.sample`. **Verified in the app**: the Charleston band renders at 1:12,000 as a real S-52 chart — buff land, marsh, the depth ramp, magenta cables and traffic lanes, buoys with their flare colours, wrecks — 2311 features in 77 ms, and the coverage overlay lists "enc - 4 in view". 7 gtests + 5 pytests. **548 total.** ASan+UBSan clean over all 139 ENC tests. **Three bugs found and fixed in this session, two of them mine and one pre-existing** — see the decision below on what they have in common. |
+| E5 | ENC rendering defects found by comparing the app against a published chart (2026-07-28, per Chris) | 6 | P | Eleventh session of the ACTIVE TRACK, and **the first time the port's output was checked against an independent rendering of the same water** rather than against itself. Chris put PythonView's Charleston render beside the ArcGIS ENC viewer's and called three things: triangles littering the water, channel linework that looked wrong, and "significant scaling problems on a few of the symbols" — with the note that the marsh symbols looked right, which is what made it a symbol-by-symbol question instead of a global scale one. Diagnosed with a throwaway harness that dumped, per viewport: every area pattern with its computed pixel pitch, every line pattern, every stroke's resolved colour/width against the lookup row that produced it, and every symbol's declared box against the extent of its parsed display list. **Two real defects, one non-defect, and two findings left open.** (1) **META objects were drawn by default — 640 of the 1234 draws in a harbour viewport were metadata, not chart.** The triangles are `DQUALA21/B01/C01`, M_QUAL's zones of confidence, stamped on a 55 px grid; M_COVR and M_NSYS added magenta linework over the same water. `S52StyleEngine::SetShowMetaObjects(bool)`, default **false**. **It is deliberately NOT a display category**: M_QUAL is category OTHER and so are soundings and depth contours, so the category threshold that hides the quality overlay also hides half the chart — meta is a separate axis and an ECDIS gives it its own switch, which is now the Overlays menu item and the `[enc] show_meta_objects` key. (2) **61 of the 367 vector symbols are anchored off their own ink.** A symbol's pivot is the point that lands on the feature; for CTNARE51 the authored pivot is **1.80 symbol-widths right and 0.60 below** its glyph, so the caution mark drew ~65 px clear of the area it annotates (also CTYARE51, ENTRES51/61/71, INFARE51, RSRDEF51, TSSCRS51, RETRFL01/02, TIDCUR03, LIGHTS82...). **The delivered file says it twice** — for 47 of the 61 the independent BITMAP pivot carries the same out-of-range fraction of its own tile (CTNARE51: 1.79 vs 1.80), and a raster pivot outside a 29x29 tile cannot be a deliberate anchor — so this is a conversion artefact in OpenCPN's chartsymbols.xml, not our parse. Narrow documented deviation: a POINT symbol whose pivot lies more than a quarter of its size beyond its own ink is re-anchored on that ink's centre. The bound is generous on purpose, and the test asserts **both halves** — the 7 known-bad symbols now contain their anchor, and every symbol authored to stand on its pivot (LIGHTS11/12/13's flare rising from the light, BCNSTK02, NOTBRD11) still starts at y=0 and rises. Line-styles and patterns are untouched: there the placer positions the stamp and an authored offset is part of how the pattern tiles. (3) **The channel linework was NOT a defect** — the dump showed every stroke resolving correctly (CHGRD grey, CHMGD/TRFCD magenta at the authored widths); the magenta belongs to CTNARE/ACHARE/CBLARE/PIPARE, and most of what read as clutter was the meta linework in (1). Recording it because "looks wrong" was a reasonable read and the evidence is what settled it. (4) **The HPGL parser is vindicated**: 335 of 339 symbols parse to exactly their declared `<vector width/height>`, and the 4 that differ have declared boxes looser than their ink (DWRTPT51, DISMAR03, RSRDEF51, NMKRCD02) — no geometry is lost, `CI` circles included. **Charleston golden re-pinned after visual checks at three scales** (`0xdabc9bc116c24d88` → `0xbaccb187be81a803`). Also fixed: PythonView told the projection the display was 0.25 mm/px and the style engine 96 dpi — **the same physical property, set independently and disagreeing by 6%** — so `device_dpi` is now derived from `display.mm_per_pixel`. 2 gtests + the 3 existing tests taught the new default. **550 total.** **Two findings left open, both in the pending list**: the **raster symbol sheet** (679 of 1018 symbols are bitmap-only; in one harbour viewport 13 lateral buoys, beacons and daymarks draw a question mark where the reference draws the navaid — this is now the largest visible gap and it is a listed Q11 leftover; **DONE 2026-07-28, row E6**), and **symbol size does not honour device DPI while line widths do** (the renderer's `px_per_himetric` is a fixed 1/25.4 = exactly 100 dpi, bit-faithful for GeoSym by rule but arbitrary for S-52; harmless at ~100 dpi, a 2x mismatch on a retina pitch). |
+| S1 | `fv::Settings` — the registry replacement (2026-07-28, per Chris) | 5 | P | Not a port step in the module sense: **the port had no preferences mechanism at all.** The registry was severed one module at a time with whatever was nearest — a ctor arg (geoid's data dir), an in-memory map (geo3's prefs), or an env var (`FVW_GEODATA_DIR`, `FVW_FIF_DIR`, `FVW_DATA_PATH`, `MSPCCS_DATA`) — and `FvConfigFileServer`, FalconView's registry-backed config COM server, is on the deferred-indefinitely list. Nothing persisted, and PythonView's Options dialog was in-memory only. New `port/include/fvkit/settings.h` + `port/fvkit/settings.cpp`: **`fv::Settings`**, a flat `string -> string` store read from a hand-edited **INI** file (`[section]` prefixes its keys, so `[vector] scene_margin` is `vector.scene_margin`; `#`/`;` comments; `"`/`'` quoting for paths with spaces or a literal `#`; keys and sections case-insensitive, values not). Chosen over JSON by Chris on one point: **standard JSON has no comments, and a preferences file nobody can annotate is one nobody will edit** — and an INI parser is one screen with no new dependency, where JSON needed a hand-written or vendored one (expat is XML-only). **Read-only by design — there is no `Save()`**: the file is authored by a human and the app never rewrites it, which is what preserves comments, ordering, and keys the running build does not know about. Search path (first existing wins, listable for an error message): `$FVW_SETTINGS` → `./peregrine.ini` → `$XDG_CONFIG_HOME`/`~/.config/peregrine/settings.ini` (+ `~/Library/Application Support/Peregrine/` on macOS, `%APPDATA%\Peregrine\` on Windows). **Three failure modes, each deliberate**: an absent key returns the CALLER's default silently (so defaults live at the point of use, not in a second table that drifts); a value of the wrong type — including `0.25px`, which must not read as `0.25` — returns the default and appends to `warnings()`, so a typo neither aborts startup nor is silently wrong; a malformed LINE fails the whole load with the file and line number, and leaves the previously-loaded values untouched (same all-or-nothing contract as the R2 rule-file parser). Unknown keys are kept, not rejected — that is how a file survives a downgrade. Bound as `pyfvw.Settings` (+ `pyfvw.default_settings_paths()`); **PythonView reads it at startup** for `vector.scene_margin`, `vector.simplify_pixels` (the two R3a knobs, previously unreachable — the margin was hardcoded and simplification was never called), `display.mm_per_pixel`, `geosym.data_dir`/`brightness`/`contrast` and `catalog.db`, plus a `--settings` flag; warnings print to stderr and a broken file still starts the app. Documented sample checked in at **`port/peregrine.ini.sample`**, with the measured effect of each knob next to it. 19 hermetic gtests + 5 pytests. **536 total.** ASan+UBSan clean. |
+| E6 | ENC raster symbol sheet: `SymbolPixmap` at the vector seam + S-52 tiles (2026-07-28, per Chris) | 6 | P | Twelfth session of the ACTIVE TRACK, and **the largest visible gap E5 left open**. 679 of the S-52 library's 1018 symbols are defined RASTER-ONLY — a `<bitmap>` tile in the colour table's symbol sheet and no HPGL at all — so a vector-only path drew the question mark over exactly the objects a mariner steers by. In the Charleston harbour viewport that was **98 draws across 15 names**: the beacons (BCNSTK60/61, BCNTOW61), the buoys (BOYPIL60/61, BOYCAN63) and their topmarks (TOPSHP20/48/90, TOPMAR01). **The seam gained a second symbol form, not an ENC special case.** `fvkit/vector/style.h` now carries `SymbolPixmap{tile, pivot_x, pivot_y}` and `IStyleEngine::Pixmap(id)`, defaulting to nullptr — GeoSym and every synthetic test engine are untouched — and the renderer resolves an id ONCE into a `ResolvedSymbol{vec, pix}`, display list first, so a product that authors a symbol both ways keeps the form that scales without resampling. OSM sprite sheets land on this, not beside it. **Units are the deviation worth naming**: everything else at this seam is HIMETRIC, a tile is PIXELS, so the two scales travel separately and are never derived from one another — `2.0` must stay `2.0` and not `2.0/25.4*25.4`, because the nearest sampler decides the tile's first row on a boundary that lands exactly on a half-pixel at integer zooms (found by test, not by reasoning). `DrawPixmapSymbolAt` blits straight through at unit scale with no rotation — the sheet's own anti-aliased edges reach the canvas untouched, and that is every point symbol on a default chart — and otherwise inverse-maps NEAREST-NEIGHBOUR: these are 9-46 px hard-edged glyphs and interpolation smears the one-pixel stroke a buoy is drawn with. The anchor is snapped to a whole pixel FIRST in both paths, which is what makes the resampler REPRODUCE the blit at unit scale instead of shifting the glyph as a zoom crosses 1.0 (pinned: `ResamplerAtUnitScaleMatchesTheStraightBlit`). **`S52PresentationLibrary::SymbolBitmap`** cuts the tile from the sheet named by the active colour table's `<graphics-file>`, cached per (name, colour table) exactly as the display lists are — the three sheets ARE the day/dusk/night palettes, already coloured, so a scheme switch re-cuts rather than recolours. A missing sheet is NOT an Open() failure (the vector half stays usable) but is reported by `raster_sheet_error()`. **E5's pivot defect, again, and worse in this half of the file**: 292 of the 1083 bitmap pivots lie more than a quarter of the tile outside the tile, and **28 are written `-2147483648`** — ARPONE01's is INT_MIN in both axes, which is a missing value, not an anchor. Same narrow deviation as E5's, same bound deliberately: those fall back to the tile centre, and a symbol that legitimately hangs off its pivot (DAYTRI52, a daymark standing on its post at y=30 of a 33 px tile) keeps what it was authored with — the test asserts both halves. The SY instruction now reaches for the tile before the question mark, so a raster-only name is neither a placeholder nor an unresolved reference; **no feature in these cells draws a placeholder any more** (`RasterOnlySymbolsAreDrawnFromTheSheet` pins the zero). Charleston golden re-pinned after visual checks at three scales and at 2x symbol scale. **Also factored** (third consumer): the libpng READER moved out of tile_pack.cpp into `fvkit/tools/png_io.h`, hardened on the way (16-bit stripped, interlaced rejected rather than silently mis-decoded, `png_read_update_info` + a rowbytes check instead of assuming the transforms took). 11 gtests + 6 renderer gtests. **563 total.** ASan+UBSan clean. **Fixed in passing**: four ENC cells (US2EC02M, US3SC1CB, US4SC1BO, US4SC1CO — bands 2/3/4 over the same water) arrived in TestData mid-session and broke 8 tests that pinned totals over the whole directory. This is the **fourth** such break, so the repair is R3b's: exact counts moved onto ONE NAMED CELL (US5CHSDC: 600 features, 42 layers, its own box), the whole-root tests assert structure and lower bounds, and `UsageBandBecomesTheSeriesAndTheScale` now checks EVERY band present against the band table instead of asserting "band 5" — which the new data turns from a one-band claim into the real one. |
+| F3 | ENC usage bands in PythonView: one band per source, opened at its own scale, stepped with PageUp/PageDown (2026-07-28, found by Chris) | 4 | P | **Two defects reported against the app, both about the same missing idea: an ENC series IS A SCALE BAND.** (1) **Every band drew every other band.** `_open_vector` opened the common ANCESTOR DIRECTORY of the catalog rows in a series, so that panning across a band needed no source swap — right goal, wrong mechanism, because the common ancestor of an exchange set is the exchange set. Choosing Harbour opened all 8 cells and a 1:12,000 chart drew a 1:1,000,000 general cell underneath itself (280 features queried in the harbour viewport where 194 belong). Invisible while TestData held band 5 alone; the four cells that arrived during E6 made it visible the same day. New **`EncVectorSource::OpenCells(cells, catalog_dir)`** takes the cell list instead of a path — `Open(path, ...)` now resolves its directory and delegates — and PythonView hands it exactly the rows the catalog filed under that series: General 1 cell, Coastal 1, Approach 2, Harbour 4. A band is a scale, not a place, and only naming the cells can say which one is wanted. (2) **A band opened zoomed out to its own full extent** (`_fit_scale_rect` over the source bounds), so picking General framed the whole cell — Bermuda to Maryland — instead of a chart. A vector series that DECLARES a scale now opens at it (the S-57 usage band's nominal 1:1,000,000 / 1:300,000 / 1:50,000 / 1:12,000, which is the scale the cell was compiled for and the only one its SCAMIN thinning is authored against); a DNC library declares none and keeps the fit. Reset (`zoom(None)`) goes to the same place. (3) **PageUp/PageDown now step vector series**, which is what Chris asked for and which the existing raster ladder already did: `step_scale` bailed on `mode == "vector"`, and the guard was never needed — `_scales_at` already ignores series with no scale, so a DNC library (a place) is never a candidate while ENC's four bands (scales) are a clean ladder. **One deliberate change to raster stepping came with it**: the ladder now gives the CURRENT PRODUCT first refusal and only crosses to another when its own product has no next step. Charleston is why — ENC, CADRG, the DOQs and DTED all cover that water, so a flat nearest-scale rule walks a mariner out of the chart he chose and into a topo sheet halfway up the band ladder. Verified end to end through the app: General -> Coastal -> Approach -> Harbour on PageUp and back on PageDown, each opening at its own scale with only its own cells, and PageDown past General correctly leaves ENC for the next coarser product. 2 gtests + 1 pytest (**565 total**); PythonView `--selftest` green. |
+| R2 | Rule layer: `fvkit/vector/rules.h` + GeoSym retrofit (scale/group/category thinning) | 3 | P | Third session of the ACTIVE TRACK, 2026-07-26. **The cross-product MIDDLE of the vector seam**, per plan §5.2. New `port/include/fvkit/vector/rules.h` + `port/fvkit/vector/rules.cpp`: a `Predicate` AST (exists/missing, the six comparisons, in/not-in, and/or/not) with **one documented comparison rule** — numeric when BOTH sides parse *whole*, byte-wise otherwise, and a missing attribute makes every comparison false including `not in`; `ScaleBand` on the map-scale DENOMINATOR (0 = unbounded, and a scale of 0 matches everything so a bulk render never loses features to thinning it did not ask for); `ViewingGroupSet` (numbered groups + the IMO display-category threshold, `epoch()` bumping on real changes); `Rule`/`RuleSet` with a **rule-file syntax shared by all three products** (`hide key=BE010 scale=..50000`, `set key=DA010 priority=3 labels=off`, `hide key=BH140 where hdp exists and hdp < 3`) parsed by a recursive-descent predicate parser, all-or-nothing with the line number in the error. **`ResolvedPlan` is the point of the whole header**: scale + group filtering happen once per (scale, epochs) at compile time, then a `RuleDecision` is memoized per `{layer, style_key}`, so a key whose rules carry no predicate costs one hash lookup and **zero** predicate evaluations — measured on the real harbor render, not asserted. **GeoSym retrofit**: `fullsym.txt`'s `vgroup`/`txtgroup`/`radar`/`dispcat` columns are finally parsed (read non-fatally *after* the required chain, so a short row can't fail the table) and wired up — a viewing group toggles the rows that belong to it, a **text** group drops those rows' LABELS only (Q6c item 3, the dense-label problem), and `dispcat` is S-52's BASE/STANDARD/OTHER under another name, which is exactly why the category threshold lives in fvkit and not in the GeoSym engine. Bound to pyfvw (`RuleSet`, `ViewingGroupSet`, `engine.rules()`/`viewing_groups()` as live references, `DISPLAY_BASE/STANDARD/OTHER`). 26 hermetic rules gtests (no VPF, no GeoSym, no canvas — a seam leak fails the build) + 9 GeoSym gtests over real rows + 2 pytests. **376 total.** ASan+UBSan clean (only the pre-existing VPF unaligned loads). **NOT bit-faithful, and deliberately opt-in**: with an empty RuleSet and a default ViewingGroupSet nothing changes, so the harbor golden hash is UNMOVED — see the decisions below, including why the `LookupTableStyleEngine` extraction did NOT happen here. |
+| E2 | ENC E2 (Q10): S-52 Presentation Library parse + S-57 Appendix A catalogue | 4 | T | Fourth session of the ACTIVE TRACK, 2026-07-27, and **the second real style table** §5.1 was waiting for. Port-native, `port/Enc/`, no FalconView source involved (there is none). **`fv_s52_preslib.{h,cpp}`** reads OpenCPN's `chartsymbols.xml` (2.2 MB, `TestData/enc/`, GPL-3.0 *as data*) through **expat 2.8.2 from `port/third_party`** — its first consumer, so the 2026-07-25 fetch is no longer unverified-by-a-real-user. Loads all **5 colour tables** (day/dusk/night is real, not a stub), all **3057 lookups across all five S-52 lookup tables** (paper/simplified points AND plain/symbolized areas — which pair is in force is a mariner setting made at style time, so all five load), **1018 symbols** (from 1093 elements, see below), 59 line-styles, 30 patterns. Lookup rows carry the parsed `S52Instruction` list (`SY`/`LS`/`LC`/`AC`/`AP`/`TX`/`TE`/`CS`), split on `;` and `,` **outside single quotes** so a TE format string keeps its own commas. **`ParseS52Hpgl`** flattens the symbol library's HPGL to the seam's `VectorSymbol`: S-52 authors in 0.01 mm, which IS HIMETRIC, so geometry passes through unscaled — only the pivot-to-origin shift and the **y flip** (PresLib y is DOWN) happen, and `SWn` becomes n×32 HIMETRIC (S-52's 0.32 mm pen unit). Verified visually by rasterising: the anchor stands upright with its flukes down, the conical buoy on its base. **`fv_s57_catalog.{h,cpp}`** closes E1's stated gap — `OBJL 42 → DEPARE`, `ATTL 87 → DRVAL1`, plus `s57expectedinput.csv`'s 1467 enumerated values, which is what gives ENC a real `Describe()` in the R1 sense, and the `Class` column that E1 needed for the DSSI meta/geo/collection split. 44 gtests (10 hermetic HPGL + 3 instruction + 4 CSV + 17 PresLib + 10 catalogue); ASan+UBSan clean over all 87 ENC tests. **420 total.** **Three data facts the corpus sweeps found, all now pinned** — see Decisions. **NOT here (E3/Q11)**: `S52StyleEngine`, the CS-procedure registry, the along-path placer, and the `LookupTableStyleEngine` extraction, which now has both tables in hand. |
 | — | PythonView: pan_viewer upgraded to an application (2026-07-25, per Chris) | — | P | Not a port step. `demo/pan_viewer.py` → **`port/apps/PythonView.py`** (git mv; the demo dir is gone): a tkinter/ttk app (stdlib-only on top of pyfvw+numpy — deliberately no Qt, nothing to version-match against the built `.so`) with a native menu bar over every family the port renders. **Map menu** groups catalog series into 4 families: Raster Charts (cadrg, gpkg) / Imagery (geotiff, tiros) / Elevation (dted-shaded — its FIRST UI exposure; series carry scale 0 so -/= drives an explicit display 1:N through `set_physical_scale(denom, 0, mm)`, defaults per level) / Vector Charts (vpf; one family on purpose — ENC/OSM slot in beside DNC when their engines land, and the menu shows them as disabled "Planned" entries). **Coverage overlay** (`c`): per-viewport `select_by_geo_rect` footprints, one color per format + on-canvas legend with in-view counts, antimeridian rows drawn as 2 boxes, per-family toggles in the Overlays menu. **Catalog UI**: first-run scan prompt, Add Map Data (auto-detect incl. a dht-walk for VPF databases), Manage Data Sources dialog (reads the catalog SQLite read-only for listing — no new C++ binding needed), New/Open catalog. **Window resizes freely** (debounced re-render at the new surface size), drag-pan + wheel zoom, Go To Location (DMS/MGRS via parse_location), Options dialog (pixel pitch, GeoSym dir, vector brightness/contrast via SetColorAdjust), Tools→fvpack pointer, `--shot`/`--series`/`--at` headless CLI, and **`--selftest`** (scripted UI walk: every family + coverage + resize, snapshots to build/pythonview_selftest; steps are CHAINED with idle gaps — absolute after() schedules starve the event loop behind slow renders and the wm Configure round-trip never lands). Sparse-coverage centering fixed: series centroid snaps to the nearest frame when it lands in a gap (CADRG samples). **Findings for the pending list**: (1) **big-endian ('MM') GeoTIFFs fail to decode** — 18 of 29 TestData tiffs; enumeration reads their headers fine so they catalog, then `CGeoTiff` load fails ("Error in byte order string: M") and (2) **one bad frame aborts `MapEngine::RenderBaseMap`'s whole composite** — the app catches the FvError and shows it in the status bar, but the engine should skip-and-log per frame. (3) WVSPLUS scans into the catalog (216 tiles) but its libraries open empty (no FCA — known 14t deferral), so those menu entries render nothing until FCS-based enumeration lands. |
 | — | Dependency modernization wave 1 (2026-07-25) | — | T | Not a port step — per Chris, "move to modern versions where available". New `port/third_party/CMakeLists.txt` is the single place library versions live (FetchContent, gtest pattern). **gtest 1.14→1.17.0, zlib 1.2.5→1.3.2 (wired in: `fv_z` is now an INTERFACE onto `fv_zlib`; libpng/libtiff consume it unchanged), expat 2.1.0→2.8.2 (new; first consumer is the E2 PresLib loader).** 3 expat smoke tests added. `codecs_test`'s `EXPECT_STREQ(zlibVersion(), "1.2.5")` replaced with `zlibVersion() == ZLIB_VERSION` + a `ZLIB_VERNUM >= 0x1300` floor — a literal would just drift on every bump (same lesson as the 2026-07-23 TestData refresh), whereas header-vs-library agreement catches the real bug class. **267 total.** libpng/libtiff/jpeg deferred as module-sized API breaks and GEOTRANS deliberately frozen — see the dependency-modernization table above. `third_party/` and `fvw_core/ImageLib/*` untouched; the Windows product build is byte-unchanged. |
 | — | TestData refresh 2026-07-23 (Charleston SC set) | — | T | Not a port step — Chris dropped new sample data before Q5/V4. **+2 DTED2 cells** (w080/n32.dt2 = new coverage, w081/n32.dt2 = overlaps the existing .dt1) and **+14 GeoTIFFs** (10 `22…e…n` DOQQ tiles + 4 `C3208…` sheets, all ~32.5N 80.1W), so dted 24→26 frames and geotiff 15→29. 5 tests failed on hardcoded inventory; **fixed by deriving the expectations from the tree instead of bumping the literals a third time** — `CellsOnDisk`/`TiffsOnDisk`/`_count_by_ext` walk the sample dir, `CatalogReal` compares Scan's row count to the format's own enumerator, and the DTED union box is compared to the union of the enumerator's per-cell boxes (w080 pushed ur.lon −80→−79). geotiff_adapter_test's two-branch if/else became a `BlockFor()` region table (Chesapeake/Charleston/Choctawhatchee) that **fails on an unclassified name** rather than silently bounds-checking new data against the wrong region. **New coverage the data enabled**: w081/n32 is the first real cell present at two levels, so `RealDtedSource.FinerLevelWinsInOverlappingCell` now pins dted.cpp's finest-level-first ordering (DTED1 10 m / 3 m vs DTED2 17 m / 21 m at two points, each level isolated in its own tree so the assertion can't pass by coincidence) + `Dted2OnlyCellProvidesCoverage`. 187 total. |
@@ -120,10 +133,14 @@ real table exists):
 |---|---|---|
 | ~~R1~~ | ~~Identify: `FeatureRef` + lazy `IVectorSource::Describe()` + VPF `INT.VDT`/`CHAR.VDT` decoding + pick index + pan-viewer click→info panel~~ **DONE 2026-07-25 (row R1 above)** | Landed as designed; the VDT reader over the ported table layer was ~60 lines |
 | ~~Q8~~ | ~~ENC E1: ISO 8211 / S-57 reader~~ **DONE 2026-07-25 (row E1 above)**: `port/Enc/` reads all four Charleston cells base-edition-only, with the ISO 8211 container reader that also parses CATALOG.031. **Next session = R2** (the rule layer), whose second real table is now available. |
-| R2 | `fvkit/vector/rules.h` (predicate AST + ScaleBand + ViewingGroup + memoized `ResolvedPlan`) + extract `LookupTableStyleEngine` from GeoSym; retrofit GeoSym | Subsumes Q6c item 3 (scale-based label/feature thinning — `vgroup`/`txtgroup` finally used) |
-| Q10/Q11 | ENC E2/E3: PresLib parse + `S52StyleEngine` + CS registry + along-path placer | Placer shared back into GeoSym SAMI = Q6c item 2 |
-| R3 | Perf: retained `TileDisplayList` cache, symbol atlas, columnar `FeatureBatch`, per-band simplification | Pulls plan phase V8 forward — identify needs the same retained structure |
-| Q7/Q9 | OSM O1–O3 | Lands on the finished middle layer; ends up small |
+| ~~R2~~ | ~~`fvkit/vector/rules.h` (predicate AST + ScaleBand + ViewingGroup + memoized `ResolvedPlan`); retrofit GeoSym~~ **DONE 2026-07-26 (row R2 above)** | Landed minus the `LookupTableStyleEngine` extraction, which **moves to Q10** — see the decision below: the second real table (chartsymbols.xml) is still not in TestData, so extracting now would still be an abstraction over GeoSym alone, which §5.1 explicitly says not to do. Q6c item 3 is solved. (The gate lifted the very next day — the PresLib arrived 2026-07-26, see the blocker list; the extraction stays in Q10 where the table now is.) |
+| ~~Q10~~ | ~~ENC E2: PresLib parse + the S-57 Appendix A catalogue~~ **DONE 2026-07-27 (row E2 above)**: `port/Enc/fv_s52_preslib.{h,cpp}` + `fv_s57_catalog.{h,cpp}`, 44 gtests. The second real style table now exists in code. |
+| ~~Q11~~ E3a | ~~ENC E3: `S52StyleEngine` + CS registry + along-path placer + the `LookupTableStyleEngine` extraction~~ **SLICED 2026-07-27 per Chris; E3a DONE (row E3a above)** | E3a landed the source adapter (which E1 had left for "E3+" and Q11's line never named), the style engine, the CS registry with 5 procedures, and the golden chart. ~~**E3b** = the shared along-path placer (S-52 `LC`/`AP` + GeoSym SAMI = Q6c item 2, one placer for both) and the remaining CS procedures~~ **DONE 2026-07-27 (row E3b above)**: `PlaceAlongPath`/`PlaceOverArea` in fvkit serve GeoSym SAMI, S-52 LC and S-52 AP, and all seven remaining procedures landed — `unhandled_cs()` over the Charleston cells is empty. **Q6c item 2 is closed with it.** ~~**E3c** = the `LookupTableStyleEngine` extraction~~ **DONE 2026-07-27 (row E3c above)**: `fvkit/vector/lookup_engine.h` holds the rule layer + label switch + symbol cache + unresolved counter + `StyleResultBuilder`, GeoSym and S-52 are loaders over it, both goldens unmoved. **Q11 is closed.** Still open from this line: the raster symbol sheet (rastersymbols-day.png is in TestData) for the 17 raster-only symbol names. |
+| ~~R3~~ R3a | ~~Perf: retained `TileDisplayList` cache, symbol atlas, columnar `FeatureBatch`, per-band simplification~~ **SLICED 2026-07-28; R3a DONE (row R3a above)** | R3a landed the retained scene (columnar geometry, pre-sorted, epoch-invalidated) and per-band simplification: a DNC pan went 133 -> 76 ms retained, -> 33 ms simplified. ~~**R3b** = the remaining half: the **symbol atlas** and the **columnar `FeatureBatch`**~~ **R3b DONE 2026-07-28 (row R3b above) — but NOT as written.** Splitting the 78 ms draw for the first time showed the plan was aimed at the wrong costs: point symbols were 20%, while **fill and CLIPPING** (unnamed by anyone) were the top two. R3b did those instead — an edge-table fill and all-inside clip fast paths, both byte-identical, **draw 73 -> 34 ms** — and the **symbol atlas is now a deliberate non-goal** because it cannot be exact (see the two decisions below). **R3c** = what the new split leaves: fill 10.9 / symbols 7.5 / project 5.9 / clip 5.2 / lines 1.1 of a 32 ms draw, with no single dominator left, so the next real target is the OTHER end — **query is 37 ms and is now much the largest cost of a cold frame**, which is exactly the product-neutral pre-parsed source cache (ENC's SENC generalized) this line already carried, plus the columnar `FeatureBatch` that feeds it. |
+| ~~E4~~ | ~~ENC into PythonView~~ **DONE 2026-07-28 (row E4 above)**, added per Chris after R3b: the enumerator + `RegisterEncFormat()` + pyfvw bindings + the Map menu. ENC had rendered a golden chart since E3a and was unreachable from the app; it is now a Vector Charts family beside DNC, and `_open_vector` is the only place the two products differ. | Left for later: the Options-dialog mariner panel (safety/shallow/deep contour, safety depth, two-shade — all bound, none exposed in the UI yet) and the ENC data-dir field beside the GeoSym one. |
+| ~~E5~~ | ~~ENC rendering defects vs a published chart~~ **DONE 2026-07-28 (row E5 above)**, added per Chris after E4: meta objects off by default, 61 off-glyph symbol pivots re-anchored, golden re-pinned. | Both follow-ups from this line are now placed: the **raster symbol sheet** is **DONE 2026-07-28 (row E6)**; **symbol size vs device DPI** is still open (the renderer's `px_per_himetric` is a fixed 1/25.4 = exactly 100 dpi, bit-faithful for GeoSym by rule but arbitrary for S-52 — harmless at ~100 dpi, a 2x mismatch on a retina pitch, and it now applies to raster tiles too, which are authored at one nominal pitch and blitted 1:1). |
+| ~~E6~~ | ~~ENC raster symbol sheet~~ **DONE 2026-07-28 (row E6 above)**: `SymbolPixmap` + `IStyleEngine::Pixmap()` at the seam, S-52 tiles cut from `rastersymbols-*.png`, no placeholders left in these cells. | The seam is the reusable half: OSM sprite sheets are the same shape, and line-styles/patterns (LC/AP) still have no raster path — nothing in the Charleston data needs one, and a product that does would add it the same way. |
+| Q7/Q9 | OSM O1–O3 | Lands on the finished middle layer; ends up small. **E4 cut the path**: a new vector product now needs an enumerator + a self-registration + one arm in `_open_vector`, and `VECTOR_FORMATS`/the per-format selftest already expect a third. |
 
 **S-52 PresLib source decided 2026-07-25**: OpenCPN's `chartsymbols.xml`
 (GPL-3.0, compatible with Peregrine **as data**; OpenCPN C++ stays
@@ -149,7 +166,7 @@ across the app trees use `IXMLDOMDocument`, none on any current port path.
 | Q7 | OSM O1: MBTiles + MVT reader | Planetiler over Geofabrik extract (generate once) | low-moderate; dependency-free, good filler session anytime |
 | ~~Q8~~ | ~~ENC E1: ISO 8211 / S-57 reader~~ **done 2026-07-25 (row E1)** | NOAA ENC cells in TestData ✓ | moderate; dependency-free — done |
 | Q9 | OSM O2+O3: style loader + render via V5 seam | same as Q7 | low (after V5 + R2) |
-| Q10 | ENC E2: S-52 PresLib (lookups + symbol display lists) | OpenCPN `chartsymbols.xml` — **needed in TestData** | moderate |
+| ~~Q10~~ | ~~ENC E2: S-52 PresLib (lookups + symbol display lists)~~ **done 2026-07-27 (row E2)** | OpenCPN `chartsymbols.xml`, `TestData/enc/` ✓ | moderate — done |
 | Q11 | ENC E3+E4: S52StyleEngine + CS procedures + source cache, render | above | high (after V5 seam + R2; shares V4 display lists + the shared along-path placer) |
 | Q12 | WMS: network raster source | public endpoints (USGS, GIBS) | moderate (HTTP client decision: libcurl) |
 | Q13 | JP2 via OpenJPEG | public samples | moderate (avoids Kakadu license; would also unblock ECRG if it ever returns) |
@@ -203,6 +220,69 @@ Pending).
 6. Update the ledger row above, commit: `port(<module>): compiles+tests on macOS`.
 
 ## Decisions made
+
+- 2026-07-28 (E5): **Self-consistency is not correctness: check the output against someone
+  else's rendering of the same data.** Every ENC test to this point compared the port against
+  itself — pinned hashes, corpus sweeps, "every feature is symbolized or counted" — and all of
+  them passed while more than half the ink in a harbour viewport was metadata and 61 symbols
+  drew clear of the features they annotate. Neither defect is detectable from inside: the meta
+  objects WERE being symbolized correctly, and the misplaced symbols were faithful to the file.
+  It took one screenshot beside a published chart. The same check is owed to DNC/GeoSym (against
+  a real DNC viewer) and will be owed to OSM. Corollary for how to look: Chris's "the marsh
+  symbols look correct" was the most useful sentence in the report, because it ruled out a
+  global scale error and turned the question into which symbols, which is answerable by dumping
+  per-symbol geometry.
+
+- 2026-07-28 (E5): **Deviating from delivered data needs the data to say so twice.** The 61
+  off-glyph pivots are wrong, but "wrong" was only actionable once the file's own second copy
+  agreed — the bitmap pivot carries the same out-of-range fraction for 47 of them, and a raster
+  pivot outside its own 29x29 tile cannot be intent. That is what distinguishes a conversion
+  artefact worth overriding from an authored offset worth honouring, and it is why the override
+  is bounded (a quarter of the symbol's size beyond its ink) and why the test pins the symbols
+  that must NOT move alongside the ones that must. Where a product has no Windows original, the
+  bit-faithful rule has nothing to anchor to and this is the substitute.
+
+- 2026-07-28 (E4): **A format adapter does not have to live in fvkit, and ENC's cannot.**
+  `fv_enc` links `fv_fvkit` (it needs the `VectorSymbol` seam and the R2 rule layer), so an
+  fvkit that named `EncFrameEnumerator` would close a dependency cycle. Rather than bend the
+  layering — hoisting the ENC reader under fvkit, or splitting fv_enc in two — ENC registers
+  itself through `RegisterEncFormat()`, which is what `RegisterFormat()` being public and
+  multi-slot was for (D1). The rule for every future product: **a format whose reader depends
+  on fvkit registers itself from its own library**, and the CONSUMER calls both registrars. The
+  Python binding hides that: `register_builtin_formats()` calls both, because a build-layering
+  fact is not something an application should have to know. OSM will land the same way.
+
+- 2026-07-28 (E4): **"Is it VPF?" was standing in for "is it vector", in four places.**
+  PythonView tested `series.format == "vpf"` to choose the render mode, to decide whether to
+  open a vector source, and twice more in `set_series` — so ENC catalogued and appeared in the
+  menu, and then rendered a blank raster frame. The same shape of bug appeared twice more the
+  same session: the app's `--selftest` walked one series per FAMILY, so with two products in
+  Vector Charts it exercised whichever sorted first and would never have caught the ENC path
+  (it was also, silently, never testing **tiros** — a pre-existing hole the fix exposed); and
+  `_render_vector` reached for `self.style`, the GeoSym engine, by name. All three are the same
+  mistake: **the first implementation of a plural thing gets treated as the thing itself.** Now
+  `VECTOR_FORMATS` is derived from `FAMILIES`, the selftest walks one series per FORMAT, and the
+  active engine is `self.vstyle`. Worth checking for wherever a second product lands next.
+
+- 2026-07-28 (R3b): **A perf plan written before the profiler is a hypothesis, and this one was
+  wrong.** R3a named the symbol atlas and the columnar `FeatureBatch` as R3b, on the reasonable
+  guess that "DNC navaid clusters re-walk the CGM display list per instance" was where a 78 ms
+  draw went. The first actual split of that draw put point symbols at 20% and the two largest
+  costs — polygon fill and CLIPPING — on nobody's list; lines, which emit 1582 of the 2527 draw
+  calls, are 1.1 ms and were never worth a thought. The rule this sets for R3c and after:
+  **instrument the phase before optimizing it**, and keep the instrumentation cheap enough to
+  leave in (`query_ms/style_ms/draw_ms` already pay for themselves; a per-primitive split is
+  still a temporary patch, which is the next thing worth making permanent).
+
+- 2026-07-28 (R3b): **The symbol atlas is deferred, and not only because it is now 7.5 ms of a
+  32 ms draw.** Caching a rasterized symbol per (symbol, size, rotation) and blitting instances
+  means stamping at INTEGER pixel offsets, while `DrawSymbolAt` today maps every vertex through
+  a fractional anchor — so an atlas cannot be byte-identical, and it would move both pinned
+  goldens by up to half a pixel per symbol. Every other R3 change so far has been exactly
+  output-preserving, which is what has made "the golden is unmoved" a usable acceptance test.
+  Spending that property on a 23% slice of the draw phase is a bad trade while cheaper exact
+  wins remain (see R3c). Revisit when a real caller is symbol-bound — a dense VMAP0 world sheet
+  would be the honest test, not the harbour.
 
 - 2026-07-10: **Bit-faithful porting**: known numeric quirks in the original are preserved, not
   fixed, so outputs match the Windows build (golden tests stay meaningful). Found in geoid:
@@ -870,6 +950,450 @@ Pending).
     and reformatting it as a double prints "3.1". `Value::AsText` returns what
     was stored whenever the value arrived as characters.
 
+- 2026-07-26: **R2 shipped the rule layer but NOT the `LookupTableStyleEngine`
+  extraction — and that is the plan's own instruction, not a shortcut.** §5.1
+  says to extract the shared engine core "when the *second* real table exists,
+  not speculatively against GeoSym alone", and §5.5 put R2 after E1 on the
+  assumption that E1 would supply it. It did not: E1 delivered the S-57
+  *reader* (the DATA side); the S-52 *table* is `chartsymbols.xml`, which is
+  still not in TestData (checked, 2026-07-26 — no `chartsymbols*`, no `.dai`
+  anywhere under it). Extracting today would still be an abstraction shaped by
+  one table, so the extraction **moves into Q10/E2**, where the second table
+  arrives and its shape is visible. Nothing is lost: rules.h — the part that is
+  genuinely cross-product and that E2/O2 will build on — is in place, and the
+  GeoSym engine is now a client of it rather than a fork of it.
+
+- 2026-07-26: **Rule-layer design decisions worth not re-deriving.**
+  - **The comparison rule is `numeric iff BOTH sides parse whole`.** Half-parsed
+    numbers are how a string compare silently becomes a wrong numeric one, so
+    `"3a" < "10"` stays a byte comparison while `"9" < "10"` is arithmetic. The
+    trap it exists to stop is pinned in a test: as strings, "9" > "10".
+  - **A missing attribute makes EVERY comparison false, `not in` included.**
+    "Not in that list" is a claim about a value that is present; `missing` is
+    the operator for absence. Without this, one typo'd attribute name turns a
+    hide-rule into a hide-everything rule.
+  - **Rules apply in source order, later wins, and compilation may only fold a
+    rule into the cached decision while nothing per-feature has been seen yet.**
+    From the first per-feature rule onward every applicable rule is deferred,
+    unconditional ones included — otherwise a `hide` written *after* a
+    conditional `show` is folded in first and loses. The naive version of this
+    fold was written, caught by a test, and the test is still there.
+  - **Group/category filtering in GeoSym sits AFTER `any_matched`.** A group the
+    operator switched off means "do not draw this", not "the FACC had no
+    matching row"; running it earlier fires the 2nd-chance fallback and paints a
+    default black dot in place of every hidden feature — the same failure mode
+    the V5b label fix already found once.
+  - **`ViewingGroupSet` is one number space**, shared by GeoSym's viewing groups
+    and text groups. Safe here and *verified* rather than assumed: across
+    fullsym.txt the viewing groups run 11050..38010 (always 5 digits) and the
+    text groups 1..29, pinned by a test that reads the shipped table. A product
+    whose spaces overlap needs a second set, not a renumbering.
+  - **Thinning is opt-in.** An empty RuleSet + a default ViewingGroupSet means
+    the plan is `trivial()` and every feature is visible with no effects, so the
+    retrofit left the DNC golden hash untouched. That is what keeps the
+    bit-faithful rule and a rule engine in the same codebase.
+  - **`restyle` (replacing colours/symbols from a rule) is deliberately absent.**
+    It needs the style vocabulary from style.h, and rules.h sits *below* style.h
+    so a source-only or test-only caller can use rules without the canvas.
+    Adding it means moving a `StyleOverride` into style.h, not growing
+    `RuleEffect`.
+
+- 2026-07-27 (E2): **Three properties of the delivered PresLib/catalogue, each
+  found by a corpus sweep that failed, each now pinned by a test.** All three
+  are data facts, not parser bugs, and all three would have been silent
+  rendering defects in E3.
+  - **`PD;` with no coordinates is a DOT**, and whole symbols are built from
+    `PUx,y;PD;` stipples (OBSTRN02, SPRING02). Skipping the empty argument list
+    — the obvious reading — erased those symbols completely. Emitted as a
+    zero-length run, which the canvas stamps as one square nib of the pen
+    width, exactly as pen-down-in-place does.
+  - **73 symbol names are defined TWICE**, once as vector and once as
+    raster-only (`<definition>R`, no HPGL), with different RCIDs — so 1093
+    `<symbol>` elements are 1018 symbols. **The vector definition wins
+    regardless of file order**: first-wins silently loses the geometry of every
+    symbol whose raster row happens to come first. Element counts are therefore
+    NOT symbol counts, and the test derives both rather than pinning either.
+  - **24 names are referenced by lookups and defined nowhere** (92 references:
+    BOYLAT52..56, FLTHAZ02, ARCSLN01 …). 23 are absent from all three tables and
+    several are plainly authoring typos in the source library (`NEWOBJ 01`,
+    `TOWERS74|`, `DGPS01DRFSTA01`); exactly one, `ESSARE01`, exists under
+    another kind (a line-style called with `SY()`), which E3 can recover by
+    falling back across kinds. Exposed as
+    `S52PresentationLibrary::UnresolvedSymbolReferences()` and pinned at 24, so
+    a PresLib swap surfaces the change instead of hiding it. **E3 owes these a
+    visible placeholder** — §7's never-silently-drop-a-feature rule.
+  - Bonus, in `s57objectclasses.csv`: the `Class` column's **`C` is COLLECTION
+    (C_AGGR/C_ASSO/C_STAC) and `$` is CARTOGRAPHIC** ($AREAS/$LINES/$CSYMB/…),
+    the opposite of what the letters suggest — and OpenCPN's pseudo-class
+    `_texto` **reuses code 135**, which S-57 gives to TESARE. First wins, so the
+    real class keeps the code, and 251 rows load as 250 object classes.
+
+- 2026-07-27 (E2): **The loader is not a style engine, deliberately.**
+  `S52PresentationLibrary` parses and exposes; matching a feature to a lookup,
+  running CS procedures and emitting `StyleResult`s is E3. Two consequences
+  worth not re-deriving: (1) **all five lookup tables load**, because paper-vs-
+  simplified and plain-vs-symbolized is a mariner display setting, not a
+  load-time choice; (2) **display lists are cached per (kind, name, colour
+  table)** — colours are baked into the primitives, so the palette is part of
+  the key, and `kind` is in there because a name can be both a symbol and a
+  line-style with different geometry (ACHARE51 is).
+
+- 2026-07-27 (E3a): **`?` in a lookup condition is S-57's UNKNOWN-VALUE marker,
+  not a wildcard.** E2's header listed the four value shapes without settling
+  what `?` MEANS, and the wrong reading is not subtle: DEPARE's first row is
+  `[DRVAL1=?][DRVAL2=?] -> AC(NODTA);AP(PRTSUR01);LS(SOLD,2,CHGRD)`, i.e.
+  "unsurveyed", so read as "present with any value" it matches EVERY depth
+  area, paints the whole harbour no-data grey and the depth ramp never runs
+  (that is exactly what the first Charleston render looked like). The DATA
+  settles it: all 479 DEPARE areas in the cells carry real DRVAL1/DRVAL2
+  values and NONE carries an empty one, so the no-data row can only be meant
+  for the empty case. Implemented as "present AND empty"; the blank forms
+  (`""` / `" "`) are the actual wildcard. Pinned in
+  `S52Style.UnknownValueConditionDoesNotMatchARealDepth`.
+
+- 2026-07-28 (F3): **An ENC series is a usage BAND, and a directory cannot
+  express one.** `EncVectorSource` opened a path — one cell, or everything
+  under a directory — and PythonView asked it for the common ancestor of a
+  series' cells so a pan across the band would not need a source swap. The
+  common ancestor of an exchange set is the exchange set, so every band opened
+  every cell and a 1:12,000 harbour chart drew a 1:1,000,000 general cell
+  underneath itself. `OpenCells(cells, catalog_dir)` takes the list instead,
+  and the directory forms delegate to it. The general rule this is an instance
+  of: when a catalog already knows which files belong to a selection, a reader
+  should accept that selection rather than be handed a path and asked to
+  re-derive it — the re-derivation is where the band was lost.
+
+- 2026-07-28 (F3): **A vector series that declares a scale opens AT it.**
+  Fitting the series' whole extent to the window is right for a DNC library,
+  which is a place with no chart scale, and wrong for an ENC band, which is a
+  scale: an S-57 cell is compiled for its band's nominal denominator and its
+  SCAMIN thinning is authored against that number, so opening anywhere else
+  shows a chart the producer never composed. `scale_denom > 0` is the test,
+  and it is the same test the raster path already uses to tell a scaled series
+  from a scale-less one.
+
+- 2026-07-28 (F3): **The scale ladder gives the current product first refusal.**
+  PageUp/PageDown steps to the nearest larger/smaller-scale series AT the
+  screen centre, and that used to mean the nearest one in ANY product. Over
+  water covered by ENC, CADRG, DOQs and DTED at once — which Charleston is —
+  that walks a mariner out of the chart he chose and into a topo sheet halfway
+  up the band ladder. Now the current format is searched first and the full
+  ladder is the fallback, so a product is paged through to its end before the
+  ladder crosses over. This CHANGED raster stepping too, deliberately.
+
+- 2026-07-28 (E6): **A pixmap is a SECOND symbol form at the seam, not a
+  rasterized VectorSymbol.** `IStyleEngine` could have been left alone by
+  turning each raster tile into a display list of one-pixel polygons, and that
+  would have been wrong twice: a tile has no geometry to hand back, so every
+  consumer of `Symbol()` — the pick index, the along-path placer, a future GPU
+  backend — would be reasoning about a rectangle pretending to be a drawing;
+  and 679 symbols x hundreds of pixels is a display list per glyph where a blit
+  will do. So `Symbol()` gained a twin, `Pixmap()`, defaulting to nullptr:
+  GeoSym, the synthetic test engines, and any future product with no raster
+  symbology never mention it. The renderer resolves an id ONCE into
+  `ResolvedSymbol{vec, pix}` and prefers the display list, so a symbol authored
+  both ways keeps the form that scales and rotates without resampling.
+
+- 2026-07-28 (E6): **A tile's scale must not be derived from the HIMETRIC one.**
+  The renderer carries `px_per_himetric = symbol_scale / 25.4` for display
+  lists and `pixmap_scale = symbol_scale` for tiles. Passing one and deriving
+  the other reads simpler and was tried; it fails, because `2.0 / 25.4 * 25.4`
+  is not `2.0` and the nearest sampler's boundary at an integer zoom lands
+  exactly on a half-pixel — the first column of every doubled tile disappeared.
+  Caught by `SymbolScaleResamplesTheTile`, not by reading the code. The same
+  half-pixel is why the sampler rounds with `floor(t + 0.5)` and not `lround`:
+  they differ only at exactly -0.5, which is precisely where that first column
+  sits.
+
+- 2026-07-28 (E6): **Both symbol paths snap the anchor to a whole pixel first.**
+  D4 puts a pixel's centre ON the integer, so a symbol anchored at a half-pixel
+  has no sub-pixel placement worth preserving in something authored to be
+  blitted. Snapping first is what makes the resampler REPRODUCE the straight
+  blit at unit scale (pinned byte-for-byte in
+  `ResamplerAtUnitScaleMatchesTheStraightBlit`) instead of shifting the glyph
+  by a pixel the moment a zoom crosses 1.0 — the kind of thing nobody reports
+  as a bug and everybody sees.
+
+- 2026-07-28 (E6): **The bitmap pivots carry the same delivered defect E5 found
+  in the vector ones, and 28 of them are INT_MIN.** 292 of the 1083 `<bitmap>`
+  pivots lie more than a quarter of the tile outside the tile itself, and
+  ARPONE01's is written `-2147483648` in both axes — a missing value, not an
+  anchor, and the file has 28 of them. Same narrow deviation as E5's and
+  deliberately the same bound: a pivot that far out is replaced by the tile's
+  centre. The test asserts BOTH halves, as E5's does — ARPONE01 and CTNARE51
+  (pivot (52,-17) on a 29x29 tile) re-anchor, and DAYTRI52, a daymark standing
+  on its post at pivot y=30 of a 33 px tile, keeps what it was authored with.
+
+- 2026-07-28 (E6): **A missing symbol sheet is not an Open() failure.** The
+  vector half of the presentation library is fully usable without
+  `rastersymbols-*.png`, and refusing to open would turn a missing optional
+  asset into "no ENC symbology at all". `SymbolBitmap()` returns nullptr, the
+  reason is available from `raster_sheet_error()`, and the failure is
+  remembered per colour table so a chart full of raster symbols does not retry
+  a missing file once per feature. Tiles are cached per (name, colour table)
+  exactly as the display lists are — the three sheets ARE the day/dusk/night
+  palettes, already coloured, so a scheme switch re-cuts rather than recolours.
+
+- 2026-07-27 (E3a): **The 17 unresolved symbol names are RASTER-ONLY
+  definitions, not dangling references.** E2 counted 24 names that lookup
+  instructions refer to and the library does not DEFINE; a corpus sweep over
+  everything the Charleston cells actually reach finds a different and larger
+  category — names the library defines with no HPGL at all (`<definition>R`),
+  which a vector-only path cannot draw however complete the file is. 17 names,
+  166 references, and zero true danglers in this data. They draw QUESMRK1 and
+  are counted. Fixing them is not a parse problem: it needs the raster symbol
+  sheet (`rastersymbols-day.png`, already in TestData) blitted as a pixmap,
+  which is a later phase. The test asserts the CATEGORY, so a real dangling
+  reference appearing later fails rather than hiding among these.
+  **SUPERSEDED 2026-07-28 (E6)**: the sheet is blitted, so these 17 draw their
+  own tiles and are no longer counted as unresolved. The test tightened rather
+  than disappeared — a name that still comes back unresolved must be one no
+  `SY()` named, i.e. a line-style or a pattern, which have no raster path.
+
+- 2026-07-27 (E3a): **A feature drawing nothing is allowed in exactly two
+  cases, both given by the data**, and the corpus sweep asserts that rather
+  than tolerating a count: (1) the lookup row's instruction is EMPTY — the
+  library itself says draw nothing (M_NPUB, nautical-publication coverage);
+  (2) the row is text-only and the feature lacks the named attribute (an
+  SBDARE point with no NATSUR has no seabed nature to print). Anything else is
+  a hole in the engine. NOTE this is also why the sweep runs with labels ON: a
+  large minority of S-52 rows are text-only (a sounding IS its number), so with
+  labels off 227 features draw nothing and the test would be measuring the
+  label switch. Same shape as DNC's label-only sounding rows (row 14q).
+
+- 2026-07-27 (E3a): **CS procedures are the one thing here written from the
+  published spec rather than read out of the delivered data**, because
+  chartsymbols.xml carries lookup rows and symbols but no procedure code. Two
+  things keep that honest: each procedure names the parts it reduces, and the
+  attribute VALUES it tests are grounded in the Appendix A catalogue E2 loaded
+  (CONDTN 1/2 = under construction/ruined, QUAPOS 2..9 = inaccurate) rather
+  than remembered. Where a procedure could not be grounded at all it was NOT
+  written: TOPMAR01 needs the TOPSHP -> TOPMARnn mapping table, which is in
+  neither the XML nor the CSVs, and guessing it would put wrong topmarks on a
+  chart — the exact failure mode this project forbids. It is counted instead.
+
+- 2026-07-27 (E3b): **The along-path placer is ONE primitive, and it lives in
+  the renderer.** GeoSym's SAMI line style, S-52's `LC`, S-52's `AP` and
+  (eventually) an OSM line pattern all say the same thing: repeat something
+  along a path, or over an area. `LinePatternStyle` is therefore a CYCLE of
+  `PathRun{kGap|kDash|kSymbol}` measured in PIXELS — the same unit contract
+  `Pen` already carries, so each style engine converts its own authoring units
+  and the renderer converts nothing. `PlaceAlongPath`/`PlaceOverArea` are free
+  functions over pixel geometry with no canvas and no style engine in their
+  signatures, which is what makes the 10 hermetic tests possible: if the
+  placer ever needs a chart product to be testable, the seam has leaked.
+  Rotation convention: the emitted `rotation_deg` is `atan2(-dy, dx)` of the
+  local tangent, i.e. the symbol's own +x axis runs along the path, expressed
+  in the sense `DrawSymbolAt` already applies (screen y down, symbol y up).
+
+- 2026-07-27 (E3b): **The pattern is laid along the UNCLIPPED projected path
+  and clipped afterwards.** Clipping first is cheaper and was the obvious
+  implementation, and it is wrong: the cycle would restart at the canvas edge,
+  so every dash and every stamped symbol would jump each time the map panned
+  by a pixel. `PatternPhaseIsMeasuredFromThePathNotTheCanvasEdge` pins it by
+  rendering the same feature into two viewports ten pixels apart and comparing
+  the shifted columns. The cost is bounded by `kMaxPatternCycles` (4096
+  cycles) and a saturated step budget, so a projection that puts a vertex a
+  million pixels away truncates the walk instead of hanging the render.
+
+- 2026-07-27 (E3b): **A GeoSym SAMI symbol run was being drawn as a DASH.**
+  Pre-E3b, `fv_geosym_style.cpp` walked a component's elements and pushed
+  EVERY element's length into `Pen::dash` regardless of type, with the comment
+  "kPointSymbol runs become gaps" — but a length pushed into `dash` is an ON
+  run, not a gap, so the symbol became a black dash of its own width. The DNC
+  harbor golden had been pinned over this since V5b. 89 of the 757 delivered
+  CGM line symbols carry such a run; the fix moved 972 pixels of the golden,
+  all of them one cable/limit line turning into the magenta symbol chain the
+  CGM authors. A component with NO point-symbol element still takes the pen
+  path — same output, less work — so the change is confined to the case that
+  was broken.
+
+- 2026-07-27 (E3b): **Two raster-only substitutions, and two deliberate
+  question marks.** E3a recorded that 17 symbol names the cells reach are
+  raster-only definitions with no HPGL. Three of the seven new procedures ran
+  straight into them. Where the library ships a VECTOR twin with the same
+  description the twin is used and the substitution is stated at the call site
+  — `ISODGR51` -> `ISODGR01` ("isolated danger of depth less than the safety
+  contour") and `OBSTRN11` -> `OBSTRN18` ("obstruction in the water which is
+  always above water level"). Where it does not, the procedure still emits the
+  name and the engine's existing unresolved-symbol path draws QUESMRK1:
+  `WRECKS07` (the "least depth unknown" over-line) and `TOPMAR01` ("topmark
+  not defined"). That is the right outcome both times — plan section 7 says a
+  fact must not be lost silently, and for TOPMAR01 an undefined topmark
+  SHOULD look undefined.
+
+- 2026-07-27 (E3b): **E3a's TOPMAR01 blocker was a missing JOIN, not missing
+  data.** E3a declined to write the procedure because "the TOPSHP ->
+  TOPMARnn mapping table is in neither the XML nor the CSVs, and guessing it
+  would put wrong topmarks on a chart". Both halves are in the delivered data
+  and E2 already loads them: `s57expectedinput.csv` enumerates TOPSHP by TEXT
+  ("1 = cone, point up") and every `<symbol>` carries a `<description>`
+  ("topmark for buoys, cone point up"). Matching the two is the table. The
+  BUOY family is used throughout, which is the one reduction: choosing between
+  the buoy (02..65) and beacon (22..89) families needs the topmark's PARENT
+  object, and S-57's master/slave relation — read by E1 — is not published
+  through `IVectorSource`. Exposing it belongs with the source, not the style
+  engine. Only 2 features in these cells reach the procedure.
+
+- 2026-07-27 (E3b): **UDWHAZ03 is reduced to its depth test, and the reduction
+  errs toward warning.** OBSTRN04 and WRECKS02 both turn on "is this a danger
+  to the mariner?", and the published procedure also asks whether the feature
+  is surrounded by water deeper than the safety contour — an isolated danger
+  in safe water gets the loud mark, one already inside a shoal does not. That
+  needs the neighbouring DEPARE, i.e. the retained scene R3 builds. The depth
+  test alone decides here, so an isolated-danger mark can appear inside shoal
+  water where a full ECDIS would leave it plain. Over-warning is the correct
+  direction to be wrong on a chart.
+
+- 2026-07-27 (E3b): **LIGHTS05 draws sector lights as plain flares, and
+  COUNTS it.** The spec draws a sector light's two legs and the arc between
+  them at the light's nominal range. That is GEOMETRY, and a CS procedure
+  returns an INSTRUCTION STRING — it can name symbols, not arcs. Rather than
+  invent a geometry-producing style op for one procedure, the simplification
+  is exposed as `S52StyleEngine::sector_lights_simplified()` and asserted
+  non-zero over the real cells, so the deviation is measured rather than
+  remembered. The light DESCRIPTION string ("Fl(2)R.10s12M") is likewise not
+  composed; it is a six-attribute text formatter on the labels axis.
+
+- 2026-07-27 (E3b): **RESTRN01/RESARE02 emit the boundary line and NOT the
+  centred symbol.** S-52 puts a copy of the restriction symbol inside the
+  area. The renderer anchors point symbology at a part's FIRST VERTEX, so that
+  copy would sit on a corner of the boundary rather than in the middle of the
+  area — a misplaced restriction symbol is worse than none, and unlike a
+  missing one it looks authoritative. A centroid anchor belongs with the
+  retained scene (R3). Also recorded: in the delivered library these two
+  procedures are called ONLY from the two AREA tables, so the point and line
+  branches of the shared helper are defensive, not reachable from ENC data.
+
+- 2026-07-27 (E3b): **A block of lookup rows is named in LOWER CASE and is
+  therefore unreachable — deliberately left that way.** `depare`, `excnst`,
+  `topmar` and the mariner objects (`ownshp`, `vessel`, `clrlin`, `ebline`,
+  `leglin`, `pastrk`, `vrmark`) appear alongside their uppercase twins in
+  chartsymbols.xml. S-57 object acronyms are uppercase by definition and this
+  engine matches exactly, so ENC data never selects them. That is why
+  `CS(DEPARE02)` and `CS(TOPMARI1)` never show up in `unhandled_cs()` despite
+  being in the file. Matching case-insensitively would make an alternate
+  `depare` row selectable ahead of the real ones and move the whole depth
+  ramp, so the exact match stands and a test pins it.
+
+- 2026-07-27 (E3b): **Area patterns are not clipped to their area.** ICanvas
+  has no clip region, so `PlaceOverArea` emits stamp positions whose CENTRES
+  are inside the ring (even-odd, the same rule CpuCanvas fills with, so a
+  pattern lands exactly where the solid fill would) and a symbol whose ink
+  overruns the boundary bleeds by up to half a symbol. The grid is anchored to
+  the canvas origin rather than the ring's own corner, so two adjacent areas
+  sharing a pattern line up; it still shifts when the map pans, which a
+  geographic anchor would fix at the same time as the retained scene. The fix
+  for the bleed is an ICanvas clip rect — one addition, one call site.
+
+- 2026-07-27 (E3b): **A patterned area keeps its boundary pen.** Found in
+  review, not by a test: routing `AP` to `area_pattern` instead of a fill
+  meant an area whose row is `AP(...);LS(...)` (S-52's MARCUL is exactly that)
+  entered the renderer's area branch with no fill, drew the pattern, and
+  silently dropped the pen the stroke branch would have drawn. The area branch
+  now draws the polygon whenever EITHER a fill or a stroke is present.
+
+- 2026-07-27 (E3c): **the `LookupTableStyleEngine` extraction, and what stayed out of it.** §5.1
+  called for a shared core "row table, memoized resolution, palette, symbol cache, placers". Three
+  of those five landed; two deliberately did not, and the reasons are the point:
+  * **The row table stayed with the products.** GeoSym matches on FACC + delineation and lets EVERY
+    row whose ATTEXP condition holds contribute a draw pass; S-52 picks the FIRST matching row of
+    one of five tables and executes its instruction list. Neither is a special case of the other,
+    so a "shared row table" would be a tagged union pretending to be an abstraction.
+  * **The palette stayed too.** GeoSym's is an INDEX into COLOR.TXT run through a brightness/
+    contrast adjuster; S-52's is a NAME into one of five day/dusk/night tables. Both reduce to
+    "give me an FvColor", which is a one-line interface with nothing behind it worth sharing.
+  * The placers were already shared in E3b, and the symbol cache, the rule layer and the label
+    switch are what actually moved — plus the open flag, so `IsOpen()` and Style()'s "not open"
+    error read identically from either engine.
+- 2026-07-27 (E3c): **`AcceptContext` is not a generic hook, it is GeoSym's cutoff keeping its
+  position.** SanSymbol/SymText bail below `scale * zoom / 100 == 0.20` BEFORE doing anything else.
+  A base class that compiled the rule plan first would still draw nothing, but it would move the
+  plan's observable side effects (the memo cache and `rule_predicate_evaluations()`) under a
+  cutoff that used to precede them. One virtual, documented at both ends, and a hermetic test
+  pins the ordering rather than trusting the comment.
+- 2026-07-27 (E3c): **one comparison rule, one implementation.** rules.h has documented since R2
+  that a value comparison is numeric only when BOTH sides parse whole and byte-wise otherwise —
+  and `fv_s52_style.cpp` then carried its own `WholeNumber`/`ValuesEqual` pair implementing it a
+  second time, with a subtly stricter reading (no trailing whitespace). The rule is now callable
+  (`RuleValueAsNumber`/`CompareRuleValues`/`RuleValuesEqual`) and S-52 uses it, so a lookup row's
+  ATTC condition and a user rule's `where` clause can no longer disagree about what "3" means.
+  Both goldens confirm the stricter-to-shared move changed nothing on real data.
+- 2026-07-27 (E3c): **`S52StyleEngine::Open` no longer drops the rule set.** The RuleSet and
+  ViewingGroupSet used to live in `Impl`, which `Open` replaces wholesale, so reopening a chart
+  silently reset the application's rules; GeoSym never did that because its `Open` does not
+  replace its Impl. In the shared core they are the ENGINE's state, not the data's, so both
+  products keep them across a reopen. Stated rather than silent because it is a real change.
+
+- 2026-07-28 (R3a): **the retained scene is keyed on the whole StyleContext and an EXACT scale,
+  not on a scale band.** §5.4 says "keyed by (tile, scale band, style epoch)". Band reuse is
+  wrong here and the measurement is not what decides it: both real engines style
+  scale-dependently, and `EncVectorSource` does SCAMIN thinning in the SOURCE, so serving a
+  scene built at 1:50k for a 1:80k viewport would draw features S-52 says are not there. Scale,
+  device DPI and symbol scale are all compared exactly — all three feed `IStyleEngine::Style`.
+  Pan is the interaction the cache is for; zoom rebuilds. A band-keyed variant becomes possible
+  only when a source can report "my answer does not change between these two scales", which
+  nothing in the seam says today.
+- 2026-07-28 (R3a): **`IStyleEngine::style_epoch()` defaults to 0, and that is a deliberate
+  soft failure.** A cache over a mutable engine needs an invalidation signal, and the choices
+  were a pure virtual (every future product and every synthetic test engine must implement it)
+  or a default. The default is safe for the two things that actually exist — a fixed table, and
+  a test engine — and both REAL products inherit a correct one from `LookupTableStyleEngine`,
+  which mixes the RuleSet epoch, the ViewingGroupSet epoch and its own counter with FNV rather
+  than adding them (1+2 and 2+1 must not collide, or a rule change cancelling a group change
+  would be invisible). The obligation this creates is written at both ends: a product setter
+  that changes what `Style()` returns must call `BumpStyleEpoch()`. `S52StyleEngine`'s
+  colour-scheme/point-style/area-style setters do, and so does its MUTABLE `mariner()`
+  accessor — unconditionally, because a caller that moves the safety contour and did not bump
+  would keep drawing the old depth ramp, and one wasted rebuild is the cheaper mistake.
+- 2026-07-28 (R3a): **a no-op setter must stay a no-op, or the cache never lands.**
+  `GeoSymStyleEngine::SetColorAdjust` bumped on every call, and `PythonView` pushes its current
+  brightness/contrast down on EVERY frame — so the scene was thrown away once per redraw and
+  the measured win was zero until the setter learned to compare first. Same for
+  `SetDrawLabels`. This is the general shape of the risk with an epoch: the bug is silent and
+  costs only performance, so the pan-hit test asserts the source was not queried again rather
+  than asserting a timing.
+- 2026-07-28 (R3a): **the scene margin defaults to 0 because a margin CHANGES WHAT IS DRAWN.**
+  Retaining more than the viewport means querying features outside it, and symbology anchored
+  just off-canvas legitimately inks into the canvas (the renderer's own ±1e3/1e4 px tolerances
+  say so). That is the more correct picture — an edge symbol is half-missing today — but it is
+  a change, so it is opt-in: the pinned goldens render at margin 0 and are unmoved, and
+  PythonView opts into 0.25. Fixing the edge-symbol case properly means querying a margin
+  ALWAYS, which is a golden re-pin and belongs in its own session.
+- 2026-07-28 (R3a): **found in passing — `CSymColorAdjuster`'s constructor reads two members
+  before assigning them.** `m_bAdjust = (m_nBrightness != 0) || (m_nContrast != 0);` runs before
+  either member is set (`SymColors.h`, and the near-identical `fvw_core/Common/SymColors.h`); it
+  clearly meant the ARGUMENTS. So a default-constructed adjuster decides whether to run every
+  GeoSym colour through its conversion table on indeterminate memory. It is benign in practice
+  (the bytes are zero, the goldens are stable) and it is UB in shared source the MSVC product
+  build also compiles, so it was NOT fixed inside a perf session. What R3a did instead is refuse
+  to depend on it: the new equality guard in `SetColorAdjust` seeds its cached brightness/
+  contrast to `INT_MIN`, so the first call always reaches the adjuster even when it asks for
+  (0,0) — only a repeated identical set is skipped. Fix tracked separately.
+
+- 2026-07-28 (S1): **INI over JSON, and read-only over read/write.** Two choices worth stating
+  because they will look arbitrary later. (1) **INI**, chosen by Chris: the file's whole purpose
+  is that a person edits it, standard JSON cannot carry a comment, and the parser is one screen
+  against a hand-written or vendored JSON one (expat is in-tree but XML-only). Sections are a
+  spelling convenience that flattens to a dotted key — there is no tree, and no schema. (2) **No
+  `Save()`.** An app that rewrites its own config file destroys the comments, the ordering and
+  any key the running build does not recognise. Application STATE that a user would never
+  hand-edit (window geometry, last position) is a different thing and belongs somewhere else;
+  this file is preferences only. The consequence, accepted: PythonView's Options dialog still
+  changes things for the session only, and the settings file is how you make a change stick.
+- 2026-07-28 (S1): **the getters take the caller's default, and there is no defaults table.**
+  Every `Get*` takes the value to use when the key is absent, so the default for
+  `vector.scene_margin` is written where it is read and cannot drift from a second registry of
+  defaults — which is exactly the failure mode the old registry code had (a default in the
+  registry writer, another in the reader, and they disagreed). The cost is that an absent key
+  and a key set to its default are indistinguishable, which is fine for preferences.
+- 2026-07-28 (S1): **a settings file must fail in three different ways, not one.** An absent key
+  is silent (normal). A value that will not parse — `0.25px` is the realistic one, and it must
+  NOT read as 0.25 — returns the default and is reported through `warnings()`, because aborting
+  startup over one typo is worse than running slightly wrong and saying so. A malformed LINE
+  fails the load entirely with `file:line`, and leaves whatever was loaded before untouched, so a
+  bad edit cannot silently blank every setting. The three are pinned separately in the tests.
+
 ## Blockers / needs from Windows machine
 
 - [x] Standard .dt1 cells arrived with the completed copy (w082-w083/n30-n34, 1201x1201 posts);
@@ -902,18 +1426,59 @@ Pending).
       Geography: 32.70–32.85 N, 80.025–79.875 W (Charleston Harbor / Ashley River), which
       **overlaps the 2026-07-23 Charleston DTED2 + GeoTIFF refresh** — so "ENC over shaded
       relief" is available as a real demo.
-- [ ] **S-52 PresLib (Q10/E2)**: OpenCPN's `chartsymbols.xml` plus its `rastersymbols-*.png`
-      sheets, from an OpenCPN install or its source tree (GPL-3.0 — see the queue note on why
-      that is fine as data). Drop under `TestData/s52/` (git-ignored), supplied at runtime by
-      data-dir arg like `TestData/GeoSymbol`.
-- [ ] **S-57 Appendix A object/attribute catalogue (E2, needed with the PresLib)**: the
-      object-class and attribute code tables, i.e. GDAL's / OpenCPN's
-      `s57objectclasses.csv` + `s57attributes.csv` (both ship with either project;
-      the codes are IHO spec data). Drop beside the PresLib under `TestData/s52/`.
-      Until then E1's reader reports numeric `OBJL`/`ATTL` codes only — see the
-      2026-07-25 decision on why they are not written from memory. This also
-      unblocks DSSI's meta/cartographic/geo record split and gives `Describe()`
-      real names for ENC, the way `INT.VDT`/`CHAR.VDT` did for VPF in R1.
+- [x] **Four more ENC cells ARRIVED 2026-07-28** (Chris, mid-session during E6):
+      `US2EC02M` (band 2, General), `US3SC1CB` (band 3, Coastal), `US4SC1BO` and
+      `US4SC1CO` (band 4, Approach) in `TestData/enc/`, beside the four band-5
+      Charleston harbour cells. They cover the same water at coarser usage bands,
+      so `TestData/enc` is now a real multi-band exchange set — which is what
+      `BestSeriesForScale` and the R2 scale bands are for, and the enumerator test
+      now checks every band present rather than asserting "band 5".
+      **They broke 8 tests on arrival**, all of them pinning a total over the whole
+      directory (cell_count, layer count, feature counts, the first frame's series).
+      Fixed in E6 the way R3b fixed the same class of break: exact counts moved onto
+      ONE NAMED CELL, whole-root tests assert structure and lower bounds. **The
+      Charleston golden moved for two reasons at once** and both numbers are on
+      record so E6's effect stays separable: pre-E6 4 cells `0xbaccb187be81a803` →
+      post-E6 4 cells `0x63ec660dc8a13dd8` (the raster symbols) → post-E6 8 cells
+      `0x5bfb57105171e60e` (the new cells drawing over the same viewport, which is
+      what is pinned).
+
+- [x] **S-52 PresLib + S-57 Appendix A ARRIVED 2026-07-26** (Chris, from OpenCPN). Both
+      blockers closed at once, and **E2/Q10 is now unblocked**. NOTE THE PATH: they went
+      into **`TestData/enc/`**, beside the Charleston cells — not the `TestData/s52/` this
+      entry originally proposed. Use `TestData/enc` as the S-52 data-dir arg. Git-ignored
+      via the existing `testdata/` rule; supplied at runtime like `TestData/GeoSymbol`.
+      Inventory, verified on arrival rather than assumed:
+      - **`chartsymbols.xml`** (2.2 MB): **5 colour tables** (DAY_BRIGHT, DAY_BLACKBACK,
+        DAY_WHITEBACK, DUSK, NIGHT — so the day/dusk/night axis is real, not a stub),
+        **3057 `<lookup>` rows across the five S-52 lookup tables** (Paper 1335,
+        Simplified 756, Symbolized 349, Plain 342, Lines 275 — i.e. both the paper-chart
+        and simplified point sets AND both area-fill styles), **1093 symbols**,
+        **59 line-styles**, **30 patterns**. That maps 1:1 onto the §5.1 table:
+        lookups→rules, line-styles→GeoSym's SAMI, patterns→area fill.
+      - **`rastersymbols-{day,dusk,dark}.png`** — the raster symbol sheets the colour
+        tables name via `<graphics-file>`. The vector symbol defs are in the XML; these
+        are the alternative raster path (and a ready-made symbol atlas for R3).
+      - **`s57objectclasses.csv`** (251 rows) + **`s57attributes.csv`** (313 rows) — the
+        Appendix A catalogue E1 refused to write from memory. Spot-checked against the
+        exact two codes the E1 decision cited as unresolvable: `OBJL 42` → `DEPARE`
+        "Depth area", `ATTL 87` → `DRVAL1` "Depth range value 1". objectclasses also
+        carries the **`Class` column (G geo / M meta / C cartographic / $ collection)**,
+        which is precisely the DSSI record split E1 had to leave to E2.
+      - **`s57expectedinput.csv`** (1467 rows) — a bonus nobody asked for and the most
+        useful of the three: the *enumerated value* table (code, ID, meaning), i.e.
+        S-57's `INT.VDT` equivalent. This is what gives ENC a real `Describe()` in the
+        R1 sense, decoding attribute values and not just naming the columns.
+- [ ] **Follow-ups noted in R2 (2026-07-26), neither blocking:**
+      (1) **PythonView has no UI for the rule layer yet** — `pyfvw.vector.RuleSet` /
+      `ViewingGroupSet` and `engine.rules()`/`viewing_groups()` are bound and tested, but
+      `port/apps/PythonView.py` does not surface them. The natural shape is an Overlays-menu
+      display-category picker (Base/Standard/Other) plus a "Load rule file…" item, which is
+      what makes scale-dependent authoring reachable to an operator.
+      (2) **`TilePackReal.WriteReadRoundTrip` and `.EnumeratedAndRenderedThroughEngine` fail
+      under `ctest -j`** and pass serially or with `-R TilePackReal` — they write the same
+      scratch `.gpkg` path, so a parallel run has them clobbering each other. Pre-existing
+      (predates R2); the fix is a per-test filename. Plain `ctest` is green: 376/376.
 - [x] **GeoSym asset directory ARRIVED 2026-07-21**: `TestData/GeoSymbol/` (git-ignored) —
       `SymAssign/` (rule tables: fullsym.txt, simpsym.txt, …) + `Graphics/*.cgm` (757 CGM
       symbol files). Chris flattened an original double-nesting (`GeoSymbol/GeoSymbol/`) on

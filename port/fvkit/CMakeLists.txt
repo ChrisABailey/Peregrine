@@ -31,12 +31,16 @@ add_library(fv_fvkit STATIC
   catalog/catalog.cpp
   canvas/cpu_canvas.cpp
   proj/map_projection.cpp
+  settings.cpp
   engine/map_engine.cpp
   overlay/manager.cpp
   overlay/grid_overlay.cpp
   store/tile_pack.cpp
   vector/renderer.cpp
   vector/pick.cpp
+  vector/rules.cpp
+  vector/scene.cpp
+  vector/lookup_engine.cpp
 )
 target_include_directories(fv_fvkit PUBLIC ${CMAKE_SOURCE_DIR}/port/include)
 # stb_truetype (vendored single header, public domain) for CpuCanvas text
@@ -71,6 +75,10 @@ if(FVW_BUILD_TESTS)
     test/vpf_adapter_test.cpp
     test/vector_renderer_test.cpp
     test/vector_pick_test.cpp
+    test/vector_rules_test.cpp
+    test/vector_lookup_engine_test.cpp
+    test/vector_scene_test.cpp
+    test/settings_test.cpp
   )
   # fv_png: golden-PNG side channel in canvas_test (ported libpng)
   target_link_libraries(fv_fvkit_test PRIVATE fv_fvkit fv_png GTest::gtest_main)

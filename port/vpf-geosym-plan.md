@@ -186,7 +186,35 @@ S-52 and OSM become **loaders** that fill it, not three parallel engines.
 Do the extraction when the *second* real table exists (see sequencing), not
 speculatively against GeoSym alone.
 
-### 5.2 `fvkit/vector/rules.h` — the rule layer
+**BUILT 2026-07-27 (E3c)** — `port/include/fvkit/vector/lookup_engine.h` +
+`port/fvkit/vector/lookup_engine.cpp`; ledger row E3c has the full note. Cut
+after BOTH engines were written and rendering, not merely after the second
+table loaded. Three of the five listed pieces moved (memoized resolution =
+the R2 rule layer, symbol cache, and the placers, which were already shared in
+E3b) plus the label switch, the open flag and an unresolved-symbol counter;
+**the row table and the palette deliberately stayed with the products** — the
+two dispatch rules are not special cases of each other (GeoSym: every row whose
+condition holds contributes; S-52: the first matching row of one of five tables
+wins), and a palette reduces to "give me an FvColor", which is an interface
+with nothing behind it. OSM now inherits the core rather than reproducing it.
+Both goldens unmoved.
+
+### 5.2 `fvkit/vector/rules.h` — the rule layer — **BUILT 2026-07-26 (R2)**
+
+*As built* (ledger row R2 has the full note): `port/include/fvkit/vector/rules.h`
++ `port/fvkit/vector/rules.cpp`, with `GeoSymStyleEngine` retrofitted as its
+first client. Four deviations from the sketch below, all recorded in the
+ledger's Decisions: the `Action` set is `show|hide|set` — **`restyle` is
+absent** because it needs style.h's vocabulary and rules.h sits below it;
+`ViewingGroup` became a `ViewingGroupSet` runtime toggle plus a separate IMO
+**display-category threshold** (GeoSym's `dispcat` = S-52's BASE/STANDARD/
+OTHER, so it is genuinely cross-product); `ResolvedPlan` defers *every* rule
+after the first per-feature one, not just the conditional ones, or source
+order stops deciding; and the whole layer is **opt-in** — an empty RuleSet
+leaves rendering bit-identical, which is what let it land without moving the
+DNC golden.
+
+
 
 One predicate AST with three front-end parsers (ATTEXP, S-52 ATTC, MapLibre
 `filter`). Rule form:
@@ -298,8 +326,8 @@ Deliberately does not build the shared abstraction until two real tables exist:
 |---|---|---|
 | ~~R1~~ | ~~Identify: `FeatureRef`, `Describe()`, VPF VDT decoding, pick index, pan-viewer click→info panel~~ **DONE 2026-07-25** (ledger row R1) | Self-contained, rules-independent, immediately useful; no abstraction guesswork |
 | E1 | ISO 8211 / S-57 reader | Zero dependencies, free NOAA cells, yields the second real product |
-| R2 | `rules.h` + `LookupTableStyleEngine` extraction; retrofit GeoSym | Now designed against GeoSym *and* S-52 tables; kills the dense-label problem (Q6c item 3) |
-| E2/E3 | PresLib parse + `S52StyleEngine` + CS registry + along-path placer | Placer is shared back into GeoSym SAMI (Q6c item 2) |
+| ~~R2~~ | ~~`rules.h`~~ + ~~retrofit GeoSym~~ **DONE 2026-07-26** (ledger row R2) | Landed as designed and killed the dense-label problem (Q6c item 3). **The `LookupTableStyleEngine` extraction did NOT happen here and moved to E2/Q10**: §5.1's rule is to extract when the second real TABLE exists, and E1 delivered the S-57 reader (data), not `chartsymbols.xml` (table), which was not in TestData at the time. **It arrived 2026-07-26** (`TestData/enc/`), so E2 has both tables in hand. |
+| ~~E2/E3~~ | PresLib parse + `S52StyleEngine` + CS registry + along-path placer **+ the deferred `LookupTableStyleEngine` extraction** — **ALL DONE 2026-07-27** as E2 / E3a / E3b / E3c (ledger rows) | Placer is shared back into GeoSym SAMI (Q6c item 2). **Ungated 2026-07-26**: `TestData/enc/` now has chartsymbols.xml (3057 lookups, 5 colour tables, 1093 symbols, 59 line-styles, 30 patterns), the raster symbol sheets, and the Appendix A catalogue. |
 | R3 | Perf pass: tile display lists, symbol atlas, columnar geometry, simplification | Two products to profile against |
 | O1–O3 | OSM | Lands on the finished middle layer; ends up small |
 
@@ -623,7 +651,7 @@ TestData/enc/                      (git-ignored, like every other sample set)
 | Phase | Deliverable | Test | Depends on |
 |---|---|---|---|
 | E1 | ISO 8211 reader + S-57 feature/attribute/geometry extraction — **BUILT 2026-07-25**, `port/Enc/fv_iso8211.{h,cpp}` + `fv_s57.{h,cpp}` (base editions only, loudly; object/attribute codes stay numeric pending the Appendix A catalogue) | pinned object counts/attrs/geometry for a NOAA cell, plus the producer's own DSSI counts and CATALOG.031 bounds as cross-checks | — (**done**) |
-| E2 | `chartsymbols.xml` parse: lookup tables + symbol display lists + day palette (vendored XML parser, §5.6) | pinned lookups for DEPARE/BOYLAT/LIGHTS; symbol display-list goldens | PresLib file present in TestData |
+| E2 | `chartsymbols.xml` parse: lookup tables + symbol display lists + palettes — **BUILT 2026-07-27**, `port/Enc/fv_s52_preslib.{h,cpp}` (all 5 colour tables, all 5 lookup tables, HPGL→`VectorSymbol`) + `fv_s57_catalog.{h,cpp}` (Appendix A). Deviation from the sketch: expat comes from `port/third_party` (2.8.2), not the vendored 2012 copy §5.6 assumed | pinned lookups for DEPARE/BOYLAT/LIGHTS; symbol display-list goldens — all present, plus 3 corpus sweeps that each found a real data quirk (ledger Decisions 2026-07-27) | — (**done**) |
 | E3 | `S52StyleEngine` over the shared `LookupTableStyleEngine` core + first CS procedures (DEPARE/DEPCNT safety contour, LIGHTS) + along-path placer | golden PNG of a NOAA harbor cell; visual sanity vs OpenCPN screenshot (not pixel parity) | V5 seam, E1, E2, R2 |
 | E4 | Pre-parsed source cache; pan-viewer `enc` mode; TilePack pre-render | reopen-from-cache identical hash; pan performance budget | E3 |
 | E5 | S-57 update files; dusk/night palettes; more CS procedures | update-applied cell matches NOAA re-issued cell | E1–E4, on demand |

@@ -12,7 +12,9 @@ port can currently render, driven from the L2 catalog.
   Raster Charts   CADRG (GNC/JNC/LFC/TLM) and GeoPackage tile packs
   Imagery         GeoTIFF DOQs and TIROS world tiles
   Elevation       DTED shaded relief (the "dted-shaded" raster source)
-  Vector Charts   DNC libraries through GeoSym + the shared VectorRenderer
+  Vector Charts   DNC libraries through GeoSym, and S-57 ENC cells through
+                  the official S-52 presentation library - two products over
+                  ONE seam (source -> style engine -> VectorRenderer)
 
 The catalog is a persistent SQLite file (File menu: New/Open/Add Map Data /
 Manage Data Sources). The Map menu lists every series grouped by family; the
@@ -62,7 +64,13 @@ NATIVE_MM_PER_PIXEL = pyfvw.engine.NATIVE_DISPLAY_MM_PER_PIXEL  # 0.25
 ZOOM_STEP = 2.0 ** 0.5
 FEATURE_STEP = 1.25
 PAN_PX = 150
-BASE_DPI = 96.0
+# The device resolution the vector style engines convert physical style units
+# with (S-52 line widths are 0.32 mm; GeoSym's are HIMETRIC). It is the SAME
+# physical property as display.mm_per_pixel, so it is DERIVED from it rather
+# than set independently — those two were 96 dpi and 0.25 mm/px (= 101.6 dpi),
+# quietly disagreeing about the screen by 6%.
+def _dpi_for(mm_per_pixel):
+    return 25.4 / mm_per_pixel if mm_per_pixel > 0 else 96.0
 
 # The data families shown in the Map menu, in display order. "dted" (the
 # elevation-query format) is deliberately absent: it backs the cursor
@@ -71,8 +79,15 @@ FAMILIES = (
     ("Raster Charts", ("cadrg", "gpkg")),
     ("Imagery", ("geotiff", "tiros")),
     ("Elevation", ("dted-shaded",)),
-    ("Vector Charts", ("vpf",)),
+    ("Vector Charts", ("vpf", "enc")),
 )
+# Formats drawn through the vector seam (source -> style engine ->
+# VectorRenderer) rather than through MapEngine's raster compositor. Derived
+# from FAMILIES so a new vector product is added in exactly one place: before
+# ENC arrived, four separate `format == "vpf"` tests stood for "is vector",
+# and every one of them had to be found again.
+VECTOR_FORMATS = frozenset(dict(FAMILIES)["Vector Charts"])
+
 # Coverage-overlay colors, one per format.
 COVERAGE_COLORS = {
     "cadrg": (230, 70, 70),
@@ -81,6 +96,7 @@ COVERAGE_COLORS = {
     "tiros": (235, 205, 60),
     "dted-shaded": (170, 110, 240),
     "vpf": (80, 150, 240),
+    "enc": (200, 80, 190),
 }
 
 # dted-shaded series carry scale 0 (elevation cells have no chart scale), so
@@ -92,7 +108,8 @@ DTED_DEFAULT_SCALE = {"DTED0": 2e6, "DTED1": 500e3, "DTED2": 150e3, "DTED3": 50e
 # per-directory, hence the subdir fallback. dted is scanned twice on purpose:
 # once as the elevation source, once as the shaded-relief raster.
 SCAN_FORMATS = (("cadrg", "rpf"), ("tiros", "tiros3"), ("dted", "dted"),
-                ("dted-shaded", "dted"), ("geotiff", "geotiff"), ("gpkg", None))
+                ("dted-shaded", "dted"), ("geotiff", "geotiff"), ("gpkg", None),
+                ("enc", "enc"))
 
 
 def _find_host_font():
@@ -314,12 +331,28 @@ class PythonView:
     """Model + tk shell. The model half (catalog/engine/render_array) works
     headless for --shot and tests; run() adds the tk UI on top."""
 
-    def __init__(self, db_path=DEFAULT_DB):
-        self.db_path = db_path
+    def __init__(self, db_path=DEFAULT_DB, settings_path=None):
+        # Settings first: everything below takes its default from the file when
+        # the file has an opinion. See port/peregrine.ini.sample for the keys,
+        # and fvkit/settings.h for the search path. Read once, at startup.
+        self.settings = pyfvw.Settings()
+        try:
+            self.settings.load(settings_path or "")
+        except pyfvw.FvError as e:
+            # A broken settings file must not stop the app starting — it says
+            # what is wrong (with the line number) and runs on defaults.
+            print(f"settings: {e.message}", file=sys.stderr)
+        cfg = self.settings
+        if cfg.path:
+            print(f"settings: {cfg.path}", file=sys.stderr)
+
+        self.db_path = cfg.get("catalog.db", db_path) if db_path == DEFAULT_DB \
+            else db_path
         self.catalog = None
         self.W, self.H = 1000, 700
         self.center = pyfvw.geo.GeoPoint(0.0, 0.0)
-        self.mm_per_pixel = NATIVE_MM_PER_PIXEL
+        self.mm_per_pixel = cfg.get_float("display.mm_per_pixel",
+                                          NATIVE_MM_PER_PIXEL)
         self.font = _find_host_font()
 
         # Raster state.
@@ -330,16 +363,26 @@ class PythonView:
 
         # Vector state.
         self.vproj = pyfvw.engine.MapProjection()
-        self.style = None             # shared GeoSymStyleEngine
-        self.geosym_dir = TESTDATA
+        self.style = None             # shared GeoSymStyleEngine (DNC)
+        self.s52 = None               # shared S52StyleEngine (ENC)
+        self.vstyle = None            # whichever of the two the active series uses
+        self.geosym_dir = cfg.get("geosym.data_dir", TESTDATA)
+        # Holds chartsymbols.xml (the S-52 presentation library) and the S-57
+        # Appendix A CSVs. Both are git-ignored data supplied by the user, so
+        # like geosym.data_dir this is a settings key, not a constant.
+        self.enc_dir = cfg.get("enc.data_dir", os.path.join(TESTDATA, "enc"))
+        self.show_meta = cfg.get_bool("enc.show_meta_objects", False)
+        # R3a knobs, applied to every vector renderer as it is created.
+        self.scene_margin = cfg.get_float("vector.scene_margin", 0.25)
+        self.simplify_px = cfg.get_float("vector.simplify_pixels", 0.0)
         self.vsources = {}            # series_id -> (source, renderer)
         self.vrenderer = None
         self.vsource = None
         self.vscale = 50e3
         self.feature_scale = 1.0
         self.labels = False
-        self.brightness = 0
-        self.contrast = 0
+        self.brightness = cfg.get_int("geosym.brightness", 0)
+        self.contrast = cfg.get_int("geosym.contrast", 0)
 
         self.canvas = None
         self._make_canvas()
@@ -368,7 +411,8 @@ class PythonView:
 
     @property
     def mode(self):
-        return "vector" if (self.series and self.series.format == "vpf") else "raster"
+        return "vector" if (self.series and
+                            self.series.format in VECTOR_FORMATS) else "raster"
 
     @property
     def proj(self):
@@ -414,7 +458,7 @@ class PythonView:
                      if s.format == self.series.format
                      and s.series_key == self.series.series_key]
             self.series = match[0] if match else None
-            if self.series is not None and self.series.format == "vpf":
+            if self.series is not None and self.series.format in VECTOR_FORMATS:
                 try:
                     self._open_vector(self.series)
                 except Exception:
@@ -470,16 +514,26 @@ class PythonView:
         prev = self.series
         self.series = series
         try:
-            if series.format == "vpf":
+            if series.format in VECTOR_FORMATS:
                 self._open_vector(series)
-            if series.format == "vpf":
+            if series.format in VECTOR_FORMATS:
                 # Frame the library like the old demo: the reader's own
                 # bounds, not the catalog tile union (tighter fit).
                 b = self.vsource.bounds
                 if recenter or not self._covers_center(series):
                     self.center = pyfvw.geo.GeoPoint(
                         (b.ll.lat + b.ur.lat) / 2.0, (b.ll.lon + b.ur.lon) / 2.0)
-                self.vscale = self._fit_scale_rect(b)
+                # A series that declares a scale opens AT it. For ENC that is
+                # the usage band's own nominal scale (General 1:1,000,000,
+                # Coastal 1:300,000, Approach 1:50,000, Harbour 1:12,000) —
+                # the scale the cell was compiled for and the only one its
+                # SCAMIN thinning is authored against. Fitting the band's
+                # whole extent on screen instead, which is what this did,
+                # opens a harbour chart zoomed so far out that every cell in
+                # the band is on screen at once. DNC libraries carry no chart
+                # scale, so they keep the fit.
+                self.vscale = (series.scale_denom if series.scale_denom > 0
+                               else self._fit_scale_rect(b))
             elif recenter or not self._covers_center(series):
                 self.center = self.series_bounds_center(series)
             if series.format == "dted-shaded":
@@ -501,23 +555,61 @@ class PythonView:
         return max(ground_w / screen_w, ground_h / screen_h) * 1.1
 
     def _open_vector(self, series):
-        """Open (or reuse) the DNC library behind a vpf series row."""
+        """Open (or reuse) the source + style engine behind a vector series.
+
+        Two products now, one seam: DNC through VPF + GeoSym, ENC through
+        S-57 + the official S-52 presentation library. Everything downstream
+        of `renderer` — the retained scene, identify, coverage, the render
+        loop — is the same code for both, which is the whole point of the
+        vector seam and is why this method is the only place that forks.
+        """
         if series.id in self.vsources:
-            self.vsource, self.vrenderer = self.vsources[series.id]
+            self.vsource, self.vrenderer, self.vstyle = self.vsources[series.id]
             return
         rows = self.catalog.select_by_geo_rect(pyfvw.geo.GeoRect.world(), series.id)
         if not rows:
             raise RuntimeError(f"no coverage rows for {series.series_key}")
-        db_root = rows[0].path.split("|")[0]
-        lib_dir = os.path.join(db_root, series.series_key)
-        source = pyfvw.vector.VpfVectorSource()
-        source.open(lib_dir)
-        if self.style is None:
-            self.style = pyfvw.vector.GeoSymStyleEngine()
-            self.style.open(self.geosym_dir, pyfvw.vector.GEOSYM_DNC)
-        renderer = pyfvw.vector.VectorRenderer(source, self.style)
-        self.vsources[series.id] = (source, renderer)
-        self.vsource, self.vrenderer = source, renderer
+
+        if series.format == "enc":
+            # One ENC row = one cell file, and an ENC series IS a usage band —
+            # so the source opens exactly the cells the catalog filed under
+            # this band, all of them, and nothing else.
+            #
+            # It used to open the common ANCESTOR DIRECTORY of those cells, so
+            # that panning across a band needed no source swap. That is the
+            # right goal and the wrong mechanism: the common ancestor of an
+            # exchange set is the exchange set, so every band opened every
+            # cell and a harbour chart drew a 1:1,000,000 general cell
+            # underneath itself. Invisible while TestData held band 5 alone;
+            # the 2026-07-28 cells made it obvious. A band is a SCALE, not a
+            # place — only naming the cells can say which one is wanted.
+            source = pyfvw.vector.EncVectorSource()
+            source.open_cells(sorted({r.path for r in rows}), self.enc_dir)
+            if self.s52 is None:
+                self.s52 = pyfvw.vector.S52StyleEngine()
+                self.s52.open(self.enc_dir)
+                self.s52.set_show_meta_objects(self.show_meta)
+            style = self.s52
+        else:
+            db_root = rows[0].path.split("|")[0]
+            lib_dir = os.path.join(db_root, series.series_key)
+            source = pyfvw.vector.VpfVectorSource()
+            source.open(lib_dir)
+            if self.style is None:
+                self.style = pyfvw.vector.GeoSymStyleEngine()
+                self.style.open(self.geosym_dir, pyfvw.vector.GEOSYM_DNC)
+            style = self.style
+        renderer = pyfvw.vector.VectorRenderer(source, style)
+        # R3a: retain a scene larger than the window, so a drag-pan re-projects
+        # and redraws but does not re-query VPF or re-run GeoSym (~40% of a
+        # vector frame); and optionally thin the geometry for drawing. Both are
+        # settings-file knobs — [vector] scene_margin / simplify_pixels. The
+        # scene rebuilds itself on a zoom, a feature-scale change, or any style
+        # change (the engine's epoch).
+        renderer.set_scene_margin(self.scene_margin)
+        renderer.set_simplify_pixels(self.simplify_px)
+        self.vsources[series.id] = (source, renderer, style)
+        self.vsource, self.vrenderer, self.vstyle = source, renderer, style
 
     def set_surface_size(self, w, h):
         if (w, h) == (self.W, self.H):
@@ -572,9 +664,15 @@ class PythonView:
         self.vproj.set_center(self.center)
         self.vproj.set_physical_scale(self.vscale, self.mm_per_pixel)
         self.vrenderer.set_symbol_scale(self.feature_scale)
-        self.vrenderer.set_device_dpi(BASE_DPI * self.feature_scale)
-        self.style.set_draw_labels(self.labels and self.font is not None)
-        self.style.set_color_adjust(self.brightness, self.contrast)
+        self.vrenderer.set_device_dpi(
+            _dpi_for(self.mm_per_pixel) * self.feature_scale)
+        self.vstyle.set_draw_labels(self.labels and self.font is not None)
+        # Brightness/contrast is a GeoSym knob (it adjusts the DNC colour
+        # table). S-52 has no equivalent by design — the mariner picks a
+        # day/dusk/night COLOUR TABLE instead, which is a chart-correctness
+        # rule, not a preference, so there is nothing to forward here.
+        if hasattr(self.vstyle, "set_color_adjust"):
+            self.vstyle.set_color_adjust(self.brightness, self.contrast)
         self.canvas.clear((255, 255, 255))
         self.vrenderer.render(self.vproj, self.canvas)
         self._frames = self.vrenderer.features_queried
@@ -592,19 +690,39 @@ class PythonView:
         return sorted(seen.values(), key=lambda s: s.scale_denom)
 
     def step_scale(self, delta):
-        """PageUp/Down: nearest larger/smaller-scale series AT the center."""
-        if self.catalog is None or self.series is None or self.mode == "vector":
+        """PageUp/Down: nearest larger/smaller-scale series AT the center.
+
+        Vector series ride this too, and ENC is the case it was made for: its
+        series ARE scale bands (General -> Coastal -> Approach -> Harbour), so
+        stepping one is the same gesture as stepping a raster scale ladder and
+        should not be a different key. `_scales_at` already ignores series
+        that declare no scale, so a DNC library — which is a place, not a
+        scale — is never a candidate and nothing steps to or from it.
+        """
+        if self.catalog is None or self.series is None:
             return None
         cur = self.series.scale_denom
         if cur <= 0:
             return None
         here = self._scales_at(self.center)
-        if delta < 0:
-            cands = [s for s in here if s.scale_denom < cur]
-            nxt = cands[-1] if cands else None
-        else:
-            cands = [s for s in here if s.scale_denom > cur]
-            nxt = cands[0] if cands else None
+
+        def nearest(pool):
+            if delta < 0:
+                c = [s for s in pool if s.scale_denom < cur]
+                return c[-1] if c else None
+            c = [s for s in pool if s.scale_denom > cur]
+            return c[0] if c else None
+
+        # The current PRODUCT gets first refusal, and only when it has no next
+        # step does the ladder cross to another one. Charleston is the case
+        # that needs it: ENC, CADRG, the DOQs and DTED all cover that water, so
+        # a flat nearest-scale rule walks a mariner out of the chart he chose
+        # and into a topo sheet halfway up the band ladder. Paging within a
+        # product until it runs out is what a scale ladder means to someone
+        # reading one.
+        nxt = nearest([s for s in here if s.format == self.series.format])
+        if nxt is None:
+            nxt = nearest(here)
         if nxt is not None:
             self.set_series(nxt)
         return nxt
@@ -617,7 +735,12 @@ class PythonView:
             return
         if self.mode == "vector":
             if factor is None:
-                self.vscale = self._fit_scale_rect(self.vsource.bounds)
+                # Reset goes where the series OPENS — its own nominal scale
+                # when it declares one (an ENC band), the whole library
+                # otherwise (a DNC library declares no chart scale).
+                self.vscale = (self.series.scale_denom
+                               if self.series.scale_denom > 0
+                               else self._fit_scale_rect(self.vsource.bounds))
                 self.feature_scale = 1.0
             else:
                 self.vscale = max(1e3, min(5e8, self.vscale * factor))
@@ -801,6 +924,14 @@ class PythonView:
         m_ovl.add_checkbutton(label="Feature Labels (vector)", accelerator="l",
                               variable=self.var_labels,
                               command=self._ui_apply_overlays)
+        # S-57 meta objects describe the DATASET, not the world: M_QUAL's
+        # zones of confidence, M_COVR's coverage, M_NSYS. Off by default (they
+        # pattern over the whole chart), but a mariner does ask for the ZOC
+        # overlay, so it is a toggle rather than a hard exclusion.
+        self.var_meta = tk.BooleanVar(value=self.show_meta)
+        m_ovl.add_checkbutton(label="ENC: Data Quality / Coverage (M_*)",
+                              variable=self.var_meta,
+                              command=self._ui_apply_overlays)
         self.menubar.add_cascade(label="Overlays", menu=m_ovl)
 
         m_tools = tk.Menu(self.menubar, tearoff=0)
@@ -843,6 +974,7 @@ class PythonView:
                     detail = f"1:{s.scale_denom:,.0f}"
                 else:
                     detail = {"vpf": "DNC library",
+                              "enc": "ENC usage band",
                               "dted-shaded": "shaded relief"}.get(s.format, "")
                 n = counts.get(s.id)
                 label = f"{s.series_key}   {detail}" + (f"   ({n} frames)" if n else "")
@@ -850,8 +982,6 @@ class PythonView:
                                   value=self._series_menu_key(s),
                                   command=lambda s=s: self._ui_set_series(s))
         m.add_command(label="--- Planned ---", state="disabled")
-        m.add_command(label="ENC (S-57 / S-52) - reader ported, styling next",
-                      state="disabled")
         m.add_command(label="OSM vector tiles - planned", state="disabled")
         m.add_command(label="WMS - planned", state="disabled")
         if self.series is not None:
@@ -1029,6 +1159,10 @@ class PythonView:
         self.coverage.enabled_formats = {
             fmt for fmt, v in self.var_cov_fmt.items() if v.get()}
         self.labels = self.var_labels.get()
+        if hasattr(self, "var_meta"):
+            self.show_meta = self.var_meta.get()
+            if self.s52 is not None:
+                self.s52.set_show_meta_objects(self.show_meta)
         self.refresh()
 
     def _ui_goto(self):
@@ -1232,7 +1366,7 @@ class PythonView:
                 self.geosym_dir = v_gs.get()
                 self.style = None       # reopen lazily with the new dir
                 self.vsources.clear()
-                self.vrenderer = self.vsource = None
+                self.vrenderer = self.vsource = self.vstyle = None
                 if self.mode == "vector":
                     try:
                         self._open_vector(self.series)
@@ -1315,8 +1449,15 @@ class PythonView:
         s = self.series
         if self.mode == "vector":
             lbl = "on" if (self.labels and self.font) else "off"
+            product = "ENC" if s.format == "enc" else "DNC"
+            # Base-edition-only cells are a navigational caveat, not a parse
+            # problem: the reader does not apply the .001+ updates shipped
+            # beside these cells, so say so on the chart rather than letting
+            # a stale chart look current.
+            if s.format == "enc" and self.vsource.staleness_warning:
+                product += " (base ed.)"
             txt = (f" {self.center.lat:+.5f} {self.center.lon:+.5f}   "
-                   f"DNC/{s.series_key}  1:{self.vscale:,.0f}   "
+                   f"{product}/{s.series_key}  1:{self.vscale:,.0f}   "
                    f"features x{self.feature_scale:.2f}  labels:{lbl}   "
                    f"{self._frames} feat/{self._ms:.0f}ms  {self.mouse_readout}")
         else:
@@ -1373,7 +1514,11 @@ def run_selftest(app, outdir):
                 app.tk.after(settle_ms, steps.pop(0))
         return wrapped
 
-    # One representative series per family present in the catalog.
+    # One representative series per FORMAT present in the catalog — not per
+    # family. Vector Charts holds two products whose only shared code is the
+    # renderer (VPF+GeoSym vs S-57+S-52), so a per-family walk would have
+    # exercised whichever came first and left the other untested; that is
+    # exactly how the ENC path shipped broken in this file's first draft.
     picks = []
     by_format = {}
     for s in app.series_by_id.values():
@@ -1383,7 +1528,6 @@ def run_selftest(app, outdir):
             if by_format.get(fmt):
                 picks.append(sorted(by_format[fmt],
                                     key=lambda s: s.series_key)[0])
-                break
 
     for s in picks:
         steps.append(step(lambda s=s: app.set_series(s, recenter=True),
@@ -1431,17 +1575,27 @@ def main():
                     help="render once headless, save PNG, exit")
     ap.add_argument("--selftest", action="store_true",
                     help="scripted UI walk-through; exits non-zero on failure")
+    ap.add_argument("--settings", metavar="INI",
+                    help="settings file (default: the FVW_SETTINGS / "
+                         "./peregrine.ini / user-config search path; see "
+                         "port/peregrine.ini.sample)")
     args = ap.parse_args()
 
-    app = PythonView(db_path=args.db)
+    app = PythonView(db_path=args.db, settings_path=args.settings)
+    for w in app.settings.warnings:
+        print(f"settings: {w}", file=sys.stderr)
+
+    # app.db_path, not args.db: the settings file may have named a catalog,
+    # and an explicit --db still wins (PythonView resolves that).
+    db = app.db_path
     first_run = False
     if args.scan:
-        print(f"scanning {args.scan} -> {args.db}")
-        app.new_catalog_from_scan(args.db, args.scan)
-    elif os.path.exists(args.db):
-        app.open_catalog(args.db)
+        print(f"scanning {args.scan} -> {db}")
+        app.new_catalog_from_scan(db, args.scan)
+    elif os.path.exists(db):
+        app.open_catalog(db)
     elif args.shot or args.selftest:
-        raise SystemExit(f"no catalog at {args.db}; run once with --scan DIR")
+        raise SystemExit(f"no catalog at {db}; run once with --scan DIR")
     else:
         first_run = True
 

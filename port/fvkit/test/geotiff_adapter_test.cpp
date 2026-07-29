@@ -59,13 +59,19 @@ const Block* BlockFor(const std::string& base) {
   // Charleston SC, added 2026-07-23: 10 '22...e...n' DOQQ tiles + 4
   // 'C3208....<quad>.<id>' sheets. Same area as the new w080/w081 DTED2 cells.
   static const Block kCharleston{"Charleston", {{32.4, -80.3}, {32.7, -79.9}}};
-  // chocta.tif: Choctawhatchee Bay, FL (arrived with the full-tree copy
-  // 2026-07-16; generic GeoTIFF series).
-  static const Block kChocta{"Choctawhatchee", {{30.3, -86.7}, {30.5, -86.4}}};
+  // Florida panhandle: chocta.tif (Choctawhatchee Bay, arrived with the
+  // full-tree copy 2026-07-16, generic GeoTIFF series), plus choctb.tif and
+  // eglin1.tif (Eglin AFB, "Color" series) dropped 2026-07-28. choctb reaches
+  // 30.525N / -86.400W, past the old box's corner — the third time a data drop
+  // has moved a test's hardcoded inventory, so the box is now the panhandle
+  // rather than one bay.
+  static const Block kPanhandle{"Florida panhandle",
+                                {{30.3, -86.7}, {30.6, -86.3}}};
 
   if (base[0] == '3' || base[0] == 'f') return &kChesapeake;
   if (base[0] == '2' || base[0] == 'C') return &kCharleston;
-  if (base.compare(0, 6, "chocta") == 0) return &kChocta;
+  if (base.compare(0, 5, "choct") == 0) return &kPanhandle;
+  if (base.compare(0, 5, "eglin") == 0) return &kPanhandle;
   return nullptr;
 }
 

@@ -20,9 +20,13 @@
 // COORDINATES: everything is in the symbol's own VDC space, exactly as
 // encoded — no scaling, no rotation, no device mapping. That is what makes
 // the list resolution-independent: a caller picks a target size, derives one
-// transform from Bounds(), and applies it. Y is VDC-up (CGM convention),
-// NOT screen-down; converting is the renderer's job because only it knows
-// the destination.
+// transform from Bounds(), and applies it. Y is **screen-DOWN**: LoadCGM runs
+// with bVDCOrientationEnable=TRUE, so CCGMFile::ReadVDCScaledY has already
+// multiplied every y by the picture's m_iDirY (-1 for the standard lly<ury
+// extent that GeoSym symbols use). That is what the GDI original drew into a
+// DC unchanged; `bounds().top` is accordingly the SMALLER value. Consumers
+// targeting a y-up space (fvkit's VectorSymbol) must negate — see
+// fv_geosym_style.cpp's FlipY.
 
 #ifndef FV_CGM_SYMBOL_H_
 #define FV_CGM_SYMBOL_H_
@@ -225,6 +229,16 @@ class CgmSymbol {
   long vdc_width() const { return vdc_width_; }
   long vdc_height() const { return vdc_height_; }
 
+  // The picture's VDC direction multipliers (+1/-1 each; -1 on y for the
+  // standard lly<ury extent every GeoSym symbol uses). The parser applied
+  // these ONCE while reading coordinates, and Windows applies them a SECOND
+  // time in CCGMDrawingObject::RotateVDC when it builds the display vertices
+  // it actually draws ("VDC adjustments for reflection even if zero rotation
+  // angle"). We keep the once-applied vertices, so a consumer that wants what
+  // GDI drew must multiply by these — see fv_geosym_style.cpp's ApplyVdcDir.
+  int dir_x() const { return dir_x_; }
+  int dir_y() const { return dir_y_; }
+
   // Name the metafile encodes for itself (may be empty).
   const std::string& name() const { return name_; }
 
@@ -233,6 +247,8 @@ class CgmSymbol {
   CgmRect bounds_;
   CgmLineStyle line_style_;
   CgmAreaStyle area_style_;
+  int dir_x_ = 1;
+  int dir_y_ = -1;
   long vdc_width_ = 0;
   long vdc_height_ = 0;
   std::string name_;

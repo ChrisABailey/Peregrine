@@ -16,6 +16,7 @@
 #include <filesystem>
 
 #include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/tools/png_io.h"
 
 namespace fv {
 
@@ -50,38 +51,8 @@ Status EncodePng(const PixelBuffer& b, std::vector<unsigned char>* out) {
   return Status::Ok();
 }
 
-struct PngReadCursor {
-  const unsigned char* data;
-  size_t size, pos;
-};
-void PngReadFromVec(png_structp png, png_bytep out, png_size_t len) {
-  auto* c = (PngReadCursor*)png_get_io_ptr(png);
-  if (c->pos + len > c->size) png_error(png, "png blob truncated");
-  std::memcpy(out, c->data + c->pos, len);
-  c->pos += len;
-}
-
-Status DecodePng(const void* data, size_t size, PixelBuffer* out) {
-  png_structp png =
-      png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-  png_infop info = png_create_info_struct(png);
-  if (setjmp(png_jmpbuf(png))) {
-    png_destroy_read_struct(&png, &info, nullptr);
-    return Status::Error(kIoError, "libpng decode failed");
-  }
-  PngReadCursor cur{(const unsigned char*)data, size, 0};
-  png_set_read_fn(png, &cur, PngReadFromVec);
-  png_read_info(png, info);
-  int w = png_get_image_width(png, info), h = png_get_image_height(png, info);
-  png_set_expand(png);
-  png_set_gray_to_rgb(png);
-  if (png_get_color_type(png, info) != PNG_COLOR_TYPE_RGBA)
-    png_set_add_alpha(png, 0xFF, PNG_FILLER_AFTER);
-  *out = PixelBuffer(w, h);
-  for (int y = 0; y < h; ++y) png_read_row(png, out->Row(y), nullptr);
-  png_destroy_read_struct(&png, &info, nullptr);
-  return Status::Ok();
-}
+// The decoder moved to fvkit/tools/png_io.h on its third consumer (here, the
+// canvas golden reader, and the S-52 raster symbol sheet).
 
 // ---- GeoPackage boilerplate ------------------------------------------------
 

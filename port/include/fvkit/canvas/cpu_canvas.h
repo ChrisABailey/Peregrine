@@ -49,6 +49,8 @@ class CpuCanvas : public ICanvas {
   struct FontEntry;  // cached, parsed TTF (stb_truetype state)
 
   void BlendPixel(int x, int y, const FvColor& c);
+  // BlendPixel over a clamped horizontal run of an already-resolved row.
+  void BlendSpan(unsigned char* row, int x0, int x1, const FvColor& c);
   void Stamp(int x, int y, const Pen& pen);
   void FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
                      const FvColor& c);

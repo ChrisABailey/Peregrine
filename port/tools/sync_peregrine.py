@@ -46,6 +46,11 @@ ROOT_DOCS = {"port/LICENSE": "LICENSE",
 # Edited in the destination, never overwritten from here.
 DEST_OWNED = {"README.md", "CMakeLists.txt", ".gitignore"}
 
+# Same, but whole subtrees: the README's screenshots are authored downstream and
+# have no upstream original, so a strict closure diff would propose deleting
+# them on every sync.
+DEST_OWNED_DIRS = ("Screenshots/",)
+
 # Loaded at run time, so they never appear in a compile-time dependency
 # closure — but the geo tests do not pass without them.
 RUNTIME_DATA = [
@@ -148,7 +153,8 @@ def main():
 
     have = subprocess.run(["git", "ls-files"], cwd=dest, capture_output=True,
                           text=True).stdout.split()
-    stale = sorted(set(have) - set(mapping.values()) - DEST_OWNED)
+    stale = sorted(f for f in set(have) - set(mapping.values()) - DEST_OWNED
+                   if not f.startswith(DEST_OWNED_DIRS))
 
     added = updated = 0
     for src_rel, dst_rel in sorted(mapping.items()):

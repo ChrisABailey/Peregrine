@@ -30,6 +30,7 @@
 #ifndef FVKIT_VECTOR_STYLE_H_
 #define FVKIT_VECTOR_STYLE_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -86,6 +87,33 @@ struct VectorSymbol {
 };
 
 // ---------------------------------------------------------------------------
+// Pixmap symbols
+// ---------------------------------------------------------------------------
+//
+// Not every symbol a product ships is a display list. S-52's delivered library
+// defines 679 of its 1018 symbols as RASTER ONLY — a tile in a symbol sheet
+// with no HPGL at all — and they are not a fringe: the lateral buoys, beacons
+// and daymarks of a harbour are in there. OSM sprite sheets are the same idea
+// again, and GeoSym's stipple fills were bitmaps before they were CGM.
+//
+// So a symbol_id resolves through TWO accessors, vector first. This is a
+// deliberate second slot rather than a rasterize-on-demand VectorSymbol: a
+// pixmap has no geometry to hand back, and pretending otherwise would make
+// every consumer of Symbol() (the pick index, the placer) reason about a
+// display list that is really a rectangle.
+//
+// UNITS ARE PIXELS, unlike everything else at this seam — the tile is
+// authored at a nominal display resolution and the renderer blits it. The
+// pivot is where the feature's own position lands, in tile pixels with y DOWN
+// (image convention, matching PixelBuffer), so it is subtracted from the
+// anchor to get the tile's top-left.
+struct SymbolPixmap {
+  PixelBuffer tile;  // RGBA8, straight (non-premultiplied) alpha
+  double pivot_x = 0.0;
+  double pivot_y = 0.0;
+};
+
+// ---------------------------------------------------------------------------
 // Draw ops
 // ---------------------------------------------------------------------------
 
@@ -118,6 +146,63 @@ struct LabelStyle {
   int dx = 0, dy = 0;  // pixel offset from the anchor point
 };
 
+// --- along-path and area pattern placement (E3b) ----------------------------
+//
+// Three products describe "repeat something along a line" and none of them can
+// say it with a pen: GeoSym's SAMI line style is a cycle of dash / gap / point
+// -symbol runs, S-52's LC is a symbol stamped end to end, and an OSM line
+// pattern is the same idea again. They reduce to ONE primitive — a cyclic
+// sequence of runs measured in pixels along the path — so the placement walk
+// lives once in the renderer (PlaceAlongPath) rather than three times in three
+// style engines. §5.1 of the plan calls this out; it is why LC and SAMI are
+// not two features.
+//
+// A style engine converts its own units to PIXELS here, the same contract
+// Pen/Brush already carry.
+
+enum class PathRunType {
+  kGap = 0,   // advance, draw nothing
+  kDash,      // advance, stroking with LinePatternStyle::pen
+  kSymbol,    // stamp `symbol_id`, then advance by `length`
+};
+
+struct PathRun {
+  PathRunType type = PathRunType::kGap;
+
+  // Pixels along the path. On a kDash this may be 0, which is GeoSym's
+  // "run to the end of the line" (SAMI encodes a solid line that way).
+  double length = 0.0;
+
+  // kSymbol only.
+  std::string symbol_id;
+  double symbol_scale = 1.0;
+  // Added to the path tangent, in the same sense PointSymbolStyle::rotation_deg
+  // is applied. 0 = the symbol's own +x axis runs along the path.
+  double rotation_deg = 0.0;
+  // Perpendicular displacement in pixels, positive toward the symbol's +y
+  // (left of the direction of travel). GeoSym's SAMI vertical displacement.
+  double offset = 0.0;
+};
+
+struct LinePatternStyle {
+  bool valid = false;
+  std::vector<PathRun> runs;  // cycled until the path is consumed
+  Pen pen;                    // strokes the kDash runs
+  double phase = 0.0;         // pixels into the cycle at the path's start
+};
+
+// A repeating symbol fill. ICanvas has only a solid brush, so this is how a
+// product's pattern brush (S-52 AP, GeoSym's bitmap stipples) says what it
+// really is; the renderer stamps the symbol on a grid clipped to the ring.
+struct AreaPatternStyle {
+  bool valid = false;
+  std::string symbol_id;
+  double spacing_x = 0.0;  // pixels, centre to centre
+  double spacing_y = 0.0;
+  bool staggered = false;  // S-52 fill type 'S': every other row offset by x/2
+  double symbol_scale = 1.0;
+};
+
 // One draw pass for one feature. A feature can produce several (GeoSym area
 // rows carry a centroid point symbol AND a boundary line symbol, at different
 // display priorities), which is why Style() appends to a vector.
@@ -132,6 +217,13 @@ struct StyleResult {
   FillStyle fill;
   PointSymbolStyle symbol;
   LabelStyle label;
+
+  // Set INSTEAD of stroke/fill when the product's linework or fill is a
+  // repeated symbol rather than a pen or a solid brush. Both may coexist with
+  // the plain slots — S-52's LC over an LS casing is legal — and the renderer
+  // draws stroke first, then the pattern on top.
+  LinePatternStyle line_pattern;
+  AreaPatternStyle area_pattern;
 };
 
 // What the renderer tells the engine about the device, so pixel-valued styles
@@ -155,6 +247,28 @@ class IStyleEngine {
   // Display list for a symbol_id handed out by Style(). Owned and cached by
   // the engine; valid until the engine is destroyed. nullptr = unknown id.
   virtual const VectorSymbol* Symbol(const std::string& symbol_id) = 0;
+
+  // The pixmap form of the same id, consulted ONLY when Symbol() has no
+  // geometry — a product that authors a symbol both ways keeps its vector
+  // definition, which scales and rotates without resampling. Owned and cached
+  // by the engine on the same terms as Symbol(). Default: this product has no
+  // raster symbology at all, which is true of GeoSym and of every synthetic
+  // engine in the tests.
+  virtual const SymbolPixmap* Pixmap(const std::string& /*symbol_id*/) {
+    return nullptr;
+  }
+
+  // Monotone counter that MUST change whenever anything that could change what
+  // Style() returns changes — a rule, a viewing group, a mariner setting, a
+  // reload. It is what lets a retained VectorScene (scene.h) know its baked
+  // styles are still current, so an engine that mutates and does not report it
+  // will be drawn stale.
+  //
+  // Default 0 = "nothing about me ever changes", which is true of a fixed
+  // table and of the synthetic engines in the tests. Both real products get a
+  // correct one from LookupTableStyleEngine, which is where a product engine
+  // should inherit it from rather than reimplementing.
+  virtual uint64_t style_epoch() const { return 0; }
 };
 
 using StyleEnginePtr = std::shared_ptr<IStyleEngine>;

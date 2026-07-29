@@ -26,6 +26,7 @@
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/proj.h"
+#include "fvkit/settings.h"
 #include "fvkit/store/tile_pack.h"
 #include "fvkit/formats/cadrg.h"
 #include "fvkit/formats/dted.h"
@@ -41,6 +42,9 @@
 
 #include "fv_vpf_vector_source.h"  // fv::VpfVectorSource
 #include "fv_geosym_style.h"       // fv::GeoSymStyleEngine
+#include "fv_enc_vector_source.h"  // fv::EncVectorSource
+#include "fv_s52_style.h"          // fv::S52StyleEngine
+#include "fv_enc_format.h"         // fv::RegisterEncFormat
 
 #include "geo_tool.h"  // GEO_string_to_lat_lon (fv_geo_tool)
 
@@ -257,6 +261,44 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_property_readonly(
           "height", [](const fv::ImageInfo& i) { return i.size.height; })
       .def_readonly("bounds", &fv::ImageInfo::bounds);
+
+  // ---- pyfvw.Settings -------------------------------------------------------
+  // The port's registry replacement: a hand-edited INI read at startup. See
+  // port/include/fvkit/settings.h and port/peregrine.ini.sample.
+  py::class_<fv::Settings>(m, "Settings")
+      .def(py::init<>())
+      .def("load",
+           [](fv::Settings& s, const std::string& path) {
+             // '' means "wherever you normally look", so a caller with an
+             // optional --settings flag has one call site, not two.
+             ThrowIfError(path.empty() ? s.LoadDefault() : s.Load(path));
+           },
+           "path"_a = std::string(),
+           "Read a named file (FvError if missing); '' searches the default "
+           "path and succeeds even when nothing is found.")
+      .def("load_default",
+           [](fv::Settings& s) { ThrowIfError(s.LoadDefault()); },
+           "Read the first file in default_paths() that exists. Finding none "
+           "is not an error.")
+      .def("load_string",
+           [](fv::Settings& s, const std::string& text) {
+             ThrowIfError(s.LoadFromString(text));
+           },
+           "text"_a)
+      .def_property_readonly("path", &fv::Settings::path)
+      .def("has", &fv::Settings::Has, "key"_a)
+      .def("get", &fv::Settings::GetString, "key"_a, "default"_a = std::string())
+      .def("get_float", &fv::Settings::GetDouble, "key"_a, "default"_a)
+      .def("get_int", &fv::Settings::GetInt, "key"_a, "default"_a)
+      .def("get_bool", &fv::Settings::GetBool, "key"_a, "default"_a)
+      .def("set", &fv::Settings::Set, "key"_a, "value"_a)
+      .def("keys", &fv::Settings::Keys)
+      .def_property_readonly("warnings", &fv::Settings::warnings)
+      .def("clear_warnings", &fv::Settings::ClearWarnings);
+
+  m.def("default_settings_paths", &fv::DefaultSettingsPaths,
+        "Where load_default() looks, in order. Returned whether or not they "
+        "exist, so an app can say 'put it in one of these'.");
 
   // ---- pyfvw.formats --------------------------------------------------------
   py::module_ formats =
@@ -600,10 +642,21 @@ PYBIND11_MODULE(pyfvw, m) {
   py::module_ catalog =
       m.def_submodule("catalog", "L2 coverage catalog (SQLite + R-tree)");
 
-  catalog.def("register_builtin_formats", &fv::RegisterBuiltinFormats,
+  // ENC registers separately in C++ (fv_enc links fv_fvkit, so fvkit cannot
+  // name it without a dependency cycle — see fv_enc_format.h). That is a
+  // build-layering detail, not something a Python caller should have to know,
+  // so one call still registers everything the port can read.
+  catalog.def("register_builtin_formats",
+              [] {
+                fv::RegisterBuiltinFormats();
+                fv::RegisterEncFormat();
+              },
               "Register the built-in format adapters (dted, geotiff, cadrg, "
-              "tiros, vpf, gpkg) with the scan registry. Idempotent; call "
-              "before Catalog.scan.");
+              "tiros, vpf, gpkg, dted-shaded, enc) with the scan registry. "
+              "Idempotent; call before Catalog.scan.");
+
+  catalog.def("registered_format_keys", &fv::RegisteredFormatKeys,
+              "Format keys currently registered, sorted.");
 
   py::class_<fv::SeriesRow>(catalog, "SeriesRow")
       .def_readonly("id", &fv::SeriesRow::id)
@@ -982,8 +1035,108 @@ PYBIND11_MODULE(pyfvw, m) {
            },
            "library_dir"_a);
 
+  py::class_<fv::EncVectorSource, fv::IVectorSource,
+             std::shared_ptr<fv::EncVectorSource>>(
+      vec, "EncVectorSource",
+      "S-57 ENC as a vector source. open() takes one base cell "
+      "(US5CHSDC.000) or a directory with cells below it; every cell found "
+      "becomes one tile. style_key and layer are both the object-class "
+      "acronym (DEPARE, LIGHTS). The S-57 Appendix A catalogue (the CSVs) is "
+      "REQUIRED and is looked for beside the cells unless catalog_dir names "
+      "it — without it nothing could be symbolized.")
+      .def(py::init<>())
+      .def("open",
+           [](fv::EncVectorSource& s, const std::string& path,
+              const std::string& catalog_dir) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = catalog_dir.empty() ? s.Open(path)
+                                        : s.Open(path, catalog_dir);
+             }
+             ThrowIfError(st);
+           },
+           "path"_a, "catalog_dir"_a = std::string())
+      .def("open_cells",
+           [](fv::EncVectorSource& s, const std::vector<std::string>& cells,
+              const std::string& catalog_dir) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = s.OpenCells(cells, catalog_dir);
+             }
+             ThrowIfError(st);
+           },
+           "cells"_a, "catalog_dir"_a = std::string(),
+           "Opens an EXPLICIT list of base cells instead of a directory. What "
+           "a caller with a catalog wants: an exchange set holds several usage "
+           "bands over the same water, so a source opened on the shared root "
+           "serves all of them at once and stacks a 1:1,000,000 general cell "
+           "under a 1:12,000 harbour one.")
+      .def_property_readonly("cell_count", &fv::EncVectorSource::cell_count)
+      .def("cell_path", &fv::EncVectorSource::cell_path, "index"_a)
+      .def_property_readonly(
+          "staleness_warning", &fv::EncVectorSource::StalenessWarning,
+          "Non-empty when an open cell has update files on disk that the "
+          "reader does not apply — the chart shown is out of date.")
+      .def_property_readonly(
+          "last_query_scamin_skipped",
+          &fv::EncVectorSource::last_query_scamin_skipped,
+          "Features the last query dropped for SCAMIN (S-57's own "
+          "scale-thinning). Only ever non-zero when the query named a scale.");
+
   py::class_<fv::IStyleEngine, std::shared_ptr<fv::IStyleEngine>>(
       vec, "IStyleEngine", "Maps (feature, scale) to draw passes.");
+
+  // --- the cross-product rule layer (R2) -----------------------------------
+  // Bound by REFERENCE off the engine that owns them (return_value_policy::
+  // reference_internal), so `engine.rules().load_file(...)` mutates the
+  // engine's own set rather than a copy that is thrown away.
+  py::class_<fv::RuleSet>(
+      vec, "RuleSet",
+      "Feature rules in one syntax shared by every vector product.\n"
+      "One rule per line:\n"
+      "    hide layer=hydline\n"
+      "    show key=BE010 scale=..50000\n"
+      "    set  key=DA010 priority=3 labels=off\n"
+      "    hide key=BH140 where hdp exists and hdp < 3\n"
+      "Actions: show | hide | set. Selectors: layer=, key=, geom=, scale=, "
+      "group=, category=. Effects (set): priority=, labels=, symbolscale=.")
+      .def(py::init<>())
+      .def("load_text",
+           [](fv::RuleSet& rs, const std::string& text) {
+             std::string err;
+             ThrowIfError(rs.LoadText(text, &err));
+           },
+           "text"_a, "Parse rules from a string. All-or-nothing.")
+      .def("load_file",
+           [](fv::RuleSet& rs, const std::string& path) {
+             std::string err;
+             ThrowIfError(rs.LoadFile(path, &err));
+           },
+           "path"_a)
+      .def("clear", &fv::RuleSet::Clear)
+      .def("__len__", &fv::RuleSet::size);
+
+  py::class_<fv::ViewingGroupSet>(
+      vec, "ViewingGroupSet",
+      "Runtime on/off state for a product's numbered viewing groups (GeoSym's "
+      "IHO vgroup/txtgroup, S-52's viewing groups) plus the IMO display-"
+      "category threshold. Group 0 is 'ungrouped' and always on.")
+      .def("set", &fv::ViewingGroupSet::Set, "group"_a, "on"_a)
+      .def("set_range", &fv::ViewingGroupSet::SetRange, "lo"_a, "hi"_a, "on"_a)
+      .def("set_default", &fv::ViewingGroupSet::SetDefault, "on"_a)
+      .def("clear_overrides", &fv::ViewingGroupSet::ClearOverrides)
+      .def("enabled", &fv::ViewingGroupSet::Enabled, "group"_a)
+      .def("set_max_category", &fv::ViewingGroupSet::SetMaxCategory,
+           "category"_a,
+           "1 = Display Base, 2 = Standard, 3 = Other (everything).")
+      .def_property_readonly("max_category",
+                             &fv::ViewingGroupSet::max_category);
+
+  vec.attr("DISPLAY_BASE") = static_cast<int>(fv::kDisplayBase);
+  vec.attr("DISPLAY_STANDARD") = static_cast<int>(fv::kDisplayStandard);
+  vec.attr("DISPLAY_OTHER") = static_cast<int>(fv::kDisplayOther);
 
   py::class_<fv::GeoSymStyleEngine, fv::IStyleEngine,
              std::shared_ptr<fv::GeoSymStyleEngine>>(
@@ -1004,7 +1157,127 @@ PYBIND11_MODULE(pyfvw, m) {
            "data_dir"_a, "product_id"_a = static_cast<int>(fv::kGeoSymDnc))
       .def("set_draw_labels", &fv::GeoSymStyleEngine::SetDrawLabels, "on"_a)
       .def("set_color_adjust", &fv::GeoSymStyleEngine::SetColorAdjust,
-           "brightness"_a, "contrast"_a);
+           "brightness"_a, "contrast"_a)
+      .def("rules",
+           py::overload_cast<>(&fv::GeoSymStyleEngine::rules),
+           py::return_value_policy::reference_internal,
+           "The engine's user/override RuleSet (empty by default).")
+      .def("viewing_groups",
+           py::overload_cast<>(&fv::GeoSymStyleEngine::viewing_groups),
+           py::return_value_policy::reference_internal,
+           "The engine's ViewingGroupSet: GeoSym's vgroup/txtgroup/dispcat "
+           "columns as runtime toggles.")
+      .def_property_readonly(
+          "rule_predicate_evaluations",
+          &fv::GeoSymStyleEngine::rule_predicate_evaluations,
+          "Predicate evaluations performed by the rule plan; 0 for a "
+          "key-only rule set however many features were styled.");
+
+  // --- S-52 / ENC style engine (E3a-c), the second IStyleEngine ------------
+
+  py::class_<fv::S52MarinerSettings>(
+      vec, "S52MarinerSettings",
+      "The MARINER's chart settings, not the producer's — S-52 makes these "
+      "the mariner's, and they change WHAT is drawn, not just how. The "
+      "safety contour is the single most important line on an ECDIS display. "
+      "Depths in metres.")
+      .def_readwrite("safety_contour", &fv::S52MarinerSettings::safety_contour)
+      .def_readwrite("shallow_contour",
+                     &fv::S52MarinerSettings::shallow_contour)
+      .def_readwrite("deep_contour", &fv::S52MarinerSettings::deep_contour)
+      .def_readwrite("safety_depth", &fv::S52MarinerSettings::safety_depth)
+      .def_readwrite("two_shades", &fv::S52MarinerSettings::two_shades)
+      .def_readwrite("shallow_pattern",
+                     &fv::S52MarinerSettings::shallow_pattern);
+
+  vec.attr("S52_DAY") = static_cast<int>(fv::S52ColorScheme::kDay);
+  vec.attr("S52_DUSK") = static_cast<int>(fv::S52ColorScheme::kDusk);
+  vec.attr("S52_NIGHT") = static_cast<int>(fv::S52ColorScheme::kNight);
+  vec.attr("S52_PAPER_CHART") = static_cast<int>(fv::S52PointStyle::kPaperChart);
+  vec.attr("S52_SIMPLIFIED") = static_cast<int>(fv::S52PointStyle::kSimplified);
+  vec.attr("S52_PLAIN_BOUNDARIES") =
+      static_cast<int>(fv::S52AreaStyle::kPlainBoundaries);
+  vec.attr("S52_SYMBOLIZED_BOUNDARIES") =
+      static_cast<int>(fv::S52AreaStyle::kSymbolizedBoundaries);
+
+  py::class_<fv::S52StyleEngine, fv::IStyleEngine,
+             std::shared_ptr<fv::S52StyleEngine>>(
+      vec, "S52StyleEngine",
+      "Official S-52 presentation-library style engine for ENC. open() takes "
+      "the directory holding chartsymbols.xml. The SECOND implementation of "
+      "the same seam GeoSymStyleEngine implements — same VectorSymbol, same "
+      "VectorRenderer, same rules()/viewing_groups().")
+      .def(py::init<>())
+      .def("open",
+           [](fv::S52StyleEngine& e, const std::string& data_dir) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = e.Open(data_dir);
+             }
+             ThrowIfError(st);
+           },
+           "data_dir"_a)
+      .def("set_draw_labels", &fv::S52StyleEngine::SetDrawLabels, "on"_a)
+      .def("set_show_meta_objects", &fv::S52StyleEngine::SetShowMetaObjects,
+           "on"_a,
+           "Draw S-57 META objects (M_QUAL zones of confidence, M_COVR, "
+           "M_NSYS...). OFF by default: they describe the DATA, not the "
+           "world, and M_QUAL's triangles pattern over the whole chart.")
+      .def_property_readonly("show_meta_objects",
+                             &fv::S52StyleEngine::show_meta_objects)
+      .def("set_color_scheme",
+           [](fv::S52StyleEngine& e, int scheme) {
+             ThrowIfError(
+                 e.SetColorScheme(static_cast<fv::S52ColorScheme>(scheme)));
+           },
+           "scheme"_a, "S52_DAY / S52_DUSK / S52_NIGHT.")
+      .def_property_readonly(
+          "color_scheme",
+          [](const fv::S52StyleEngine& e) {
+            return static_cast<int>(e.color_scheme());
+          })
+      .def("set_point_style",
+           [](fv::S52StyleEngine& e, int s) {
+             e.SetPointStyle(static_cast<fv::S52PointStyle>(s));
+           },
+           "style"_a, "S52_PAPER_CHART / S52_SIMPLIFIED.")
+      .def("set_area_style",
+           [](fv::S52StyleEngine& e, int s) {
+             e.SetAreaStyle(static_cast<fv::S52AreaStyle>(s));
+           },
+           "style"_a,
+           "S52_PLAIN_BOUNDARIES / S52_SYMBOLIZED_BOUNDARIES.")
+      .def("mariner", py::overload_cast<>(&fv::S52StyleEngine::mariner),
+           py::return_value_policy::reference_internal,
+           "The engine's own S52MarinerSettings, by reference — "
+           "`engine.mariner().safety_contour = 10` re-styles the chart. "
+           "NOTE: calling this bumps the style epoch (the C++ contract), so "
+           "a retained VectorScene rebuilds; read the values off a saved "
+           "reference if that matters in a loop.")
+      .def("rules", py::overload_cast<>(&fv::S52StyleEngine::rules),
+           py::return_value_policy::reference_internal,
+           "The engine's user/override RuleSet (empty by default).")
+      .def("viewing_groups",
+           py::overload_cast<>(&fv::S52StyleEngine::viewing_groups),
+           py::return_value_policy::reference_internal,
+           "S-52's viewing groups and the IMO display-category threshold "
+           "(DISPLAY_BASE / STANDARD / OTHER).")
+      .def_property_readonly(
+          "unhandled_cs",
+          [](const fv::S52StyleEngine& e) {
+            py::dict d;
+            for (const auto& kv : e.unhandled_cs())
+              d[py::str(kv.first)] = kv.second;
+            return d;
+          },
+          "Conditional-symbology procedures the cells asked for that are not "
+          "implemented, and how often. Empty over the Charleston cells.")
+      .def_property_readonly("placeholders_drawn",
+                             &fv::S52StyleEngine::placeholders_drawn)
+      .def_property_readonly("sector_lights_simplified",
+                             &fv::S52StyleEngine::sector_lights_simplified)
+      .def("reset_diagnostics", &fv::S52StyleEngine::ResetDiagnostics);
 
   py::class_<fv::VectorRenderer>(
       vec, "VectorRenderer",
@@ -1038,5 +1311,23 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_property_readonly("features_queried",
                              &fv::VectorRenderer::features_queried)
       .def_property_readonly("draws_emitted",
-                             &fv::VectorRenderer::draws_emitted);
+                             &fv::VectorRenderer::draws_emitted)
+      // R3a retained scene: a pan inside the margin skips query + style.
+      .def("set_scene_margin", &fv::VectorRenderer::SetSceneMargin, "fraction"_a)
+      .def("set_simplify_pixels", &fv::VectorRenderer::SetSimplifyPixels,
+           "pixels"_a)
+      .def("invalidate_scene", &fv::VectorRenderer::InvalidateScene)
+      .def_property_readonly("scene_margin", &fv::VectorRenderer::scene_margin)
+      .def_property_readonly("simplify_pixels",
+                             &fv::VectorRenderer::simplify_pixels)
+      .def_property_readonly("scene_reused", &fv::VectorRenderer::scene_reused)
+      .def_property_readonly(
+          "scene_vertices",
+          [](const fv::VectorRenderer& r) { return r.scene().vertices_kept(); })
+      .def_property_readonly(
+          "scene_vertices_in",
+          [](const fv::VectorRenderer& r) { return r.scene().vertices_in(); })
+      .def_property_readonly("query_ms", &fv::VectorRenderer::query_ms)
+      .def_property_readonly("style_ms", &fv::VectorRenderer::style_ms)
+      .def_property_readonly("draw_ms", &fv::VectorRenderer::draw_ms);
 }
