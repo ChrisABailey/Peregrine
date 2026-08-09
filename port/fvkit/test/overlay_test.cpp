@@ -46,14 +46,18 @@ class Recorder : public fv::Overlay {
     log_->push_back(Name() + ":down");
     return handles_;
   }
-  bool OnKeyDown(int) override {
+  bool OnKeyDown(const fv::KeyEvent& e) override {
     log_->push_back(Name() + ":key");
+    last_key_ = e;
     return handles_;
   }
+
+  const fv::KeyEvent& last_key() const { return last_key_; }
 
  private:
   std::vector<std::string>* log_;
   bool handles_;
+  fv::KeyEvent last_key_;
 };
 
 class ManagerTest : public ::testing::Test {
@@ -88,9 +92,92 @@ TEST_F(ManagerTest, RoutesTopDownUntilHandled) {
   EXPECT_EQ(log_, (std::vector<std::string>{"c:down", "b:down"}));
 }
 
+// --- KeyEvent (2026-08-04) -------------------------------------------------
+// The seam used to hand overlays a bare `int key` with no documented
+// numbering and no modifiers, which is unimplementable from a real UI
+// toolkit: tkinter's own keycode is a platform-specific composite, so there
+// was no correct value to pass. These pin the replacement.
+
+TEST(KeyEvent, VirtualKeyValuesAreWin32AndNeverRenumbered) {
+  // Not decoration: overlay.h promises these ARE the Win32 VK codes, so a
+  // Windows shell can pass WM_KEYDOWN's wParam straight through. If someone
+  // ever "tidies" the enum into 0,1,2,... this fails, which is the point.
+  EXPECT_EQ(fv::Key::kBackspace, 0x08);
+  EXPECT_EQ(fv::Key::kTab, 0x09);
+  EXPECT_EQ(fv::Key::kReturn, 0x0D);
+  EXPECT_EQ(fv::Key::kEscape, 0x1B);
+  EXPECT_EQ(fv::Key::kSpace, 0x20);
+  EXPECT_EQ(fv::Key::kPageUp, 0x21);
+  EXPECT_EQ(fv::Key::kPageDown, 0x22);
+  EXPECT_EQ(fv::Key::kEnd, 0x23);
+  EXPECT_EQ(fv::Key::kHome, 0x24);
+  EXPECT_EQ(fv::Key::kLeft, 0x25);
+  EXPECT_EQ(fv::Key::kUp, 0x26);
+  EXPECT_EQ(fv::Key::kRight, 0x27);
+  EXPECT_EQ(fv::Key::kDown, 0x28);
+  EXPECT_EQ(fv::Key::kInsert, 0x2D);
+  EXPECT_EQ(fv::Key::kDelete, 0x2E);
+  EXPECT_EQ(fv::Key::kF1, 0x70);
+  EXPECT_EQ(fv::Key::kF12, 0x7B);
+  EXPECT_EQ(fv::Key::kF1 + 11, fv::Key::kF12);  // F(n) == kF1 + (n-1)
+
+  // The property that makes the choice pleasant to use: letters and digits
+  // need no constant, because VK_A..VK_Z and VK_0..VK_9 ARE their ASCII
+  // uppercase code points.
+  EXPECT_EQ(0x41, static_cast<int>('A'));
+  EXPECT_EQ(0x5A, static_cast<int>('Z'));
+  EXPECT_EQ(0x30, static_cast<int>('0'));
+  // ... and these three coincide with their ASCII controls, deliberately.
+  EXPECT_EQ(fv::Key::kReturn, static_cast<int>('\r'));
+  EXPECT_EQ(fv::Key::kTab, static_cast<int>('\t'));
+  EXPECT_EQ(fv::Key::kSpace, static_cast<int>(' '));
+}
+
+TEST(KeyEvent, DefaultsAreAnEmptyPressAndNotAnAccidentalKey) {
+  const fv::KeyEvent e;
+  EXPECT_EQ(e.key, fv::Key::kNone);
+  EXPECT_EQ(e.text, 0u);
+  EXPECT_FALSE(e.shift);
+  EXPECT_FALSE(e.ctrl);
+  EXPECT_FALSE(e.alt);
+  EXPECT_FALSE(e.meta);
+}
+
+TEST_F(ManagerTest, TheWholeKeyEventReachesTheOverlayIntact) {
+  // The bug this replaced: modifiers had nowhere to travel, so an overlay
+  // could not tell Ctrl-Z from Z. Route one of each and read it back.
+  fv::KeyEvent e;
+  e.key = 'Z';
+  e.text = 'z';
+  e.ctrl = true;
+  e.shift = true;
+  EXPECT_TRUE(mgr_.RouteKeyDown(e));  // b handles
+
+  EXPECT_EQ(b_->last_key().key, 'Z');
+  EXPECT_EQ(b_->last_key().text, uint32_t{'z'});
+  EXPECT_TRUE(b_->last_key().ctrl);
+  EXPECT_TRUE(b_->last_key().shift);
+  EXPECT_FALSE(b_->last_key().alt);
+  EXPECT_FALSE(b_->last_key().meta);
+  // c is above b and saw it first, unmodified in transit.
+  EXPECT_EQ(c_->last_key().key, 'Z');
+  EXPECT_TRUE(c_->last_key().ctrl);
+  // a is below b, which handled it.
+  EXPECT_EQ(a_->last_key().key, fv::Key::kNone);
+  EXPECT_EQ(log_, (std::vector<std::string>{"c:key", "b:key"}));
+}
+
+TEST_F(ManagerTest, ANonPrintingKeyCarriesNoText) {
+  fv::KeyEvent e;
+  e.key = fv::Key::kDelete;   // text stays 0: Delete types nothing
+  EXPECT_TRUE(mgr_.RouteKeyDown(e));
+  EXPECT_EQ(b_->last_key().key, fv::Key::kDelete);
+  EXPECT_EQ(b_->last_key().text, 0u);
+}
+
 TEST_F(ManagerTest, InvisibleOverlaysSkipped) {
   b_->SetVisible(false);
-  EXPECT_FALSE(mgr_.RouteKeyDown('x'));  // only c and a, neither handles
+  EXPECT_FALSE(mgr_.RouteKeyDown(fv::KeyEvent{'X', 'x'}));  // neither handles
   EXPECT_EQ(log_, (std::vector<std::string>{"c:key", "a:key"}));
   log_.clear();
   fv::CpuCanvas canvas(100, 100);

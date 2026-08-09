@@ -58,6 +58,7 @@ RUNTIME_DATA = [
     "fvw_core/PdfLib/sdk/lib/7_param.dat",
     "fvw_core/PdfLib/sdk/lib/ellips.dat",
     "fvw_core/PdfLib/sdk/lib/egm96.grd",
+    "port/Osm/styles/peregrine-osm.json",
 ]
 
 

@@ -268,6 +268,12 @@ struct VpfVectorSource::Impl {
 
   std::map<int, std::string> tile_names;  // tile_id -> directory name
 
+  // R3c: every feature in the library, in scan order, built by the first
+  // Query. See the note above VpfVectorSource::Query.
+  std::vector<VectorFeature> cache;
+  bool cache_built = false;
+  bool cache_enabled = true;
+
   // Primitive tables are reopened constantly while walking a feature table;
   // keep them open, keyed by "<tiledir>/<PRIM>".
   std::map<std::string, std::unique_ptr<VPFRecordset>> prim_cache;
@@ -576,7 +582,12 @@ VpfVectorSource::VpfVectorSource() : impl_(new Impl) {}
 VpfVectorSource::~VpfVectorSource() = default;
 
 Status VpfVectorSource::Open(const std::string& path) {
+  // A fresh Impl drops the parsed-feature cache with everything else, which
+  // is what re-opening onto another library must do. The cache SETTING is a
+  // property of the caller, not of the library, so it is carried over.
+  const bool keep_cache_enabled = impl_ ? impl_->cache_enabled : true;
   impl_.reset(new Impl);
+  impl_->cache_enabled = keep_cache_enabled;
 
   std::string p = path;
   while (!p.empty() && (p.back() == '/' || p.back() == '\\')) p.pop_back();
@@ -631,10 +642,84 @@ GeoRect VpfVectorSource::Bounds() const {
   return b;
 }
 
+// R3c. Answering from the parsed cache, which is built on the first Query and
+// never rebuilt: a VPF library is read-only data and this source's answer
+// depends only on the query BOX (DNC's scale is the choice of library, so
+// VectorQuery::scale_denominator is not consulted anywhere in this file).
+//
+// The cache is opt-out rather than budgeted. One library's features are ~1.2x
+// its size on disk — the Nantucket harbour library is 3.1 MB on disk and
+// 3.7 MB parsed — and a source holds exactly one library, so a cap would add a
+// re-scan cliff to save an amount of memory nobody is short of. A caller that
+// disagrees turns it off and gets the pre-R3c full scan per query.
 Status VpfVectorSource::Query(const VectorQuery& q,
                               std::vector<VectorFeature>* out) {
   if (out == nullptr) return Status::Error(kInvalidArg, "null out");
   if (!IsOpen()) return Status::Error(kNotFound, "source not open");
+
+  if (!impl_->cache_enabled) {
+    std::vector<VectorFeature> all;
+    const Status s = ScanAll(&all);
+    if (!s.ok()) return s;
+    AppendMatching(all, q, out);
+    return Status::Ok();
+  }
+
+  if (!impl_->cache_built) {
+    const Status s = ScanAll(&impl_->cache);
+    if (!s.ok()) {
+      impl_->cache.clear();
+      return s;
+    }
+    impl_->cache_built = true;
+  }
+  AppendMatching(impl_->cache, q, out);
+  return Status::Ok();
+}
+
+void VpfVectorSource::SetFeatureCacheEnabled(bool on) {
+  if (!impl_) return;
+  impl_->cache_enabled = on;
+  if (!on) {
+    impl_->cache.clear();
+    impl_->cache.shrink_to_fit();
+    impl_->cache_built = false;
+  }
+}
+
+bool VpfVectorSource::feature_cache_enabled() const {
+  return impl_ && impl_->cache_enabled;
+}
+
+size_t VpfVectorSource::cached_features() const {
+  return impl_ ? impl_->cache.size() : 0;
+}
+
+// The two filters ScanAll no longer applies, in the order the scan applied
+// them: a feature is tested against the box, and max_features counts what is
+// already in `out` (Query appends — the seam's contract — so a caller's own
+// earlier hits count toward its limit exactly as they did before).
+void VpfVectorSource::AppendMatching(const std::vector<VectorFeature>& src,
+                                     const VectorQuery& q,
+                                     std::vector<VectorFeature>* out) {
+  for (const VectorFeature& f : src) {
+    if (q.max_features != 0 && out->size() >= q.max_features) return;
+    if (Intersects(f.bounds, q.area)) out->push_back(f);
+  }
+}
+
+// The whole library, materialized once (R3c). This IS the pre-R3c Query with
+// its two filters removed: the spatial test and the max_features cut now
+// happen in Query, over what this produced, and the ORDER is unchanged — so
+// "the first N features that meet the box, in layer-then-row order" means the
+// same thing it always did.
+//
+// It walks every row of every feature table, and it did so on EVERY Query
+// before R3c: a viewport returning 5 features cost the same 9.4 ms as one
+// returning 5,037, because the cost never depended on the answer. That is the
+// measurement this split exists for.
+Status VpfVectorSource::ScanAll(std::vector<VectorFeature>* out) {
+  const VectorQuery q;  // unfiltered; kept named so the walk below reads on
 
   // Every non-structural column travels with the feature: the GeoSym rule
   // engine dispatches on them (exs, nam, dof, hdp, …) and a hit-test wants

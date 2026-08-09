@@ -72,7 +72,33 @@ class VpfVectorSource : public IVectorSource {
   // Layers()). The dictionaries load lazily, per coverage, on first use.
   Status Describe(const FeatureRef& ref, FeatureDescription* out) override;
 
+  // --- the parsed-feature cache (R3c) --------------------------------------
+  //
+  // Before R3c every Query walked every row of every feature table and built
+  // every feature, then threw away the ones outside the box: a viewport
+  // returning 5 features cost the same 9.4 ms as one returning 5,037. The
+  // library is now parsed ONCE, on the first Query, and every later query is
+  // a box test over what is already in memory.
+  //
+  // This is the same arrangement ENC has had since E1 (cells parsed at Open)
+  // and OSM since O1 (an LRU of decoded tiles). DNC was the product without
+  // it, and the one the R3a/R3b profile was taken on.
+  //
+  // Off = the pre-R3c behaviour, for a caller that would rather pay the scan
+  // than hold the library (roughly 1.2x its size on disk). Must be set before
+  // the first Query to have any effect on what is already cached; turning it
+  // off releases the cache.
+  void SetFeatureCacheEnabled(bool on);
+  bool feature_cache_enabled() const;
+  // Features held. 0 before the first Query, and always 0 with the cache off.
+  size_t cached_features() const;
+
  private:
+  Status ScanAll(std::vector<VectorFeature>* out);
+  static void AppendMatching(const std::vector<VectorFeature>& src,
+                             const VectorQuery& q,
+                             std::vector<VectorFeature>* out);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

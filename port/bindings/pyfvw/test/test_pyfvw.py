@@ -483,6 +483,137 @@ def test_overlay_python_subclass():
     assert "broken" in ei.value.message and "oops" in ei.value.message
 
 
+def test_overlay_key_event():
+    """KeyEvent reaches a Python overlay whole (2026-08-04).
+
+    Before this the SPI passed a bare int with no documented numbering, so a
+    Python overlay could not tell Ctrl-Z from Z and no UI toolkit had a
+    correct value to send: tkinter's own `keycode` is a platform-specific
+    composite (Left arrives as 2063660802 on Aqua).
+    """
+
+    class Keys(pyfvw.overlay.Overlay):
+        def __init__(self, handles):
+            super().__init__("keys")
+            self.seen = []
+            self.handles = handles
+
+        def on_key_down(self, e):
+            self.seen.append((e.key, e.text, e.shift, e.ctrl, e.alt, e.meta))
+            return self.handles
+
+    k = pyfvw.overlay.key
+    # Win32 VK values, pinned on the Python side too — these are what an
+    # overlay author writes, so a renumbering must break here as well.
+    assert (k.LEFT, k.UP, k.RIGHT, k.DOWN) == (0x25, 0x26, 0x27, 0x28)
+    assert (k.PAGE_UP, k.PAGE_DOWN) == (0x21, 0x22)
+    assert (k.ESCAPE, k.RETURN, k.DELETE, k.SPACE) == (0x1B, 0x0D, 0x2E, 0x20)
+    assert k.F1 == 0x70 and k.F12 == 0x7B
+    assert k.NONE == 0
+    # Letters and digits need no constant at all.
+    assert ord("A") == 0x41 and ord("0") == 0x30
+
+    mgr = pyfvw.overlay.OverlayManager()
+    top = Keys(handles=False)
+    bottom = Keys(handles=True)
+    mgr.add(bottom)
+    mgr.add(top)  # added last == on top == routed first
+
+    e = pyfvw.overlay.KeyEvent(key=ord("Z"), text=ord("z"), ctrl=True)
+    assert mgr.route_key_down(e)
+    assert top.seen == [(ord("Z"), ord("z"), False, True, False, False)]
+    assert bottom.seen == top.seen  # top declined, so it fell through
+
+    # Defaults: an unmodified named key carries no text.
+    bottom.seen.clear()
+    top.seen.clear()
+    assert mgr.route_key_down(pyfvw.overlay.KeyEvent(key=k.DELETE))
+    assert top.seen == [(k.DELETE, 0, False, False, False, False)]
+
+    # An overlay that raises declines rather than propagating (contracts D3).
+    class Angry(pyfvw.overlay.Overlay):
+        def __init__(self):
+            super().__init__("angry")
+
+        def on_key_down(self, e):
+            raise RuntimeError("nope")
+
+    mgr2 = pyfvw.overlay.OverlayManager()
+    mgr2.add(Angry())
+    assert not mgr2.route_key_down(pyfvw.overlay.KeyEvent(key=k.LEFT))
+
+
+def test_tk_key_adapter():
+    """The tkinter -> KeyEvent mapping, without tkinter (2026-08-04).
+
+    port/apps/tk_keys.py takes anything with .keysym/.char/.state, which is
+    exactly so this can run with no display, no event loop and no window —
+    and so the per-platform modifier bits are asserted rather than assumed.
+    """
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    "..", "..", "..", "apps"))
+    try:
+        import tk_keys
+    finally:
+        sys.path.pop(0)
+
+    class Ev:
+        def __init__(self, keysym, char="", state=0):
+            self.keysym, self.char, self.state = keysym, char, state
+            # The field that LOOKS right and is not; present here so a
+            # future "simplification" to event.keycode fails this test.
+            self.keycode = 2063660802
+
+    k = pyfvw.overlay.key
+
+    # Named keys, using Tk's own spellings (note Prior/Next are Page Up/Down).
+    assert tk_keys.key_event(Ev("Left")).key == k.LEFT
+    assert tk_keys.key_event(Ev("Prior")).key == k.PAGE_UP
+    assert tk_keys.key_event(Ev("Next")).key == k.PAGE_DOWN
+    assert tk_keys.key_event(Ev("Escape")).key == k.ESCAPE
+    assert tk_keys.key_event(Ev("BackSpace")).key == k.BACKSPACE
+    assert tk_keys.key_event(Ev("F7")).key == k.F1 + 6
+    assert tk_keys.key_event(Ev("space", " ")).key == k.SPACE
+
+    # Letters fold to their uppercase VK whichever case was typed, and the
+    # CASE survives in `text` — that is the whole reason for two fields.
+    lower = tk_keys.key_event(Ev("a", "a"))
+    upper = tk_keys.key_event(Ev("A", "A", state=0x1))
+    assert lower.key == upper.key == ord("A")
+    assert lower.text == ord("a") and upper.text == ord("A")
+    assert upper.shift and not lower.shift
+
+    # Punctuation is deliberately unnamed: VK_OEM_* is layout-specific, so
+    # `text` carries it and `key` says "no portable name".
+    plus = tk_keys.key_event(Ev("+", "+", state=0x1))
+    assert plus.key == k.NONE and plus.text == ord("+")
+
+    # Modifier bits, per platform. The trap: 0x8 is Alt on X11 and COMMAND
+    # on Aqua, so a single hardcoded mask would turn every macOS Cmd
+    # shortcut into an Alt shortcut.
+    assert tk_keys.key_event(Ev("a", "a", state=0x4)).ctrl
+    if sys.platform == "darwin":
+        assert tk_keys.key_event(Ev("a", "a", state=0x20000)).alt
+        assert tk_keys.key_event(Ev("a", "a", state=0x8)).meta
+        assert not tk_keys.key_event(Ev("a", "a", state=0x8)).alt
+    else:
+        assert tk_keys.key_event(Ev("a", "a", state=0x8)).alt
+
+    # A control character is not text an overlay should insert; `key` and
+    # `ctrl` carry the meaning instead.
+    ctrl_c = tk_keys.key_event(Ev("c", "\x03", state=0x4))
+    assert ctrl_c.key == ord("C") and ctrl_c.text == 0 and ctrl_c.ctrl
+
+    # Pressing Shift itself is not a key press an overlay wants.
+    assert tk_keys.is_modifier(Ev("Shift_L"))
+    assert not tk_keys.is_modifier(Ev("Left"))
+
+    # An unknown keysym is key=0, not a crash and not a wrong guess.
+    assert tk_keys.key_event(Ev("XF86AudioPlay")).key == k.NONE
+
+
 def test_cadrg_cache_lru():
     root = _testdata("rpf")
     if root is None:
@@ -983,3 +1114,124 @@ def test_enc_color_scheme_round_trips():
     assert style.color_scheme == pyfvw.vector.S52_DAY
     style.set_color_scheme(pyfvw.vector.S52_NIGHT)
     assert style.color_scheme == pyfvw.vector.S52_NIGHT
+
+
+# ---------------------------------------------------------------------------
+# OSM (MVT pyramid + MapLibre style) through the same seam — phase O3
+# ---------------------------------------------------------------------------
+#
+# The port's THIRD vector product, and these assert the same thing the ENC
+# block above does: it arrives through the classes DNC and ENC already use, so
+# PythonView forks in exactly one method. What is genuinely new is that SCALE
+# picks a pyramid level, and that the source and the style engine have to be
+# told the same latitude and pixel pitch or they disagree about which level
+# that is — so that pairing is what gets pinned here.
+
+_OSM_STYLE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "Osm", "styles", "peregrine-osm.json")
+
+
+def _mbtiles():
+    d = _testdata("OSM")
+    if d is None:
+        return None
+    p = os.path.join(d, "mbtiles", "us-south.mbtiles")
+    return p if os.path.isfile(p) else None
+
+
+def test_osm_registers_as_a_scannable_format():
+    pyfvw.catalog.register_builtin_formats()
+    assert "osm" in pyfvw.catalog.registered_format_keys()
+
+
+def test_osm_source_open_layers_bounds():
+    path = _mbtiles()
+    if path is None:
+        pytest.skip("no OSM TestData")
+    s = pyfvw.vector.OsmVectorSource()
+    s.open(path)
+    assert s.is_open()
+    assert s.min_zoom == 0 and s.max_zoom == 14
+    # Layers are the OpenMapTiles schema's, not a product dictionary's.
+    for want in ("water", "transportation", "building", "place"):
+        assert want in s.layers()
+    # Bounds are DERIVED from the tile index: an MBTiles `bounds` value cannot
+    # be trusted, and this file's claims the whole world.
+    b = s.bounds
+    assert b.contains(pyfvw.geo.GeoPoint(33.749, -84.388))
+    assert b.ur.lon < -70.0 and b.ll.lon > -110.0
+
+
+def test_osm_scale_picks_the_zoom_and_clipping_is_on():
+    path = _mbtiles()
+    if path is None:
+        pytest.skip("no OSM TestData")
+    src = pyfvw.vector.OsmVectorSource()
+    src.open(path)
+    style = pyfvw.vector.OsmStyleEngine()
+    style.load_file(_OSM_STYLE)
+    style.set_reference_latitude(33.755)
+    style.set_display_mm_per_pixel(src.display_mm_per_pixel)
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(256, 256)
+    proj.set_center(pyfvw.geo.GeoPoint(33.755, -84.390))
+    proj.set_physical_scale(25000.0, 0.25)
+    cv = pyfvw.canvas.CpuCanvas(256, 256)
+    cv.clear(style.background(25000.0)[:3])
+    r = pyfvw.vector.VectorRenderer(src, style)
+    r.render(proj, cv)
+
+    assert src.last_query_zoom == 14
+    assert src.last_query_tiles_read >= 1
+    assert src.clip_to_tile
+    assert src.last_query_clipped > 0
+    # 1:25,000 is z14.35 here and the pyramid stops at 14, so a third of a
+    # level of overzoom is expected and reported; it is only ever 0 at a
+    # scale a level actually covers.
+    assert 0.0 < src.last_query_overzoom < 0.5
+    assert r.features_queried > 100
+    assert r.draws_emitted > 100
+    # A picture, not a flat fill.
+    arr = np.asarray(cv.buffer)
+    assert len(np.unique(arr.reshape(-1, 4), axis=0)) > 8
+
+
+def test_osm_overzoom_does_not_go_blank():
+    path = _mbtiles()
+    if path is None:
+        pytest.skip("no OSM TestData")
+    src = pyfvw.vector.OsmVectorSource()
+    src.open(path)
+    q_scale = 2000.0                       # about z18; the pyramid stops at 14
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(128, 128)
+    proj.set_center(pyfvw.geo.GeoPoint(33.755, -84.390))
+    proj.set_physical_scale(q_scale, 0.25)
+    style = pyfvw.vector.OsmStyleEngine()
+    style.load_file(_OSM_STYLE)
+    style.set_reference_latitude(33.755)
+    cv = pyfvw.canvas.CpuCanvas(128, 128)
+    cv.clear((255, 255, 255))
+    r = pyfvw.vector.VectorRenderer(src, style)
+    r.render(proj, cv)
+
+    assert src.last_query_zoom == src.max_zoom
+    assert src.last_query_overzoom > 2.0
+    assert r.draws_emitted > 0
+    # The style is NOT clamped with the source: it keeps evaluating at the
+    # real zoom, which is what makes the map grow instead of freezing.
+    assert style.zoom_for_scale(q_scale) > 17.0
+
+
+def test_osm_style_rejects_what_it_does_not_understand():
+    style = pyfvw.vector.OsmStyleEngine()
+    style.load_file(_OSM_STYLE)
+    name = style.style_name
+    with pytest.raises(pyfvw.FvError):
+        style.load_text('{"version":8,"layers":[{"id":"x","type":"raster",'
+                        '"source-layer":"water"}]}')
+    # All-or-nothing: the previous style is still loaded.
+    assert style.style_name == name
+    assert style.layer_count > 10

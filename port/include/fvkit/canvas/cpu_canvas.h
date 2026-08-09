@@ -36,6 +36,9 @@ class CpuCanvas : public ICanvas {
   Status DrawPixmap(const PixelBuffer& src, int x, int y) override;
   Status DrawTextString(const std::string& utf8, int x, int y,
                         const TextStyle& style) override;
+  Status DrawRotatedTextString(const std::string& utf8, double x, double y,
+                               double angle_rad,
+                               const TextStyle& style) override;
   Status GetTextExtent(const std::string& utf8, const TextStyle& style,
                        PixelSize* out) override;
 

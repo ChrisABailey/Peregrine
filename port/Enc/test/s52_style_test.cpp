@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -1100,7 +1101,26 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // Visually re-checked at three scales (0.00005 / 0.0002 / 0.0008 deg/px) and
 // at 2x symbol scale: lateral buoys are the right colour and shape, daymarks
 // stand on their pivots, and the resampled tiles stay crisp when zoomed.
-constexpr uint64_t kHashCharleston = 0x5bfb57105171e60eull;
+// Re-pinned 2026-08-08 (R3c), for the area-pattern anchor: PlaceOverArea's
+// stamp grid hung on the CANVAS origin, so an AP fill crawled inside its own
+// region whenever the map panned. It now hangs on a fixed geographic point
+// projected into the frame, which moves this chart's marsh/foreshore stamps
+// by a sub-spacing offset and nothing else.
+// 0x5bfb57105171e60e -> 0x48a0cf127f6a2584. Visually re-checked against the
+// pre-change render side by side: the tufts sit in different places along the
+// left edge and the bottom-left creek, and every other mark on the chart —
+// land, the depth ramp, buoys, lights, the magenta linework — is unmoved.
+//
+// Re-pinned again 2026-08-08, for the two follow-on fixes the viewer forced
+// (see the pan tests below): the anchor is now a RETAINED NEARBY ground point
+// rather than lat/lon 0,0, and the placer tests the exact projected ring
+// rather than the whole-pixel one ClipPolygon returns.
+// 0x48a0cf127f6a2584 -> 0xa01ffd5340f22646. Diffed against the pre-change
+// render pixel by pixel rather than eyeballed: 135 pixels of 262,144 changed
+// (0.05 %), in 9 connected clusters, and every changed pixel is marsh-grass
+// ink — tufts that the rounded ring had been excluding near a boundary now
+// appear. No other mark on the chart differs by a single pixel.
+constexpr uint64_t kHashCharleston = 0xa01ffd5340f22646ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();
@@ -1133,6 +1153,177 @@ TEST(S52Render, CharlestonHarborViewport) {
   else
     EXPECT_EQ(h, kHashCharleston);
   WritePng(canvas.Buffer(), "s52_charleston");
+}
+
+// R3c. THE TEST THE CRAWLING MARSH GRASS SHOULD HAVE HAD.
+//
+// A map that pans is drawing the same ground through a moved window, so every
+// mark on it must move by exactly the number of pixels the window moved and
+// by nothing else. The S-52 area patterns did not.
+//
+// THREE defects, found in that order. The last two are why this test is
+// parameterised over the pan DIRECTION — each shows on an axis the others do
+// not, and a test that panned one way passed while the chart was visibly wrong.
+//
+//  1. The stamp grid hung on the CANVAS origin, so the tufts stood still while
+//     the marsh slid out from under them — a visible crawl.
+//  2. R3c re-hung it on lat/lon 0,0, which is ~600,000 px off-screen at
+//     Charleston. That is ground-fixed only while dpp holds still, and
+//     MapProjection derives dpp from the CENTRE LATITUDE in its scale-driven
+//     modes, so a north/south pan rescales it by ~1.26e-6 per pixel and the
+//     lever arm turns that into 0.75 px of lattice slip PER PIXEL of vertical
+//     pan. Tufts stopped crawling and started blinking on and off instead, a
+//     whole cell every ~39 px of drag. Chris caught it in the viewer.
+//  3. Independently: the placer took the ring ClipPolygon had ALREADY rounded
+//     to whole pixels, so the boundary it tested moved by up to half a pixel
+//     with the pan and stamps near an edge flipped in and out. On a marsh cut
+//     to ribbons by tidal channels, nearly every stamp is near an edge. This
+//     one shows on an EAST pan, where the anchor is blameless.
+//
+// Measured here, in percent of interior pixels that failed to move with the map
+// (see HOW TO READ THE NUMBER below for why none of these is zero):
+//
+//                                          east    north    diagonal
+//     0,0 anchor, clipped integer ring     1.073    3.022     2.828
+//     retained anchor, clipped ring        1.073    0.210     1.243
+//     retained anchor, exact ring          0.148    0.211     0.276
+//
+// The original of this test panned only in LONGITUDE, where dpp is constant,
+// and so was blind to (2) by construction. It also built a fresh renderer per
+// frame; the lattice is now renderer state (see VectorRenderer::PatternAnchor)
+// exactly as a retained scene is, so a pan test must reuse one renderer, which
+// is what an interactive caller does anyway.
+//
+// SetPhysicalScale, not SetResolution, for the same reason: the viewer runs in
+// physical-scale mode and that is the mode whose dpp moves with the centre.
+//
+// HOW TO READ THE NUMBER. The pan is 37 px — deliberately not a multiple of
+// any pattern spacing in the library, since a multiple would hide the very
+// defect under test — and the two frames are compared with the second shifted
+// back onto the first. They do NOT come out identical, and the reason is not
+// the patterns: shifting the CENTRE by 37 pixels' worth of degrees is 37
+// pixels in real arithmetic but not in floating-point arithmetic, so a
+// projected vertex can land a thousandth of a pixel the other side of a
+// rounding boundary, and a long straight line whose endpoint flips redraws one
+// pixel over. Allowing a match anywhere in a 1 px neighbourhood absorbs that;
+// a pattern on the wrong lattice is out by a fraction of its SPACING, which is
+// several pixels, and no neighbourhood hides it.
+//
+// s52_pan_diff_*.png marks the disagreeing pixels in red, and is worth LOOKING
+// at rather than trusting the number — in a failing build the tufts light up
+// as red glyphs, which is the defect drawn.
+namespace {
+
+// Renders the Charleston viewport at `pan` px east and `pan_down` px south of
+// the base centre, through ONE renderer, and returns the fraction of interior
+// pixels that did not move with the map.
+double PanMismatch(const std::string& enc_root, int pan_x, int pan_y,
+                   const char* png_name) {
+  // 768 px over the marshes south of the harbour, at the viewer's own kind of
+  // scale. The E3a golden's 512 px harbour viewport is nearly all water and
+  // holds barely a dozen stamps — it let a 3 % defect through as a pass, which
+  // is how the lever arm survived a test written to catch exactly it.
+  constexpr int kW = 768, kH = 768;
+  constexpr double kLat = 32.72, kLon = -79.93;
+  constexpr double kDen = 50000.0;
+
+  auto source = std::make_shared<fv::EncVectorSource>();
+  EXPECT_TRUE(source->Open(enc_root).ok());
+  auto style = std::make_shared<fv::S52StyleEngine>();
+  EXPECT_TRUE(style->Open(enc_root).ok());
+  // One renderer for both frames: the stamp lattice is carried across frames.
+  fv::VectorRenderer r(source, style);
+
+  auto RenderAt = [&](int dx, int dy, fv::CpuCanvas* canvas) {
+    fv::MapProjection proj;
+    EXPECT_TRUE(proj.SetSurfaceSize(kW, kH).ok());
+    EXPECT_TRUE(proj.SetCenter(fv::GeoPoint{kLat, kLon}).ok());
+    EXPECT_TRUE(proj.SetPhysicalScale(kDen, 0.25).ok());
+    // Offset in whole pixels of THIS projection. Moving the centre changes dpp
+    // (that is the point of the test), so the offset is applied against the
+    // dpp the base centre produced and the centre re-set once.
+    EXPECT_TRUE(proj.SetCenter(fv::GeoPoint{
+                                   kLat - dy * proj.DegPerPixelLat(),
+                                   kLon + dx * proj.DegPerPixelLon()})
+                    .ok());
+    canvas->Clear(fv::FvColor{255, 255, 255, 255});
+    EXPECT_TRUE(r.Render(proj, canvas).ok());
+  };
+
+  fv::CpuCanvas a(kW, kH), b(kW, kH);
+  RenderAt(0, 0, &a);
+  // A ground point that was at (x, y) is now at (x - pan_x, y - pan_y).
+  RenderAt(pan_x, pan_y, &b);
+
+  // Everything outside a 56 px frame is excluded: near the edge the two frames
+  // legitimately disagree, since one of them queried ground the other did not
+  // and clips geometry the other draws whole.
+  constexpr int kMargin = 56;
+  fv::CpuCanvas diff(kW, kH);
+  for (int y = 0; y < kH; ++y)
+    memcpy(const_cast<unsigned char*>(diff.Buffer().Row(y)),
+           b.Buffer().Row(y), static_cast<size_t>(kW) * 4);
+
+  size_t compared = 0, differing = 0;
+  for (int y = kMargin; y < kH - kMargin - pan_y; ++y) {
+    const unsigned char* rb = b.Buffer().Row(y);
+    for (int x = kMargin; x < kW - kMargin - pan_x; ++x) {
+      const unsigned char* pb = rb + x * 4;
+      ++compared;
+      bool found = false;
+      for (int dy = -1; dy <= 1 && !found; ++dy)
+        for (int dx = -1; dx <= 1 && !found; ++dx) {
+          const unsigned char* pa =
+              a.Buffer().Row(y + pan_y + dy) + (x + pan_x + dx) * 4;
+          if (pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]) found = true;
+        }
+      if (found) continue;
+      ++differing;
+      unsigned char* pd =
+          const_cast<unsigned char*>(diff.Buffer().Row(y)) + x * 4;
+      pd[0] = 255; pd[1] = 0; pd[2] = 0; pd[3] = 255;
+    }
+  }
+  WritePng(diff.Buffer(), png_name);
+  EXPECT_GT(compared, 90000u);
+  return compared == 0 ? 1.0
+                       : static_cast<double>(differing) / compared;
+}
+
+}  // namespace
+
+TEST(S52Render, PanMovesEveryMarkByTheSameAmountIncludingAreaPatterns) {
+  SKIP_WITHOUT_PRESLIB();
+  // East/west: dpp does not move, so this axis was already clean before the
+  // PatternAnchor fix. Kept because it is the axis that pins the placer.
+  const double east = PanMismatch(enc_root, 37, 0, "s52_pan_diff_east");
+  EXPECT_LT(east, 0.0035)
+      << east * 100.0 << "% of pixels did not move with an east pan — look at "
+         "s52_pan_diff_east.png: red glyphs on the marsh mean the pattern "
+         "lattice is anchored to the canvas again";
+}
+
+TEST(S52Render, PanningNorthDoesNotReshuffleAreaPatterns) {
+  SKIP_WITHOUT_PRESLIB();
+  // THE ONE THAT CATCHES THE LEVER ARM. A vertical pan is the only pan that
+  // changes dpp, and dpp is what the 0,0 anchor was multiplied by: 3.022 %
+  // with that anchor, 0.211 % with a retained near-viewport one.
+  const double north = PanMismatch(enc_root, 0, 37, "s52_pan_diff_north");
+  EXPECT_LT(north, 0.0035)
+      << north * 100.0
+      << "% of pixels did not move with a north pan — look at "
+         "s52_pan_diff_north.png: red glyphs on the marsh mean the stamp "
+         "lattice slid sideways when dpp changed, i.e. the anchor has a lever "
+         "arm again";
+}
+
+TEST(S52Render, PanningDiagonallyDoesNotReshuffleAreaPatterns) {
+  SKIP_WITHOUT_PRESLIB();
+  // What a drag actually is, and what Chris's two screenshots were.
+  const double diag = PanMismatch(enc_root, 37, 29, "s52_pan_diff_diag");
+  EXPECT_LT(diag, 0.0035)
+      << diag * 100.0 << "% of pixels did not move with a diagonal pan — see "
+                         "s52_pan_diff_diag.png";
 }
 
 TEST(S52Render, RenderIsDeterministic) {

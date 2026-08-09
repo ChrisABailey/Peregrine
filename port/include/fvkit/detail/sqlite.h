@@ -37,6 +37,21 @@ class SqliteDb {
     return Status::Ok();
   }
 
+  // Read-only, and fails if the file is absent rather than creating it —
+  // sqlite3_open() would happily hand back an empty new database for a typo'd
+  // path. For published artefacts the port only ever reads (an MBTiles
+  // pyramid, someone else's GeoPackage), this is the right door.
+  Status OpenReadOnly(const std::string& path) {
+    Close();
+    if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READONLY, nullptr) !=
+        SQLITE_OK) {
+      std::string msg = db_ ? sqlite3_errmsg(db_) : "sqlite3_open_v2 failed";
+      Close();
+      return Status::Error(kIoError, "sqlite open " + path + ": " + msg);
+    }
+    return Status::Ok();
+  }
+
   void Close() {
     if (db_ != nullptr) {
       sqlite3_close(db_);

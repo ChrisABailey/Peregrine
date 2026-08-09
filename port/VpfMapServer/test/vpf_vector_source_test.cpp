@@ -395,6 +395,158 @@ TEST(VpfVectorSourceReal, BoundsCoverEveryFeature) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The parsed-feature cache (R3c).
+//
+// Before R3c every Query walked every row of every feature table and built
+// every feature, then discarded the ones outside the box — a query returning
+// 5 features cost the same 9.4 ms as one returning 5,037. The library is now
+// parsed once and every later query is a box test over memory (0.3 ms).
+//
+// The cache is only allowed to be faster, so the tests are EQUIVALENCE tests
+// against the path it replaced (R3b's rule for an optimization): the same
+// source answers the same queries with the cache off, and the two answers
+// must agree feature for feature, in order.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void ExpectSameFeatures(const std::vector<fv::VectorFeature>& a,
+                        const std::vector<fv::VectorFeature>& b) {
+  ASSERT_EQ(a.size(), b.size());
+  for (size_t i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(a[i].layer, b[i].layer) << "at " << i;
+    EXPECT_EQ(a[i].style_key, b[i].style_key) << "at " << i;
+    EXPECT_EQ(static_cast<int>(a[i].type), static_cast<int>(b[i].type)) << i;
+    EXPECT_EQ(a[i].ref.layer, b[i].ref.layer) << "at " << i;
+    EXPECT_EQ(a[i].ref.tile, b[i].ref.tile) << "at " << i;
+    EXPECT_EQ(a[i].ref.feature, b[i].ref.feature) << "at " << i;
+    EXPECT_DOUBLE_EQ(a[i].bounds.ll.lat, b[i].bounds.ll.lat) << "at " << i;
+    EXPECT_DOUBLE_EQ(a[i].bounds.ur.lon, b[i].bounds.ur.lon) << "at " << i;
+    ASSERT_EQ(a[i].parts.size(), b[i].parts.size()) << "at " << i;
+    for (size_t p = 0; p < a[i].parts.size(); ++p)
+      EXPECT_EQ(a[i].parts[p].size(), b[i].parts[p].size()) << i << "/" << p;
+    ASSERT_EQ(a[i].attributes.size(), b[i].attributes.size()) << "at " << i;
+    for (size_t k = 0; k < a[i].attributes.size(); ++k)
+      EXPECT_EQ(a[i].attributes[k], b[i].attributes[k]) << "at " << i;
+  }
+}
+
+}  // namespace
+
+TEST(VpfFeatureCache, CachedAnswersMatchTheFullScanExactly) {
+  SKIP_WITHOUT_DNC();
+  fv::VpfVectorSource cached;
+  ASSERT_TRUE(cached.Open(lib).ok());
+  fv::VpfVectorSource scanned;
+  ASSERT_TRUE(scanned.Open(lib).ok());
+  scanned.SetFeatureCacheEnabled(false);
+  EXPECT_FALSE(scanned.feature_cache_enabled());
+
+  // Whole library, a sub-rect, a rect that touches nothing, and a rect
+  // straddling the library's edge.
+  const std::vector<fv::GeoRect> boxes = {
+      fv::GeoRect::World(),
+      fv::GeoRect{{41.66, -69.98}, {41.70, -69.94}},
+      fv::GeoRect{{10.0, 10.0}, {11.0, 11.0}},
+      fv::GeoRect{{41.80, -70.10}, {41.90, -69.90}},
+  };
+  for (const fv::GeoRect& box : boxes) {
+    fv::VectorQuery q;
+    q.area = box;
+    std::vector<fv::VectorFeature> a, b;
+    ASSERT_TRUE(cached.Query(q, &a).ok());
+    ASSERT_TRUE(scanned.Query(q, &b).ok());
+    ExpectSameFeatures(a, b);
+  }
+  EXPECT_GT(cached.cached_features(), 0u);
+  EXPECT_EQ(scanned.cached_features(), 0u) << "the cache was off";
+}
+
+// max_features truncates in the same place either way. It counts what is
+// ALREADY in `out` too, because Query appends — the seam's contract.
+TEST(VpfFeatureCache, TruncationAndAppendingMatchTheFullScan) {
+  SKIP_WITHOUT_DNC();
+  fv::VpfVectorSource cached;
+  ASSERT_TRUE(cached.Open(lib).ok());
+  fv::VpfVectorSource scanned;
+  ASSERT_TRUE(scanned.Open(lib).ok());
+  scanned.SetFeatureCacheEnabled(false);
+
+  for (size_t limit : {size_t{1}, size_t{25}, size_t{5000}}) {
+    fv::VectorQuery q;
+    q.max_features = limit;
+    std::vector<fv::VectorFeature> a, b;
+    ASSERT_TRUE(cached.Query(q, &a).ok());
+    ASSERT_TRUE(scanned.Query(q, &b).ok());
+    EXPECT_LE(a.size(), limit);
+    ExpectSameFeatures(a, b);
+  }
+
+  // Pre-filled output: three entries the source must leave alone, and which
+  // count toward the limit.
+  fv::VectorQuery q;
+  q.max_features = 10;
+  std::vector<fv::VectorFeature> a(3), b(3);
+  ASSERT_TRUE(cached.Query(q, &a).ok());
+  ASSERT_TRUE(scanned.Query(q, &b).ok());
+  EXPECT_EQ(a.size(), 10u);
+  ASSERT_EQ(a.size(), b.size());
+}
+
+// Repeated identical queries are the interaction this exists for (a pan
+// re-queries), and they must not accumulate or drift.
+TEST(VpfFeatureCache, RepeatedQueriesAreStable) {
+  SKIP_WITHOUT_DNC();
+  fv::VpfVectorSource s;
+  ASSERT_TRUE(s.Open(lib).ok());
+  fv::VectorQuery q;
+  q.area = fv::GeoRect{{41.66, -69.98}, {41.70, -69.94}};
+  std::vector<fv::VectorFeature> first;
+  ASSERT_TRUE(s.Query(q, &first).ok());
+  ASSERT_FALSE(first.empty());
+  for (int i = 0; i < 3; ++i) {
+    std::vector<fv::VectorFeature> again;
+    ASSERT_TRUE(s.Query(q, &again).ok());
+    ExpectSameFeatures(first, again);
+  }
+}
+
+// Turning the cache off releases it; turning it back on rebuilds it, and the
+// answer is the same across the switch.
+TEST(VpfFeatureCache, ToggleReleasesAndRebuilds) {
+  SKIP_WITHOUT_DNC();
+  fv::VpfVectorSource s;
+  ASSERT_TRUE(s.Open(lib).ok());
+  const std::vector<fv::VectorFeature> warm = QueryAll(&s);
+  const size_t held = s.cached_features();
+  EXPECT_GT(held, 0u);
+
+  s.SetFeatureCacheEnabled(false);
+  EXPECT_EQ(s.cached_features(), 0u);
+  ExpectSameFeatures(warm, QueryAll(&s));
+
+  s.SetFeatureCacheEnabled(true);
+  ExpectSameFeatures(warm, QueryAll(&s));
+  EXPECT_EQ(s.cached_features(), held);
+}
+
+// A re-Open must drop the cache (another library has other features) while
+// keeping the caller's SETTING, which belongs to the caller and not the data.
+TEST(VpfFeatureCache, ReopenDropsTheCacheAndKeepsTheSetting) {
+  SKIP_WITHOUT_DNC();
+  fv::VpfVectorSource s;
+  ASSERT_TRUE(s.Open(lib).ok());
+  QueryAll(&s);
+  EXPECT_GT(s.cached_features(), 0u);
+  ASSERT_TRUE(s.Open(lib).ok());
+  EXPECT_EQ(s.cached_features(), 0u) << "a re-open must not serve stale data";
+
+  s.SetFeatureCacheEnabled(false);
+  ASSERT_TRUE(s.Open(lib).ok());
+  EXPECT_FALSE(s.feature_cache_enabled());
+}
+
 TEST(VpfVectorSourceReal, ReopenIsClean) {
   SKIP_WITHOUT_DNC();
   fv::VpfVectorSource s;

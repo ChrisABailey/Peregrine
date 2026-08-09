@@ -12,8 +12,9 @@ port can currently render, driven from the L2 catalog.
   Raster Charts   CADRG (GNC/JNC/LFC/TLM) and GeoPackage tile packs
   Imagery         GeoTIFF DOQs and TIROS world tiles
   Elevation       DTED shaded relief (the "dted-shaded" raster source)
-  Vector Charts   DNC libraries through GeoSym, and S-57 ENC cells through
-                  the official S-52 presentation library - two products over
+  Vector Charts   DNC libraries through GeoSym, S-57 ENC cells through the
+                  official S-52 presentation library, and OSM vector-tile
+                  pyramids through a MapLibre GL style - three products over
                   ONE seam (source -> style engine -> VectorRenderer)
 
 The catalog is a persistent SQLite file (File menu: New/Open/Add Map Data /
@@ -43,6 +44,7 @@ import sys
 import time
 import traceback
 
+
 # --- locate the built pyfvw next to this repo checkout -----------------------
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 import glob as _glob
@@ -54,6 +56,8 @@ TESTDATA = os.environ.get("FVW_TESTDATA_DIR", os.path.join(REPO, "TestData"))
 
 import numpy as np  # noqa: E402
 import pyfvw        # noqa: E402
+import tk_keys      # noqa: E402  (sibling module, see its header)
+from route import RouteOverlay
 
 # ----------------------------------------------------------------------------
 # App-wide constants
@@ -79,7 +83,7 @@ FAMILIES = (
     ("Raster Charts", ("cadrg", "gpkg")),
     ("Imagery", ("geotiff", "tiros")),
     ("Elevation", ("dted-shaded",)),
-    ("Vector Charts", ("vpf", "enc")),
+    ("Vector Charts", ("vpf", "enc", "osm")),
 )
 # Formats drawn through the vector seam (source -> style engine ->
 # VectorRenderer) rather than through MapEngine's raster compositor. Derived
@@ -97,6 +101,7 @@ COVERAGE_COLORS = {
     "dted-shaded": (170, 110, 240),
     "vpf": (80, 150, 240),
     "enc": (200, 80, 190),
+    "osm": (110, 190, 190),
 }
 
 # dted-shaded series carry scale 0 (elevation cells have no chart scale), so
@@ -109,7 +114,7 @@ DTED_DEFAULT_SCALE = {"DTED0": 2e6, "DTED1": 500e3, "DTED2": 150e3, "DTED3": 50e
 # once as the elevation source, once as the shaded-relief raster.
 SCAN_FORMATS = (("cadrg", "rpf"), ("tiros", "tiros3"), ("dted", "dted"),
                 ("dted-shaded", "dted"), ("geotiff", "geotiff"), ("gpkg", None),
-                ("enc", "enc"))
+                ("enc", "enc"), ("osm", "OSM"))
 
 
 def _find_host_font():
@@ -372,9 +377,24 @@ class PythonView:
         # like geosym.data_dir this is a settings key, not a constant.
         self.enc_dir = cfg.get("enc.data_dir", os.path.join(TESTDATA, "enc"))
         self.show_meta = cfg.get_bool("enc.show_meta_objects", False)
+        # The MapLibre style sheet OSM is drawn with. Unlike GeoSym's tables
+        # and the S-52 presentation library, this one ships WITH the port
+        # (port/Osm/styles) rather than with the data — it is a deliverable of
+        # O2, not something the user supplies — so the default is a repo path
+        # and the settings key exists to point at a different sheet.
+        self.osm_style_path = cfg.get(
+            "osm.style", os.path.join(REPO, "port", "Osm", "styles",
+                                      "peregrine-osm.json"))
+        self.osm = None               # shared OsmStyleEngine
+        self._osm_ref_lat = None      # latitude that engine is currently set to
         # R3a knobs, applied to every vector renderer as it is created.
         self.scene_margin = cfg.get_float("vector.scene_margin", 0.25)
         self.simplify_px = cfg.get_float("vector.simplify_pixels", 0.0)
+        # Label sizing. 0 = constant on-screen size, the core default; a scale
+        # denominator makes labels scale with the map, as if their authored
+        # pixel size had been chosen at that scale. Off means road names stay
+        # legible at every zoom; on means they belong to the ground.
+        self.label_ref_scale = cfg.get_float("vector.label_reference_scale", 0.0)
         self.vsources = {}            # series_id -> (source, renderer)
         self.vrenderer = None
         self.vsource = None
@@ -394,6 +414,16 @@ class PythonView:
         self.mgr.add(self.coverage)
         self.mgr.add(self.grid)
         self.mgr.add(self.cross)
+        
+        # The demo route, and the app's one EDITABLE overlay: click selects a
+        # waypoint, "a" arms add-point (the next click inserts after it), "d"
+        # deletes. Kept on self so a test can drive it without the tk shell.
+        self.route = RouteOverlay("KATL departure", [
+            ("KATL",  33.6407, -84.4277),
+            ("VULCN", 33.75,   -84.30),
+            ("ROME",  34.35,   -85.16),
+        ])
+        self.mgr.add(self.route)
 
         self.mouse_readout = ""
         self.render_error = None
@@ -557,11 +587,12 @@ class PythonView:
     def _open_vector(self, series):
         """Open (or reuse) the source + style engine behind a vector series.
 
-        Two products now, one seam: DNC through VPF + GeoSym, ENC through
-        S-57 + the official S-52 presentation library. Everything downstream
-        of `renderer` — the retained scene, identify, coverage, the render
-        loop — is the same code for both, which is the whole point of the
-        vector seam and is why this method is the only place that forks.
+        Three products now, one seam: DNC through VPF + GeoSym, ENC through
+        S-57 + the official S-52 presentation library, OSM through an MVT
+        pyramid + a MapLibre GL style sheet. Everything downstream of
+        `renderer` — the retained scene, identify, coverage, the render loop —
+        is the same code for all three, which is the whole point of the vector
+        seam and is why this method is the only place that forks.
         """
         if series.id in self.vsources:
             self.vsource, self.vrenderer, self.vstyle = self.vsources[series.id]
@@ -570,7 +601,24 @@ class PythonView:
         if not rows:
             raise RuntimeError(f"no coverage rows for {series.series_key}")
 
-        if series.format == "enc":
+        if series.format == "osm":
+            # One row = one .mbtiles file = one series, so there is no set of
+            # cells to choose between and no library directory to build: the
+            # catalog's path IS what the source opens.
+            source = pyfvw.vector.OsmVectorSource()
+            source.open(rows[0].path)
+            # The display pitch is half of the zoom<->scale relation, and the
+            # source and the style engine must be given the SAME one (the
+            # other half, the reference latitude, moves with the viewport and
+            # is set per frame in _render_vector).
+            source.set_display_mm_per_pixel(self.mm_per_pixel)
+            if self.osm is None:
+                self.osm = pyfvw.vector.OsmStyleEngine()
+                self.osm.load_file(self.osm_style_path)
+                self.osm.set_display_mm_per_pixel(self.mm_per_pixel)
+                self._osm_ref_lat = None
+            style = self.osm
+        elif series.format == "enc":
             # One ENC row = one cell file, and an ENC series IS a usage band —
             # so the source opens exactly the cells the catalog filed under
             # this band, all of them, and nothing else.
@@ -608,6 +656,7 @@ class PythonView:
         # change (the engine's epoch).
         renderer.set_scene_margin(self.scene_margin)
         renderer.set_simplify_pixels(self.simplify_px)
+        renderer.set_label_reference_scale(self.label_ref_scale)
         self.vsources[series.id] = (source, renderer, style)
         self.vsource, self.vrenderer, self.vstyle = source, renderer, style
 
@@ -667,16 +716,50 @@ class PythonView:
         self.vrenderer.set_device_dpi(
             _dpi_for(self.mm_per_pixel) * self.feature_scale)
         self.vstyle.set_draw_labels(self.labels and self.font is not None)
+        self.vrenderer.set_label_reference_scale(self.label_ref_scale)
         # Brightness/contrast is a GeoSym knob (it adjusts the DNC colour
         # table). S-52 has no equivalent by design — the mariner picks a
         # day/dusk/night COLOUR TABLE instead, which is a chart-correctness
         # rule, not a preference, so there is nothing to forward here.
         if hasattr(self.vstyle, "set_color_adjust"):
             self.vstyle.set_color_adjust(self.brightness, self.contrast)
-        self.canvas.clear((255, 255, 255))
+        if self.series.format == "osm":
+            self._sync_osm_zoom_inputs()
+        # A paper chart is white; a GL style says what its own background is
+        # (`background` is a style layer, not a feature, so it cannot arrive
+        # as a StyleResult and the application has to clear with it).
+        bg = (255, 255, 255)
+        if hasattr(self.vstyle, "background"):
+            c = self.vstyle.background(self.vscale)
+            if c:
+                bg = c[:3]
+        self.canvas.clear(bg)
         self.vrenderer.render(self.vproj, self.canvas)
         self._frames = self.vrenderer.features_queried
         self.mgr.draw_all(self.vproj, self.canvas)
+
+    # Latitude step at which the OSM style engine's reference latitude is
+    # re-set. Web Mercator's zoom<->scale relation is latitude-dependent, so
+    # the engine has to be told where the map is (it gets a scale and no
+    # geography) — but setting it every frame would bump the style epoch on
+    # every pan and the R3a retained scene would never be reused, which the
+    # ledger names as the way that cache silently stops working. Half a degree
+    # is worth about 0.01 of a zoom level at these latitudes: far below the
+    # rounding the source does when it picks a level, and the visible cost of
+    # a rebuilt scene is much larger than the invisible one of that error.
+    OSM_REF_LAT_STEP = 0.5
+
+    def _sync_osm_zoom_inputs(self):
+        """Keep the OSM style engine's half of the zoom<->scale relation in
+        step with the source's. Both must derive the SAME zoom from a scale or
+        the style switches layers on at a scale that does not match the tile
+        level the source read — the one failure O2 was designed around."""
+        self.vsource.set_display_mm_per_pixel(self.mm_per_pixel)
+        self.vstyle.set_display_mm_per_pixel(self.mm_per_pixel)
+        lat = round(self.center.lat / self.OSM_REF_LAT_STEP) * self.OSM_REF_LAT_STEP
+        if lat != self._osm_ref_lat:
+            self.vstyle.set_reference_latitude(lat)
+            self._osm_ref_lat = lat
 
     # --- scale ladder / zoom (shared by keys and menus) --------------------
 
@@ -924,6 +1007,12 @@ class PythonView:
         m_ovl.add_checkbutton(label="Feature Labels (vector)", accelerator="l",
                               variable=self.var_labels,
                               command=self._ui_apply_overlays)
+        # Turning this on pins the CURRENT scale as the reference, so the text
+        # does not jump the moment you tick it — it starts scaling from here.
+        self.var_label_ground = tk.BooleanVar(value=self.label_ref_scale > 0)
+        m_ovl.add_checkbutton(label="Labels Scale With The Map (vector)",
+                              variable=self.var_label_ground,
+                              command=self._ui_apply_overlays)
         # S-57 meta objects describe the DATASET, not the world: M_QUAL's
         # zones of confidence, M_COVR's coverage, M_NSYS. Off by default (they
         # pattern over the whole chart), but a mariner does ask for the ZOC
@@ -954,7 +1043,7 @@ class PythonView:
     def _rebuild_map_menu(self):
         """Repopulate the Map menu from the catalog: one section per family,
         radio items per series, plus disabled placeholders for planned
-        formats (ENC, OSM, WMS) so the roadmap is visible in the UI."""
+        formats (WMS) so the roadmap is visible in the UI."""
         m = self.m_map
         m.delete(0, "end")
         counts = frame_counts_by_series(self.db_path)
@@ -975,6 +1064,7 @@ class PythonView:
                 else:
                     detail = {"vpf": "DNC library",
                               "enc": "ENC usage band",
+                              "osm": "OSM tile pyramid",
                               "dted-shaded": "shaded relief"}.get(s.format, "")
                 n = counts.get(s.id)
                 label = f"{s.series_key}   {detail}" + (f"   ({n} frames)" if n else "")
@@ -982,7 +1072,6 @@ class PythonView:
                                   value=self._series_menu_key(s),
                                   command=lambda s=s: self._ui_set_series(s))
         m.add_command(label="--- Planned ---", state="disabled")
-        m.add_command(label="OSM vector tiles - planned", state="disabled")
         m.add_command(label="WMS - planned", state="disabled")
         if self.series is not None:
             self.series_var.set(self._series_menu_key(self.series))
@@ -990,23 +1079,65 @@ class PythonView:
     # --- keys / mouse ------------------------------------------------------
 
     def _bind_keys(self):
-        t = self.tk
-        for key, dx, dy in (("<Left>", -1, 0), ("<Right>", 1, 0),
-                            ("<Up>", 0, -1), ("<Down>", 0, 1)):
-            t.bind(key, lambda e, dx=dx, dy=dy: self._ui_pan(dx, dy))
-        t.bind("<Prior>", lambda e: self._ui_step_scale(-1))
-        t.bind("<Next>", lambda e: self._ui_step_scale(+1))
-        t.bind("-", lambda e: self._ui_zoom(ZOOM_STEP))
-        t.bind("=", lambda e: self._ui_zoom(1.0 / ZOOM_STEP))
-        t.bind("+", lambda e: self._ui_zoom(1.0 / ZOOM_STEP))
-        t.bind("0", lambda e: self._ui_zoom(None))
-        t.bind("[", lambda e: self._ui_feature(1.0 / FEATURE_STEP))
-        t.bind("]", lambda e: self._ui_feature(FEATURE_STEP))
-        t.bind("g", lambda e: self._ui_toggle(self.var_grid))
-        t.bind("c", lambda e: self._ui_toggle(self.var_cov))
-        t.bind("l", lambda e: self._ui_toggle(self.var_labels))
-        t.bind("q", lambda e: self.tk.destroy())
-        t.bind("<Escape>", lambda e: self.tk.destroy())
+        # ONE binding, so there is ONE precedence order and it is readable
+        # here rather than arbitrated by Tk behind our back.
+        #
+        # This used to be a dozen specific bindings (<Left>, <Prior>, "g", …).
+        # Within a bind tag Tk fires only the BEST-MATCHING pattern, so a
+        # generic <Key> handler was unreachable for every key that had its own
+        # binding — which meant an overlay hooked to <Key> could never see the
+        # arrows, Page Up/Down or Escape, no matter how correct its event was
+        # (found 2026-08-04 hooking a route overlay).
+        self.tk.bind("<Key>", self._on_key)
+
+    # (vk, char) -> what the app itself does with it. Named keys match on the
+    # virtual-key code; punctuation matches on the character it produced,
+    # since VK_OEM_* is keyboard-layout-specific and deliberately unmapped.
+    def _app_key_action(self, ev):
+        k = pyfvw.overlay.key
+        by_vk = {
+            k.LEFT: lambda: self._ui_pan(-1, 0),
+            k.RIGHT: lambda: self._ui_pan(1, 0),
+            k.UP: lambda: self._ui_pan(0, -1),
+            k.DOWN: lambda: self._ui_pan(0, 1),
+            k.PAGE_UP: lambda: self._ui_step_scale(-1),
+            k.PAGE_DOWN: lambda: self._ui_step_scale(+1),
+            k.ESCAPE: self.tk.destroy,
+        }
+        if ev.key in by_vk:
+            return by_vk[ev.key]
+        by_char = {
+            "-": lambda: self._ui_zoom(ZOOM_STEP),
+            "=": lambda: self._ui_zoom(1.0 / ZOOM_STEP),
+            "+": lambda: self._ui_zoom(1.0 / ZOOM_STEP),
+            "0": lambda: self._ui_zoom(None),
+            "[": lambda: self._ui_feature(1.0 / FEATURE_STEP),
+            "]": lambda: self._ui_feature(FEATURE_STEP),
+            "g": lambda: self._ui_toggle(self.var_grid),
+            "c": lambda: self._ui_toggle(self.var_cov),
+            "l": lambda: self._ui_toggle(self.var_labels),
+            "q": self.tk.destroy,
+        }
+        ch = chr(ev.text) if ev.text else ""
+        return by_char.get(ch)
+
+    def _on_key(self, e):
+        # Pressing Shift itself is not a key press anyone wants routed.
+        if tk_keys.is_modifier(e):
+            return None
+        ev = tk_keys.key_event(e)
+        # OVERLAYS GET FIRST REFUSAL. An editing overlay has to be able to
+        # take Delete, or the arrows while it is dragging a leg, before the
+        # map pans out from under it. Returning True stops the routing and
+        # this handler.
+        if self.mgr.route_key_down(ev):
+            self.refresh()
+            return "break"
+        action = self._app_key_action(ev)
+        if action is None:
+            return None
+        action()
+        return "break"
 
     def _on_configure(self, e):
         if e.width < 60 or e.height < 60:
@@ -1058,14 +1189,14 @@ class PythonView:
             self.refresh()
             return
         # A plain click.
+        if self.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(e.x, e.y)):
+            self.refresh()
+            return
         if self.mode == "vector":
             self.info_lines = self.identify(e.x, e.y)
             self._show_info(True)
             self._update_status()
-        else:
-            if self.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(e.x, e.y)):
-                self.refresh()
-                return
+        else:  
             self._recenter_at(e.x, e.y)
 
     def _on_shift_click(self, e):
@@ -1091,6 +1222,9 @@ class PythonView:
         self._ui_zoom(1.0 / step if e.delta > 0 else step)
 
     def _on_motion(self, e):
+        if self.mgr.route_mouse_move(pyfvw.overlay.MouseEvent(e.x, e.y)):
+            self.refresh()
+            return
         if self._drag is not None:
             return
         proj = self.proj
@@ -1159,6 +1293,9 @@ class PythonView:
         self.coverage.enabled_formats = {
             fmt for fmt, v in self.var_cov_fmt.items() if v.get()}
         self.labels = self.var_labels.get()
+        if hasattr(self, "var_label_ground"):
+            self.label_ref_scale = self.vscale if self.var_label_ground.get() \
+                else 0.0
         if hasattr(self, "var_meta"):
             self.show_meta = self.var_meta.get()
             if self.s52 is not None:
@@ -1347,6 +1484,17 @@ class PythonView:
             row=row, column=2)
         row += 1
 
+        tk.Label(win, text="OSM style sheet (MapLibre JSON):").grid(
+            row=row, column=0, sticky="w", padx=8, pady=4)
+        v_os = tk.StringVar(value=self.osm_style_path)
+        tk.Entry(win, textvariable=v_os, width=36).grid(row=row, column=1)
+        tk.Button(win, text="...", command=lambda: v_os.set(
+            filedialog.askopenfilename(
+                initialdir=os.path.dirname(v_os.get()),
+                filetypes=[("MapLibre style", "*.json")]) or v_os.get())).grid(
+            row=row, column=2)
+        row += 1
+
         tk.Label(win, text="Vector brightness / contrast:").grid(
             row=row, column=0, sticky="w", padx=8, pady=4)
         v_b = tk.IntVar(value=self.brightness)
@@ -1362,9 +1510,20 @@ class PythonView:
                 self.mm_per_pixel = max(0.01, min(64.0, float(v_mm.get())))
             except ValueError:
                 pass
+            # Either asset change drops the cached sources so the next open
+            # rebuilds against the new one. A style sheet that will not load
+            # must not take the app down with it: say so and keep the old one.
+            reopen = None
             if v_gs.get() != self.geosym_dir:
                 self.geosym_dir = v_gs.get()
                 self.style = None       # reopen lazily with the new dir
+                reopen = "GeoSym"
+            if v_os.get() != self.osm_style_path:
+                self.osm_style_path = v_os.get()
+                self.osm = None
+                self._osm_ref_lat = None
+                reopen = "OSM style"
+            if reopen:
                 self.vsources.clear()
                 self.vrenderer = self.vsource = self.vstyle = None
                 if self.mode == "vector":
@@ -1373,7 +1532,7 @@ class PythonView:
                     except Exception as exc:
                         from tkinter import messagebox
                         messagebox.showerror("PythonView",
-                                             f"GeoSym reopen failed:\n{exc}")
+                                             f"{reopen} reopen failed:\n{exc}")
             self.brightness, self.contrast = v_b.get(), v_c.get()
             win.destroy()
             self.refresh()
@@ -1409,7 +1568,13 @@ class PythonView:
             "l                 feature labels (vector)\n"
             "click             identify (vector) / re-center (raster)\n"
             "shift+click       re-center\n"
-            "q / Esc           quit"))
+            "q / Esc           quit\n"
+            "\n"
+            "Route overlay (the demo route):\n"
+            "click             select a waypoint\n"
+            "a                 arm add-point; next click inserts after it\n"
+            "d / Delete        delete the selected waypoint\n"
+            "Esc               cancel add mode / deselect"))
 
     def _ui_about(self):
         from tkinter import messagebox
@@ -1417,9 +1582,11 @@ class PythonView:
             "PythonView - the pyfvw desktop viewer\n\n"
             "A Python UI over the cross-platform FalconView port: CADRG, "
             "GeoTIFF, TIROS, GeoPackage and DTED shaded relief through "
-            "MapEngine; DNC vector charts through GeoSym and the shared "
-            "VectorRenderer; coverage and identify straight from the L2 "
-            f"catalog.\n\nCatalog: {self.db_path}"))
+            "MapEngine; DNC vector charts through GeoSym, S-57 ENC through "
+            "the S-52 presentation library and OSM vector tiles through a "
+            "MapLibre GL style - three products over one VectorRenderer; "
+            "coverage and identify straight from the L2 catalog."
+            f"\n\nCatalog: {self.db_path}"))
 
     # --- refresh / status ---------------------------------------------------
 
@@ -1449,13 +1616,20 @@ class PythonView:
         s = self.series
         if self.mode == "vector":
             lbl = "on" if (self.labels and self.font) else "off"
-            product = "ENC" if s.format == "enc" else "DNC"
+            product = {"enc": "ENC", "osm": "OSM"}.get(s.format, "DNC")
             # Base-edition-only cells are a navigational caveat, not a parse
             # problem: the reader does not apply the .001+ updates shipped
             # beside these cells, so say so on the chart rather than letting
             # a stale chart look current.
             if s.format == "enc" and self.vsource.staleness_warning:
                 product += " (base ed.)"
+            # A pyramid stops at z14 while the display does not, and the
+            # difference is worth showing: past it the map is z14 geometry
+            # under z15+ rules, so nothing new appears however far you zoom.
+            if s.format == "osm":
+                product += f" z{self.vsource.last_query_zoom}"
+                if self.vsource.last_query_overzoom >= 1.0:
+                    product += f"+{self.vsource.last_query_overzoom:.1f}"
             txt = (f" {self.center.lat:+.5f} {self.center.lon:+.5f}   "
                    f"{product}/{s.series_key}  1:{self.vscale:,.0f}   "
                    f"features x{self.feature_scale:.2f}  labels:{lbl}   "

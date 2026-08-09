@@ -139,11 +139,53 @@ struct PointSymbolStyle {
   double scale = 1.0;         // multiplies the renderer's symbol scale
 };
 
+// How a label meets its geometry.
+enum class LabelPlacement {
+  // One horizontal string at the first vertex of each part, plus dx/dy. The
+  // original behaviour and still the right answer for a point feature.
+  kPoint = 0,
+  // Glyph by glyph along a line, each rotated to the local tangent. The
+  // renderer's PlaceTextAlongPath does the walk; a run that does not fit, or
+  // that turns harder than max_angle_deg, is not drawn at all.
+  kAlongPath,
+};
+
+// What LabelStyle::style.size means.
+enum class LabelSizeUnit {
+  kPixels = 0,  // a constant on-screen size at any scale
+  // A constant GROUND size: `ground_size_m` metres of cap height, converted to
+  // pixels per frame, so the text zooms with the map exactly like the road it
+  // names. The renderer clamps the result (see kMinLabelPx/kMaxLabelPx) so a
+  // zoom-out cannot turn every label into a smear of single pixels.
+  kMeters,
+};
+
 struct LabelStyle {
   bool valid = false;
   std::string text;
   TextStyle style;
-  int dx = 0, dy = 0;  // pixel offset from the anchor point
+  int dx = 0, dy = 0;  // pixel offset from the anchor point (kPoint only)
+
+  LabelPlacement placement = LabelPlacement::kPoint;
+
+  // Ground sizing. `style.size` still carries the pixel size and is what a
+  // kPixels label uses; a kMeters label uses this instead, and the renderer
+  // leaves style.size alone so a caller can fall back to it.
+  LabelSizeUnit size_unit = LabelSizeUnit::kPixels;
+  double ground_size_m = 0.0;
+
+  // --- kAlongPath only ------------------------------------------------------
+  // Pixels between the START of one run and the start of the next. 0 = one run
+  // per part, centred on it — which is the right default for a road, whose
+  // parts already come out of the source one carriageway at a time.
+  double spacing_px = 0.0;
+  // Rejects a run whose direction turns by more than this between any two
+  // consecutive glyphs. MapLibre's text-max-angle, same meaning and default.
+  double max_angle_deg = 45.0;
+  // Perpendicular displacement in pixels, positive to the LEFT of the
+  // direction of travel — the same sense as PathRun::offset. Lifts a name off
+  // the centreline it would otherwise sit on.
+  double offset_px = 0.0;
 };
 
 // --- along-path and area pattern placement (E3b) ----------------------------

@@ -78,6 +78,26 @@ struct ICanvas {
   // Draws utf8 text with its BASELINE-left at (x, y).
   virtual Status DrawTextString(const std::string& utf8, int x, int y,
                                 const TextStyle& style) = 0;
+
+  // The same, rotated about that baseline-left origin, and in sub-pixel
+  // coordinates because a glyph laid along a road lands wherever the road is.
+  //
+  // ANGLE CONVENTION, identical to PlacedSymbol::rotation_deg: positive turns
+  // the text COUNTERCLOCKWISE as seen on screen. Screen y grows downward, so
+  // the baseline direction is (cos a, -sin a) and the up direction is
+  // (sin a, cos a).
+  //
+  // NOT pure: a canvas that has no rotated text (pyfvw's Python-side ICanvas
+  // subclasses, any future thin native backend) keeps compiling and draws the
+  // string upright rather than dropping it. Override it to place text along a
+  // path properly.
+  virtual Status DrawRotatedTextString(const std::string& utf8, double x,
+                                       double y, double angle_rad,
+                                       const TextStyle& style) {
+    (void)angle_rad;
+    return DrawTextString(utf8, static_cast<int>(x < 0 ? x - 0.5 : x + 0.5),
+                          static_cast<int>(y < 0 ? y - 0.5 : y + 0.5), style);
+  }
   virtual Status GetTextExtent(const std::string& utf8, const TextStyle& style,
                                PixelSize* out) = 0;
 

@@ -23,6 +23,8 @@
 #define FVKIT_VECTOR_RENDERER_H_
 
 #include <cstddef>
+#include <map>
+#include <utility>
 #include <vector>
 
 #include "fvkit/canvas/canvas.h"
@@ -57,6 +59,24 @@ class VectorRenderer {
 
   // Guard for interactive callers over dense coverages. 0 = unlimited.
   void SetMaxFeatures(size_t n) { max_features_ = n; }
+
+  // Makes PIXEL-sized labels scale with the map (see LabelSizeUnit).
+  //
+  // Every product authors label size in pixels — GeoSym in points, a GL style
+  // in px — which keeps text a constant size on screen while the map zooms
+  // under it. Setting a reference scale denominator reinterprets that authored
+  // size as the size AT THAT SCALE: text is then `size * ref / current`, so it
+  // grows into a zoom and shrinks out of one along with the geometry it names.
+  // A label that already carries LabelSizeUnit::kMeters ignores this — it
+  // said what it meant.
+  //
+  // 0 = off, the default, because turning it on changes every rendered frame
+  // that has a label in it and the pinned goldens are the record of what those
+  // frames look like. Interactive callers opt in.
+  void SetLabelReferenceScale(double scale_denominator) {
+    label_ref_scale_ = scale_denominator > 0.0 ? scale_denominator : 0.0;
+  }
+  double label_reference_scale() const { return label_ref_scale_; }
 
   // --- the retained scene (R3a, plan §5.4) ---------------------------------
   //
@@ -125,6 +145,15 @@ class VectorRenderer {
   double draw_ms() const { return draw_ms_; }
 
  private:
+  // This frame's pixel anchor for one area-pattern spacing, carried forward as
+  // a ground point so a pan cannot slide the lattice. See the long comment on
+  // the definition — the short version is that anchoring on a point 600,000 px
+  // away made the lattice sensitive to dpp, and dpp moves with the centre
+  // latitude in every scale-driven projection mode.
+  void PatternAnchor(const MapProjection& proj, double seed_x, double seed_y,
+                     double spacing_x, double spacing_y, double* ax,
+                     double* ay);
+
   VectorSourcePtr source_;
   StyleEnginePtr style_;
   double dpi_ = 96.0;
@@ -132,6 +161,7 @@ class VectorRenderer {
   size_t max_features_ = 0;
   double scene_margin_ = 0.0;
   double simplify_px_ = 0.0;
+  double label_ref_scale_ = 0.0;
   VectorScene scene_;
   bool scene_reused_ = false;
   bool pick_enabled_ = true;
@@ -141,6 +171,9 @@ class VectorRenderer {
   double style_ms_ = 0.0;
   double draw_ms_ = 0.0;
   PickIndex pick_;
+  // Retained stamp lattices, keyed by (spacing_x, spacing_y). Each value is the
+  // ground point the lattice hangs on; a handful of entries at most.
+  std::map<std::pair<double, double>, GeoPoint> pattern_anchors_;
 };
 
 // --- geometry helpers, exposed because they are worth testing directly -----
@@ -200,18 +233,86 @@ struct PathPlacement {
 PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
                              const std::vector<PathRun>& runs, double phase);
 
-// Grid of stamp positions covering `ring` (a clipped pixel ring). A position
-// is emitted when it is inside the ring by the even-odd rule, which is the
-// same fill rule CpuCanvas uses, so a pattern lands exactly where the solid
-// fill would have. DEVIATION: a symbol whose ink overruns the boundary is not
-// clipped — ICanvas has no clip region — so a pattern can bleed by up to half
-// a symbol. Documented in the ledger; the fix is an ICanvas clip rect.
-std::vector<SurfacePoint> PlaceOverArea(const std::vector<PixelPoint>& ring,
+// Grid of stamp positions covering `ring`, the EXACT projected outline in
+// sub-pixel surface coordinates — deliberately not the clipped, whole-pixel
+// ring the fill is drawn from, whose vertices move by up to half a pixel with
+// the pan and make stamps near a boundary blink. A position is emitted when it
+// is inside the ring by the even-odd rule, the same fill rule CpuCanvas uses,
+// so a pattern lands where the solid fill would have.
+//
+// `clip_w`/`clip_h` bound the walk to a canvas of that size (0 = unbounded),
+// which an exact ring needs because it may run far outside the viewport.
+//
+// DEVIATION: a symbol whose ink overruns the boundary is not clipped — ICanvas
+// has no clip region — so a pattern can bleed by up to half a symbol.
+// Documented in the ledger; the fix is an ICanvas clip rect.
+//
+// `anchor_x`/`anchor_y` pin the lattice: stamps land on anchor + k*spacing, so
+// every ring in a frame shares one grid. The renderer passes the pixel position
+// of a nearby FIXED GEOGRAPHIC POINT, which is what keeps a pattern still under
+// its own area while the map pans — pass 0,0 to get the original canvas-origin
+// lattice, which crawls. See VectorRenderer::PatternAnchor.
+std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
                                         double spacing_x, double spacing_y,
-                                        bool staggered);
+                                        bool staggered, double anchor_x = 0.0,
+                                        double anchor_y = 0.0,
+                                        double clip_w = 0.0,
+                                        double clip_h = 0.0);
 
 // Budget for one PlaceAlongPath call.
 constexpr int kMaxPatternCycles = 4096;
+
+// --- text along a path (the label placer) -----------------------------------
+//
+// The third thing that repeats along a line, after SAMI/LC symbols and area
+// patterns, and the one PlaceAlongPath cannot express: a glyph's step is its
+// OWN advance, not a run length the style knows in advance, and a run either
+// fits and is drawn or does not fit and is dropped whole — half a road name is
+// worse than none.
+//
+// Pure geometry, like its two neighbours: pixels in, pixels out, no canvas and
+// no font. The caller measures the text (that is the canvas's job) and passes
+// the per-glyph advances in.
+
+struct PlacedGlyph {
+  size_t index = 0;      // which glyph, into the advances array
+  double x = 0.0, y = 0.0;  // its baseline-left origin, pixels
+  double angle_rad = 0.0;   // CCW on screen, the ICanvas text convention
+};
+
+// Glyphs are in reading order and always run left-to-right on screen: a run
+// whose path direction would put the text upside down is walked backwards.
+struct PlacedTextRun {
+  std::vector<PlacedGlyph> glyphs;
+};
+
+// Lays `advances` (pixels, one per glyph) along `path` (>= 2 pixel points).
+//
+//   spacing_px    distance between the starts of consecutive runs; <= 0 puts
+//                 ONE run at the centre of the path, which is what a road
+//                 wants — a source hands out roads part by part already.
+//   max_angle_deg the largest turn tolerated between two consecutive glyphs.
+//                 A run that turns harder is dropped, not straightened.
+//   offset_px     perpendicular shift, positive to the LEFT of travel.
+//
+// Returns nothing when the text is longer than the path: a name that does not
+// fit is not drawn. Every emitted run is complete.
+std::vector<PlacedTextRun> PlaceTextAlongPath(
+    const std::vector<SurfacePoint>& path, const std::vector<double>& advances,
+    double spacing_px, double max_angle_deg, double offset_px);
+
+// Sizing bounds for a label whose size is a GROUND size (LabelSizeUnit::
+// kMeters, or a renderer label reference scale). Ground sizing has no natural
+// floor or ceiling — zoom far enough either way and the text is a smear of
+// single pixels or a wall of letters taller than the canvas — so the converted
+// size is clamped here and the label is dropped below the floor.
+constexpr double kMinLabelPx = 5.0;
+constexpr double kMaxLabelPx = 200.0;
+
+// Degrees of latitude to metres, for label ground sizing ONLY. A spherical
+// degree: the label is nominal typography, not a measurement, and carrying the
+// ellipsoidal meridian arc here would imply a precision the size does not have.
+constexpr double kMetersPerDegreeLat = 111319.49079327358;
 
 }  // namespace fv
 

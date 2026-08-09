@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -349,6 +350,138 @@ TEST(CpuCanvas, TextWithSystemFont) {
     for (int x = 0; x < 128; ++x) ink += Px(c.Buffer(), x, y)[0] ? 1 : 0;
   EXPECT_GT(ink, 50) << "text should leave ink";
   WriteAndCheckPng(c.Buffer(), "canvas_text");
+}
+
+// Same font search as above; text tests skip rather than fail on a host with
+// no TTF where this one looks.
+std::string SystemFont() {
+  const char* candidates[] = {
+      "/System/Library/Fonts/Supplemental/Arial.ttf",
+      "/System/Library/Fonts/Supplemental/Courier New.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  };
+  for (const char* f : candidates)
+    if (FILE* fp = fopen(f, "rb")) {
+      fclose(fp);
+      return f;
+    }
+  return std::string();
+}
+
+// The ink's own bounding box, which is what a rotation is visible in. A hash
+// would prove nothing about the ANGLE — the lesson F1/F2 paid for.
+bool InkBounds(const fv::PixelBuffer& b, int* x0, int* y0, int* x1, int* y1) {
+  bool any = false;
+  for (int y = 0; y < b.Height(); ++y)
+    for (int x = 0; x < b.Width(); ++x) {
+      if (Px(b, x, y)[0] == 0) continue;
+      if (!any) {
+        *x0 = *x1 = x;
+        *y0 = *y1 = y;
+        any = true;
+        continue;
+      }
+      *x0 = std::min(*x0, x);
+      *x1 = std::max(*x1, x);
+      *y0 = std::min(*y0, y);
+      *y1 = std::max(*y1, y);
+    }
+  return any;
+}
+
+TEST(CpuCanvas, RotatedTextTurnsTheStringOnTheScreen) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+  fv::TextStyle ts;
+  ts.font_path = font;
+  ts.size = 16;
+  ts.color = Rgb(255, 255, 255);
+
+  // Horizontal: a wide, short box. Quarter turn: the SAME string standing up,
+  // so the box is tall and narrow. Asserting the aspect ratio flips is the
+  // directional check; the ink count says the glyphs survived the resampling.
+  fv::CpuCanvas flat(160, 160), turned(160, 160);
+  flat.Clear(Rgb(0, 0, 0));
+  turned.Clear(Rgb(0, 0, 0));
+  ASSERT_TRUE(flat.DrawRotatedTextString("Main Street", 20, 100, 0.0, ts).ok());
+  ASSERT_TRUE(
+      turned.DrawRotatedTextString("Main Street", 100, 140, M_PI / 2, ts).ok());
+
+  int fx0, fy0, fx1, fy1, tx0, ty0, tx1, ty1;
+  ASSERT_TRUE(InkBounds(flat.Buffer(), &fx0, &fy0, &fx1, &fy1));
+  ASSERT_TRUE(InkBounds(turned.Buffer(), &tx0, &ty0, &tx1, &ty1));
+  EXPECT_GT(fx1 - fx0, fy1 - fy0) << "horizontal text should be wide";
+  EXPECT_GT(ty1 - ty0, tx1 - tx0) << "text at +90 should stand up";
+  // A quarter turn swaps the extents, near enough to prove it is the same run.
+  EXPECT_NEAR(ty1 - ty0, fx1 - fx0, 3);
+  EXPECT_NEAR(tx1 - tx0, fy1 - fy0, 3);
+  // +90 is COUNTERCLOCKWISE on screen: from the (100, 140) origin the text
+  // runs UP the canvas, i.e. to smaller y, and stays near its origin column.
+  EXPECT_LT(ty0, 140);
+  EXPECT_NEAR(tx0, 100, 20);
+}
+
+TEST(CpuCanvas, RotatedTextAtZeroIsTheUprightPathExactly) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+  fv::TextStyle ts;
+  ts.font_path = font;
+  ts.size = 14;
+  ts.color = Rgb(255, 255, 255);
+
+  // Pinned because every existing golden with text in it depends on it: a
+  // zero angle must take the ORIGINAL glyph path, not a resampled copy of it.
+  fv::CpuCanvas a(128, 32), b(128, 32);
+  a.Clear(Rgb(0, 0, 0));
+  b.Clear(Rgb(0, 0, 0));
+  ASSERT_TRUE(a.DrawTextString("Chart 42", 4, 20, ts).ok());
+  ASSERT_TRUE(b.DrawRotatedTextString("Chart 42", 4.0, 20.0, 0.0, ts).ok());
+  EXPECT_EQ(memcmp(a.Buffer().Row(0), b.Buffer().Row(0),
+                   (size_t)a.Buffer().Height() * a.Buffer().Width() * 4),
+            0);
+}
+
+TEST(CpuCanvas, ADefaultCanvasDrawsRotatedTextUpright) {
+  // ICanvas::DrawRotatedTextString is not pure: a backend that has no rotated
+  // text (pyfvw's Python subclasses) must still put the string down. This
+  // pins the fallback by calling it through the base class on a canvas that
+  // does NOT override it.
+  struct PlainCanvas : fv::ICanvas {
+    fv::PixelSize Size() const override { return {0, 0}; }
+    void Clear(const fv::FvColor&) override {}
+    fv::Status DrawLines(const std::vector<fv::PixelPoint>&,
+                         const fv::Pen&) override { return fv::Status::Ok(); }
+    fv::Status DrawPolyPolygon(const std::vector<std::vector<fv::PixelPoint>>&,
+                               const fv::Brush*, const fv::Pen*) override {
+      return fv::Status::Ok();
+    }
+    fv::Status DrawRectangle(const fv::PixelRect&, const fv::Brush*,
+                             const fv::Pen*) override { return fv::Status::Ok(); }
+    fv::Status DrawEllipse(const fv::PixelRect&, const fv::Brush*,
+                           const fv::Pen*) override { return fv::Status::Ok(); }
+    fv::Status DrawPixmap(const fv::PixelBuffer&, int, int) override {
+      return fv::Status::Ok();
+    }
+    fv::Status DrawTextString(const std::string& s, int x, int y,
+                              const fv::TextStyle&) override {
+      text = s;
+      px = x;
+      py = y;
+      return fv::Status::Ok();
+    }
+    fv::Status GetTextExtent(const std::string&, const fv::TextStyle&,
+                             fv::PixelSize*) override {
+      return fv::Status::Ok();
+    }
+    std::string text;
+    int px = 0, py = 0;
+  } plain;
+
+  fv::TextStyle ts;
+  ASSERT_TRUE(plain.DrawRotatedTextString("A", 10.4, -3.4, 1.0, ts).ok());
+  EXPECT_EQ(plain.text, "A");
+  EXPECT_EQ(plain.px, 10);
+  EXPECT_EQ(plain.py, -3);
 }
 
 }  // namespace

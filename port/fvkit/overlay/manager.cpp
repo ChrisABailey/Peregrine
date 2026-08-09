@@ -69,8 +69,8 @@ bool OverlayManager::RouteDoubleClick(const MouseEvent& e) {
 bool OverlayManager::RouteMouseWheel(const MouseEvent& e, double delta) {
   return RouteTopDown([&](Overlay& o) { return o.OnMouseWheel(e, delta); });
 }
-bool OverlayManager::RouteKeyDown(int key) {
-  return RouteTopDown([&](Overlay& o) { return o.OnKeyDown(key); });
+bool OverlayManager::RouteKeyDown(const KeyEvent& e) {
+  return RouteTopDown([&](Overlay& o) { return o.OnKeyDown(e); });
 }
 
 }  // namespace fv

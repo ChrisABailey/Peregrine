@@ -270,7 +270,7 @@ std::vector<SurfacePoint> Subpath(const std::vector<SurfacePoint>& path,
   return out;
 }
 
-bool PointInRing(const std::vector<PixelPoint>& ring, double x, double y) {
+bool PointInRing(const std::vector<SurfacePoint>& ring, double x, double y) {
   bool in = false;
   for (size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
     const double yi = ring[i].y, yj = ring[j].y;
@@ -365,27 +365,148 @@ PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
   return out;
 }
 
-std::vector<SurfacePoint> PlaceOverArea(const std::vector<PixelPoint>& ring,
+std::vector<PlacedTextRun> PlaceTextAlongPath(
+    const std::vector<SurfacePoint>& path, const std::vector<double>& advances,
+    double spacing_px, double max_angle_deg, double offset_px) {
+  std::vector<PlacedTextRun> out;
+  if (path.size() < 2 || advances.empty()) return out;
+
+  double text_w = 0.0;
+  for (double a : advances) text_w += (std::max)(0.0, a);
+  if (!(text_w > 0.0)) return out;
+
+  // The walk runs on a possibly REVERSED copy, because reading direction is a
+  // property of the whole path: a road digitised east-to-west would otherwise
+  // carry its name upside down. Decided once, from the chord of the path, so
+  // every run on one part reads the same way and a wiggle in the middle cannot
+  // flip a single word.
+  const double chord_x = path.back().x - path.front().x;
+  const double chord_y = path.back().y - path.front().y;
+  // Ties (a due-north/south road) read UPWARD, the cartographic convention;
+  // screen y grows downward, so upward is a negative chord_y.
+  const bool reverse = chord_x < 0.0 || (chord_x == 0.0 && chord_y > 0.0);
+  std::vector<SurfacePoint> fwd;
+  if (reverse) fwd.assign(path.rbegin(), path.rend());
+  const std::vector<SurfacePoint>& p = reverse ? fwd : path;
+
+  std::vector<double> cum(p.size(), 0.0);
+  for (size_t i = 1; i < p.size(); ++i)
+    cum[i] = cum[i - 1] +
+             std::hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y);
+  const double total = cum.back();
+  if (total < text_w) return out;  // does not fit: draw nothing, not half a name
+
+  // Run starts, centred on the path as a block. One run when no spacing was
+  // asked for; the count is capped for the same reason PlaceAlongPath caps
+  // cycles — a projection can hand this a path a million pixels long.
+  std::vector<double> starts;
+  if (spacing_px > 0.0) {
+    long n = static_cast<long>(std::floor((total - text_w) / spacing_px)) + 1;
+    n = (std::max)(1L, (std::min)(n, static_cast<long>(kMaxPatternCycles)));
+    const double span = (n - 1) * spacing_px + text_w;
+    const double first = (total - span) / 2.0;
+    for (long k = 0; k < n; ++k) starts.push_back(first + k * spacing_px);
+  } else {
+    starts.push_back((total - text_w) / 2.0);
+  }
+
+  const double max_turn = max_angle_deg > 0.0 ? max_angle_deg * kPi / 180.0
+                                              : kPi;  // <= 0 = no limit
+  size_t seg = 0;
+  for (double start : starts) {
+    PlacedTextRun run;
+    run.glyphs.reserve(advances.size());
+    bool ok = true;
+    double d = start;
+    double prev_angle = 0.0;
+    for (size_t g = 0; g < advances.size() && ok; ++g) {
+      const double adv = (std::max)(0.0, advances[g]);
+      SurfacePoint at, next;
+      double tx = 0.0, ty = 0.0;
+      seg = SampleAt(p, cum, d, seg, &at, &tx, &ty);
+      // The angle comes from the CHORD across this glyph, not the tangent at
+      // its origin: the next glyph starts where this one's advance ends, so
+      // using the chord is what keeps a curved run's glyphs touching instead
+      // of drifting apart on the outside of the bend.
+      SampleAt(p, cum, d + adv, seg, &next, &tx, &ty);
+      double ax = next.x - at.x, ay = next.y - at.y;
+      if (ax == 0.0 && ay == 0.0) {  // zero-advance glyph: fall back to tangent
+        SampleAt(p, cum, d, seg, &at, &tx, &ty);
+        ax = tx;
+        ay = ty;
+      }
+      const double angle = std::atan2(-ay, ax);
+      if (g > 0) {
+        double turn = angle - prev_angle;
+        while (turn > kPi) turn -= 2.0 * kPi;
+        while (turn < -kPi) turn += 2.0 * kPi;
+        if (std::fabs(turn) > max_turn) ok = false;
+      }
+      prev_angle = angle;
+
+      PlacedGlyph pg;
+      pg.index = g;
+      // Left of travel, the same normal PlaceAlongPath offsets a symbol by.
+      const double nlen = std::hypot(ax, ay);
+      const double ux = nlen > 0.0 ? ax / nlen : 1.0;
+      const double uy = nlen > 0.0 ? ay / nlen : 0.0;
+      pg.x = at.x + offset_px * uy;
+      pg.y = at.y - offset_px * ux;
+      pg.angle_rad = angle;
+      run.glyphs.push_back(pg);
+      d += adv;
+    }
+    // A rejected run does not shift the others: the starts are fixed, so the
+    // surviving runs stay where a straight stretch put them.
+    if (ok && !run.glyphs.empty()) out.push_back(std::move(run));
+  }
+  return out;
+}
+
+std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
                                         double spacing_x, double spacing_y,
-                                        bool staggered) {
+                                        bool staggered, double anchor_x,
+                                        double anchor_y, double clip_w,
+                                        double clip_h) {
   std::vector<SurfacePoint> out;
   if (ring.size() < 3 || !(spacing_x > 0.0) || !(spacing_y > 0.0)) return out;
 
   double minx = ring[0].x, maxx = ring[0].x;
   double miny = ring[0].y, maxy = ring[0].y;
-  for (const PixelPoint& p : ring) {
-    minx = (std::min)(minx, static_cast<double>(p.x));
-    maxx = (std::max)(maxx, static_cast<double>(p.x));
-    miny = (std::min)(miny, static_cast<double>(p.y));
-    maxy = (std::max)(maxy, static_cast<double>(p.y));
+  for (const SurfacePoint& p : ring) {
+    minx = (std::min)(minx, p.x);
+    maxx = (std::max)(maxx, p.x);
+    miny = (std::min)(miny, p.y);
+    maxy = (std::max)(maxy, p.y);
   }
 
-  // The grid is anchored to the canvas origin, not to the ring's own corner,
-  // so two adjacent areas sharing a pattern line up instead of each starting
-  // its own grid. (It still shifts when the map pans — a geographic anchor is
-  // an R3 concern, along with the retained scene.)
-  const double x0 = std::floor(minx / spacing_x) * spacing_x;
-  const double y0 = std::floor(miny / spacing_y) * spacing_y;
+  // The ring is the EXACT projected outline, so it can run far off-canvas; walk
+  // only the part that can put ink down. Without this a coastline polygon
+  // spanning a whole cell would step a lattice across millions of pixels and
+  // spend the stamp budget before reaching the viewport.
+  if (clip_w > 0.0 && clip_h > 0.0) {
+    minx = (std::max)(minx, 0.0);
+    miny = (std::max)(miny, 0.0);
+    maxx = (std::min)(maxx, clip_w - 1.0);
+    maxy = (std::min)(maxy, clip_h - 1.0);
+    if (minx > maxx || miny > maxy) return out;
+  }
+
+  // The grid is anchored to a point the CALLER pins, not to the ring's own
+  // corner, so two adjacent areas sharing a pattern line up instead of each
+  // starting its own grid.
+  //
+  // R3c: that anchor is a GEOGRAPHIC reference projected into pixels, where
+  // before it was the canvas origin — which meant the whole lattice moved with
+  // the canvas and the stamps crawled inside their own regions as the map
+  // panned. Anchoring on the ground makes the stamp positions a function of
+  // WHERE ON EARTH the area is, so a pan slides the ring and its pattern
+  // together. Which ground point is only a convention; see
+  // VectorRenderer::PatternAnchor for why it has to be a NEARBY one.
+  const double x0 =
+      anchor_x + std::floor((minx - anchor_x) / spacing_x) * spacing_x;
+  const double y0 =
+      anchor_y + std::floor((miny - anchor_y) / spacing_y) * spacing_y;
 
   int row = 0;
   for (double y = y0; y <= maxy && out.size() < kMaxPatternStamps;
@@ -403,6 +524,70 @@ std::vector<SurfacePoint> PlaceOverArea(const std::vector<PixelPoint>& ring,
 
 VectorRenderer::VectorRenderer(VectorSourcePtr source, StyleEnginePtr style)
     : source_(std::move(source)), style_(std::move(style)) {}
+
+// Resolves one pattern spacing's stamp lattice into this frame's pixels, and
+// remembers it as a GROUND point for the next frame.
+//
+// WHY THIS IS NOT JUST THE SEED (the R3c bug, found by Chris in the viewer).
+// R3c anchored the lattice at lat/lon 0,0 and recomputed the anchor pixel
+// every frame as -lon/dpp_lon. That is genuinely fixed to the ground while dpp
+// holds still, and panning east/west it is: measured over 40 one-pixel pans of
+// the Charleston chart, not one stamp moved.
+//
+// But MapProjection derives dpp from the CENTRE LATITUDE in its scale and
+// physical-scale modes (equal-arc, square ground cells at the centre), which
+// is the mode the viewer runs in — so every north/south pan changes dpp_lon
+// slightly. At Charleston the 0,0 anchor sits ~600,000 px off-screen, and a
+// one-pixel north pan moves dpp_lon by 1.26e-6 of itself: 600,000 x 1.26e-6 =
+// 0.75 px of lattice slip per pixel of vertical pan. With 29.5 px cells, ~39
+// px of drag slips the lattice a whole cell and every tuft of marsh grass
+// re-lands on a different site. That is the "tufts appear and disappear"
+// Chris saw, and it is why panning only in longitude did not catch it.
+//
+// The lever arm is the whole problem, so the fix is to keep the anchor within
+// ONE CELL of the viewport centre instead of 600,000 px away. Each frame the
+// retained ground point is projected, then walked to the nearest lattice site
+// to the centre — a WHOLE NUMBER OF CELLS, so this re-centring cannot move
+// the lattice, only re-describe it — and the walked point is stored back. The
+// residual slip is now 30 px x 1.26e-6 = 4e-5 px per pixel of pan.
+//
+// One anchor per (spacing_x, spacing_y): the whole-cell walk is only exact for
+// the spacing it was computed with, and patterns on one chart do not share a
+// spacing. There are a handful of distinct spacings in a presentation library.
+//
+// CONSEQUENCE. The lattice is now renderer state, so it is stable across the
+// frames of ONE renderer, which is how an interactive caller draws. Two
+// renderers seeded at different centres can land on lattices offset by a
+// sub-cell amount (the seed carries the full lever arm). A caller that builds
+// a fresh renderer per frame therefore still crawls — the viewer does not, and
+// neither should any pan test.
+void VectorRenderer::PatternAnchor(const MapProjection& proj, double seed_x,
+                                   double seed_y, double spacing_x,
+                                   double spacing_y, double* ax, double* ay) {
+  const PixelSize surface = proj.SurfaceSize();
+  const double cx = (surface.width - 1) / 2.0;
+  const double cy = (surface.height - 1) / 2.0;
+
+  double x = seed_x, y = seed_y;
+  const auto it = pattern_anchors_.find(std::make_pair(spacing_x, spacing_y));
+  if (it != pattern_anchors_.end()) {
+    double px = 0.0, py = 0.0;
+    if (proj.GeoToSurface(it->second, &px, &py).ok()) {
+      x = px;
+      y = py;
+    }
+  }
+
+  if (spacing_x > 0.0) x += std::round((cx - x) / spacing_x) * spacing_x;
+  if (spacing_y > 0.0) y += std::round((cy - y) / spacing_y) * spacing_y;
+
+  GeoPoint g;
+  if (proj.SurfaceToGeo(x, y, &g).ok())
+    pattern_anchors_[std::make_pair(spacing_x, spacing_y)] = g;
+
+  *ax = x;
+  *ay = y;
+}
 
 namespace {
 
@@ -715,6 +900,47 @@ bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
   return true;
 }
 
+// The size this label actually draws at, in pixels.
+//
+// Three ways in, one way out. A kMeters label states a ground size and is
+// converted with this frame's metres per pixel. A kPixels label is either left
+// alone (ref_scale 0, the default: constant on screen) or reinterpreted as
+// "that size AT ref_scale" and scaled by how far the current scale is from it —
+// which is the same ground sizing expressed in the unit the products author in.
+// See VectorRenderer::SetLabelReferenceScale.
+double LabelPixelSize(const LabelStyle& lb, double scale_denominator,
+                      double meters_per_pixel, double ref_scale) {
+  double px = lb.style.size;
+  if (lb.size_unit == LabelSizeUnit::kMeters) {
+    if (!(lb.ground_size_m > 0.0) || !(meters_per_pixel > 0.0)) return 0.0;
+    px = lb.ground_size_m / meters_per_pixel;
+  } else if (ref_scale > 0.0 && scale_denominator > 0.0) {
+    px *= ref_scale / scale_denominator;
+  } else {
+    return px;  // untouched, so a pinned golden is untouched
+  }
+  return (std::min)(px, kMaxLabelPx);
+}
+
+// Per-glyph advances, measured through the canvas because the canvas owns the
+// font. Taken as DIFFERENCES OF PREFIX WIDTHS rather than per-character widths:
+// GetTextExtent returns whole pixels, so summing rounded characters would drift
+// by up to half a pixel per glyph, while prefix differences put every glyph
+// within a pixel of where the upright renderer would have put it.
+bool GlyphAdvances(ICanvas* canvas, const std::string& text,
+                   const TextStyle& ts, std::vector<double>* out) {
+  out->clear();
+  out->reserve(text.size());
+  int prev = 0;
+  for (size_t i = 1; i <= text.size(); ++i) {
+    PixelSize ext;
+    if (!canvas->GetTextExtent(text.substr(0, i), ts, &ext).ok()) return false;
+    out->push_back(static_cast<double>(ext.width - prev));
+    prev = ext.width;
+  }
+  return !out->empty() && prev > 0;
+}
+
 using Clock = std::chrono::steady_clock;
 
 double MsSince(Clock::time_point t0) {
@@ -759,6 +985,27 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
 
   const Clock::time_point t_draw = Clock::now();
   const PixelSize size = canvas->Size();
+
+  // SEED for an area pattern's stamp lattice: where lat/lon 0,0 lands in this
+  // frame's pixels. Written out from the projection's own linear relation
+  // rather than fetched through GeoToSurface, which unwraps longitude toward
+  // the centre — an unwrap that would make the seed jump as a pan crossed
+  // +/-90 degrees from the centre.
+  //
+  // This is only the seed: it fixes WHICH lattice a renderer starts on, and
+  // PatternAnchor below then carries that lattice forward from frame to frame
+  // without ever evaluating this expression again. See PatternAnchor for why
+  // using it every frame (R3c) was wrong.
+  const GeoPoint pat_center = proj.Center();
+  const PixelSize surface = proj.SurfaceSize();  // GeoToSurface's frame, not
+                                                 // the canvas's, if they differ
+  const double pattern_seed_x =
+      (surface.width - 1) / 2.0 - pat_center.lon / proj.DegPerPixelLon();
+  const double pattern_seed_y =
+      (surface.height - 1) / 2.0 + pat_center.lat / proj.DegPerPixelLat();
+  // Ground metres per pixel, for labels sized in ground units. The latitude
+  // axis, because it is the one an equal-arc projection keeps uniform.
+  const double meters_per_pixel = proj.DegPerPixelLat() * kMetersPerDegreeLat;
   const double px_per_himetric = symbol_scale_ / kHimetricPerHundredthInch;
   // The same zoom in the other symbol form's units: a tile is authored in
   // pixels, so the user's symbol scale IS its scale factor.
@@ -802,10 +1049,24 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
             const ResolvedSymbol pat =
                 ResolveSymbol(style_.get(), sr.area_pattern.symbol_id);
             if (pat.drawable()) {
+              double anchor_x = 0.0, anchor_y = 0.0;
+              PatternAnchor(proj, pattern_seed_x, pattern_seed_y,
+                            sr.area_pattern.spacing_x,
+                            sr.area_pattern.spacing_y, &anchor_x, &anchor_y);
+              // The EXACT projected ring, not the clipped integer one the fill
+              // is drawn from: ClipPolygon rounds every vertex to a whole pixel
+              // and drops vertices that round together, so its boundary moves
+              // by up to half a pixel — differently at every pan — and a stamp
+              // sitting near an edge flips in and out. On a marsh shredded by
+              // tidal channels that is most of them. Found alongside the anchor
+              // lever arm and visible on an EAST pan, where the anchor is
+              // blameless. Membership is now a question about the geometry, not
+              // about how the geometry happened to round.
               for (const SurfacePoint& at :
-                   PlaceOverArea(rings[0], sr.area_pattern.spacing_x,
+                   PlaceOverArea(proj_part, sr.area_pattern.spacing_x,
                                  sr.area_pattern.spacing_y,
-                                 sr.area_pattern.staggered)) {
+                                 sr.area_pattern.staggered, anchor_x, anchor_y,
+                                 size.width, size.height)) {
                 DrawResolvedSymbol(
                     canvas, pat, at.x, at.y,
                     px_per_himetric * sr.area_pattern.symbol_scale,
@@ -900,24 +1161,69 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
       }
 
       if (sr.label.valid && !sr.label.text.empty()) {
-        const SurfacePoint& a = proj_part.front();
-        const int lx = static_cast<int>(std::lround(a.x)) + sr.label.dx;
-        const int ly = static_cast<int>(std::lround(a.y)) + sr.label.dy;
-        if (lx > -1000 && ly > -1000 && lx < size.width + 1000 &&
-            ly < size.height + 1000) {
-          canvas->DrawTextString(sr.label.text, lx, ly, sr.label.style);
-          ++draws_emitted_;
-          if (pick_enabled_) {
-            // Text draws from its BASELINE-left, so the box runs upward.
-            PixelSize ext;
-            if (canvas->GetTextExtent(sr.label.text, sr.label.style, &ext).ok() &&
-                ext.width > 0 && ext.height > 0) {
-              PixelRect box;
-              box.x = lx;
-              box.y = ly - ext.height;
-              box.width = ext.width;
-              box.height = ext.height;
-              pick_.AddBox(it.ref, sr.priority, box);
+        TextStyle ts = sr.label.style;
+        ts.size = LabelPixelSize(sr.label, ctx.scale_denominator,
+                                 meters_per_pixel, label_ref_scale_);
+        // Below the floor the text is illegible, and drawing it anyway is how
+        // a zoomed-out chart fills with grey mush.
+        if (ts.size >= kMinLabelPx) {
+          if (sr.label.placement == LabelPlacement::kAlongPath &&
+              it.type != VectorGeometryType::kPoint && proj_part.size() >= 2) {
+            // Placed along the WHOLE projected part, then each glyph clipped
+            // by being on the canvas or not — the same reason a line pattern
+            // is laid before clipping, and here it also decides whether the
+            // name FITS, which the clipped fragment cannot answer.
+            std::vector<double> adv;
+            if (GlyphAdvances(canvas, sr.label.text, ts, &adv)) {
+              for (const PlacedTextRun& run : PlaceTextAlongPath(
+                       proj_part, adv, sr.label.spacing_px,
+                       sr.label.max_angle_deg, sr.label.offset_px)) {
+                InkBox ink;
+                bool drew = false;
+                for (const PlacedGlyph& g : run.glyphs) {
+                  if (g.x < -ts.size * 2 || g.y < -ts.size * 2 ||
+                      g.x > size.width + ts.size * 2 ||
+                      g.y > size.height + ts.size * 2)
+                    continue;
+                  canvas->DrawRotatedTextString(
+                      sr.label.text.substr(g.index, 1), g.x, g.y, g.angle_rad,
+                      ts);
+                  drew = true;
+                  if (pick_enabled_) {
+                    // One box over the whole run, grown by the em: glyph
+                    // quads are rotated and the pick index takes rectangles,
+                    // so this is deliberately a little generous.
+                    ink.Add(g.x, g.y);
+                  }
+                }
+                if (drew) {
+                  ++draws_emitted_;
+                  if (pick_enabled_)
+                    pick_.AddBox(it.ref, sr.priority, ink.ToRect(ts.size));
+                }
+              }
+            }
+          } else {
+            const SurfacePoint& a = proj_part.front();
+            const int lx = static_cast<int>(std::lround(a.x)) + sr.label.dx;
+            const int ly = static_cast<int>(std::lround(a.y)) + sr.label.dy;
+            if (lx > -1000 && ly > -1000 && lx < size.width + 1000 &&
+                ly < size.height + 1000) {
+              canvas->DrawTextString(sr.label.text, lx, ly, ts);
+              ++draws_emitted_;
+              if (pick_enabled_) {
+                // Text draws from its BASELINE-left, so the box runs upward.
+                PixelSize ext;
+                if (canvas->GetTextExtent(sr.label.text, ts, &ext).ok() &&
+                    ext.width > 0 && ext.height > 0) {
+                  PixelRect box;
+                  box.x = lx;
+                  box.y = ly - ext.height;
+                  box.width = ext.width;
+                  box.height = ext.height;
+                  pick_.AddBox(it.ref, sr.priority, box);
+                }
+              }
             }
           }
         }

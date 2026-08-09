@@ -398,7 +398,7 @@ TEST(PathPlacer, DegenerateInputsProduceNothingRatherThanHanging) {
 
 TEST(AreaPlacer, TilesOnlyInsideTheRingAndStaggersAlternateRows) {
   // 40x40 square at the origin, 10 px grid: interior positions only.
-  std::vector<PixelPoint> ring{{0, 0}, {40, 0}, {40, 40}, {0, 40}};
+  std::vector<SurfacePoint> ring{{0, 0}, {40, 0}, {40, 40}, {0, 40}};
   const auto linear = PlaceOverArea(ring, 10, 10, false);
   ASSERT_FALSE(linear.empty());
   for (const auto& p : linear) {
@@ -419,17 +419,204 @@ TEST(AreaPlacer, TilesOnlyInsideTheRingAndStaggersAlternateRows) {
   EXPECT_TRUE(any_half);
 }
 
+// R3c. The defect: the stamp grid hung on the canvas origin, so a pattern
+// crawled inside its own region as the map panned. The fix pins the lattice
+// to a caller-supplied anchor, which the renderer fills with the pixel
+// position of a fixed geographic point.
+//
+// These two tests are the property, stated both ways round.
+TEST(AreaPlacer, MovingRingAndAnchorTogetherMovesTheStampsWithThem) {
+  std::vector<SurfacePoint> ring{{0, 0}, {40, 0}, {40, 40}, {0, 40}};
+  const auto before = PlaceOverArea(ring, 10, 10, false, 0.0, 0.0);
+  ASSERT_FALSE(before.empty());
+
+  // A pan of 3 px: everything on the ground moves 3 px across the canvas —
+  // the ring AND the projected anchor, because both are geography.
+  const int dx = 3, dy = 3;
+  std::vector<SurfacePoint> panned;
+  for (const SurfacePoint& p : ring)
+    panned.push_back(SurfacePoint{p.x + dx, p.y + dy});
+  const auto after = PlaceOverArea(panned, 10, 10, false, dx, dy);
+
+  ASSERT_EQ(after.size(), before.size())
+      << "a pan must not change how many stamps an area holds";
+  for (size_t i = 0; i < before.size(); ++i) {
+    EXPECT_DOUBLE_EQ(after[i].x, before[i].x + dx);
+    EXPECT_DOUBLE_EQ(after[i].y, before[i].y + dy);
+  }
+}
+
+TEST(AreaPlacer, MovingOnlyTheRingIsWhatUsedToMakePatternsCrawl) {
+  // The same pan with a lattice that ignores the anchor — the pre-R3c
+  // behaviour, which the default arguments still give — moves the stamps by
+  // a DIFFERENT amount than the ring, and that difference is the crawl.
+  std::vector<SurfacePoint> ring{{0, 0}, {40, 0}, {40, 40}, {0, 40}};
+  const auto before = PlaceOverArea(ring, 10, 10, false);
+  std::vector<SurfacePoint> panned;
+  for (const SurfacePoint& p : ring)
+    panned.push_back(SurfacePoint{p.x + 3, p.y + 3});
+  const auto after = PlaceOverArea(panned, 10, 10, false);
+  ASSERT_FALSE(before.empty());
+  ASSERT_FALSE(after.empty());
+  // Anchored to the canvas, the lattice does not move at all: the first stamp
+  // is still on a multiple of the spacing rather than 3 px past one.
+  EXPECT_DOUBLE_EQ(std::fmod(after[0].x, 10.0), 0.0);
+  EXPECT_NE(after[0].x, before[0].x + 3);
+}
+
+TEST(AreaPlacer, StampsLandOnTheAnchorsOwnLattice) {
+  std::vector<SurfacePoint> ring{{0, 0}, {40, 0}, {40, 40}, {0, 40}};
+  // A fractional, far-away anchor. The renderer now keeps its anchor within
+  // one cell of the viewport (a distant one made the lattice sensitive to dpp
+  // — see VectorRenderer::PatternAnchor), but the placer must not depend on
+  // that: the lattice is derived by arithmetic, never by walking cell by cell
+  // from the anchor, so a far anchor is exact and costs nothing.
+  const double ax = -100000.25, ay = 250000.75;
+  const auto stamps = PlaceOverArea(ring, 10, 10, false, ax, ay);
+  ASSERT_FALSE(stamps.empty());
+  for (const auto& p : stamps) {
+    EXPECT_NEAR(std::fmod(p.x - ax, 10.0), 0.0, 1e-9);
+    EXPECT_NEAR(std::fmod(p.y - ay, 10.0), 0.0, 1e-9);
+    EXPECT_GE(p.x, 0.0);
+    EXPECT_LT(p.x, 40.0);
+  }
+}
+
 TEST(AreaPlacer, ConcaveRingLeavesItsNotchEmpty) {
   // A C shape: the notch on the right is outside the ring, so no stamps land
   // in it even though it is inside the bounding box.
-  std::vector<PixelPoint> ring{{0, 0},  {60, 0},  {60, 20}, {20, 20},
-                               {20, 40}, {60, 40}, {60, 60}, {0, 60}};
+  std::vector<SurfacePoint> ring{{0, 0},  {60, 0},  {60, 20}, {20, 20},
+                                 {20, 40}, {60, 40}, {60, 60}, {0, 60}};
   const auto stamps = PlaceOverArea(ring, 5, 5, false);
   ASSERT_FALSE(stamps.empty());
   for (const auto& p : stamps) {
     const bool in_notch = p.x > 20.0 && p.y > 20.0 && p.y < 40.0;
     EXPECT_FALSE(in_notch) << p.x << "," << p.y;
   }
+}
+
+// --- the text placer -------------------------------------------------------
+//
+// Pure geometry: the advances stand in for a font, so nothing here depends on
+// the host having one. Every assertion is DIRECTIONAL — an angle, a side, an
+// order — because that is exactly what a golden hash cannot see.
+
+using fv::PlaceTextAlongPath;
+
+// Six 10 px glyphs = a 60 px word.
+std::vector<double> Word(size_t n = 6, double adv = 10.0) {
+  return std::vector<double>(n, adv);
+}
+
+TEST(TextPlacer, AWordOnAStraightLineIsCentredAndUnrotated) {
+  std::vector<SurfacePoint> path{{0, 50}, {100, 50}};
+  const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0);
+  ASSERT_EQ(runs.size(), 1u);
+  ASSERT_EQ(runs[0].glyphs.size(), 6u);
+  // 100 px path, 60 px word: 20 px of slack each side.
+  EXPECT_DOUBLE_EQ(runs[0].glyphs[0].x, 20.0);
+  EXPECT_DOUBLE_EQ(runs[0].glyphs[5].x, 70.0);
+  for (const auto& g : runs[0].glyphs) {
+    EXPECT_DOUBLE_EQ(g.y, 50.0);
+    EXPECT_NEAR(g.angle_rad, 0.0, 1e-12);
+  }
+}
+
+TEST(TextPlacer, TextTooLongForItsPathIsNotDrawnAtAll) {
+  // Half a road name is worse than none: the run is dropped whole.
+  std::vector<SurfacePoint> path{{0, 0}, {40, 0}};
+  EXPECT_TRUE(PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0).empty());
+}
+
+TEST(TextPlacer, GlyphsFollowTheTangentThroughABend) {
+  // East for 100, then due south for 100. The word sits astride the corner,
+  // so its first glyphs run east (angle 0) and its last run south, which in
+  // the screen-y-down CCW convention is -90 degrees.
+  std::vector<SurfacePoint> path{{0, 0}, {100, 0}, {100, 100}};
+  const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 90.0, 0.0);
+  ASSERT_EQ(runs.size(), 1u);
+  const auto& g = runs[0].glyphs;
+  EXPECT_NEAR(g.front().angle_rad, 0.0, 1e-9);
+  EXPECT_NEAR(g.back().angle_rad, -M_PI / 2, 1e-9);
+  // And the glyphs are still touching: each one starts where the last one's
+  // advance ended, measured ALONG the path.
+  for (size_t i = 1; i < g.size(); ++i) {
+    const double step = std::hypot(g[i].x - g[i - 1].x, g[i].y - g[i - 1].y);
+    EXPECT_LE(step, 10.0 + 1e-9);
+    EXPECT_GT(step, 5.0);
+  }
+}
+
+TEST(TextPlacer, ARunThatTurnsHarderThanTheLimitIsRejected) {
+  // A hairpin: consecutive glyphs turn ~180 degrees at the point.
+  std::vector<SurfacePoint> path{{0, 0}, {50, 0}, {0, 5}};
+  EXPECT_TRUE(PlaceTextAlongPath(path, Word(), 0.0, 30.0, 0.0).empty());
+  // The same geometry with the limit lifted places it — the rejection is the
+  // limit doing its job, not the placer failing to walk the path.
+  EXPECT_FALSE(PlaceTextAlongPath(path, Word(), 0.0, 0.0, 0.0).empty());
+}
+
+TEST(TextPlacer, AWestwardRoadReadsLeftToRightAnyway) {
+  // Digitised east-to-west. Placed naively the text would be upside down;
+  // the placer walks such a path backwards instead.
+  std::vector<SurfacePoint> path{{100, 50}, {0, 50}};
+  const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0);
+  ASSERT_EQ(runs.size(), 1u);
+  const auto& g = runs[0].glyphs;
+  for (const auto& p : g) EXPECT_NEAR(p.angle_rad, 0.0, 1e-12);
+  EXPECT_LT(g.front().x, g.back().x) << "reading order must run rightward";
+}
+
+TEST(TextPlacer, ANorthSouthRoadReadsUpward) {
+  // The tie case. Cartographic convention: text on a vertical line reads
+  // bottom to top, i.e. +90 CCW, whichever way the line was digitised.
+  std::vector<SurfacePoint> down{{50, 0}, {50, 100}};   // digitised southward
+  std::vector<SurfacePoint> up{{50, 100}, {50, 0}};     // and northward
+  for (const auto* path : {&down, &up}) {
+    const auto runs = PlaceTextAlongPath(*path, Word(), 0.0, 45.0, 0.0);
+    ASSERT_EQ(runs.size(), 1u);
+    for (const auto& g : runs[0].glyphs)
+      EXPECT_NEAR(g.angle_rad, M_PI / 2, 1e-9);
+    // Reading upward means later glyphs are at SMALLER y.
+    EXPECT_LT(runs[0].glyphs.back().y, runs[0].glyphs.front().y);
+  }
+}
+
+TEST(TextPlacer, OffsetPutsTheTextOnTheLeftOfTravel) {
+  // Same sense as PathRun::offset. Running east on a screen whose y grows
+  // down, left of travel is UP: a positive offset must LOWER y.
+  std::vector<SurfacePoint> path{{0, 50}, {100, 50}};
+  const auto up = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 6.0);
+  const auto down = PlaceTextAlongPath(path, Word(), 0.0, 45.0, -6.0);
+  ASSERT_EQ(up.size(), 1u);
+  ASSERT_EQ(down.size(), 1u);
+  EXPECT_DOUBLE_EQ(up[0].glyphs[0].y, 44.0);
+  EXPECT_DOUBLE_EQ(down[0].glyphs[0].y, 56.0);
+  // The offset is perpendicular only: it must not slide the word along.
+  EXPECT_DOUBLE_EQ(up[0].glyphs[0].x, down[0].glyphs[0].x);
+}
+
+TEST(TextPlacer, SpacingRepeatsTheNameAlongALongRoad) {
+  // 1000 px of road, a 60 px word, one every 200 px.
+  std::vector<SurfacePoint> path{{0, 0}, {1000, 0}};
+  const auto runs = PlaceTextAlongPath(path, Word(), 200.0, 45.0, 0.0);
+  ASSERT_EQ(runs.size(), 5u);
+  for (size_t i = 1; i < runs.size(); ++i) {
+    EXPECT_DOUBLE_EQ(runs[i].glyphs[0].x - runs[i - 1].glyphs[0].x, 200.0);
+  }
+  // The block of runs is centred on the path, so the margins match.
+  const double left = runs.front().glyphs.front().x;
+  const double right = 1000.0 - (runs.back().glyphs.back().x + 10.0);
+  EXPECT_NEAR(left, right, 1e-9);
+}
+
+TEST(TextPlacer, NoSpacingIsOneRunNotOnePerPathLength) {
+  // A road part is already one name's worth of geometry, so the default has
+  // to be a single centred run however long the part is.
+  std::vector<SurfacePoint> path{{0, 0}, {10000, 0}};
+  const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0);
+  ASSERT_EQ(runs.size(), 1u);
+  EXPECT_DOUBLE_EQ(runs[0].glyphs[0].x, (10000.0 - 60.0) / 2.0);
 }
 
 // --- stub source / style ---------------------------------------------------
@@ -1117,6 +1304,207 @@ TEST(VectorRenderer, PatternPhaseIsMeasuredFromThePathNotTheCanvasEdge) {
     if (pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]) ++same;
   }
   EXPECT_EQ(same, compared) << "the pattern shifted when the map panned";
+}
+
+// --- labels ----------------------------------------------------------------
+
+// A font is a host asset, so these tests skip rather than fail where there is
+// none — the same bargain canvas_test makes for its text tests.
+std::string SystemFont() {
+  const char* candidates[] = {
+      "/System/Library/Fonts/Supplemental/Arial.ttf",
+      "/System/Library/Fonts/Supplemental/Courier New.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  };
+  for (const char* f : candidates)
+    if (FILE* fp = fopen(f, "rb")) {
+      fclose(fp);
+      return f;
+    }
+  return std::string();
+}
+
+class LabelStyleEngine : public fv::IStyleEngine {
+ public:
+  fv::LabelStyle label;
+  fv::Status Style(const fv::VectorFeature&, const fv::StyleContext&,
+                   std::vector<fv::StyleResult>* out) override {
+    fv::StyleResult r;
+    r.label = label;
+    out->push_back(r);
+    return fv::Status::Ok();
+  }
+  const fv::VectorSymbol* Symbol(const std::string&) override {
+    return nullptr;
+  }
+};
+
+// The white ink's bounding box and area. Directional, not a hash: what these
+// tests are about is WHERE the glyphs went and HOW BIG they came out.
+struct Ink {
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  long count = 0;
+  int width() const { return x1 - x0; }
+  int height() const { return y1 - y0; }
+};
+Ink Measure(const fv::PixelBuffer& b) {
+  Ink k;
+  bool any = false;
+  for (int y = 0; y < b.Height(); ++y)
+    for (int x = 0; x < b.Width(); ++x) {
+      if (Px(b, x, y)[0] == 0) continue;
+      ++k.count;
+      if (!any) {
+        k.x0 = k.x1 = x;
+        k.y0 = k.y1 = y;
+        any = true;
+        continue;
+      }
+      k.x0 = std::min(k.x0, x);
+      k.x1 = std::max(k.x1, x);
+      k.y0 = std::min(k.y0, y);
+      k.y1 = std::max(k.y1, y);
+    }
+  return k;
+}
+
+TEST(VectorRenderer, AnAlongPathLabelTurnsWithItsLine) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  // A road running due north through the middle of the viewport. Placed at a
+  // point the name lies flat; placed along the path it stands up. Same
+  // feature, same style, one field different.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("r", {{-60.0, 0.0}, {60.0, 0.0}}));
+
+  auto flat = std::make_shared<LabelStyleEngine>();
+  flat->label.valid = true;
+  flat->label.text = "Main Street";
+  flat->label.style.font_path = font;
+  flat->label.style.size = 14;
+  flat->label.style.color = fv::FvColor{255, 255, 255, 255};
+  auto along = std::make_shared<LabelStyleEngine>();
+  along->label = flat->label;
+  along->label.placement = fv::LabelPlacement::kAlongPath;
+
+  fv::CpuCanvas a(200, 200), b(200, 200);
+  a.Clear(fv::FvColor{0, 0, 0, 255});
+  b.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer ra(src, flat), rb(src, along);
+  ASSERT_TRUE(ra.Render(Proj(200, 200, 0.0, 0.0, 1.0), &a).ok());
+  ASSERT_TRUE(rb.Render(Proj(200, 200, 0.0, 0.0, 1.0), &b).ok());
+
+  const Ink flat_ink = Measure(a.Buffer());
+  const Ink along_ink = Measure(b.Buffer());
+  ASSERT_GT(flat_ink.count, 20) << "the point label drew nothing";
+  ASSERT_GT(along_ink.count, 20) << "the along-path label drew nothing";
+  EXPECT_GT(flat_ink.width(), flat_ink.height()) << "a point label lies flat";
+  EXPECT_GT(along_ink.height(), along_ink.width())
+      << "a label on a north-south road should stand up";
+  // It is ON the road, not off at the first vertex: the ink straddles the
+  // centre column.
+  EXPECT_LT(along_ink.x0, 110);
+  EXPECT_GT(along_ink.x1, 90);
+  EXPECT_FALSE(rb.pick_index().empty()) << "an along-path label is identifiable";
+}
+
+TEST(VectorRenderer, ALabelLongerThanItsRoadIsNotDrawn) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  // A 4-pixel stub of road cannot carry a name, and drawing the part of it
+  // that fits would be worse than drawing none.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("r", {{-2.0, 0.0}, {2.0, 0.0}}));
+  auto style = std::make_shared<LabelStyleEngine>();
+  style->label.valid = true;
+  style->label.text = "Bartholomew Boulevard";
+  style->label.style.font_path = font;
+  style->label.style.size = 14;
+  style->label.style.color = fv::FvColor{255, 255, 255, 255};
+  style->label.placement = fv::LabelPlacement::kAlongPath;
+
+  fv::CpuCanvas c(200, 200);
+  c.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+  EXPECT_EQ(Measure(c.Buffer()).count, 0);
+  EXPECT_EQ(r.draws_emitted(), 0u);
+}
+
+TEST(VectorRenderer, GroundSizedLabelsGrowWithTheMap) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("r", {{0.0, -60.0}, {0.0, 60.0}}));
+  auto style = std::make_shared<LabelStyleEngine>();
+  style->label.valid = true;
+  style->label.text = "Ash";
+  style->label.style.font_path = font;
+  style->label.style.size = 14;  // ignored: the label states a GROUND size
+  style->label.style.color = fv::FvColor{255, 255, 255, 255};
+  style->label.size_unit = fv::LabelSizeUnit::kMeters;
+  // 1 deg/px is ~111 km per pixel, so a metre-sized label would be invisible;
+  // these are the sizes a text this big has to be to show up at all.
+  style->label.ground_size_m = 2.0e6;
+
+  // Zooming in by 4x (a quarter of the degrees per pixel) must make the text
+  // about 4x taller, because it is pinned to the ground and the ground grew.
+  fv::CpuCanvas out(400, 400), in(400, 400);
+  out.Clear(fv::FvColor{0, 0, 0, 255});
+  in.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer ro(src, style), ri(src, style);
+  ASSERT_TRUE(ro.Render(Proj(400, 400, 0.0, 0.0, 1.0), &out).ok());
+  ASSERT_TRUE(ri.Render(Proj(400, 400, 0.0, 0.0, 0.25), &in).ok());
+
+  const Ink small = Measure(out.Buffer()), big = Measure(in.Buffer());
+  ASSERT_GT(small.count, 10);
+  ASSERT_GT(big.count, 10);
+  EXPECT_NEAR(static_cast<double>(big.height()) / small.height(), 4.0, 0.6)
+      << "ground-sized text must scale with the map";
+}
+
+TEST(VectorRenderer, ALabelReferenceScaleIsOffUntilItIsSet) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  auto src = std::make_shared<StubSource>();
+  // Small enough that the anchor vertex is on screen at 1:500k, where a
+  // 400 px canvas covers about half a degree.
+  src->features.push_back(Line("r", {{-0.01, 0.0}, {0.01, 0.0}}));
+  auto style = std::make_shared<LabelStyleEngine>();
+  style->label.valid = true;
+  style->label.text = "Ash";
+  style->label.style.font_path = font;
+  style->label.style.size = 14;
+  style->label.style.color = fv::FvColor{255, 255, 255, 255};
+
+  auto render = [&](double scale, double ref) {
+    fv::CpuCanvas c(400, 400);
+    c.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::MapProjection p;
+    p.SetSurfaceSize(400, 400);
+    p.SetCenter(fv::GeoPoint{0.0, 0.0});
+    p.SetScale(scale);
+    fv::VectorRenderer r(src, style);
+    r.SetLabelReferenceScale(ref);
+    EXPECT_TRUE(r.Render(p, &c).ok());
+    return Measure(c.Buffer());
+  };
+
+  // Off (the default): the same pixel size at both scales — which is what
+  // every pinned golden with a label in it depends on.
+  const Ink a = render(500000.0, 0.0), b = render(250000.0, 0.0);
+  ASSERT_GT(a.count, 10);
+  EXPECT_EQ(a.height(), b.height());
+  EXPECT_EQ(a.width(), b.width());
+
+  // On, with the reference at the smaller scale: zooming to 1:250k doubles it.
+  const Ink c = render(500000.0, 500000.0), d = render(250000.0, 500000.0);
+  EXPECT_EQ(c.height(), a.height()) << "at the reference scale, nothing moves";
+  EXPECT_NEAR(static_cast<double>(d.height()) / c.height(), 2.0, 0.35);
 }
 
 TEST(VectorRenderer, StyleContextCarriesDpiAndSymbolScale) {

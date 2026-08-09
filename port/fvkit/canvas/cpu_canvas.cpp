@@ -380,6 +380,95 @@ Status CpuCanvas::DrawTextString(const std::string& utf8, int x, int y,
   return Status::Ok();
 }
 
+// Rotated text.
+//
+// The glyph is rasterized UPRIGHT by stb at the requested pixel height and
+// then resampled into the canvas through the inverse rotation, rather than
+// asking stb for a transformed outline: stb_truetype has no outline transform,
+// and rasterizing a rotated outline by hand would mean a second rasterizer
+// whose antialiasing did not match the upright one. Resampling keeps ONE
+// source of glyph coverage, which is what makes a label look the same whether
+// it lands on a straight road or a curved one.
+//
+// The cost of that choice is one bilinear filter's worth of softness on a
+// rotated glyph. At label sizes it is not visible; if it ever is, the fix is a
+// supersampled glyph bitmap here, not a second rasterizer.
+//
+// A zero angle takes the upright path EXACTLY, so every already-pinned golden
+// that draws horizontal text is untouched by this function existing.
+Status CpuCanvas::DrawRotatedTextString(const std::string& utf8, double x,
+                                        double y, double angle_rad,
+                                        const TextStyle& style) {
+  const double ca = std::cos(angle_rad), sa = std::sin(angle_rad);
+  if (std::fabs(sa) < 1e-12 && ca > 0.0) {
+    return DrawTextString(utf8, (int)std::lround(x), (int)std::lround(y),
+                          style);
+  }
+  Status s;
+  FontEntry* font = LoadFont(style.font_path, &s);
+  if (font == nullptr) return s;
+
+  // Text-local (u along the baseline, v up) -> screen. See the convention on
+  // ICanvas::DrawRotatedTextString: e_u = (cos a, -sin a), e_v = (-sin a, -cos a).
+  const float scale = stbtt_ScaleForPixelHeight(&font->info, (float)style.size);
+  double pen_u = 0.0;
+  for (unsigned char ch : utf8) {
+    int w = 0, h = 0, xoff = 0, yoff = 0;
+    unsigned char* bmp = stbtt_GetCodepointBitmap(&font->info, scale, scale, ch,
+                                                  &w, &h, &xoff, &yoff);
+    if (bmp != nullptr) {
+      // The glyph bitmap occupies u in [u0, u0+w), and lies yoff..yoff+h BELOW
+      // the baseline, i.e. v in (-(yoff+h), -yoff].
+      const double u0 = pen_u + xoff, v0 = -(double)yoff;
+      double minx = 1e300, maxx = -1e300, miny = 1e300, maxy = -1e300;
+      for (int c = 0; c < 4; ++c) {
+        const double u = u0 + ((c & 1) ? w : 0);
+        const double v = v0 - ((c & 2) ? h : 0);
+        const double sx = x + u * ca - v * sa;
+        const double sy = y - u * sa - v * ca;
+        minx = (std::min)(minx, sx); maxx = (std::max)(maxx, sx);
+        miny = (std::min)(miny, sy); maxy = (std::max)(maxy, sy);
+      }
+      int x0 = (int)std::floor(minx) - 1, x1 = (int)std::ceil(maxx) + 1;
+      int y0 = (int)std::floor(miny) - 1, y1 = (int)std::ceil(maxy) + 1;
+      x0 = (std::max)(x0, 0); y0 = (std::max)(y0, 0);
+      x1 = (std::min)(x1, buf_.Width() - 1);
+      y1 = (std::min)(y1, buf_.Height() - 1);
+      for (int py = y0; py <= y1; ++py) {
+        for (int px = x0; px <= x1; ++px) {
+          // Inverse of the map above: the basis is orthonormal, so it is a
+          // dot product with each axis.
+          const double dx = px + 0.5 - x, dy = py + 0.5 - y;
+          const double u = dx * ca - dy * sa;
+          const double v = -dx * sa - dy * ca;
+          // Continuous glyph-bitmap coordinates, then bilinear on centres.
+          const double fx = (u - u0) - 0.5, fy = (v0 - v) - 0.5;
+          const int gx = (int)std::floor(fx), gy = (int)std::floor(fy);
+          const double tx = fx - gx, ty = fy - gy;
+          auto at = [&](int ix, int iy) -> double {
+            if (ix < 0 || iy < 0 || ix >= w || iy >= h) return 0.0;
+            return bmp[iy * w + ix];
+          };
+          const double cov = at(gx, gy) * (1 - tx) * (1 - ty) +
+                             at(gx + 1, gy) * tx * (1 - ty) +
+                             at(gx, gy + 1) * (1 - tx) * ty +
+                             at(gx + 1, gy + 1) * tx * ty;
+          if (cov < 0.5) continue;
+          FvColor c = style.color;
+          c.a = (unsigned char)std::lround(c.a * (std::min)(cov, 255.0) / 255.0);
+          if (c.a == 0) continue;
+          BlendPixel(px, py, c);
+        }
+      }
+      stbtt_FreeBitmap(bmp, nullptr);
+    }
+    int advance = 0, lsb = 0;
+    stbtt_GetCodepointHMetrics(&font->info, ch, &advance, &lsb);
+    pen_u += advance * scale;
+  }
+  return Status::Ok();
+}
+
 Status CpuCanvas::GetTextExtent(const std::string& utf8, const TextStyle& style,
                                 PixelSize* out) {
   if (out == nullptr) return Status::Error(kInvalidArg, "out is null");

@@ -45,6 +45,9 @@
 #include "fv_enc_vector_source.h"  // fv::EncVectorSource
 #include "fv_s52_style.h"          // fv::S52StyleEngine
 #include "fv_enc_format.h"         // fv::RegisterEncFormat
+#include "fv_osm_vector_source.h"  // fv::OsmVectorSource
+#include "fv_osm_style.h"          // fv::OsmStyleEngine
+#include "fv_osm_format.h"         // fv::RegisterOsmFormat
 
 #include "geo_tool.h"  // GEO_string_to_lat_lon (fv_geo_tool)
 
@@ -508,6 +511,65 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_readwrite("shift", &fv::MouseEvent::shift)
       .def_readwrite("ctrl", &fv::MouseEvent::ctrl);
 
+  py::class_<fv::KeyEvent>(
+      ovl, "KeyEvent",
+      "One key press. `key` is a pyfvw.overlay.key.* virtual-key code (the "
+      "physical intent, stable across keyboard layouts) and is what a "
+      "shortcut compares against; `text` is the Unicode code point the "
+      "layout produced (0 for a non-printing key) and is what typed input "
+      "should insert. A shell with no name for a key sends key=0.")
+      .def(py::init([](int key, uint32_t text, bool shift, bool ctrl, bool alt,
+                       bool meta) {
+             return fv::KeyEvent{key, text, shift, ctrl, alt, meta};
+           }),
+           "key"_a = 0, "text"_a = 0, "shift"_a = false, "ctrl"_a = false,
+           "alt"_a = false, "meta"_a = false)
+      .def_readwrite("key", &fv::KeyEvent::key)
+      .def_readwrite("text", &fv::KeyEvent::text)
+      .def_readwrite("shift", &fv::KeyEvent::shift)
+      .def_readwrite("ctrl", &fv::KeyEvent::ctrl)
+      .def_readwrite("alt", &fv::KeyEvent::alt)
+      .def_readwrite("meta", &fv::KeyEvent::meta)
+      .def("__repr__", [](const fv::KeyEvent& e) {
+        std::string mods;
+        if (e.ctrl) mods += "ctrl+";
+        if (e.alt) mods += "alt+";
+        if (e.shift) mods += "shift+";
+        if (e.meta) mods += "meta+";
+        return "<KeyEvent " + mods + "key=0x" +
+               [](int v) {
+                 char b[16];
+                 std::snprintf(b, sizeof(b), "%02X", v);
+                 return std::string(b);
+               }(e.key) +
+               " text=" + std::to_string(e.text) + ">";
+      });
+
+  // Win32 virtual-key codes, verbatim and never renumbered (overlay.h says
+  // why). Letters and digits are their ASCII uppercase values, so
+  // `e.key == ord('A')` needs no constant at all.
+  py::module_ keys = ovl.def_submodule(
+      "key", "Virtual-key codes for KeyEvent.key (Win32 VK values). Letters "
+             "and digits are ord() of their uppercase character.");
+  keys.attr("NONE") = int(fv::Key::kNone);
+  keys.attr("BACKSPACE") = int(fv::Key::kBackspace);
+  keys.attr("TAB") = int(fv::Key::kTab);
+  keys.attr("RETURN") = int(fv::Key::kReturn);
+  keys.attr("ESCAPE") = int(fv::Key::kEscape);
+  keys.attr("SPACE") = int(fv::Key::kSpace);
+  keys.attr("PAGE_UP") = int(fv::Key::kPageUp);
+  keys.attr("PAGE_DOWN") = int(fv::Key::kPageDown);
+  keys.attr("END") = int(fv::Key::kEnd);
+  keys.attr("HOME") = int(fv::Key::kHome);
+  keys.attr("LEFT") = int(fv::Key::kLeft);
+  keys.attr("UP") = int(fv::Key::kUp);
+  keys.attr("RIGHT") = int(fv::Key::kRight);
+  keys.attr("DOWN") = int(fv::Key::kDown);
+  keys.attr("INSERT") = int(fv::Key::kInsert);
+  keys.attr("DELETE") = int(fv::Key::kDelete);
+  for (int n = 1; n <= 12; ++n)
+    keys.attr(("F" + std::to_string(n)).c_str()) = int(fv::Key::kF1) + n - 1;
+
   // Trampoline: Python exceptions never cross the SPI (contracts D3) —
   // on_draw errors become failed Status, event-handler errors log + decline.
   class PyOverlay : public fv::Overlay {
@@ -552,12 +614,12 @@ PYBIND11_MODULE(pyfvw, m) {
         return false;
       }
     }
-    bool OnKeyDown(int key) override {
+    bool OnKeyDown(const fv::KeyEvent& e) override {
       py::gil_scoped_acquire gil;
       py::function o = py::get_override(this, "on_key_down");
       if (!o) return false;
       try {
-        return py::cast<bool>(o(key));
+        return py::cast<bool>(o(e));
       } catch (py::error_already_set& err) {
         PyErr_Clear();
         return false;
@@ -581,7 +643,7 @@ PYBIND11_MODULE(pyfvw, m) {
   py::class_<fv::Overlay, PyOverlay, std::shared_ptr<fv::Overlay>>(
       ovl, "Overlay",
       "Subclass and override on_draw(proj, canvas), on_mouse_down(e) -> "
-      "bool, on_key_down(key) -> bool, ... Handlers returning True stop "
+      "bool, on_key_down(KeyEvent) -> bool, ... Handlers returning True stop "
       "top-down routing; exceptions are contained (draw -> FvError from "
       "draw_all, events -> unhandled).")
       .def(py::init<std::string>(), "name"_a)
@@ -636,24 +698,26 @@ PYBIND11_MODULE(pyfvw, m) {
       .def("route_double_click", &fv::OverlayManager::RouteDoubleClick, "e"_a)
       .def("route_mouse_wheel", &fv::OverlayManager::RouteMouseWheel, "e"_a,
            "delta"_a)
-      .def("route_key_down", &fv::OverlayManager::RouteKeyDown, "key"_a);
+      .def("route_key_down", &fv::OverlayManager::RouteKeyDown, "event"_a);
 
   // ---- pyfvw.catalog ---------------------------------------------------
   py::module_ catalog =
       m.def_submodule("catalog", "L2 coverage catalog (SQLite + R-tree)");
 
-  // ENC registers separately in C++ (fv_enc links fv_fvkit, so fvkit cannot
-  // name it without a dependency cycle — see fv_enc_format.h). That is a
-  // build-layering detail, not something a Python caller should have to know,
-  // so one call still registers everything the port can read.
+  // ENC and OSM register separately in C++ (fv_enc and fv_osm both link
+  // fv_fvkit, so fvkit cannot name them without a dependency cycle — see
+  // fv_enc_format.h). That is a build-layering detail, not something a Python
+  // caller should have to know, so one call still registers everything the
+  // port can read.
   catalog.def("register_builtin_formats",
               [] {
                 fv::RegisterBuiltinFormats();
                 fv::RegisterEncFormat();
+                fv::RegisterOsmFormat();
               },
               "Register the built-in format adapters (dted, geotiff, cadrg, "
-              "tiros, vpf, gpkg, dted-shaded, enc) with the scan registry. "
-              "Idempotent; call before Catalog.scan.");
+              "tiros, vpf, gpkg, dted-shaded, enc, osm) with the scan "
+              "registry. Idempotent; call before Catalog.scan.");
 
   catalog.def("registered_format_keys", &fv::RegisteredFormatKeys,
               "Format keys currently registered, sorted.");
@@ -785,6 +849,20 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_property_readonly("scale", &fv::MapProjection::Scale)
       .def_property_readonly("mm_per_pixel", &fv::MapProjection::MmPerPixel)
       .def_property_readonly("bounds", &fv::MapProjection::VmapBounds)
+      // center + surface_size complete the set a caller needs to COPY a
+      // projection (set_surface_size / set_center / set_resolution reproduce
+      // the same linear transform exactly). An overlay wants that: OnDraw is
+      // handed a projection by reference and OnMouseDown is handed none, so
+      // un-projecting a click means snapshotting the drawing projection —
+      // and snapshotting it beats holding the borrowed reference, which
+      // outlives nothing in particular.
+      .def_property_readonly("center", &fv::MapProjection::Center)
+      .def_property_readonly(
+          "surface_size",
+          [](const fv::MapProjection& p) {
+            const fv::PixelSize s = p.SurfaceSize();
+            return py::make_tuple(s.width, s.height);
+          })
       .def("geo_to_surface",
            [](const fv::MapProjection& p, const fv::GeoPoint& g) {
              double sx = 0, sy = 0;
@@ -1085,6 +1163,90 @@ PYBIND11_MODULE(pyfvw, m) {
           "Features the last query dropped for SCAMIN (S-57's own "
           "scale-thinning). Only ever non-zero when the query named a scale.");
 
+  py::class_<fv::OsmVectorSource, fv::IVectorSource,
+             std::shared_ptr<fv::OsmVectorSource>>(
+      vec, "OsmVectorSource",
+      "OSM vector tiles as a vector source. open() takes an .mbtiles file of "
+      "MVT tiles. Unlike DNC and ENC, the query's SCALE picks a pyramid level "
+      "(one zoom<->scale relation, shared with OsmStyleEngine), the unit of "
+      "I/O is a tile, and geometry is clipped to the tile it came from so a "
+      "feature straddling a seam is not drawn twice.")
+      .def(py::init<>())
+      .def("open",
+           [](fv::OsmVectorSource& s, const std::string& path) {
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = s.Open(path);
+             }
+             ThrowIfError(st);
+           },
+           "mbtiles_path"_a)
+      .def("set_display_mm_per_pixel", &fv::OsmVectorSource::SetDisplayMmPerPixel,
+           "mm_per_pixel"_a,
+           "The display pitch a scale is turned into a zoom with. Pass the "
+           "SAME value the projection and the style engine got.")
+      .def_property_readonly("display_mm_per_pixel",
+                             &fv::OsmVectorSource::display_mm_per_pixel)
+      .def("set_zoom_override", &fv::OsmVectorSource::SetZoomOverride, "z"_a,
+           "Force a zoom level; < 0 restores automatic choice. Honoured "
+           "exactly (not tile-capped).")
+      .def_property_readonly("zoom_override",
+                             &fv::OsmVectorSource::zoom_override)
+      .def("set_max_tiles_per_query",
+           &fv::OsmVectorSource::SetMaxTilesPerQuery, "n"_a)
+      .def("set_tile_cache_capacity",
+           &fv::OsmVectorSource::SetTileCacheCapacity, "n"_a)
+      .def("set_clip_to_tile", &fv::OsmVectorSource::SetClipToTile, "on"_a,
+           "Clip line/area geometry to its own tile (default on). Off gives a "
+           "feature's WHOLE geometry, buffer included — what a graph builder "
+           "wants and what a renderer must not have.")
+      .def_property_readonly("clip_to_tile", &fv::OsmVectorSource::clip_to_tile)
+      .def("set_style_key_tags",
+           [](fv::OsmVectorSource& s, std::vector<std::string> tags) {
+             s.SetStyleKeyTags(std::move(tags));
+           },
+           "tags"_a,
+           "Tag names consulted in order for a feature's style_key; the "
+           "layer name is the fallback. Default ['class'].")
+      .def_property_readonly("last_query_zoom",
+                             &fv::OsmVectorSource::last_query_zoom)
+      .def_property_readonly("last_query_tiles_read",
+                             &fv::OsmVectorSource::last_query_tiles_read)
+      .def_property_readonly("last_query_tiles_missing",
+                             &fv::OsmVectorSource::last_query_tiles_missing)
+      .def_property_readonly("last_query_zoom_capped",
+                             &fv::OsmVectorSource::last_query_zoom_capped)
+      .def_property_readonly("last_query_truncated",
+                             &fv::OsmVectorSource::last_query_truncated)
+      .def_property_readonly("last_query_buffer_dropped",
+                             &fv::OsmVectorSource::last_query_buffer_dropped)
+      .def_property_readonly("last_query_clipped",
+                             &fv::OsmVectorSource::last_query_clipped)
+      .def_property_readonly("last_query_clipped_away",
+                             &fv::OsmVectorSource::last_query_clipped_away)
+      .def_property_readonly(
+          "last_query_overzoom", &fv::OsmVectorSource::last_query_overzoom,
+          "Levels the display is past the pyramid's deepest tiles; 0 "
+          "normally. z14 geometry under z15+ rules is the intended "
+          "behaviour, not a fault — this is how far it has gone.")
+      .def_property_readonly("undeclared_layers",
+                             &fv::OsmVectorSource::undeclared_layers)
+      .def_property_readonly(
+          "name", [](const fv::OsmVectorSource& s) { return s.file().name(); },
+          "The tileset's own `name` metadata (a title, not a key).")
+      .def_property_readonly("attribution",
+                             [](const fv::OsmVectorSource& s) {
+                               return s.file().attribution();
+                             },
+                             "ODbL for OSM data — display it.")
+      .def_property_readonly(
+          "min_zoom",
+          [](const fv::OsmVectorSource& s) { return s.file().min_zoom(); })
+      .def_property_readonly(
+          "max_zoom",
+          [](const fv::OsmVectorSource& s) { return s.file().max_zoom(); });
+
   py::class_<fv::IStyleEngine, std::shared_ptr<fv::IStyleEngine>>(
       vec, "IStyleEngine", "Maps (feature, scale) to draw passes.");
 
@@ -1279,6 +1441,100 @@ PYBIND11_MODULE(pyfvw, m) {
                              &fv::S52StyleEngine::sector_lights_simplified)
       .def("reset_diagnostics", &fv::S52StyleEngine::ResetDiagnostics);
 
+  // --- MapLibre GL style engine (O2), the third IStyleEngine ---------------
+
+  py::class_<fv::OsmStyleEngine, fv::IStyleEngine,
+             std::shared_ptr<fv::OsmStyleEngine>>(
+      vec, "OsmStyleEngine",
+      "MapLibre/Mapbox GL style-JSON loader over the shared lookup engine — "
+      "the THIRD implementation of the same seam GeoSym and S-52 implement. "
+      "load_file() is all-or-nothing and REJECTS anything outside the "
+      "supported subset (expression filters, interpolate/step paint "
+      "expressions, sprites) rather than ignoring it.")
+      .def(py::init<>())
+      .def("load_file",
+           [](fv::OsmStyleEngine& e, const std::string& path) {
+             std::string err;
+             fv::Status st;
+             {
+               py::gil_scoped_release release;
+               st = e.LoadFile(path, &err);
+             }
+             ThrowIfError(st);
+           },
+           "path"_a)
+      .def("load_text",
+           [](fv::OsmStyleEngine& e, const std::string& json_text) {
+             std::string err;
+             ThrowIfError(e.LoadText(json_text, &err));
+           },
+           "json_text"_a)
+      .def("set_draw_labels", &fv::OsmStyleEngine::SetDrawLabels, "on"_a)
+      // The two halves of the zoom<->scale relation the source also needs.
+      // Set BOTH to the same values the source got, or the style's minzoom
+      // switches a layer on at a different scale than the tiles it styles.
+      .def("set_reference_latitude", &fv::OsmStyleEngine::SetReferenceLatitude,
+           "lat"_a,
+           "The viewport's centre latitude. A StyleContext carries a scale "
+           "and no geography, and Web Mercator's zoom<->scale relation is "
+           "latitude-dependent: z12 is 1:270k at the equator and 1:190k off "
+           "Charleston.")
+      .def_property_readonly("reference_latitude",
+                             &fv::OsmStyleEngine::reference_latitude)
+      .def("set_display_mm_per_pixel",
+           &fv::OsmStyleEngine::SetDisplayMmPerPixel, "mm_per_pixel"_a)
+      .def_property_readonly("display_mm_per_pixel",
+                             &fv::OsmStyleEngine::display_mm_per_pixel)
+      .def("set_zoom_override", &fv::OsmStyleEngine::SetZoomOverride, "z"_a,
+           "Pin the styling zoom; < 0 restores derivation from the scale. "
+           "NOTE: do not use this to match a source zoom override that was "
+           "clamped to the pyramid — past maxzoom the style is meant to keep "
+           "going (overzoom).")
+      .def_property_readonly("zoom_override",
+                             &fv::OsmStyleEngine::zoom_override)
+      .def("zoom_for_scale", &fv::OsmStyleEngine::ZoomForScale,
+           "scale_denominator"_a,
+           "The fractional, unclamped zoom this engine styles at.")
+      .def("set_scaleless_zoom", &fv::OsmStyleEngine::SetScalelessZoom, "z"_a)
+      .def_property_readonly("scaleless_zoom",
+                             &fv::OsmStyleEngine::scaleless_zoom)
+      .def("background",
+           [](const fv::OsmStyleEngine& e, double scale_denominator) {
+             fv::FvColor c{255, 255, 255, 255};
+             if (!e.background(scale_denominator, &c)) return py::object(py::none());
+             return py::object(py::make_tuple(c.r, c.g, c.b, c.a));
+           },
+           "scale_denominator"_a,
+           "The style's `background` colour as (r, g, b, a), or None when the "
+           "style has no background layer. A background is not a feature and "
+           "cannot be a StyleResult — the application clears the canvas with "
+           "it before rendering.")
+      .def_property_readonly("style_name", &fv::OsmStyleEngine::style_name)
+      .def_property_readonly(
+          "layer_count",
+          [](const fv::OsmStyleEngine& e) { return e.layers().size(); })
+      .def("rules", py::overload_cast<>(&fv::OsmStyleEngine::rules),
+           py::return_value_policy::reference_internal,
+           "The engine's user/override RuleSet (empty by default).")
+      .def("viewing_groups",
+           py::overload_cast<>(&fv::OsmStyleEngine::viewing_groups),
+           py::return_value_policy::reference_internal)
+      .def_property_readonly(
+          "ignored_icons",
+          [](const fv::OsmStyleEngine& e) {
+            py::dict d;
+            for (const auto& kv : e.ignored_icons())
+              d[py::str(kv.first)] = kv.second;
+            return d;
+          },
+          "icon-image names the style asked for and did not get: there is no "
+          "sprite sheet yet, so a symbol layer with an icon and no text draws "
+          "nothing. Counted rather than silent.")
+      .def_property_readonly("layers_that_drew",
+                             &fv::OsmStyleEngine::layers_that_drew)
+      .def_property_readonly("empty_labels", &fv::OsmStyleEngine::empty_labels)
+      .def("reset_diagnostics", &fv::OsmStyleEngine::ResetDiagnostics);
+
   py::class_<fv::VectorRenderer>(
       vec, "VectorRenderer",
       "Queries the viewport, styles + sorts by priority, projects, clips and "
@@ -1317,6 +1573,13 @@ PYBIND11_MODULE(pyfvw, m) {
       .def("set_simplify_pixels", &fv::VectorRenderer::SetSimplifyPixels,
            "pixels"_a)
       .def("invalidate_scene", &fv::VectorRenderer::InvalidateScene)
+      // Labels: 0 (the default) keeps text a constant size on screen; a
+      // scale denominator makes every pixel-sized label scale with the map,
+      // as if it had been authored at that scale.
+      .def("set_label_reference_scale",
+           &fv::VectorRenderer::SetLabelReferenceScale, "scale_denominator"_a)
+      .def_property_readonly("label_reference_scale",
+                             &fv::VectorRenderer::label_reference_scale)
       .def_property_readonly("scene_margin", &fv::VectorRenderer::scene_margin)
       .def_property_readonly("simplify_pixels",
                              &fv::VectorRenderer::simplify_pixels)

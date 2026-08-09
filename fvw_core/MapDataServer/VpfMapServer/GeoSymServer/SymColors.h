@@ -132,7 +132,17 @@ public:
 	//Returns:     N/A
 	//////////////////////////////////////////////////////////////////////////////
 	CSymColorAdjuster(int nBrightness = 0, int nContrast = 0, bool ReplaceFill=false, COLORREF FillColor=RGB(0xff,0,0), COLORREF OrigColor=RGB(0xff,0,0))
-	{ 
+	{
+		// PORT FIX (R3c): this line read m_nBrightness/m_nContrast BEFORE
+		// either was assigned — indeterminate members deciding whether the
+		// colour table is built at all. It plainly meant the ARGUMENTS, and
+		// the members are now seeded from them first so both readings agree.
+		// Not a behaviour change that can be seen: with zeroed memory the old
+		// line computed the same answer, which is why it survived. It is
+		// still UB, and an optimizing build is entitled to trap on it — one
+		// does (SIGTRAP in SymColors.BrightnessAdjuster at -O3).
+		m_nBrightness = nBrightness;
+		m_nContrast = nContrast;
 		m_bAdjust = (m_nBrightness != 0) || (m_nContrast != 0);
 
 		m_bReplaceFill = ReplaceFill;

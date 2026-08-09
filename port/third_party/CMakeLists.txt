@@ -28,6 +28,9 @@ include(FetchContent)
 
 set(FVW_EXPAT_VERSION "2.8.2" CACHE STRING "libexpat release to build against")
 set(FVW_ZLIB_VERSION  "1.3.2" CACHE STRING "zlib release to build against")
+set(FVW_PROTOZERO_VERSION "1.8.2" CACHE STRING "protozero release to build against")
+set(FVW_VTZERO_VERSION    "1.2.0" CACHE STRING "vtzero release to build against")
+set(FVW_JSON_VERSION      "3.12.0" CACHE STRING "nlohmann/json release to build against")
 
 # --- expat (MIT) ------------------------------------------------------------
 # Replaces third_party/Expat 2.0.1 (expat.h reports 2.1.0, released 2012) for
@@ -77,6 +80,55 @@ add_library(fv_zlib INTERFACE)
 target_link_libraries(fv_zlib INTERFACE ${FVW_ZLIB_TARGET})
 # zconf.h is generated into the build tree; the source dir alone is not enough.
 target_include_directories(fv_zlib INTERFACE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
+
+# --- protozero + vtzero (BSD-2) --------------------------------------------
+# Mapbox Vector Tile decoding for the OSM track (plan section 6, phase O1).
+# protozero is a zero-copy protobuf reader; vtzero is the MVT schema on top of
+# it — geometry command integers, zigzag deltas and the property value variant,
+# which is the fiddly half of the format. The plan called for VENDORING both
+# into port/vendor/ (the stb_truetype pattern); FetchContent is the same
+# decision with the 2026-07-25 mechanism, so versions stay in this one file and
+# nothing multi-MB lands in the repo.
+#
+# Both are header-only. Their own CMakeLists build tests, examples and doc
+# targets we do not want, so SOURCE_SUBDIR points at a directory with no
+# CMakeLists.txt: FetchContent_MakeAvailable then POPULATES without calling
+# add_subdirectory, and we publish the headers ourselves.
+FetchContent_Declare(protozero
+  URL https://github.com/mapbox/protozero/archive/refs/tags/v${FVW_PROTOZERO_VERSION}.tar.gz
+  SOURCE_SUBDIR headers-only-no-cmake
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(protozero)
+add_library(fv_protozero INTERFACE)
+target_include_directories(fv_protozero INTERFACE ${protozero_SOURCE_DIR}/include)
+
+FetchContent_Declare(vtzero
+  URL https://github.com/mapbox/vtzero/archive/refs/tags/v${FVW_VTZERO_VERSION}.tar.gz
+  SOURCE_SUBDIR headers-only-no-cmake
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(vtzero)
+add_library(fv_vtzero INTERFACE)
+target_include_directories(fv_vtzero INTERFACE ${vtzero_SOURCE_DIR}/include)
+target_link_libraries(fv_vtzero INTERFACE fv_protozero)
+
+# --- nlohmann/json (MIT) ----------------------------------------------------
+# The port had no JSON reader: preferences are INI (fv::Settings, deliberately
+# — a file a human annotates), and expat is XML-only. MBTiles keeps its layer
+# inventory in a `json` metadata value, and O2's MapLibre style subset is JSON
+# through and through, so this is the first place JSON is unavoidable.
+#
+# The `include.zip` RELEASE ASSET, not the source tarball: 300 KB of headers
+# instead of a repository whose test corpus dwarfs this whole port. It has no
+# CMakeLists at its root, so MakeAvailable populates only.
+FetchContent_Declare(nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v${FVW_JSON_VERSION}/include.zip
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+add_library(fv_json INTERFACE)
+target_include_directories(fv_json INTERFACE ${nlohmann_json_SOURCE_DIR}/include)
 
 # --- integration smoke tests ------------------------------------------------
 # expat has no consumer in the port yet (the first is the E2 PresLib loader),

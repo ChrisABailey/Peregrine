@@ -40,7 +40,7 @@ class OverlayManager {
   bool RouteMouseUp(const MouseEvent& e);
   bool RouteDoubleClick(const MouseEvent& e);
   bool RouteMouseWheel(const MouseEvent& e, double delta);
-  bool RouteKeyDown(int key);
+  bool RouteKeyDown(const KeyEvent& e);
 
  private:
   template <typename Fn>
