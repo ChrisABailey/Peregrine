@@ -54,6 +54,7 @@ which is not distributed here (`ctest` reports a skipped test as passing; the
 | Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays, vector sources, style engines, routing and the app layer |
 | Apps | `PythonView.py` — a desktop map viewer over the bindings (family menus, coverage overlay, identify, route editing) |
 | Tools | `fvrender` renders a map to PNG; `fvpack` builds offline GeoPackage tile packs; `fvgraph` builds and queries road graphs |
+| Overlays | Overlay Architecture modeled after the FalconView Overlay Interfaces but implemented in portable C++17, with a type registry and a Python subclassable base class. The overlay stack is headless and testable, and can be used to build a map application shell without Windows dependancies. | 
 
 Render a chart headlessly (needs map data — see *Test data* below):
 
@@ -115,6 +116,7 @@ build the catalog, `--at`/`--series` to open somewhere specific, `--shot` to
 render straight to a PNG.
 
 ### Screenshots
+![Open Street Map](Screenshots/OSM.png)
 ![CADRG](Screenshots/CADRG.png)
 ![DTED](Screenshots/DTED.png)
 ![GeoTIFF](Screenshots/GeoTIFF.png)
