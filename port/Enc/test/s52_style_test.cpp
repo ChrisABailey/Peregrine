@@ -316,8 +316,8 @@ TEST(S52Style, DepthRampFollowsTheMarinersContours) {
 
   // Raising the safety contour moves the boundary: 9.1 m water is no longer
   // "medium", it falls back into the shallow shade.
-  e->mariner().safety_contour = 12.0;
-  e->mariner().deep_contour = 12.0;
+  e->mutable_mariner().safety_contour = 12.0;
+  e->mutable_mariner().deep_contour = 12.0;
   const fv::FvColor was_medium = shade(3.6, 9.1);
   EXPECT_TRUE(SameColor(was_medium, 152, 197, 242));
   const fv::FvColor now_deep = shade(15.0, 20.0);
@@ -328,7 +328,7 @@ TEST(S52Style, TwoShadeModeCollapsesTheRamp) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
   ASSERT_NE(e, nullptr);
-  e->mariner().two_shades = true;
+  e->mutable_mariner().two_shades = true;
 
   auto shade = [&](double d1, double d2) {
     fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kArea, "DEPARE");
@@ -350,7 +350,7 @@ TEST(S52Style, SafetyContourIsDrawnBolderThanTheOthers) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
   ASSERT_NE(e, nullptr);
-  e->mariner().safety_contour = 10.0;
+  e->mutable_mariner().safety_contour = 10.0;
 
   fv::VectorFeature safety = MakeFeature(fv::VectorGeometryType::kLine, "DEPCNT");
   SetAttr(&safety, "VALDCO", "10");
@@ -369,30 +369,6 @@ TEST(S52Style, SafetyContourIsDrawnBolderThanTheOthers) {
   EXPECT_GT(bold.width, thin.width);
   EXPECT_TRUE(SameColor(bold.color, 82, 90, 92));    // DEPSC
   EXPECT_TRUE(SameColor(thin.color, 125, 137, 140));  // DEPCN
-}
-
-TEST(S52Style, SoundingsSplitAtTheMarinersSafetyDepth) {
-  SKIP_WITHOUT_PRESLIB();
-  auto e = OpenEngine(enc_root);
-  ASSERT_NE(e, nullptr);
-  e->SetDrawLabels(true);
-  e->mariner().safety_depth = 10.0;
-
-  auto label_color = [&](const char* depth) {
-    fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "SOUNDG");
-    SetAttr(&f, "DEPTH", depth);
-    std::vector<fv::StyleResult> out;
-    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
-    fv::FvColor c{};
-    for (const auto& r : out)
-      if (r.label.valid) {
-        c = r.label.style.color;
-        EXPECT_EQ(r.label.text, depth);
-      }
-    return c;
-  };
-  EXPECT_TRUE(SameColor(label_color("4.5"), 7, 7, 7));       // CHBLK, shoal
-  EXPECT_TRUE(SameColor(label_color("40.0"), 125, 137, 140));  // CHGRD, deep
 }
 
 TEST(S52Style, LabelsAreOffByDefault) {
@@ -415,6 +391,171 @@ TEST(S52Style, LabelsAreOffByDefault) {
       EXPECT_EQ(r.label.text, "Sullivans Island");
     }
   EXPECT_TRUE(labelled);
+}
+
+// S-52 gives the LOOKUP a display priority and the whole instruction chain
+// inherits it, text included — and the delivered library puts text-bearing rows
+// at every priority there is. LNDARE's own row is the proof: `AC(LANDA);
+// TX(OBJNAM,...)` at Group 1, so the land name drew at priority 1 and every
+// band above it painted over the name. Text now goes in a band of its own.
+TEST(S52Style, TextDrawsAboveEveryGeometryBand) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kArea, "LNDARE");
+  SetAttr(&f, "OBJNAM", "Sullivans Island");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(f, Ctx(), &out).ok());
+
+  int label_priority = -1;
+  int max_geometry_priority = -1;
+  for (const auto& r : out) {
+    if (r.label.valid) {
+      label_priority = r.priority;
+      // The label is a pass of its OWN: lifting it out of the object's band
+      // means it cannot ride along on the fill's result.
+      EXPECT_FALSE(r.fill.valid);
+      EXPECT_FALSE(r.stroke.valid);
+      EXPECT_FALSE(r.symbol.valid);
+    } else {
+      max_geometry_priority = (std::max)(max_geometry_priority, r.priority);
+    }
+  }
+  ASSERT_GE(label_priority, 0);
+  ASSERT_GE(max_geometry_priority, 0);
+  // The land fill is Group 1, which is exactly the band that used to bury it.
+  EXPECT_EQ(max_geometry_priority, fv::kS52PrioGroup1);
+  EXPECT_EQ(label_priority, fv::kS52PrioTextBase + fv::kS52PrioGroup1);
+  EXPECT_GT(label_priority, max_geometry_priority);
+}
+
+// Adding the object's own priority rather than flattening every label onto one
+// number keeps the library's relative order among labels: a buoy's name (its
+// row is Hazards) still sits over a land area's name (Group 1).
+TEST(S52Style, TextKeepsTheLibrarysRelativeOrderAmongLabels) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+
+  fv::VectorFeature land = MakeFeature(fv::VectorGeometryType::kArea, "LNDARE");
+  SetAttr(&land, "OBJNAM", "Sullivans Island");
+  fv::VectorFeature buoy = MakeFeature(fv::VectorGeometryType::kPoint, "BOYLAT");
+  SetAttr(&buoy, "BOYSHP", "2");
+  SetAttr(&buoy, "OBJNAM", "R \"6\"");
+
+  int land_text = -1, buoy_text = -1;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(land, Ctx(), &out).ok());
+  for (const auto& r : out)
+    if (r.label.valid) land_text = r.priority;
+  out.clear();
+  ASSERT_TRUE(e->Style(buoy, Ctx(), &out).ok());
+  for (const auto& r : out)
+    if (r.label.valid) buoy_text = r.priority;
+
+  ASSERT_GE(land_text, 0);
+  ASSERT_GE(buoy_text, 0);
+  EXPECT_EQ(land_text, fv::kS52PrioTextBase + fv::kS52PrioGroup1);
+  EXPECT_EQ(buoy_text, fv::kS52PrioTextBase + fv::kS52PrioHazards);
+  EXPECT_GT(buoy_text, land_text);
+}
+
+// TX/TE carry HJUST, VJUST, XOFFS and YOFFS for every string in the library and
+// all four were being skipped, so every ENC label drew baseline-left exactly on
+// its anchor — a name sitting on the symbol it belongs beside.
+//
+// The decode is the library's own, read off rows that can only mean one thing:
+// SEAARE labels an area with (1,2) and no offset, so 1 and 2 are "centre";
+// BOYLAT offsets LEFT with HJUST 2, so 2 is right-justified.
+TEST(S52Style, TextJustificationAndOffsetComeFromTheInstruction) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+
+  // LNDARE area: TX(OBJNAM,1,2,3,'15118',-1,-1,CHBLK,26) — centred both ways,
+  // one body size left and one UP (y is positive downward), body size 18.
+  fv::VectorFeature land = MakeFeature(fv::VectorGeometryType::kArea, "LNDARE");
+  SetAttr(&land, "OBJNAM", "Sullivans Island");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(land, Ctx(), &out).ok());
+  const fv::LabelStyle* lb = nullptr;
+  for (const auto& r : out)
+    if (r.label.valid) lb = &r.label;
+  ASSERT_NE(lb, nullptr);
+  EXPECT_EQ(lb->halign, fv::LabelHAlign::kCenter);
+  EXPECT_EQ(lb->valign, fv::LabelVAlign::kCenter);
+  EXPECT_DOUBLE_EQ(lb->style.size, 18.0);
+  EXPECT_EQ(lb->dx, -18);
+  EXPECT_EQ(lb->dy, -18);
+
+  // BOYLAT point: TE('%s','OBJNAM',2,1,2,'15110',-1,-1,CHBLK,21) — right
+  // justified and bottom aligned, so a name offset left of the buoy ends up
+  // wholly clear of it. Body size 10, so the offsets are 10 px, not 18.
+  fv::VectorFeature buoy = MakeFeature(fv::VectorGeometryType::kPoint, "BOYLAT");
+  SetAttr(&buoy, "BOYSHP", "2");
+  SetAttr(&buoy, "OBJNAM", "R \"6\"");
+  out.clear();
+  ASSERT_TRUE(e->Style(buoy, Ctx(), &out).ok());
+  lb = nullptr;
+  for (const auto& r : out)
+    if (r.label.valid) lb = &r.label;
+  ASSERT_NE(lb, nullptr);
+  EXPECT_EQ(lb->halign, fv::LabelHAlign::kRight);
+  EXPECT_EQ(lb->valign, fv::LabelVAlign::kBottom);
+  EXPECT_DOUBLE_EQ(lb->style.size, 10.0);
+  EXPECT_EQ(lb->dx, -10);
+  EXPECT_EQ(lb->dy, -10);
+}
+
+// The offsets are stated in BODY SIZES, so magnifying the symbology has to move
+// the text as far as it grew the symbol it is standing off from.
+TEST(S52Style, TextOffsetsScaleWithTheSymbology) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+
+  fv::VectorFeature land = MakeFeature(fv::VectorGeometryType::kArea, "LNDARE");
+  SetAttr(&land, "OBJNAM", "Sullivans Island");
+  fv::StyleContext c = Ctx();
+  c.symbol_scale = 2.0;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(land, c, &out).ok());
+  const fv::LabelStyle* lb = nullptr;
+  for (const auto& r : out)
+    if (r.label.valid) lb = &r.label;
+  ASSERT_NE(lb, nullptr);
+  EXPECT_DOUBLE_EQ(lb->style.size, 36.0);
+  EXPECT_EQ(lb->dx, -36);
+  EXPECT_EQ(lb->dy, -36);
+}
+
+// A rule that names a priority is an explicit instruction about where this
+// object goes. Obey it literally: lifting half the object into the text band
+// anyway would make the override mean something the caller did not write.
+TEST(S52Style, ARulePriorityOverrideKeepsTextWithItsGeometry) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+  const fv::Status s = e->rules().LoadText("set key=LNDARE priority=3\n");
+  ASSERT_TRUE(s.ok()) << s.message;
+
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kArea, "LNDARE");
+  SetAttr(&f, "OBJNAM", "Sullivans Island");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(f, Ctx(), &out).ok());
+  ASSERT_FALSE(out.empty());
+  bool saw_label = false;
+  for (const auto& r : out) {
+    EXPECT_EQ(r.priority, 3);
+    if (r.label.valid) saw_label = true;
+  }
+  EXPECT_TRUE(saw_label);
 }
 
 // Plan §7: never let a feature vanish because the symbology is not written
@@ -569,6 +710,131 @@ TEST(S52Style, LightFlareFollowsTheColourAttribute) {
   EXPECT_EQ(LightSymbol(e.get(), "1,3"), "LIGHTS11");
 }
 
+TEST(S52Style, TheLightFlareLeansSouthEastInsteadOfStandingOnItsLight) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&f, "COLOUR", "1");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(f, Ctx(), &out).ok());
+  ASSERT_FALSE(out.empty());
+
+  // The HPGL flare rises straight up from its pivot, so unrotated it grew out
+  // of the top of the buoy it belongs to. 135 degrees of BEARING lays it down
+  // and to the right, which is where the delivered library's own RASTER copy
+  // of the same symbol puts it (its bitmap pivot is the tile corner and the
+  // ink centroid bears 133.5 from it).
+  //
+  // NEGATIVE because the renderer's rotation is CCGMSymbol::DrawSymbol's — see
+  // the SY handler: positive turns a symbol COUNTER-clockwise on screen, so a
+  // compass bearing is negated at this seam and nowhere else.
+  bool checked = false;
+  for (const auto& r : out)
+    if (r.symbol.valid && r.symbol.symbol_id == "LIGHTS13") {
+      EXPECT_DOUBLE_EQ(r.symbol.rotation_deg, -135.0);
+      checked = true;
+    }
+  EXPECT_TRUE(checked);
+}
+
+TEST(S52Style, SymbolsAreSizedOnTheLibrarysOwnGridNotGeoSyms) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  // 0.32 mm, the presentation library's nominal pixel. Not a preference: it is
+  // what makes a display list come out the same size as the TILE of the same
+  // symbol, and the delivered file states both boxes for 316 symbols so the
+  // claim is checkable — which is what the loop below does.
+  EXPECT_DOUBLE_EQ(e->himetric_per_symbol_pixel(), 32.0);
+
+  // A symbol authored BOTH ways states its own grid twice: the <vector> box in
+  // 0.01 mm and the <bitmap> box in tile pixels. Divide the first by the grid
+  // and the tile comes back, which is the whole claim — the two forms of one
+  // symbol now draw the same size. Half a pixel of slack, because a tile
+  // rounds to whole pixels.
+  //
+  // These four are ordinary navaids with square-ish tiles big enough that the
+  // rounding does not dominate; the same holds across all 316 dual-form
+  // symbols, whose median ratio is 32.11.
+  for (const char* name :
+       {"ACHBRT07", "BOYCAR04", "BUAARE02", "DNGHILIT"}) {
+    const fv::S52SymbolDef* def = e->library().SymbolDef(name);
+    ASSERT_NE(def, nullptr) << name;
+    ASSERT_TRUE(def->has_bitmap) << name;
+    ASSERT_GT(def->vector_width, 0) << name;
+    const double px_per_unit = 1.0 / e->himetric_per_symbol_pixel();
+    EXPECT_NEAR(def->vector_width * px_per_unit, def->bitmap_width, 0.5)
+        << name;
+    EXPECT_NEAR(def->vector_height * px_per_unit, def->bitmap_height, 0.5)
+        << name;
+  }
+}
+
+// A sounding is a ROW OF SYMBOLS, one per digit — `SOUND` + family + position
+// + digit — and the position is what puts the decimetre a half-line low. The
+// two families are the safety-depth split: SOUNDS* black for at-or-shallower,
+// SOUNDG* grey for deeper.
+std::vector<std::string> SoundingSymbols(fv::S52StyleEngine* e,
+                                         const char* depth) {
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "SOUNDG");
+  SetAttr(&f, "DEPTH", depth);
+  std::vector<fv::StyleResult> out;
+  EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+  return AllSymbols(out);
+}
+
+TEST(S52Style, SoundingsSplitAtTheMarinersSafetyDepth) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->mutable_mariner().safety_depth = 10.0;
+
+  // 4.5 m is at or above the safety depth: the BLACK family.
+  EXPECT_EQ(SoundingSymbols(e.get(), "4.5"),
+            (std::vector<std::string>{"SOUNDS14", "SOUNDS55"}));
+  // 40 m is deeper: the same layout in the GREY family.
+  EXPECT_EQ(SoundingSymbols(e.get(), "40.0"),
+            (std::vector<std::string>{"SOUNDG24", "SOUNDG10"}));
+
+  // Moving the safety depth moves the split and nothing else.
+  e->mutable_mariner().safety_depth = 50.0;
+  EXPECT_EQ(SoundingSymbols(e.get(), "40.0"),
+            (std::vector<std::string>{"SOUNDS24", "SOUNDS10"}));
+}
+
+TEST(S52Style, SoundingDigitsCarryTheDecimetreAsASubscript) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->mutable_mariner().safety_depth = 1000.0;  // one family, so this reads as layout
+
+  // Position 1 is the units digit and position 5 is the subscript slot — the
+  // delivered BITMAP PIVOTS say so: 5 puts the tile at position 0's x with the
+  // pivot 4 px higher, i.e. the same column dropped half a line. Composing the
+  // tiles by those pivots draws "9<sub>4</sub>", which is how this was read
+  // off the data rather than out of the spec.
+  EXPECT_EQ(SoundingSymbols(e.get(), "9.4"),
+            (std::vector<std::string>{"SOUNDS19", "SOUNDS54"}));
+  // Two whole digits: position 2 is the tens, right-to-left ending at 1.
+  EXPECT_EQ(SoundingSymbols(e.get(), "12.6"),
+            (std::vector<std::string>{"SOUNDS21", "SOUNDS12", "SOUNDS56"}));
+  // 31 m and deeper is whole metres — no subscript, by S-52's own rule.
+  EXPECT_EQ(SoundingSymbols(e.get(), "31.4"),
+            (std::vector<std::string>{"SOUNDS23", "SOUNDS11"}));
+  EXPECT_EQ(SoundingSymbols(e.get(), "127.0"),
+            (std::vector<std::string>{"SOUNDS31", "SOUNDS22", "SOUNDS17"}));
+  // A whole number under 31 has nothing to subscript.
+  EXPECT_EQ(SoundingSymbols(e.get(), "5.0"),
+            (std::vector<std::string>{"SOUNDS15"}));
+  // A drying height is authored negative; its magnitude prints (the bar that
+  // says "drying" is the one piece of SNDFRM02 still missing).
+  EXPECT_EQ(SoundingSymbols(e.get(), "-1.2"),
+            (std::vector<std::string>{"SOUNDS11", "SOUNDS52"}));
+}
+
 TEST(S52Style, FloodAndStripLightsTakeTheirOwnSymbolNotAFlare) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
@@ -610,7 +876,7 @@ TEST(S52Style, ObstructionDangerFollowsTheMarinersSafetyContour) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
   ASSERT_NE(e, nullptr);
-  e->mariner().safety_contour = 10.0;
+  e->mutable_mariner().safety_contour = 10.0;
 
   // 5 m under a 10 m safety contour is a danger; 15 m is not; over 20 m takes
   // the deep-hazard mark. This is the whole point of the procedure, and it
@@ -634,7 +900,7 @@ TEST(S52Style, ObstructionDangerFollowsTheMarinersSafetyContour) {
   EXPECT_TRUE(HasSymbol(out, "DANGER02")) << FirstSymbol(out);
 
   // Raising the contour past the sounding turns the same feature into a danger.
-  e->mariner().safety_contour = 40.0;
+  e->mutable_mariner().safety_contour = 40.0;
   out.clear();
   ASSERT_TRUE(e->Style(deep, Ctx(), &out).ok());
   EXPECT_TRUE(HasSymbol(out, "ISODGR01"));
@@ -1120,7 +1386,27 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // (0.05 %), in 9 connected clusters, and every changed pixel is marsh-grass
 // ink — tufts that the rounded ring had been excluding near a boundary now
 // appear. No other mark on the chart differs by a single pixel.
-constexpr uint64_t kHashCharleston = 0xa01ffd5340f22646ull;
+//
+// Re-pinned 2026-08-11 (E7) — the largest move this golden has had, and every
+// part of it intended: 0xa01ffd5340f22646 -> 0xe00d1fe6b6907b43. Three
+// symbology changes at once. Display lists are now sized on S-52's own 0.32 mm
+// grid instead of GeoSym's 1/100 inch, so every vector symbol is 21% smaller
+// and finally agrees with the TILE of the same symbol beside it; light flares
+// carry their 135-degree bearing, so they lean down and to the right off their
+// lights instead of growing out of the top of them; and a sounding is a row of
+// library digit symbols with the decimetre subscripted rather than a text run.
+// Read rather than hashed: the flares all lean the same way and clear their
+// buoys, and the soundings read 10-sub-6, 5-sub-7, 3-sub-9, 2-sub-4.
+//
+// NOTE this is also the first run of this test since TestData/enc was cut back
+// to the 8 Charleston cells (2026-08-11). It had been DARK, not passing: the
+// directory had grown to 823 cells and `Open()` failed whole on the two that
+// will not parse, so every S52Render test died before it drew. The 8 that
+// remain are the ones the goldens were always pinned over — the set is
+// reproducible, being every cell whose coverage meets lat 32.60..32.95,
+// lon -80.15..-79.75, which is the padded extent of every coordinate these
+// tests name.
+constexpr uint64_t kHashCharleston = 0xe00d1fe6b6907b43ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();

@@ -21,6 +21,8 @@
 #include "DelimitedParser.h"
 #include "SymColors.h"
 #include "fv_cgm_symbol.h"
+// G2: FromColorRef and ToVectorSymbol used to be defined below, file-local.
+#include "fv_cgm_to_symbol.h"
 
 namespace fv {
 namespace {
@@ -54,14 +56,6 @@ std::string StripCgmExtension(const std::string& s) {
   return s;
 }
 
-FvColor FromColorRef(COLORREF c) {
-  FvColor out;
-  out.r = static_cast<unsigned char>(c & 0xFF);
-  out.g = static_cast<unsigned char>((c >> 8) & 0xFF);
-  out.b = static_cast<unsigned char>((c >> 16) & 0xFF);
-  out.a = 255;
-  return out;
-}
 
 std::string ToStd(const CString& s) {
   return std::string(static_cast<const char*>(s), s.GetLength());
@@ -101,171 +95,6 @@ struct TextRow {
   double dir_deg = 0.0;
 };
 
-// --- CGM display list -> product-neutral VectorSymbol ----------------------
-
-void AddPoints(const std::vector<CgmPoint>& in, SymbolPrimitive* out) {
-  out->points.reserve(in.size());
-  for (const CgmPoint& p : in)
-    out->points.push_back(SymbolPoint{static_cast<double>(p.x),
-                                      static_cast<double>(p.y)});
-}
-
-// Solves r = radius1*cos(t) + radius2*sin(t) for t, so an arc's delimiting
-// rays become parameter angles in the conjugate-diameter basis.
-double AngleInBasis(const CgmPoint& r1, const CgmPoint& r2, const CgmPoint& r) {
-  const double a = static_cast<double>(r1.x), b = static_cast<double>(r2.x);
-  const double c = static_cast<double>(r1.y), d = static_cast<double>(r2.y);
-  const double det = a * d - b * c;
-  if (std::fabs(det) < 1e-12) return 0.0;
-  const double x = static_cast<double>(r.x), y = static_cast<double>(r.y);
-  const double cos_t = (d * x - b * y) / det;
-  const double sin_t = (-c * x + a * y) / det;
-  return std::atan2(sin_t, cos_t);
-}
-
-// Flattens an elliptical arc into a polyline. CGM's conjugate-diameter form
-// handles rotation for free: P(t) = center + r1*cos t + r2*sin t.
-void FlattenArc(const CgmElement& e, SymbolPrimitive* out) {
-  double t0 = AngleInBasis(e.radius1, e.radius2, e.ray[0]);
-  double t1 = AngleInBasis(e.radius1, e.radius2, e.ray[1]);
-  const double kTwoPi = 6.283185307179586476925286766559;
-  double sweep = t1 - t0;
-  if (e.clockwise) {
-    while (sweep > 0.0) sweep -= kTwoPi;
-    if (sweep <= -kTwoPi) sweep += kTwoPi;
-  } else {
-    while (sweep < 0.0) sweep += kTwoPi;
-    if (sweep >= kTwoPi) sweep -= kTwoPi;
-  }
-  const int steps = 48;
-  out->points.reserve(static_cast<size_t>(steps) + 2);
-  for (int i = 0; i <= steps; ++i) {
-    const double t = t0 + sweep * (static_cast<double>(i) / steps);
-    const double ct = std::cos(t), st = std::sin(t);
-    out->points.push_back(SymbolPoint{
-        e.center.x + e.radius1.x * ct + e.radius2.x * st,
-        e.center.y + e.radius1.y * ct + e.radius2.y * st});
-  }
-  if (e.arc_close == CgmArcClose::kPie) {
-    out->points.push_back(SymbolPoint{static_cast<double>(e.center.x),
-                                      static_cast<double>(e.center.y)});
-  }
-}
-
-// Applies the picture's VDC direction multipliers, which is what Windows does
-// in CCGMDrawingObject::RotateVDC ("Need to do VDC adjustments for reflection
-// even if zero rotation angle") when it builds the m_disp_vertices the GDI
-// path draws. The parser already applied them ONCE while reading coordinates
-// (CCGMFile::ReadVDCScaledY), and CgmSymbol keeps those once-applied values,
-// so without this second application the symbol is mirrored — for the
-// standard lly<ury extent every GeoSym symbol uses, dir_y is -1 and the
-// display list is y-DOWN while VectorSymbol's contract (and VectorRenderer's
-// flip) is y-UP, which drew every DNC point symbol upside down.
-//
-// Rotation still matches: Windows rotates BEFORE the multipliers, we rotate
-// after, and diag(1,-1)*R(a) == R(-a)*diag(1,-1) — the same net transform.
-void ApplyVdcDir(const CgmSymbol& cgm, SymbolPrimitive* p) {
-  const double dx = static_cast<double>(cgm.dir_x());
-  const double dy = static_cast<double>(cgm.dir_y());
-  for (SymbolPoint& pt : p->points) { pt.x *= dx; pt.y *= dy; }
-  p->center.x *= dx;
-  p->center.y *= dy;
-  p->radius1.x *= dx;
-  p->radius1.y *= dy;
-  p->radius2.x *= dx;
-  p->radius2.y *= dy;
-}
-
-VectorSymbol ToVectorSymbol(const CgmSymbol& cgm,
-                            const CSymColorAdjuster& adjuster) {
-  VectorSymbol out;
-  out.primitives.reserve(cgm.elements().size());
-  for (const CgmElement& e : cgm.elements()) {
-    SymbolPrimitive p;
-    // CGM fill styles: 0 hollow, 1 solid, 4 empty. Anything else (pattern,
-    // hatch, geometric, interpolated) has no canvas equivalent yet and is
-    // drawn as its solid colour rather than dropped.
-    const bool solid_fill = e.fill_style != 0 && e.fill_style != 4;
-    switch (e.type) {
-      case CgmElementType::kPolyline:
-        p.type = SymbolPrimitiveType::kPolyline;
-        AddPoints(e.vertices, &p);
-        p.has_stroke = true;
-        p.stroke_color = FromColorRef(adjuster.Adjust(e.line_color));
-        p.stroke_width = static_cast<double>(e.line_width);
-        break;
-      case CgmElementType::kPolygon:
-      case CgmElementType::kPolygonSet:
-        p.type = SymbolPrimitiveType::kPolygon;
-        AddPoints(e.vertices, &p);
-        p.has_fill = solid_fill;
-        p.fill_color = FromColorRef(adjuster.Adjust(e.fill_color));
-        p.has_stroke = e.edge_visible;
-        p.stroke_color = FromColorRef(adjuster.Adjust(e.edge_color));
-        p.stroke_width = static_cast<double>(e.edge_width);
-        break;
-      case CgmElementType::kEllipse:
-        p.type = SymbolPrimitiveType::kEllipse;
-        p.center = SymbolPoint{static_cast<double>(e.center.x),
-                               static_cast<double>(e.center.y)};
-        p.radius1 = SymbolPoint{static_cast<double>(e.radius1.x),
-                                static_cast<double>(e.radius1.y)};
-        p.radius2 = SymbolPoint{static_cast<double>(e.radius2.x),
-                                static_cast<double>(e.radius2.y)};
-        p.has_fill = solid_fill;
-        p.fill_color = FromColorRef(adjuster.Adjust(e.fill_color));
-        p.has_stroke = e.edge_visible;
-        p.stroke_color = FromColorRef(adjuster.Adjust(e.edge_color));
-        p.stroke_width = static_cast<double>(e.edge_width);
-        break;
-      case CgmElementType::kEllipticalArc:
-        // An arc becomes a polyline (or a closed polygon for pie/chord).
-        p.type = e.arc_close == CgmArcClose::kOpen
-                     ? SymbolPrimitiveType::kPolyline
-                     : SymbolPrimitiveType::kPolygon;
-        FlattenArc(e, &p);
-        if (p.type == SymbolPrimitiveType::kPolygon) {
-          p.has_fill = solid_fill;
-          p.fill_color = FromColorRef(adjuster.Adjust(e.fill_color));
-          p.has_stroke = e.edge_visible;
-          p.stroke_color = FromColorRef(adjuster.Adjust(e.edge_color));
-          p.stroke_width = static_cast<double>(e.edge_width);
-        } else {
-          p.has_stroke = true;
-          p.stroke_color = FromColorRef(adjuster.Adjust(e.line_color));
-          p.stroke_width = static_cast<double>(e.line_width);
-        }
-        break;
-      case CgmElementType::kText:
-        p.type = SymbolPrimitiveType::kText;
-        p.text = e.text;
-        p.center = SymbolPoint{static_cast<double>(e.position.x),
-                               static_cast<double>(e.position.y)};
-        p.text_height = static_cast<double>(e.char_height);
-        p.has_fill = true;
-        p.fill_color = FromColorRef(adjuster.Adjust(e.line_color));
-        break;
-      default:
-        continue;
-    }
-    ApplyVdcDir(cgm, &p);
-    out.primitives.push_back(std::move(p));
-  }
-  // bounds() is in the parser's once-applied space too, so the extent takes
-  // the same multipliers; min/max stay order-agnostic rather than copying the
-  // `top`/`bottom` names across a sign change.
-  const CgmRect& b = cgm.bounds();
-  const double dx = static_cast<double>(cgm.dir_x());
-  const double dy = static_cast<double>(cgm.dir_y());
-  const double x0 = b.left * dx, x1 = b.right * dx;
-  const double y0 = b.top * dy, y1 = b.bottom * dy;
-  out.min_x = (std::min)(x0, x1);
-  out.max_x = (std::max)(x0, x1);
-  out.min_y = (std::min)(y0, y1);
-  out.max_y = (std::max)(y0, y1);
-  return out;
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -290,7 +119,16 @@ struct GeoSymStyleEngine::Impl {
   // set with the same numbers is skipped.
   int brightness = INT_MIN;
   int contrast = INT_MIN;
+  // The mariner's depth numbers, in the form ATTEXP evaluates: every ATTEXP
+  // row that names ssdc/msdc/mssc/idsm/isdm resolves through this object
+  // (CAEAttributeList holds a reference to it), so keeping it in step with the
+  // shared MarinerSettings is the whole of DNC's mariner wiring.
   CECDISValues ecdis;
+  // The mariner epoch this `ecdis` was derived from. A mutable-reference
+  // caller can move a contour at any time, so the derivation is checked per
+  // Style() call — an integer compare — rather than at a setter that may
+  // never be called.
+  uint64_t ecdis_epoch = 0;
 
   // The R2 rule layer and the VectorSymbol display-list cache live in the
   // shared LookupTableStyleEngine core (E3c). What stays here is GeoSym's own
@@ -513,7 +351,33 @@ GeoSymStyleEngine::Impl::AreaFillFor(const std::string& number) {
 
 // ---------------------------------------------------------------------------
 
-GeoSymStyleEngine::GeoSymStyleEngine() : impl_(new Impl) {}
+GeoSymStyleEngine::GeoSymStyleEngine() : impl_(new Impl) {
+  // GeoSym's OWN defaults, which are not the struct's (those are S-52's): the
+  // numbers CECDISValues has default-constructed since V3, and therefore the
+  // ones every DNC golden was pinned over. ISDM defaults to 1, so DNC ships
+  // with the shallow-water pattern ON — see fvkit/vector/mariner.h.
+  MarinerSettings m;
+  m.safety_contour = 10.0;   // ssdc
+  m.safety_depth = 10.0;     // DNC has no second number: ssdc is both
+  m.deep_contour = 30.0;     // msdc
+  m.shallow_contour = 2.0;   // mssc
+  m.two_shades = false;      // idsm = 0, four shades
+  m.shallow_pattern = true;  // isdm = 1
+  SetMariner(m);
+  ApplyMariner();
+}
+
+// MarinerSettings -> the ATTEXP pseudo-attributes. The mapping is read off the
+// delivered tables, not the spec — mariner.h names the rows.
+void GeoSymStyleEngine::ApplyMariner() {
+  const MarinerSettings& m = current_mariner();
+  impl_->ecdis.SSDC(m.safety_contour);
+  impl_->ecdis.MSDC(m.deep_contour);
+  impl_->ecdis.MSSC(m.shallow_contour);
+  impl_->ecdis.IDSM(m.two_shades ? 1 : 0);
+  impl_->ecdis.ISDM(m.shallow_pattern ? 1 : 0);
+  impl_->ecdis_epoch = mariner_epoch();
+}
 GeoSymStyleEngine::~GeoSymStyleEngine() = default;
 
 Status GeoSymStyleEngine::Open(const std::string& data_dir, int product_id) {
@@ -608,6 +472,11 @@ Status GeoSymStyleEngine::StyleFeature(const VectorFeature& f,
   if (symbol_scale > 0.0 && symbol_scale < 0.20) return Status::Ok();
   const bool draw_labels = rule_pass.draw_labels;
   const ViewingGroupSet& groups = viewing_groups();
+
+  // A caller may have moved a contour through the mutable mariner() reference
+  // since the last feature; re-deriving costs one integer compare per feature
+  // and five assignments per actual change.
+  if (impl_->ecdis_epoch != mariner_epoch()) ApplyMariner();
 
   const int delin = DelinFor(f.type);
   const std::string attrs = AttributeString(f);

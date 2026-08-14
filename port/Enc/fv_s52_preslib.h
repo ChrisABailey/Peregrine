@@ -92,6 +92,26 @@ enum S52DisplayPriority {
   kS52PrioMariners = 9,
 };
 
+// Text is lifted OUT of its object's priority band and drawn above all
+// geometry, at kS52PrioTextBase + the object's own priority.
+//
+// S-52 assigns a display priority to the LOOKUP, and the lookup's whole
+// instruction chain — TX/TE included — would otherwise inherit it. The
+// delivered library puts text-bearing rows at every priority there is,
+// including Group 1: LNDARE carries a TX, so a land name drew at priority 1
+// and every depth area, built-up area and symbol pass above it painted over
+// the name. Measured on the Charleston cells before this changed: a name at
+// Group 1 is overdrawn by four later bands.
+//
+// Adding the object's priority rather than flattening to one number keeps the
+// library's own relative order AMONG labels, so a hazard's text still sits
+// over a land area's text.
+//
+// The base leaves a gap above kS52PrioMariners rather than sitting on 10: an
+// own-ship or AIS layer is the one thing that should eventually draw over the
+// text, and it needs somewhere to go.
+constexpr int kS52PrioTextBase = 16;
+
 // One attribute condition of a lookup row. The XML packs them as a single
 // token, `<attrib-code index="0">CATACH8</attrib-code>`: six characters of
 // acronym followed by the value, so the split is POSITIONAL (S-57 acronyms are

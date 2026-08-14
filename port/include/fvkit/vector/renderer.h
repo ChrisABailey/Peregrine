@@ -41,6 +41,12 @@ namespace fv {
 // device size, i.e. it treats 1/100 inch as one pixel (100 DPI) for point
 // symbols regardless of the actual device. Preserved (bit-faithful rule); see
 // SymbolPixelsPerHimetric below for where the device DPI *is* honoured.
+//
+// It is the DEFAULT of IStyleEngine::himetric_per_symbol_pixel(), not a
+// constant of the renderer: a product states the grid its symbols were drawn
+// on, and S-52 states 32 (0.32 mm). Everything that measures a distance in the
+// same pixels a symbol is drawn at — an area pattern's pitch, a complex
+// line's period — must use the engine's number, not this one.
 constexpr double kHimetricPerHundredthInch = 25.4;
 
 class VectorRenderer {
@@ -135,6 +141,13 @@ class VectorRenderer {
   size_t features_queried() const { return features_queried_; }
   size_t draws_emitted() const { return draws_emitted_; }
 
+  // Extra text draws spent on label halos (T2). NOT counted in
+  // draws_emitted(): a haloed label is one label, and folding its 4-8 stamps
+  // into that number would move every existing draw-count assertion the moment
+  // a style turned halos on. Reported separately because it is real work — it
+  // is the one diagnostic that says what the halo cost.
+  size_t halo_draws() const { return halo_draws_; }
+
   // Wall-clock split of the last Render, in milliseconds. The three phases are
   // exactly the three costs R3 is about: pulling features out of the source,
   // asking the style engine what they look like, and putting pixels down.
@@ -167,6 +180,7 @@ class VectorRenderer {
   bool pick_enabled_ = true;
   size_t features_queried_ = 0;
   size_t draws_emitted_ = 0;
+  size_t halo_draws_ = 0;
   double query_ms_ = 0.0;
   double style_ms_ = 0.0;
   double draw_ms_ = 0.0;
@@ -177,11 +191,10 @@ class VectorRenderer {
 };
 
 // --- geometry helpers, exposed because they are worth testing directly -----
-
-struct SurfacePoint {
-  double x = 0.0;
-  double y = 0.0;
-};
+//
+// `SurfacePoint` moved to fvkit/geo.h in G1 — it is a D4 pixel primitive and
+// fvkit/geo/contour.h needs it without the vector seam. Same type, same
+// namespace; this note exists only so nobody goes looking for it here.
 
 // Cohen-Sutherland clip of a polyline against [0,w) x [0,h), emitting the
 // visible runs. A run is only emitted when it has >= 2 points.

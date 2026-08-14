@@ -64,20 +64,30 @@ namespace fv {
 // producer's, and they change what is drawn, not just how: the safety contour
 // is the single most important line on an ECDIS display.
 //
-// This is the ENC half of the "MarinerSettings API" the F1 row left open. The
-// GeoSym/DNC half (CECDISValues' ssdc/msdc/mssc) is the same idea under VPF
-// names and is still driven by its own defaults — see the ledger.
-struct S52MarinerSettings {
-  // Metres. Depths are compared against these exactly as S-52 §8.4 does.
-  double safety_contour = 30.0;   // the bold contour; DEPARE/DEPCNT pivot here
-  double shallow_contour = 2.0;   // inner edge of the shallow-water shade
-  double deep_contour = 30.0;     // outer edge of the deep-water shade
-  double safety_depth = 30.0;     // soundings at or below this print bold/black
-  bool two_shades = false;        // two depth shades instead of four
-  bool shallow_pattern = false;   // DIAMOND1 over the shallowest band
-};
+// ONE STRUCT, TWO PRODUCTS as of the DNC half of this API: it is
+// fv::MarinerSettings on the shared LookupTableStyleEngine core, and GeoSym's
+// ssdc/msdc/mssc are the same six values under VPF names (the derivation is in
+// fvkit/vector/mariner.h). The alias is kept because S-52 is where the names
+// come from and because every caller in the tree spells it this way. S-52's
+// defaults ARE the struct's defaults, so nothing here moved.
+//
+// `shallow_pattern` draws DIAMOND1 over the shallowest band on this product.
+using S52MarinerSettings = MarinerSettings;
 
 enum class S52ColorScheme { kDay = 0, kDusk, kNight };
+
+// HIMETRIC (0.01 mm) units per nominal S-52 SYMBOL PIXEL — 0.32 mm, the
+// presentation library's own display pixel and the unit its HPGL `SWn` pen
+// widths count in. Everything the library authors in HPGL is on this grid:
+// symbols, complex line styles and area patterns alike.
+//
+// MEASURED, not assumed. 316 of the delivered symbols carry both a <vector>
+// box (0.01 mm) and a <bitmap> box (tile pixels) for the SAME artwork; the
+// median of the 632 ratios is 32.11 and the mode is exactly 32. That is what
+// makes the two forms agree: at GeoSym's 25.4 a display list came out 26%
+// larger than the tile of the same symbol, which is why a harbour's anchoring
+// and restricted-area marks dwarfed its buoys — the buoys are tiles.
+constexpr double kS52HimetricPerSymbolPixel = 32.0;
 
 // The two mutually exclusive point tables, and the two area tables. Which pair
 // is in force is a display setting, which is why E2 loads all five.
@@ -116,8 +126,10 @@ class S52StyleEngine : public LookupTableStyleEngine {
 
   void SetPointStyle(S52PointStyle s);
   void SetAreaStyle(S52AreaStyle s);
-  S52MarinerSettings& mariner();
-  const S52MarinerSettings& mariner() const;
+  // mariner() / mutable_mariner() / SetMariner() are the shared core's:
+  // mutable_mariner() bumps the style epoch on call, because a caller holding
+  // the reference can move the safety contour at any time and the retained
+  // scene has to be told. Reading through mariner() is free.
 
   // NOTE labels, rules() and viewing_groups() come from the shared core.
   // S-52's own display category (BASE/STANDARD/OTHER) is carried by each lookup
@@ -135,6 +147,12 @@ class S52StyleEngine : public LookupTableStyleEngine {
   // vector definitions alone showed a question mark over its buoys and
   // beacons; the renderer consults this whenever Symbol() has no geometry.
   const SymbolPixmap* Pixmap(const std::string& symbol_id) override;
+
+  // S-52's symbols are drawn on a 0.32 mm grid — the presentation library's
+  // nominal pixel, the same unit its HPGL `SWn` pen widths count in — so a
+  // display list divides by 32, not by GeoSym's 25.4. See
+  // kS52HimetricPerSymbolPixel.
+  double himetric_per_symbol_pixel() const override;
 
   // The loaded library, for callers that want the tables themselves.
   const S52PresentationLibrary& library() const;

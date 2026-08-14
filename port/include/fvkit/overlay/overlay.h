@@ -28,6 +28,20 @@
 
 namespace fv {
 
+// The app layer's optional capabilities (fvkit/app/capabilities.h, A1).
+// Forward-declared, never included: capabilities.h includes THIS header (a
+// HitItem names an Overlay), and the accessors below only return pointers, so
+// an incomplete type is all they need. This keeps L4 free of any app-layer
+// dependency -- fvkit/overlay still builds and binds on its own.
+namespace app {
+class Persistence;
+class HitTest;
+class SnapTo;
+class ContextMenu;
+class RoutingOverrides;
+class EditTarget;
+}  // namespace app
+
 struct MouseEvent {
   int x = 0, y = 0;   // surface pixels
   int button = 0;     // 0 left, 1 middle, 2 right
@@ -96,8 +110,32 @@ class Overlay {
   Overlay& operator=(const Overlay&) = delete;
 
   const std::string& Name() const { return name_; }
+  // A FILE overlay renames itself to its document when one is opened (A6), the
+  // way FalconView shows the route's file name in the overlay list rather than
+  // the name it was created under. Nothing else changes a name.
+  void SetName(std::string name) { name_ = std::move(name); }
   bool IsVisible() const { return visible_; }
   void SetVisible(bool v) { visible_ = v; }
+
+  // The registered overlay type this instance came from (app::TypeId, i.e. a
+  // string -- "fv.grid"). Empty for an overlay created outside the app layer,
+  // which is legal: an ad-hoc pyfvw overlay has no type. Stamped at creation
+  // by the session layer, the way InternalInitialize(guid) did it, so the
+  // stack can answer FirstOfType/OfType (A2).
+  const std::string& type_id() const { return type_id_; }
+  void set_type_id(std::string id) { type_id_ = std::move(id); }
+
+  // Optional capabilities (R2). A capable overlay overrides the one it
+  // implements and returns `this`; everything else keeps the nullptr default
+  // and is skipped at the call site. This replaces FalconView's dynamic_cast
+  // discovery -- same optionality, one class hierarchy, and safe across a
+  // pybind11 trampoline, which a cross-cast is not.
+  virtual app::Persistence* AsPersistence() { return nullptr; }
+  virtual app::HitTest* AsHitTest() { return nullptr; }
+  virtual app::SnapTo* AsSnapTo() { return nullptr; }
+  virtual app::ContextMenu* AsContextMenu() { return nullptr; }
+  virtual app::RoutingOverrides* AsRoutingOverrides() { return nullptr; }
+  virtual app::EditTarget* AsEditTarget() { return nullptr; }
 
   // Draw in surface space for the given projection. Default: nothing.
   virtual Status OnDraw(const MapProjection& proj, ICanvas& canvas) {
@@ -120,6 +158,7 @@ class Overlay {
 
  private:
   std::string name_;
+  std::string type_id_;
   bool visible_ = true;
 };
 

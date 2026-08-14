@@ -10,6 +10,12 @@
 #include <cmath>
 #include <cstring>
 
+// G2: DrawSymbolAt / DrawPixmapSymbolAt / ResolveSymbol / DrawResolvedSymbol
+// and InkBox used to be defined below, in the anonymous namespace. They now
+// live here so an overlay can reach them too.
+#include "fvkit/vector/symbol_draw.h"
+#include "fvkit/vector/text_draw.h"
+
 namespace fv {
 namespace {
 
@@ -623,324 +629,6 @@ bool ProjectPart(const MapProjection& proj, const GeoPoint* pts, size_t n,
 // navaid dot is still something a user aims at.
 constexpr int kMinPickBox = 9;
 
-// Accumulates the pixel extent a symbol actually drew into, which is what the
-// pick index uses as the symbol's hit box (plan §5.3: hit-test the glyph, not
-// the anchor pixel).
-struct InkBox {
-  double minx = 0, miny = 0, maxx = 0, maxy = 0;
-  bool any = false;
-  void Add(double x, double y) {
-    if (!any) {
-      minx = maxx = x;
-      miny = maxy = y;
-      any = true;
-      return;
-    }
-    minx = std::min(minx, x);
-    maxx = std::max(maxx, x);
-    miny = std::min(miny, y);
-    maxy = std::max(maxy, y);
-  }
-  PixelRect ToRect(double pad) const {
-    PixelRect r;
-    if (!any) return r;
-    r.x = static_cast<int>(std::floor(minx - pad));
-    r.y = static_cast<int>(std::floor(miny - pad));
-    r.width = static_cast<int>(std::ceil(maxx + pad)) - r.x + 1;
-    r.height = static_cast<int>(std::ceil(maxy + pad)) - r.y + 1;
-    return r;
-  }
-};
-
-// Draws one symbol display list anchored at (ax, ay) pixels.
-//
-// Mapping (verbatim from CCGMSymbol::DrawSymbol's DC setup): logical (0,0) is
-// the anchor, viewport extent is (+k, -k) so y flips, and k px per HIMETRIC
-// unit is scale/25.4 — the s_dblConversionFactor path, which treats 1/100
-// inch as one pixel for symbols regardless of the device.
-//
-// `ink` (optional) collects the extent drawn, for the pick index.
-void DrawSymbolAt(ICanvas* canvas, const VectorSymbol& sym, double ax,
-                  double ay, double px_per_himetric, double rotation_rad,
-                  InkBox* ink) {
-  const double cs = std::cos(rotation_rad), sn = std::sin(rotation_rad);
-  auto map = [&](const SymbolPoint& p) {
-    // Rotate in symbol space (y up), then scale and flip to screen.
-    const double rx = p.x * cs - p.y * sn;
-    const double ry = p.x * sn + p.y * cs;
-    const SurfacePoint sp{ax + rx * px_per_himetric,
-                          ay - ry * px_per_himetric};
-    if (ink != nullptr) ink->Add(sp.x, sp.y);
-    return sp;
-  };
-
-  for (const SymbolPrimitive& prim : sym.primitives) {
-    Pen pen;
-    pen.color = prim.stroke_color;
-    pen.width = std::max(1, static_cast<int>(std::lround(prim.stroke_width *
-                                                        px_per_himetric)));
-    Brush brush;
-    brush.color = prim.fill_color;
-
-    switch (prim.type) {
-      case SymbolPrimitiveType::kPolyline: {
-        if (prim.points.size() < 2 || !prim.has_stroke) break;
-        std::vector<SurfacePoint> pts;
-        pts.reserve(prim.points.size());
-        for (const SymbolPoint& p : prim.points) pts.push_back(map(p));
-        const PixelSize size = canvas->Size();
-        for (auto& run : ClipPolyline(pts, size.width, size.height))
-          canvas->DrawLines(run, pen);
-        break;
-      }
-      case SymbolPrimitiveType::kPolygon: {
-        if (prim.points.size() < 3) break;
-        std::vector<SurfacePoint> pts;
-        pts.reserve(prim.points.size());
-        for (const SymbolPoint& p : prim.points) pts.push_back(map(p));
-        const PixelSize size = canvas->Size();
-        std::vector<PixelPoint> ring =
-            ClipPolygon(pts, size.width, size.height);
-        if (ring.size() < 3) break;
-        std::vector<std::vector<PixelPoint>> rings{std::move(ring)};
-        canvas->DrawPolyPolygon(rings, prim.has_fill ? &brush : nullptr,
-                                prim.has_stroke ? &pen : nullptr);
-        break;
-      }
-      case SymbolPrimitiveType::kEllipse: {
-        // The conjugate radius vectors reduce to an axis-aligned box only
-        // when they are axis-aligned themselves; GeoSym's are (they encode
-        // circles and axis-aligned ellipses). A rotated one degrades to its
-        // bounding box — documented, revisit if a symbol needs it.
-        const SurfacePoint c = map(prim.center);
-        const double rx = std::hypot(prim.radius1.x, prim.radius1.y) *
-                          px_per_himetric;
-        const double ry = std::hypot(prim.radius2.x, prim.radius2.y) *
-                          px_per_himetric;
-        PixelRect box;
-        box.x = static_cast<int>(std::lround(c.x - rx));
-        box.y = static_cast<int>(std::lround(c.y - ry));
-        box.width = std::max(1, static_cast<int>(std::lround(2.0 * rx)));
-        box.height = std::max(1, static_cast<int>(std::lround(2.0 * ry)));
-        if (ink != nullptr) {  // map() only saw the centre
-          ink->Add(box.x, box.y);
-          ink->Add(box.x + box.width, box.y + box.height);
-        }
-        canvas->DrawEllipse(box, prim.has_fill ? &brush : nullptr,
-                            prim.has_stroke ? &pen : nullptr);
-        break;
-      }
-      case SymbolPrimitiveType::kText: {
-        if (prim.text.empty()) break;
-        const SurfacePoint p = map(prim.center);
-        TextStyle ts;
-        ts.size = prim.text_height * px_per_himetric;
-        ts.color = prim.has_fill ? prim.fill_color : prim.stroke_color;
-        if (ts.size >= 1.0) {
-          canvas->DrawTextString(prim.text, static_cast<int>(std::lround(p.x)),
-                                 static_cast<int>(std::lround(p.y)), ts);
-          if (ink != nullptr) {
-            PixelSize ext;
-            if (canvas->GetTextExtent(prim.text, ts, &ext).ok())
-              ink->Add(p.x + ext.width, p.y - ext.height);
-          }
-        }
-        break;
-      }
-    }
-  }
-}
-
-// Draws a pixmap symbol so that its PIVOT lands on (ax, ay).
-//
-// The tile is authored in pixels, so the identity case — no user zoom, no
-// rotation — is a straight blit at an integer offset and the sheet's own
-// anti-aliased edges reach the canvas untouched. That is the case that must
-// stay exact, and it is also every point symbol on a default chart.
-//
-// Otherwise the tile is resampled NEAREST-NEIGHBOUR into a temporary buffer by
-// inverse-mapping each destination pixel. Nearest, not bilinear: these glyphs
-// are 9-46 px of hard-edged chart symbology, and interpolating them smears the
-// one-pixel strokes a buoy is drawn with. A rotated raster symbol is a
-// degradation either way — the vector twin is what a product should ship — so
-// the cheap sampler is the honest one.
-void DrawPixmapSymbolAt(ICanvas* canvas, const SymbolPixmap& sym, double ax,
-                        double ay, double scale, double rotation_rad,
-                        InkBox* ink) {
-  const int sw = sym.tile.Width(), sh = sym.tile.Height();
-  if (sw <= 0 || sh <= 0) return;
-
-  // The anchor is snapped to a whole pixel FIRST, for both paths. D4 puts a
-  // pixel's centre ON the integer, so a symbol at a half-pixel anchor has no
-  // "correct" sub-pixel placement to preserve without resampling — and
-  // snapping is what makes the two paths agree: at scale 1 with no rotation
-  // the resampler below reproduces the straight blit exactly instead of
-  // shifting the glyph by a pixel as the zoom crosses 1.
-  const double cx = std::round(ax), cy = std::round(ay);
-
-  const bool plain = std::fabs(scale - 1.0) < 1e-6 &&
-                     std::fabs(rotation_rad) < 1e-9;
-  if (plain) {
-    const int x = static_cast<int>(std::lround(cx - sym.pivot_x));
-    const int y = static_cast<int>(std::lround(cy - sym.pivot_y));
-    canvas->DrawPixmap(sym.tile, x, y);
-    if (ink != nullptr) {
-      ink->Add(x, y);
-      ink->Add(x + sw, y + sh);
-    }
-    return;
-  }
-  if (!(scale > 0.0)) return;
-
-  // Corners of the tile relative to the pivot, forward-mapped, to size the
-  // destination. A pixel covers half a unit either side of its centre, so the
-  // painted extent runs from -0.5 to size-0.5. Rotation is clockwise on screen
-  // for a positive angle, the same sense DrawSymbolAt applies (its symbol
-  // space is y up, this one is y down, hence the sign in the y row).
-  const double cs = std::cos(rotation_rad), sn = std::sin(rotation_rad);
-  auto fwd = [&](double sx, double sy, double* dx, double* dy) {
-    const double px = (sx - sym.pivot_x) * scale;
-    const double py = (sy - sym.pivot_y) * scale;
-    *dx = px * cs + py * sn;
-    *dy = -px * sn + py * cs;
-  };
-  double x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
-  const double corners[4][2] = {{-0.5, -0.5},
-                                {sw - 0.5, -0.5},
-                                {-0.5, sh - 0.5},
-                                {sw - 0.5, sh - 0.5}};
-  for (const auto& c : corners) {
-    double dx = 0, dy = 0;
-    fwd(c[0], c[1], &dx, &dy);
-    x0 = std::min(x0, dx); x1 = std::max(x1, dx);
-    y0 = std::min(y0, dy); y1 = std::max(y1, dy);
-  }
-  // One pixel of slack on each side: the destination grid is not aligned to
-  // the rotated source grid, so a boundary sample can fall just outside a
-  // tight box. Slack pixels that sample outside the tile stay transparent and
-  // blit as nothing, which is cheaper than losing an edge row.
-  const int ox = static_cast<int>(std::floor(cx + x0)) - 1;
-  const int oy = static_cast<int>(std::floor(cy + y0)) - 1;
-  const int dw = static_cast<int>(std::ceil(cx + x1)) - ox + 2;
-  const int dh = static_cast<int>(std::ceil(cy + y1)) - oy + 2;
-  if (dw <= 0 || dh <= 0) return;
-  // A symbol scaled past this is a bug in the caller's units, not a symbol.
-  if (dw > 4096 || dh > 4096) return;
-
-  PixelBuffer dst(dw, dh);
-  const double inv = 1.0 / scale;
-  for (int y = 0; y < dh; ++y) {
-    unsigned char* drow = dst.Row(y);
-    const double ry = (oy + y) - cy;  // destination pixel centre, D4
-    for (int x = 0; x < dw; ++x) {
-      const double rx = (ox + x) - cx;
-      // Inverse rotation (the transpose) then inverse scale, back to the
-      // tile's own grid; nearest sample. floor(t + 0.5), NOT lround: they
-      // differ at exactly -0.5, which is where a 2x upscale puts the first
-      // column of the tile, and lround's round-half-away-from-zero drops it.
-      const double px = rx * cs - ry * sn;
-      const double py = rx * sn + ry * cs;
-      const int sx =
-          static_cast<int>(std::floor(px * inv + sym.pivot_x + 0.5));
-      const int sy =
-          static_cast<int>(std::floor(py * inv + sym.pivot_y + 0.5));
-      if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) continue;
-      std::memcpy(drow + x * 4, sym.tile.Row(sy) + sx * 4, 4);
-    }
-  }
-  canvas->DrawPixmap(dst, ox, oy);
-  if (ink != nullptr) {
-    ink->Add(ox, oy);
-    ink->Add(ox + dw, oy + dh);
-  }
-}
-
-// A symbol id resolved to whichever form the engine has for it. Looked up
-// ONCE and then stamped as many times as the placer asks — an area pattern is
-// hundreds of stamps of the same id, and R3b did not make the fill fast so a
-// hash lookup could be added back per stamp.
-struct ResolvedSymbol {
-  const VectorSymbol* vec = nullptr;
-  const SymbolPixmap* pix = nullptr;
-  bool drawable() const { return vec != nullptr || pix != nullptr; }
-};
-
-// Display list first: a product that authors a symbol both ways keeps its
-// vector definition, which scales and rotates without resampling.
-ResolvedSymbol ResolveSymbol(IStyleEngine* style, const std::string& id) {
-  ResolvedSymbol r;
-  const VectorSymbol* sym = style->Symbol(id);
-  if (sym != nullptr && !sym->primitives.empty()) {
-    r.vec = sym;
-    return r;
-  }
-  const SymbolPixmap* pix = style->Pixmap(id);
-  if (pix != nullptr && !pix->tile.Empty()) r.pix = pix;
-  return r;
-}
-
-// Draws a resolved symbol at (ax, ay). Returns true when something reached the
-// canvas, so a caller only records a pick box for ink that exists.
-//
-// `px_per_himetric` sizes a display list; `pixmap_scale` sizes a tile, which is
-// already in pixels. They are the same zoom in each form's own units and are
-// passed SEPARATELY rather than derived from one another: a tile's scale must
-// be exact (2.0, not 2.0 divided and re-multiplied by 25.4), because the
-// nearest sampler decides the tile's first row and column on a boundary that
-// lands exactly on a half-pixel at integer zooms.
-bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
-                        double ay, double px_per_himetric, double pixmap_scale,
-                        double rotation_rad, InkBox* ink) {
-  if (sym.vec != nullptr) {
-    DrawSymbolAt(canvas, *sym.vec, ax, ay, px_per_himetric, rotation_rad, ink);
-    return true;
-  }
-  if (sym.pix == nullptr) return false;
-  DrawPixmapSymbolAt(canvas, *sym.pix, ax, ay, pixmap_scale, rotation_rad, ink);
-  return true;
-}
-
-// The size this label actually draws at, in pixels.
-//
-// Three ways in, one way out. A kMeters label states a ground size and is
-// converted with this frame's metres per pixel. A kPixels label is either left
-// alone (ref_scale 0, the default: constant on screen) or reinterpreted as
-// "that size AT ref_scale" and scaled by how far the current scale is from it —
-// which is the same ground sizing expressed in the unit the products author in.
-// See VectorRenderer::SetLabelReferenceScale.
-double LabelPixelSize(const LabelStyle& lb, double scale_denominator,
-                      double meters_per_pixel, double ref_scale) {
-  double px = lb.style.size;
-  if (lb.size_unit == LabelSizeUnit::kMeters) {
-    if (!(lb.ground_size_m > 0.0) || !(meters_per_pixel > 0.0)) return 0.0;
-    px = lb.ground_size_m / meters_per_pixel;
-  } else if (ref_scale > 0.0 && scale_denominator > 0.0) {
-    px *= ref_scale / scale_denominator;
-  } else {
-    return px;  // untouched, so a pinned golden is untouched
-  }
-  return (std::min)(px, kMaxLabelPx);
-}
-
-// Per-glyph advances, measured through the canvas because the canvas owns the
-// font. Taken as DIFFERENCES OF PREFIX WIDTHS rather than per-character widths:
-// GetTextExtent returns whole pixels, so summing rounded characters would drift
-// by up to half a pixel per glyph, while prefix differences put every glyph
-// within a pixel of where the upright renderer would have put it.
-bool GlyphAdvances(ICanvas* canvas, const std::string& text,
-                   const TextStyle& ts, std::vector<double>* out) {
-  out->clear();
-  out->reserve(text.size());
-  int prev = 0;
-  for (size_t i = 1; i <= text.size(); ++i) {
-    PixelSize ext;
-    if (!canvas->GetTextExtent(text.substr(0, i), ts, &ext).ok()) return false;
-    out->push_back(static_cast<double>(ext.width - prev));
-    prev = ext.width;
-  }
-  return !out->empty() && prev > 0;
-}
-
 using Clock = std::chrono::steady_clock;
 
 double MsSince(Clock::time_point t0) {
@@ -952,6 +640,7 @@ double MsSince(Clock::time_point t0) {
 Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   features_queried_ = 0;
   draws_emitted_ = 0;
+  halo_draws_ = 0;
   query_ms_ = style_ms_ = draw_ms_ = 0.0;
   pick_.Clear();
   if (canvas == nullptr) return Status::Error(kInvalidArg, "null canvas");
@@ -1006,7 +695,15 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   // Ground metres per pixel, for labels sized in ground units. The latitude
   // axis, because it is the one an equal-arc projection keeps uniform.
   const double meters_per_pixel = proj.DegPerPixelLat() * kMetersPerDegreeLat;
-  const double px_per_himetric = symbol_scale_ / kHimetricPerHundredthInch;
+  // The product's own symbol grid, not the renderer's — a display list is
+  // sized so that it comes out the same as the TILE of the same symbol, and
+  // only the engine knows what grid its artists drew on (25.4 for GeoSym's
+  // 1/100 inch, 32 for S-52's 0.32 mm nominal pixel).
+  const double units_per_symbol_px =
+      style_ != nullptr && style_->himetric_per_symbol_pixel() > 0.0
+          ? style_->himetric_per_symbol_pixel()
+          : kHimetricPerHundredthInch;
+  const double px_per_himetric = symbol_scale_ / units_per_symbol_px;
   // The same zoom in the other symbol form's units: a tile is authored in
   // pixels, so the user's symbol scale IS its scale factor.
   const double pixmap_scale = symbol_scale_;
@@ -1166,6 +863,13 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                                  meters_per_pixel, label_ref_scale_);
         // Below the floor the text is illegible, and drawing it anyway is how
         // a zoomed-out chart fills with grey mush.
+        const double halo_px = HaloPixels(sr.label, ts.size);
+        double hdx[kMaxHaloOffsets], hdy[kMaxHaloOffsets];
+        const int halo_n =
+            halo_px > 0.0 ? HaloOffsets(halo_px, hdx, hdy) : 0;
+        TextStyle hs = ts;
+        hs.color = sr.label.halo_color;
+
         if (ts.size >= kMinLabelPx) {
           if (sr.label.placement == LabelPlacement::kAlongPath &&
               it.type != VectorGeometryType::kPoint && proj_part.size() >= 2) {
@@ -1180,6 +884,25 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                        sr.label.max_angle_deg, sr.label.offset_px)) {
                 InkBox ink;
                 bool drew = false;
+                // The WHOLE run's halo goes down before ANY of its fill. Per
+                // glyph would be wrong at a tight bend: glyph N's halo lands on
+                // glyph N-1's face and eats it from the trailing edge. The
+                // offsets stay in SCREEN space rather than turning with the
+                // glyph — a ring is a ring at any angle.
+                if (halo_n > 0) {
+                  for (const PlacedGlyph& g : run.glyphs) {
+                    if (g.x < -ts.size * 2 || g.y < -ts.size * 2 ||
+                        g.x > size.width + ts.size * 2 ||
+                        g.y > size.height + ts.size * 2)
+                      continue;
+                    const std::string gs = sr.label.text.substr(g.index, 1);
+                    for (int i = 0; i < halo_n; ++i)
+                      canvas->DrawRotatedTextString(gs, g.x + hdx[i],
+                                                    g.y + hdy[i], g.angle_rad,
+                                                    hs);
+                    halo_draws_ += static_cast<size_t>(halo_n);
+                  }
+                }
                 for (const PlacedGlyph& g : run.glyphs) {
                   if (g.x < -ts.size * 2 || g.y < -ts.size * 2 ||
                       g.x > size.width + ts.size * 2 ||
@@ -1205,24 +928,56 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
             }
           } else {
             const SurfacePoint& a = proj_part.front();
-            const int lx = static_cast<int>(std::lround(a.x)) + sr.label.dx;
-            const int ly = static_cast<int>(std::lround(a.y)) + sr.label.dy;
+            int lx = static_cast<int>(std::lround(a.x)) + sr.label.dx;
+            int ly = static_cast<int>(std::lround(a.y)) + sr.label.dy;
+
+            // The canvas draws baseline-left, so the default alignment needs no
+            // measurement at all — and measuring costs a pass over the string.
+            // Only a product that actually asks for alignment pays for it.
+            const bool aligned = sr.label.halign != LabelHAlign::kLeft ||
+                                 sr.label.valign != LabelVAlign::kBaseline;
+            PixelSize ext{0, 0};
+            bool have_ext = false;
+            if (aligned || pick_enabled_) {
+              have_ext = canvas->GetTextExtent(sr.label.text, ts, &ext).ok() &&
+                         ext.width > 0 && ext.height > 0;
+            }
+            if (aligned && have_ext) {
+              switch (sr.label.halign) {
+                case LabelHAlign::kLeft: break;
+                case LabelHAlign::kCenter: lx -= ext.width / 2; break;
+                case LabelHAlign::kRight: lx -= ext.width; break;
+              }
+              // The box runs from baseline-height to baseline, so a bottom
+              // alignment is the baseline itself and the others push the
+              // baseline DOWN from the anchor by part of the height.
+              switch (sr.label.valign) {
+                case LabelVAlign::kBaseline:
+                case LabelVAlign::kBottom: break;
+                case LabelVAlign::kCenter: ly += ext.height / 2; break;
+                case LabelVAlign::kTop: ly += ext.height; break;
+              }
+            }
+
             if (lx > -1000 && ly > -1000 && lx < size.width + 1000 &&
                 ly < size.height + 1000) {
+              for (int i = 0; i < halo_n; ++i) {
+                canvas->DrawTextString(
+                    sr.label.text,
+                    lx + static_cast<int>(std::lround(hdx[i])),
+                    ly + static_cast<int>(std::lround(hdy[i])), hs);
+              }
+              halo_draws_ += static_cast<size_t>(halo_n);
               canvas->DrawTextString(sr.label.text, lx, ly, ts);
               ++draws_emitted_;
-              if (pick_enabled_) {
+              if (pick_enabled_ && have_ext) {
                 // Text draws from its BASELINE-left, so the box runs upward.
-                PixelSize ext;
-                if (canvas->GetTextExtent(sr.label.text, ts, &ext).ok() &&
-                    ext.width > 0 && ext.height > 0) {
-                  PixelRect box;
-                  box.x = lx;
-                  box.y = ly - ext.height;
-                  box.width = ext.width;
-                  box.height = ext.height;
-                  pick_.AddBox(it.ref, sr.priority, box);
-                }
+                PixelRect box;
+                box.x = lx;
+                box.y = ly - ext.height;
+                box.width = ext.width;
+                box.height = ext.height;
+                pick_.AddBox(it.ref, sr.priority, box);
               }
             }
           }

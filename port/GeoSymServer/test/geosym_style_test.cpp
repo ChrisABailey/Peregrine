@@ -377,6 +377,191 @@ TEST(GeoSymStyle, DepthAreasShadeFromTheCurveValue) {
   EXPECT_GE(deep.b, deep.g - 16);
 }
 
+// ---------------------------------------------------------------------------
+// Mariner settings (fvkit/vector/mariner.h) — the DNC half
+//
+// Until these landed, the depth ramp above was driven by CECDISValues'
+// default-constructed knobs and a vessel's draft could not be entered at all.
+// The mapping is read off the delivered tables, so each test below names the
+// fullsym.txt rows it is really about.
+// ---------------------------------------------------------------------------
+
+// Every fill in the order the engine emitted them.
+std::vector<fv::FvColor> Fills(const std::vector<fv::StyleResult>& rs) {
+  std::vector<fv::FvColor> out;
+  for (const fv::StyleResult& r : rs)
+    if (r.fill.valid) out.push_back(r.fill.brush.color);
+  return out;
+}
+
+bool SameRgb(const fv::FvColor& a, const fv::FvColor& b) {
+  return a.r == b.r && a.g == b.g && a.b == b.b;
+}
+
+TEST(GeoSymStyle, GeoSymStartsOnCECDISValuesOwnDefaults) {
+  fv::GeoSymStyleEngine e;  // no Open needed: the defaults are constructed
+  const fv::MarinerSettings& m = e.mariner();
+  // NOT the struct's defaults, which are S-52's (30/2/30/30, four shades, no
+  // pattern). These are the numbers every DNC golden was pinned over.
+  EXPECT_DOUBLE_EQ(m.safety_contour, 10.0);   // ssdc
+  EXPECT_DOUBLE_EQ(m.shallow_contour, 2.0);   // mssc
+  EXPECT_DOUBLE_EQ(m.deep_contour, 30.0);     // msdc
+  EXPECT_FALSE(m.two_shades);                 // idsm = 0
+  EXPECT_TRUE(m.shallow_pattern);             // isdm = 1
+}
+
+// The whole point of the feature: raising the safety contour to a deeper
+// vessel draft moves the bands, so water that was "medium deep" becomes
+// "medium shallow" without the chart changing.
+TEST(GeoSymStyle, TheSafetyContourMovesTheDepthBands) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_NE(e, nullptr);
+
+  auto first_fill = [&](const char* cvl) {
+    std::vector<fv::StyleResult> rs;
+    EXPECT_TRUE(e->Style(AreaFeature("BE010", {{"cvl", cvl}}), Ctx(), &rs).ok());
+    const fv::FillStyle* f = FirstFill(rs);
+    return f != nullptr ? f->brush.color : fv::FvColor{0, 0, 0, 0};
+  };
+
+  // Default ssdc = 10: 15 m is medium DEEP (row 2257, symbol 0820) and 5 m is
+  // medium SHALLOW (row 2267, symbol 0821).
+  const fv::FvColor deep_15 = first_fill("15");
+  const fv::FvColor shallow_5 = first_fill("5");
+  ASSERT_GT(deep_15.a, 0);
+  ASSERT_GT(shallow_5.a, 0);
+  ASSERT_FALSE(SameRgb(deep_15, shallow_5)) << "the two bands must differ";
+
+  // A deeper ship: safety contour 20 m. 15 m is now inside it, so the SAME
+  // feature takes the medium-shallow shade the 5 m one had.
+  fv::MarinerSettings m = e->mariner();
+  m.safety_contour = 20.0;
+  e->SetMariner(m);
+  EXPECT_TRUE(SameRgb(first_fill("15"), shallow_5))
+      << "15 m did not cross the safety contour when it moved to 20 m";
+  EXPECT_FALSE(SameRgb(first_fill("15"), deep_15));
+
+  // ...and back. The engine must not have baked the old value anywhere.
+  m.safety_contour = 10.0;
+  e->SetMariner(m);
+  EXPECT_TRUE(SameRgb(first_fill("15"), deep_15));
+}
+
+// idsm: 1 = two depth shades, 0 = four. With two shades everything at or
+// beyond the safety contour is one colour (row 2260, symbol 0805), which is
+// the ECDIS "safe / unsafe" display.
+TEST(GeoSymStyle, TwoShadesCollapsesTheRampAtTheSafetyContour) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_NE(e, nullptr);
+
+  auto first_fill = [&](const char* cvl) {
+    std::vector<fv::StyleResult> rs;
+    EXPECT_TRUE(e->Style(AreaFeature("BE010", {{"cvl", cvl}}), Ctx(), &rs).ok());
+    const fv::FillStyle* f = FirstFill(rs);
+    return f != nullptr ? f->brush.color : fv::FvColor{0, 0, 0, 0};
+  };
+
+  // Four shades: 15 m (medium deep) and 55 m (very deep) are different.
+  ASSERT_FALSE(SameRgb(first_fill("15"), first_fill("55")));
+
+  fv::MarinerSettings m = e->mariner();
+  m.two_shades = true;
+  e->SetMariner(m);
+  const fv::FvColor safe_15 = first_fill("15");
+  const fv::FvColor safe_55 = first_fill("55");
+  ASSERT_GT(safe_15.a, 0);
+  EXPECT_TRUE(SameRgb(safe_15, safe_55))
+      << "two-shade mode still drew two different deep-water colours";
+  // ...and the shallow side is still its own shade.
+  EXPECT_FALSE(SameRgb(first_fill("1"), safe_15));
+}
+
+// isdm: "shallow display mode". ON (the DNC default) adds area symbol 0949 —
+// a second, patterned fill — over the shallow bands; OFF leaves the flat fill
+// alone. Rows 2267/2268 are the pair.
+TEST(GeoSymStyle, ShallowPatternIsASecondFillAndCanBeTurnedOff) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_NE(e, nullptr);
+
+  auto fills = [&](const char* cvl) {
+    std::vector<fv::StyleResult> rs;
+    EXPECT_TRUE(e->Style(AreaFeature("BE010", {{"cvl", cvl}}), Ctx(), &rs).ok());
+    return Fills(rs);
+  };
+
+  const std::vector<fv::FvColor> on = fills("5");
+  ASSERT_GE(on.size(), 2u) << "shallow mode on should add the 0949 pattern";
+
+  fv::MarinerSettings m = e->mariner();
+  m.shallow_pattern = false;
+  e->SetMariner(m);
+  const std::vector<fv::FvColor> off = fills("5");
+  ASSERT_EQ(off.size(), on.size() - 1);
+  // The band's own colour is unchanged — only the overlay went away.
+  EXPECT_TRUE(SameRgb(off[0], on[0]));
+}
+
+// DNC has ONE number where S-52 has two: ssdc is the safety contour AND the
+// sounding threshold. BE020 rows 2318 (hdp <= ssdc, dark) and 2319
+// (hdp > ssdc, light) are the pair, and they are label rows, so this is also
+// the one test here that needs the labels on.
+TEST(GeoSymStyle, TheSafetyContourAlsoDarkensSoundings) {
+  SKIP_WITHOUT_ASSETS();
+  auto e = OpenDnc();
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+
+  // Both BE020 rows also require `hdh = NULL` — a sounding, not a drying
+  // height — and a MISSING attribute makes every ATTEXP comparison false, so
+  // the null has to be stated for either row to fire at all.
+  const std::vector<std::pair<std::string, std::string>> kSounding15m = {
+      {"hdp", "15"}, {"hdh", "NULL"}};
+
+  auto label_color = [&]() {
+    std::vector<fv::StyleResult> rs;
+    EXPECT_TRUE(e->Style(PointFeature("BE020", kSounding15m), Ctx(), &rs).ok());
+    for (const fv::StyleResult& r : rs)
+      if (r.label.valid) return r.label.style.color;
+    return fv::FvColor{0, 0, 0, 0};
+  };
+
+  // Default ssdc = 10, so a 15 m sounding is deeper than the ship needs: light.
+  const fv::FvColor light = label_color();
+  ASSERT_GT(light.a, 0) << "no sounding label drawn at all";
+
+  fv::MarinerSettings m = e->mariner();
+  m.safety_contour = 20.0;
+  e->SetMariner(m);
+  const fv::FvColor dark = label_color();
+  ASSERT_GT(dark.a, 0);
+  EXPECT_FALSE(SameRgb(light, dark))
+      << "the sounding did not change shade when it fell inside the contour";
+  // "Dark" is literally that: the shallower row is the darker ink.
+  EXPECT_LT(dark.r + dark.g + dark.b, light.r + light.g + light.b);
+}
+
+// The retained-scene contract: a real change must bump the style epoch, and a
+// no-op set must NOT — a setter an interactive caller pushes every frame would
+// otherwise throw the scene away once per redraw (the R3a rule).
+TEST(GeoSymStyle, SetMarinerBumpsTheEpochOnlyWhenSomethingMoved) {
+  fv::GeoSymStyleEngine e;
+  const uint64_t before = e.style_epoch();
+  e.SetMariner(e.mariner());  // identical settings
+  EXPECT_EQ(e.style_epoch(), before);
+  // ...and reading is free, which is why the mutable accessor has its own
+  // name: mariner() through a non-const engine must not be a scene rebuild.
+  EXPECT_DOUBLE_EQ(e.mariner().safety_contour, 10.0);
+  EXPECT_EQ(e.style_epoch(), before);
+
+  fv::MarinerSettings m = e.mariner();
+  m.safety_contour += 1.0;
+  e.SetMariner(m);
+  EXPECT_NE(e.style_epoch(), before);
+}
+
 // A hollow/empty fill style means "do not fill" and must not paint.
 TEST(GeoSymStyle, AreaRowWithoutAnAreaSymbolGetsNoFill) {
   SKIP_WITHOUT_ASSETS();

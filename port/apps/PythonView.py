@@ -57,13 +57,18 @@ TESTDATA = os.environ.get("FVW_TESTDATA_DIR", os.path.join(REPO, "TestData"))
 import numpy as np  # noqa: E402
 import pyfvw        # noqa: E402
 import tk_keys      # noqa: E402  (sibling module, see its header)
-from route import RouteOverlay
+import route as route_mod  # noqa: E402  (sibling module)
+from route import RouteOverlay, RouteEditor
 
 # ----------------------------------------------------------------------------
 # App-wide constants
 # ----------------------------------------------------------------------------
 
 DEFAULT_DB = os.path.join(REPO, "build", "pythonview.sqlite")
+# This APPLICATION's own overlay types (the port's own are fv.*). Both are
+# static: at most one instance, toggled rather than opened.
+CROSSHAIR_TYPE_ID = "app.crosshair"
+COVERAGE_TYPE_ID = "app.coverage"
 NATIVE_MM_PER_PIXEL = pyfvw.engine.NATIVE_DISPLAY_MM_PER_PIXEL  # 0.25
 ZOOM_STEP = 2.0 ** 0.5
 FEATURE_STEP = 1.25
@@ -261,7 +266,9 @@ class CoverageOverlay(pyfvw.overlay.Overlay):
     def __init__(self, app):
         super().__init__("coverage")
         self.app = app
-        self.visible = False
+        # Visible from birth: a static overlay that exists IS on (A6 — the
+        # session creates it when the user asks for it and removes it when
+        # they do not), so a hidden one would simply never appear.
         self.enabled_formats = set(COVERAGE_COLORS)
 
     def _draw_box(self, proj, canvas, lat0, lon0, lat1, lon1, color):
@@ -332,11 +339,34 @@ class CoverageOverlay(pyfvw.overlay.Overlay):
 # The application
 # ----------------------------------------------------------------------------
 
-class PythonView:
+class PythonView(pyfvw.app.AppShell):
     """Model + tk shell. The model half (catalog/engine/render_array) works
-    headless for --shot and tests; run() adds the tk UI on top."""
+    headless for --shot and tests; run() adds the tk UI on top.
+
+    A6: PythonView IS the AppShell (pyfvw.app.AppShell) — the seam the core
+    calls back into whenever it needs a user to decide something. Rule R1 says
+    the core never opens a dialog; every `AskSave`, `CFileDialog` and snap-to
+    chooser FalconView called inline is one of the methods in the "the shell"
+    section below, and the flows in `OverlaySession` cannot tell a tk dialog
+    from the scripted `FakeShell` the C++ tests use.
+
+    EVERY SHELL METHOD MUST WORK HEADLESS. The model half runs with no tk at
+    all (--shot, the pytest suite), and a flow that reached a dialog there
+    would hang a test rather than fail one — so each of them answers "cancel"
+    when `self.tk` is None, which is the safe answer for all five.
+    """
 
     def __init__(self, db_path=DEFAULT_DB, settings_path=None):
+        super().__init__()
+        # FIRST, before anything below can call back into this object as a
+        # shell: creating the demo route runs a session flow, which enters an
+        # editor, which calls on_editor_changed -- and a shell method that
+        # asked whether there was a window yet would find no attribute at all.
+        self.tk = None
+        self._tkmod = None
+        self.label = None              # the map widget; None until run()
+        self._hover_hint = ""          # what the pick session last reported
+        self._editor_tools = []        # the active editor's palette, as data
         # Settings first: everything below takes its default from the file when
         # the file has an opinion. See port/peregrine.ini.sample for the keys,
         # and fvkit/settings.h for the search path. Read once, at startup.
@@ -385,6 +415,27 @@ class PythonView:
         self.osm_style_path = cfg.get(
             "osm.style", os.path.join(REPO, "port", "Osm", "styles",
                                       "peregrine-osm.json"))
+        # A6/schema 2: the icon set File > Sample points embeds in the
+        # starter document. Loose <name>.png files — the port ships none, so
+        # like geosym.data_dir this is user-supplied test data — and the
+        # artwork is copied INTO the document, so this path is read once at
+        # write time and never again.
+        self.point_symbol_dir = cfg.get(
+            "points.symbol_dir",
+            os.path.join(self.geosym_dir, "GeoSymbol", "makiPng"))
+        # O4: the routable road graph the route overlay follows on "r". A
+        # build artifact (fvgraph build), not sample data, so there is no
+        # sensible default path — without the key the overlay says so and
+        # keeps its straight legs.
+        self.road_graph_path = cfg.get("routing.graph", "")
+        # O5c: the JSON cost rules the route is priced with, and which profile
+        # in them "r" follows. Empty path = the weights compiled into the
+        # router, which are the O5b numbers exactly — so the key is a tuning
+        # surface, never a dependency, and an app told nothing routes as it
+        # always did. port/Routing/rules/route-weights.json is that default
+        # written out where it can be edited.
+        self.route_rules_path = cfg.get("routing.rules", "")
+        self.route_profile = cfg.get("routing.profile", "")
         self.osm = None               # shared OsmStyleEngine
         self._osm_ref_lat = None      # latitude that engine is currently set to
         # R3a knobs, applied to every vector renderer as it is created.
@@ -404,33 +455,297 @@ class PythonView:
         self.brightness = cfg.get_int("geosym.brightness", 0)
         self.contrast = cfg.get_int("geosym.contrast", 0)
 
+        # The MARINER's depth numbers, shared by DNC and ENC (see
+        # fvkit/vector/mariner.h). There is no dialog for these: the ini is the
+        # UI. A key that is absent leaves the PRODUCT's own default alone,
+        # which is why each getter's fallback is read back off the engine
+        # rather than written here — DNC's defaults are not S-52's.
+        self.mariner_keys = {
+            "safety_contour": cfg.get_float("mariner.safety_contour", -1.0),
+            "shallow_contour": cfg.get_float("mariner.shallow_contour", -1.0),
+            "deep_contour": cfg.get_float("mariner.deep_contour", -1.0),
+            "safety_depth": cfg.get_float("mariner.safety_depth", -1.0),
+        }
+        self.mariner_two_shades = cfg.get("mariner.two_shades", "")
+        self.mariner_shallow_pattern = cfg.get("mariner.shallow_pattern", "")
+        # Data families: one JSON file per product, listing named groups with
+        # an on/off flag. port/families/*.json ship as starters with every
+        # family ON, so pointing at them changes nothing until one is edited.
+        self.family_files = {
+            "dnc": cfg.get("vector.families_dnc", ""),
+            "enc": cfg.get("vector.families_enc", ""),
+            "osm": cfg.get("vector.families_osm", ""),
+        }
+        self.families = {}            # product -> FamilySet, for diagnostics
+
         self.canvas = None
         self._make_canvas()
         self.mgr = pyfvw.overlay.OverlayManager()
-        self.grid = pyfvw.overlay.GridOverlay()
-        self.grid.visible = False
-        self.cross = Crosshair(self)
-        self.coverage = CoverageOverlay(self)
-        self.mgr.add(self.coverage)
-        self.mgr.add(self.grid)
-        self.mgr.add(self.cross)
-        
+
+        # --- the app layer (A6) ---------------------------------------------
+        # THE REGISTRY IS THE APPLICATION'S INVENTORY: what can be opened, what
+        # the menus offer, and how a file spec finds the code that reads it.
+        # Two of its three types come from fvkit itself — the graticule and the
+        # SQLite point overlay — and the third is written in Python, which is
+        # the point: a type is a descriptor, and the language its factory is
+        # written in does not reach the framework.
+        self.editors = None                 # RouteEditor asks for this; see below
+        self.registry = pyfvw.app.OverlayTypeRegistry()
+        pyfvw.app.register_builtin_types(self.registry)
+        self.registry.register(route_mod.route_type_desc(
+            factory=self._make_route, editor_factory=lambda: RouteEditor(self)))
+        # With a registry, `add` inserts by the type's display order instead of
+        # blindly on top, and the top-most band draws last (A2).
+        self.mgr.set_type_registry(self.registry)
+        self.session = pyfvw.app.OverlaySession(self.registry, self.mgr, self,
+                                                self.settings)
+        self.editors = pyfvw.app.EditorManager(self.registry, self.mgr, self)
+        # Mutual, and it has to be wired both ways: the editor manager asks the
+        # session to CREATE the overlay a mode needs, the session tells the
+        # editor manager a document was created.
+        self.editors.set_session(self.session)
+        self.session.set_editor_manager(self.editors)
+        self.pick = pyfvw.app.PickSession(self.mgr, self)
+
+        # The app's own two overlays are STATIC types: at most one of each,
+        # toggled rather than opened, which is what a descriptor with no
+        # `file` means. Registering them buys three things this app used to
+        # hand-roll — the Overlays menu is now the registry, the crosshair
+        # lands in the TOP-MOST band (drawn over everything however the stack
+        # is reordered, which an untyped overlay cannot ask for), and
+        # restore_at_startup puts the crosshair up without a line of code.
+        self.registry.register(pyfvw.app.OverlayTypeDesc(
+            id=CROSSHAIR_TYPE_ID, display_name="Crosshair", icon="crosshair",
+            factory=lambda: Crosshair(self),
+            is_top_most=True, restore_at_startup=True))
+        self.registry.register(pyfvw.app.OverlayTypeDesc(
+            id=COVERAGE_TYPE_ID, display_name="Coverage", icon="coverage",
+            factory=lambda: CoverageOverlay(self),
+            default_display_order=800))
+        self.session.restore_startup_overlays()
+
         # The demo route, and the app's one EDITABLE overlay: click selects a
         # waypoint, "a" arms add-point (the next click inserts after it), "d"
-        # deletes. Kept on self so a test can drive it without the tk shell.
-        self.route = RouteOverlay("KATL departure", [
-            ("KATL",  33.6407, -84.4277),
-            ("VULCN", 33.75,   -84.30),
-            ("ROME",  34.35,   -85.16),
-        ])
-        self.mgr.add(self.route)
+        # deletes. Created through the FLOW rather than by hand, so it is a
+        # document from the first frame: it has a type, the editor auto-enters
+        # on create, and File > Save As has something to write.
+        # Kiawah Island, because that is where the routable graph is: both
+        # ends are exact OSM junctions (they snap 0 m), so "r" and "b" have
+        # something to follow the moment the app opens. West end is Ruddy
+        # Turnstone; east end is where Boardwalk 12 — beach access 12 — meets
+        # Eugenia Avenue (OSM node 2532255833).
+        self.session.new_file_overlay(route_mod.ROUTE_TYPE_ID)
+        self.route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
+        if self.route is not None:
+            # FileNew empties a new document, so the demo waypoints go in
+            # after it — and the route is NOT dirty, or quitting would ask to
+            # save a route the user never touched.
+            self.route.name = "Ruddy Turnstone to the beach"
+            self.route.waypoints = [
+                ("RTURN", 32.6044007, -80.1083007),
+                ("BA12",  32.5957369, -80.1097501),
+            ]
+            self.route.dirty = False
 
         self.mouse_readout = ""
         self.render_error = None
         self._frames, self._ms = 0, 0.0
         self.info_lines = []
         self.last_array = None
-        self.tk = None
+
+    # --- the app layer -----------------------------------------------------
+
+    def _make_route(self):
+        """The route type's factory. It exists to bind the SETTINGS to the
+        overlay — the graph, the rule file and the profile are the
+        application's, not the type's — which is exactly why an
+        OverlayTypeDesc takes a callable and not a class."""
+        return RouteOverlay("Route", [], graph_path=self.road_graph_path,
+                            rules_path=self.route_rules_path,
+                            profile=self.route_profile,
+                            manager=self.mgr)
+
+    @property
+    def cross(self):
+        """The crosshair, or None when it is off — a static overlay is not
+        hidden, it is absent."""
+        return self.mgr.first_of_type(CROSSHAIR_TYPE_ID)
+
+    @property
+    def coverage(self):
+        return self.mgr.first_of_type(COVERAGE_TYPE_ID)
+
+    @property
+    def grid(self):
+        """The graticule, or None when it is off. It is a STATIC type: at most
+        one instance, toggled on and off rather than opened, which is the
+        whole meaning of a descriptor with no `file` (plan §1.2)."""
+        return self.mgr.first_of_type(pyfvw.app.GRID_TYPE_ID)
+
+    def _set_grid(self, on):
+        self._set_static(pyfvw.app.GRID_TYPE_ID, on)
+
+    def _set_static(self, type_id, on):
+        """Toggling a static overlay IS the flow — there is no visibility flag
+        to set, because for a type with at most one instance 'off' and 'not
+        open' are the same state."""
+        if on != (self.mgr.first_of_type(type_id) is not None):
+            self.session.toggle_static(type_id)
+
+    def _overlay_display_name(self, overlay):
+        """What the user calls it: the file name when it has one, else the
+        overlay's own name — the same rule the save prompt uses."""
+        spec = overlay.file_spec
+        return os.path.basename(spec) if spec else overlay.name
+
+    # --- the shell (pyfvw.app.AppShell) ------------------------------------
+    #
+    # Every method below is the core asking this application to ask the user.
+    # None of them decides anything: they carry a question out and an answer
+    # back, and each one has a headless answer for when there is no tk.
+
+    def ask_save(self, name):
+        A = pyfvw.app.AppShell.SaveAnswer
+        if self.tk is None:
+            return A.DISCARD          # headless: never block on a prompt
+        from tkinter import messagebox
+        answer = messagebox.askyesnocancel(
+            "PythonView", f"Save changes to {name}?", parent=self.tk)
+        if answer is None:
+            return A.CANCEL
+        return A.SAVE if answer else A.DISCARD
+
+    def choose_files_to_open(self, file_type):
+        if self.tk is None:
+            return []
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            title="Open Overlay",
+            filetypes=list(file_type.open_filters) + [("All Files", "*")],
+            parent=self.tk)
+        return list(paths)
+
+    def choose_save_spec(self, file_type, suggested):
+        # An empty path is the cancel; there is no second signal, because
+        # "chose nothing" and "cancelled" are the same outcome for the caller.
+        if self.tk is None:
+            return ("", 0)
+        from tkinter import filedialog
+        ext = file_type.default_extension
+        path = filedialog.asksaveasfilename(
+            title="Save Overlay As",
+            initialfile=(suggested or "untitled") +
+                        (f".{ext}" if ext and "." not in suggested else ""),
+            defaultextension=f".{ext}" if ext else "",
+            filetypes=list(file_type.save_filters) + [("All Files", "*")],
+            parent=self.tk)
+        # One format only, so the index is 0. A type with several would map
+        # the chosen filter back to its index here.
+        return (path or "", 0)
+
+    def choose_from_list(self, title, rows):
+        """The ambiguity chooser — FalconView's snptodlg, generalised. This is
+        one of the two seams A5 built and nothing called until now."""
+        if self.tk is None or not rows:
+            return None
+        tk = self._tkmod
+        win = tk.Toplevel(self.tk)
+        win.title(title)
+        win.transient(self.tk)
+        chosen = []
+        lb = tk.Listbox(win, width=52, height=min(10, len(rows)),
+                        exportselection=False)
+        for r in rows:
+            lb.insert("end", r)
+        lb.selection_set(0)
+        lb.pack(padx=8, pady=8, fill="both", expand=True)
+
+        def take():
+            sel = lb.curselection()
+            if sel:
+                chosen.append(int(sel[0]))
+            win.destroy()
+
+        row = tk.Frame(win)
+        row.pack(pady=(0, 8))
+        tk.Button(row, text="OK", command=take).pack(side="left", padx=4)
+        tk.Button(row, text="Cancel", command=win.destroy).pack(side="left")
+        lb.bind("<Double-Button-1>", lambda _e: take())
+        win.grab_set()
+        self.tk.wait_window(win)
+        return chosen[0] if chosen else None
+
+    def confirm_revert(self, file_spec):
+        if self.tk is None:
+            return False
+        from tkinter import messagebox
+        return bool(messagebox.askyesno(
+            "PythonView",
+            f"{os.path.basename(file_spec)} is already open and has unsaved "
+            "changes.\n\nDiscard them and re-read the file?", parent=self.tk))
+
+    def set_cursor(self, cursor):
+        if self.tk is None or self.label is None:
+            return
+        C = pyfvw.app.CursorId
+        self.label.config(cursor={C.CROSSHAIR: "crosshair", C.HAND: "hand2",
+                                  C.MOVE: "fleur", C.NO: "X_cursor",
+                                  C.WAIT: "watch"}.get(cursor, ""))
+
+    def show_hint(self, hint):
+        # The tool tip goes on the status line too: a floating window per
+        # mouse move is exactly what UpdateHover's change-only contract is
+        # there to make possible, and it is still more UI than this app wants.
+        self._hover_hint = hint.status # or hint.tool_tip
+        self._update_status()
+
+    def show_context_menu(self, x, y, menu):
+        if self.tk is None:
+            return
+        popup = self._tk_menu_from(menu)
+        try:
+            popup.tk_popup(self.tk.winfo_rootx() + x, self.tk.winfo_rooty() + y)
+        finally:
+            popup.grab_release()
+
+    def _tk_menu_from(self, node):
+        """A MenuNode tree as a tk menu. The core describes menus as DATA and
+        never as widgets (rule R1), so this is the only place that knows tk
+        has a Menu class."""
+        tk = self._tkmod
+        menu = tk.Menu(self.tk, tearoff=0)
+        for child in node.children:
+            if child.is_separator:
+                menu.add_separator()
+            elif child.children:
+                menu.add_cascade(label=child.label,
+                                 menu=self._tk_menu_from(child))
+            else:
+                menu.add_command(
+                    label=child.label,
+                    state="normal" if child.enabled else "disabled",
+                    command=lambda c=child: (c.invoke(), self.refresh()))
+        return menu
+
+    def request_invalidate(self):
+        # Whole-view, deliberately: MapEngine plus the retained scene make a
+        # full frame cheap (R3c), so region invalidation waits for a profile
+        # that asks for it.
+        if self.tk is not None:
+            self.refresh()
+
+    def on_editor_changed(self, type_id, editor):
+        self._editor_tools = editor.tools() if editor is not None else []
+        if self.tk is not None:
+            self._rebuild_tools_menu()
+            self._update_status()
+
+    def report_error(self, code, message):
+        if self.tk is None:
+            print(f"pythonview: {message} ({code})", file=sys.stderr)
+            return
+        from tkinter import messagebox
+        messagebox.showerror("PythonView", message, parent=self.tk)
 
     # --- model -------------------------------------------------------------
 
@@ -568,7 +883,8 @@ class PythonView:
                 self.center = self.series_bounds_center(series)
             if series.format == "dted-shaded":
                 self.fixed_denom = DTED_DEFAULT_SCALE.get(series.series_key, 250e3)
-            self.cross.click = None
+            if self.cross is not None:
+                self.cross.click = None
             self.info_lines = []
         except Exception:
             self.series = prev
@@ -583,6 +899,48 @@ class PythonView:
         screen_w = self.W * NATIVE_MM_PER_PIXEL / 1000.0
         screen_h = self.H * NATIVE_MM_PER_PIXEL / 1000.0
         return max(ground_w / screen_w, ground_h / screen_h) * 1.1
+
+    def _apply_mariner(self, style):
+        """Push the [mariner] settings keys onto a freshly opened chart engine.
+
+        Per-key, not wholesale: DNC and ENC ship DIFFERENT defaults (GeoSym's
+        safety contour is 10 m with the shallow pattern on, S-52's is 30 m with
+        it off), so a key nobody set must leave the product's own number alone
+        rather than take the other product's.
+        """
+        m = style.mariner()
+        for name, value in self.mariner_keys.items():
+            if value >= 0.0:
+                setattr(m, name, value)
+        for name, text in (("two_shades", self.mariner_two_shades),
+                           ("shallow_pattern", self.mariner_shallow_pattern)):
+            if text:
+                setattr(m, name, text.strip().lower() in
+                        ("1", "on", "yes", "true"))
+
+    def _apply_families(self, product, style):
+        """Load this product's data-family file and hide what it says to hide.
+
+        Families load FIRST and the engine's own rules() stay open afterwards,
+        so a rule file or a menu can still put one thing back. A missing path
+        is the normal case (no key set) and a broken file is reported and
+        skipped — a chart with everything on beats no chart.
+        """
+        path = self.family_files.get(product, "")
+        if not path:
+            return
+        fams = pyfvw.vector.FamilySet()
+        try:
+            fams.load_file(path)
+            fams.append_rules(style.rules())
+        except pyfvw.FvError as e:
+            print(f"families[{product}]: {e.message}", file=sys.stderr)
+            return
+        self.families[product] = fams
+        if fams.disabled_count:
+            off = [f.name for f in fams.families if not f.enabled]
+            print(f"families[{product}]: {len(fams)} families, "
+                  f"off: {', '.join(off)}", file=sys.stderr)
 
     def _open_vector(self, series):
         """Open (or reuse) the source + style engine behind a vector series.
@@ -617,6 +975,7 @@ class PythonView:
                 self.osm.load_file(self.osm_style_path)
                 self.osm.set_display_mm_per_pixel(self.mm_per_pixel)
                 self._osm_ref_lat = None
+                self._apply_families("osm", self.osm)
             style = self.osm
         elif series.format == "enc":
             # One ENC row = one cell file, and an ENC series IS a usage band —
@@ -637,6 +996,8 @@ class PythonView:
                 self.s52 = pyfvw.vector.S52StyleEngine()
                 self.s52.open(self.enc_dir)
                 self.s52.set_show_meta_objects(self.show_meta)
+                self._apply_mariner(self.s52)
+                self._apply_families("enc", self.s52)
             style = self.s52
         else:
             db_root = rows[0].path.split("|")[0]
@@ -646,6 +1007,8 @@ class PythonView:
             if self.style is None:
                 self.style = pyfvw.vector.GeoSymStyleEngine()
                 self.style.open(self.geosym_dir, pyfvw.vector.GEOSYM_DNC)
+                self._apply_mariner(self.style)
+                self._apply_families("dnc", self.style)
             style = self.style
         renderer = pyfvw.vector.VectorRenderer(source, style)
         # R3a: retain a scene larger than the window, so a drag-pan re-projects
@@ -924,9 +1287,14 @@ class PythonView:
         self.label.bind("<Motion>", self._on_motion)
         self.label.bind("<Leave>", lambda e: self._set_readout(""))
         self.label.bind("<MouseWheel>", self._on_wheel)
+        self.label.bind("<Button-3>", self._on_right_click)
+        self.label.bind("<Control-Button-1>", self._on_right_click)
         self._drag = None
         self._drag_moved = False
         self._last_drag_render = 0.0
+        # True between a press an overlay TOOK and its release: the map does
+        # not pan, and every move goes to the overlay instead. See _on_press.
+        self._overlay_gesture = False
 
         if first_run_scan_prompt:
             self.tk.after(200, self._first_run_prompt)
@@ -942,6 +1310,29 @@ class PythonView:
         self.menubar = tk.Menu(self.tk)
 
         m_file = tk.Menu(self.menubar, tearoff=0)
+        # THE FILE MENU IS BUILT FROM THE REGISTRY (A6). Every file type gets a
+        # New item without this code knowing what a route or a point set is;
+        # the Open item offers the union of every type's filters and dispatches
+        # the chosen path by extension.
+        m_new = tk.Menu(m_file, tearoff=0)
+        for desc in self.registry.all():
+            if desc.is_file and desc.display_name:
+                m_new.add_command(
+                    label=desc.display_name,
+                    command=lambda d=desc: self._ui_flow(
+                        lambda: self.session.new_file_overlay(d.id)))
+        m_file.add_cascade(label="New Overlay", menu=m_new)
+        m_file.add_command(
+            label="Open Overlay...", accelerator="Ctrl-O",
+            command=lambda: self._ui_flow(
+                lambda: self.session.open_file_overlays("")))
+        m_file.add_command(label="Open Sample Points (demo document)",
+                           command=self._ui_sample_points)
+        m_file.add_command(label="Save Overlay", accelerator="Ctrl-S",
+                           command=self._ui_save)
+        m_file.add_command(label="Save Overlay As...", command=self._ui_save_as)
+        m_file.add_command(label="Close Overlay", command=self._ui_close)
+        m_file.add_separator()
         m_file.add_command(label="Open Catalog...", command=self._ui_open_catalog)
         m_file.add_command(label="New Catalog from Scan...",
                            command=self._ui_new_catalog)
@@ -952,8 +1343,10 @@ class PythonView:
         m_file.add_separator()
         m_file.add_command(label="Save Screenshot...", command=self._ui_screenshot)
         m_file.add_separator()
-        m_file.add_command(label="Quit", accelerator="q",
-                           command=self.tk.destroy)
+        # Quitting goes through the session, so a dirty document is offered a
+        # save and a cancel really does abort the exit — the File-Overlay
+        # behaviour the app did not have before A6.
+        m_file.add_command(label="Quit", accelerator="q", command=self._ui_quit)
         self.menubar.add_cascade(label="File", menu=m_file)
 
         self.m_map = tk.Menu(self.menubar, tearoff=0)
@@ -983,9 +1376,9 @@ class PythonView:
         self.menubar.add_cascade(label="View", menu=m_view)
 
         m_ovl = tk.Menu(self.menubar, tearoff=0)
-        self.var_grid = tk.BooleanVar(value=self.grid.visible)
-        self.var_cross = tk.BooleanVar(value=True)
-        self.var_cov = tk.BooleanVar(value=self.coverage.visible)
+        self.var_grid = tk.BooleanVar(value=self.grid is not None)
+        self.var_cross = tk.BooleanVar(value=self.cross is not None)
+        self.var_cov = tk.BooleanVar(value=self.coverage is not None)
         m_ovl.add_checkbutton(label="Lat/Lon Grid", accelerator="g",
                               variable=self.var_grid, command=self._ui_apply_overlays)
         m_ovl.add_checkbutton(label="Crosshair", variable=self.var_cross,
@@ -1023,11 +1416,9 @@ class PythonView:
                               command=self._ui_apply_overlays)
         self.menubar.add_cascade(label="Overlays", menu=m_ovl)
 
-        m_tools = tk.Menu(self.menubar, tearoff=0)
-        m_tools.add_command(label="Options...", command=self._ui_options)
-        m_tools.add_command(label="Build Tile Pack (fvpack)...",
-                            command=self._ui_fvpack_help)
-        self.menubar.add_cascade(label="Tools", menu=m_tools)
+        self.m_tools = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Tools", menu=self.m_tools)
+        self._rebuild_tools_menu()
 
         m_help = tk.Menu(self.menubar, tearoff=0)
         m_help.add_command(label="Keyboard Shortcuts", command=self._ui_shortcuts)
@@ -1036,6 +1427,38 @@ class PythonView:
 
         self.tk.config(menu=self.menubar)
         self._rebuild_map_menu()
+
+    def _rebuild_tools_menu(self):
+        """The Tools menu, with the EDITOR half built from the registry: one
+        toggle per type that has an editor (~ FalconView's drawing-tools
+        menu), and the active editor's own palette under it. Rebuilt whenever
+        the mode changes, because `tools()` reports live state — whether add
+        is armed, whether there is anything to undo."""
+        tk = self._tkmod
+        m = self.m_tools
+        m.delete(0, "end")
+        mode = self.editors.current_mode
+        for desc in self.registry.with_editors():
+            if not desc.display_name:
+                continue
+            m.add_checkbutton(
+                label=f"Edit {desc.display_name}",
+                variable=tk.BooleanVar(value=(desc.id == mode)),
+                command=lambda d=desc: self._ui_flow(
+                    lambda: self.editors.toggle_editor(d.id)))
+        for tool in self._editor_tools:
+            if tool.is_separator:
+                m.add_separator()
+            else:
+                m.add_command(label=f"    {tool.label}",
+                              state="normal" if tool.enabled else "disabled",
+                              command=lambda t=tool: (t.invoke(),
+                                                      self._rebuild_tools_menu(),
+                                                      self.refresh()))
+        m.add_separator()
+        m.add_command(label="Options...", command=self._ui_options)
+        m.add_command(label="Build Tile Pack (fvpack)...",
+                      command=self._ui_fvpack_help)
 
     def _series_menu_key(self, s):
         return f"{s.format}/{s.series_key}"
@@ -1102,10 +1525,23 @@ class PythonView:
             k.DOWN: lambda: self._ui_pan(0, 1),
             k.PAGE_UP: lambda: self._ui_step_scale(-1),
             k.PAGE_DOWN: lambda: self._ui_step_scale(+1),
-            k.ESCAPE: self.tk.destroy,
+            k.ESCAPE: self._ui_quit,
         }
         if ev.key in by_vk:
             return by_vk[ev.key]
+        # The document accelerators. Held before the plain characters so that
+        # ctrl-S is Save and not whatever "s" would otherwise mean.
+        if ev.ctrl:
+            by_ctrl = {
+                ord("O"): lambda: self._ui_flow(
+                    lambda: self.session.open_file_overlays("")),
+                ord("S"): self._ui_save,
+                ord("N"): lambda: self._ui_flow(
+                    lambda: self.session.new_file_overlay(route_mod.ROUTE_TYPE_ID)),
+                ord("W"): self._ui_close,
+            }
+            if ev.key in by_ctrl:
+                return by_ctrl[ev.key]
         by_char = {
             "-": lambda: self._ui_zoom(ZOOM_STEP),
             "=": lambda: self._ui_zoom(1.0 / ZOOM_STEP),
@@ -1116,7 +1552,7 @@ class PythonView:
             "g": lambda: self._ui_toggle(self.var_grid),
             "c": lambda: self._ui_toggle(self.var_cov),
             "l": lambda: self._ui_toggle(self.var_labels),
-            "q": self.tk.destroy,
+            "q": self._ui_quit,
         }
         ch = chr(ev.text) if ev.text else ""
         return by_char.get(ch)
@@ -1154,11 +1590,49 @@ class PythonView:
         self.set_surface_size(w, h)
         self.refresh()
 
+    @staticmethod
+    def _mouse(e, button=0):
+        """A tk event as the SPI's MouseEvent. The modifier bits are tk's
+        `state` mask (bit 0 shift, bit 2 control on every platform tk
+        supports), and they are carried because an overlay gesture is entitled
+        to mean something different with a modifier held — the shell has no
+        business deciding that for it."""
+        state = getattr(e, "state", 0)
+        if not isinstance(state, int):      # tk hands a string for some events
+            state = 0
+        return pyfvw.overlay.MouseEvent(e.x, e.y, button,
+                                        bool(state & 0x0001),
+                                        bool(state & 0x0004))
+
     def _on_press(self, e):
-        self._drag = (e.x, e.y, self.center.lat, self.center.lon)
+        """The press is offered to the overlays FIRST, and a press that is
+        taken starts an OVERLAY gesture rather than a map pan.
+
+        This is the shell's half of the drag contract. Before it, a click was
+        synthesized at RELEASE time and only for a press that had not moved,
+        so no overlay could express press-drag-release and mouse capture had
+        nothing to capture. An overlay that declines still gets the map pan it
+        used to get, because declining is what "this click is not mine" means.
+        """
+        self._drag = None
         self._drag_moved = False
+        self._overlay_gesture = False
+        if self.mgr.route_mouse_down(self._mouse(e)):
+            self._overlay_gesture = True
+            self.refresh()
+            return
+        self._drag = (e.x, e.y, self.center.lat, self.center.lon)
 
     def _on_drag(self, e):
+        if self._overlay_gesture:
+            # Capture (phase 0 of the manager's route) sends this to the
+            # overlay that took the press and to nobody else.
+            if self.mgr.route_mouse_move(self._mouse(e)):
+                now = time.time()
+                if now - self._last_drag_render > 0.05:
+                    self._last_drag_render = now
+                    self.refresh()
+            return
         if self._drag is None:
             return
         x0, y0, lat0, lon0 = self._drag
@@ -1181,6 +1655,13 @@ class PythonView:
             self.refresh()
 
     def _on_release(self, e):
+        if self._overlay_gesture:
+            # The overlay owns the whole gesture, including its end — this is
+            # where a drag commits and where capture is released.
+            self._overlay_gesture = False
+            self.mgr.route_mouse_up(self._mouse(e))
+            self.refresh()
+            return
         drag, moved = self._drag, self._drag_moved
         self._drag = None
         if drag is None:
@@ -1188,10 +1669,20 @@ class PythonView:
         if moved:
             self.refresh()
             return
-        # A plain click.
-        if self.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(e.x, e.y)):
-            self.refresh()
-            return
+        # A plain click nobody took at press time. The overlays have already
+        # had their refusal, so this is picking only — where before it routed
+        # the press here, at release, which is what made a drag impossible.
+        proj = self.proj
+        if proj is not None:
+            hit = self.pick.resolve_click(proj, e.x, e.y)
+            if hit is not None:
+                # A point overlay's hit carries the row id, so selecting is
+                # the overlay's own business and this shell stays generic.
+                if isinstance(hit.overlay, pyfvw.overlay.PointOverlay):
+                    hit.overlay.selected = hit.feature
+                self._hover_hint = hit.hint.status or hit.hint.tool_tip
+                self.refresh()
+                return
         if self.mode == "vector":
             self.info_lines = self.identify(e.x, e.y)
             self._show_info(True)
@@ -1200,7 +1691,10 @@ class PythonView:
             self._recenter_at(e.x, e.y)
 
     def _on_shift_click(self, e):
+        # A more specific tk binding than <ButtonPress-1>, so _on_press never
+        # ran and no gesture was started -- but the release still fires.
         self._drag = None
+        self._overlay_gesture = False
         self._recenter_at(e.x, e.y)
         return "break"
 
@@ -1212,7 +1706,8 @@ class PythonView:
             self.center = proj.surface_to_geo(x, y)
         except pyfvw.FvError:
             return
-        self.cross.click = None
+        if self.cross is not None:
+            self.cross.click = None
         self.refresh()
 
     def _on_wheel(self, e):
@@ -1221,8 +1716,17 @@ class PythonView:
         step = 2.0 ** (1.0 / 8.0)
         self._ui_zoom(1.0 / step if e.delta > 0 else step)
 
+    def _on_right_click(self, e):
+        """The aggregated context menu: every overlay under the point appends
+        its own section, top-down. False means nobody contributed, and an
+        empty menu flashing open is worse than no menu — so nothing happens."""
+        proj = self.proj
+        if proj is not None:
+            self.pick.show_context_menu(proj, e.x, e.y)
+        return "break"
+
     def _on_motion(self, e):
-        if self.mgr.route_mouse_move(pyfvw.overlay.MouseEvent(e.x, e.y)):
+        if self.mgr.route_mouse_move(self._mouse(e)):
             self.refresh()
             return
         if self._drag is not None:
@@ -1230,6 +1734,9 @@ class PythonView:
         proj = self.proj
         if proj is None:
             return
+        # What a click here would do. Notified only on a CHANGE, so this costs
+        # a hit test per move and nothing else.
+        self.pick.update_hover(proj, e.x, e.y)
         try:
             p = proj.surface_to_geo(e.x, e.y)
         except pyfvw.FvError:
@@ -1282,16 +1789,113 @@ class PythonView:
         self.pan_pixels(dx * PAN_PX, dy * PAN_PX)
         self.refresh()
 
+    # --- the flows ---------------------------------------------------------
+
+    def _ui_flow(self, run):
+        """Run one session/editor flow and put the outcome on screen.
+
+        The three FlowResults are NOT interchangeable and this is where that
+        pays: DONE redraws, CANCELED is the user's own answer and says nothing
+        (they know — they just cancelled), and FAILED has already been
+        reported through report_error, so all that is left is to keep the
+        stack view honest."""
+        result = run()
+        F = pyfvw.app.FlowResult
+        if result == F.DONE:
+            self.route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
+            self._sync_overlay_menus()
+            self.refresh()
+        for note in self.session.warnings:
+            print(f"pythonview: {note}", file=sys.stderr)
+        self.session.clear_warnings()
+        self._update_status()
+        return result
+
+    def _sync_overlay_menus(self):
+        """Keep the menus agreeing with the stack after a flow changed it."""
+        if self.tk is None:
+            return
+        if hasattr(self, "var_grid"):
+            self.var_grid.set(self.grid is not None)
+            self.var_cross.set(self.cross is not None)
+            self.var_cov.set(self.coverage is not None)
+        self._rebuild_tools_menu()
+
+    def _current_document(self):
+        """The overlay File > Save/Close act on: the CURRENT one when it is a
+        document, else the topmost document there is. FalconView's own rule,
+        and it is why `current` exists at all."""
+        cur = self.mgr.current
+        if cur is not None and cur.is_file_overlay:
+            return cur
+        for o in reversed(self.mgr.overlays):
+            if o.is_file_overlay:
+                return o
+        return None
+
+    def _ui_sample_points(self):
+        """Write the C++ point overlay's arbitrary starter document if it is
+        not there yet, then OPEN it through the normal flow — the same path a
+        file the user chose would take, dedup and all. It is a demo of the
+        first C++ file overlay, and the fastest way to have something to pick.
+        """
+        spec = os.path.join(os.path.dirname(self.db_path) or ".",
+                            "sample.fvpoints")
+        # The icons ride INTO the file, so a directory that is not there costs
+        # the points their artwork and nothing else — they draw as shapes,
+        # which is the document this wrote before schema 2.
+        icons = self.point_symbol_dir \
+            if os.path.isdir(self.point_symbol_dir) else ""
+        try:
+            if not os.path.exists(spec):
+                pyfvw.overlay.PointOverlay.write_sample_file(spec, icons)
+        except pyfvw.FvError as e:
+            self.report_error(e.code, str(e.message))
+            return
+        if self._ui_flow(lambda: self.session.open_file("", spec)) != \
+                pyfvw.app.FlowResult.DONE:
+            return
+        points = self.mgr.first_of_type(pyfvw.app.POINTS_TYPE_ID)
+        if points is not None and points.points:
+            lats = [p.position.lat for p in points.points]
+            lons = [p.position.lon for p in points.points]
+            self.center = pyfvw.geo.GeoPoint((min(lats) + max(lats)) / 2.0,
+                                             (min(lons) + max(lons)) / 2.0)
+            self.refresh()
+
+    def _ui_save(self):
+        doc = self._current_document()
+        if doc is not None:
+            self._ui_flow(lambda: self.session.save(doc))
+
+    def _ui_save_as(self):
+        doc = self._current_document()
+        if doc is not None:
+            self._ui_flow(lambda: self.session.save_as(doc))
+
+    def _ui_close(self):
+        doc = self._current_document()
+        if doc is not None:
+            self._ui_flow(lambda: self.session.close(doc))
+
+    def _ui_quit(self):
+        # Exit() prompts for every dirty document and a cancel anywhere aborts
+        # the whole thing — including the destroy below, which is the point.
+        if self.session.exit() == pyfvw.app.FlowResult.CANCELED:
+            return
+        self.tk.destroy()
+
     def _ui_toggle(self, var):
         var.set(not var.get())
         self._ui_apply_overlays()
 
     def _ui_apply_overlays(self):
-        self.grid.visible = self.var_grid.get()
-        self.cross.visible = self.var_cross.get()
-        self.coverage.visible = self.var_cov.get()
-        self.coverage.enabled_formats = {
-            fmt for fmt, v in self.var_cov_fmt.items() if v.get()}
+        self._set_grid(self.var_grid.get())
+        self._set_static(CROSSHAIR_TYPE_ID, self.var_cross.get())
+        self._set_static(COVERAGE_TYPE_ID, self.var_cov.get())
+        if self.coverage is not None:
+            self.coverage.enabled_formats = {
+                fmt for fmt, v in self.var_cov_fmt.items() if v.get()}
         self.labels = self.var_labels.get()
         if hasattr(self, "var_label_ground"):
             self.label_ref_scale = self.vscale if self.var_label_ground.get() \
@@ -1462,6 +2066,11 @@ class PythonView:
 
     # --- options / help ----------------------------------------------------
 
+    # The profile menu's entry for "no profile named": the router's own
+    # default, which is the built-in weights when no rule file is set and the
+    # file's `default` profile when one is.
+    _NO_PROFILE = "(default)"
+
     def _ui_options(self):
         tk = self._tkmod
         from tkinter import filedialog
@@ -1493,6 +2102,70 @@ class PythonView:
                 initialdir=os.path.dirname(v_os.get()),
                 filetypes=[("MapLibre style", "*.json")]) or v_os.get())).grid(
             row=row, column=2)
+        row += 1
+
+        # --- routing cost rules (O5c) ---------------------------------------
+        # The path and the profile are one setting in two halves: a rule file
+        # nobody names a profile from changes nothing, and a profile name is
+        # meaningless without the file that defines it. So they sit together,
+        # and the menu is rebuilt from whatever path is in the box.
+        tk.Label(win, text="Routing cost rules (JSON):").grid(
+            row=row, column=0, sticky="w", padx=8, pady=4)
+        v_rr = tk.StringVar(value=self.route_rules_path)
+        tk.Entry(win, textvariable=v_rr, width=36).grid(row=row, column=1)
+
+        def pick_rules():
+            start = os.path.dirname(v_rr.get()) or os.path.join(
+                REPO, "port", "Routing", "rules")
+            p = filedialog.askopenfilename(
+                initialdir=start, title="Routing cost rules",
+                filetypes=[("Routing rules", "*.json"), ("All files", "*")])
+            if p:
+                v_rr.set(p)
+                refresh_profiles()
+
+        tk.Button(win, text="...", command=pick_rules).grid(row=row, column=2)
+        row += 1
+
+        tk.Label(win, text="Route profile:").grid(
+            row=row, column=0, sticky="w", padx=8, pady=4)
+        v_rp = tk.StringVar(value=self.route_profile or self._NO_PROFILE)
+        profile_menu = tk.OptionMenu(win, v_rp, self._NO_PROFILE)
+        profile_menu.config(width=18)
+        profile_menu.grid(row=row, column=1, sticky="w", padx=8)
+        v_err = tk.StringVar(value="")
+
+        def refresh_profiles():
+            """Re-read the rule file and rebuild the menu from it. This is the
+            'recognise my edit' button: routing itself rereads the file on
+            every route (the core polls its mtime), so the only thing that can
+            go stale is this menu and the error line under it — a profile
+            added while the app is running appears here, and a syntax error
+            says so while the last good weights keep routing."""
+            path = v_rr.get()
+            try:
+                names = list(pyfvw.routing.rule_profiles(path))
+                v_err.set(pyfvw.routing.rules_error(path))
+            except pyfvw.FvError as exc:
+                names = []
+                v_err.set(exc.message)
+            menu = profile_menu["menu"]
+            menu.delete(0, "end")
+            for name in [self._NO_PROFILE] + names:
+                menu.add_command(label=name,
+                                 command=lambda n=name: v_rp.set(n))
+            # A profile that no longer exists must not stay selected and
+            # silently fail at the next "r".
+            if v_rp.get() != self._NO_PROFILE and v_rp.get() not in names:
+                v_rp.set(self._NO_PROFILE)
+
+        tk.Button(win, text="Reload Rules", command=refresh_profiles).grid(
+            row=row, column=2, padx=4)
+        row += 1
+        tk.Label(win, textvariable=v_err, fg="#b00000", wraplength=380,
+                 justify="left").grid(row=row, column=1, columnspan=2,
+                                      sticky="w", padx=8)
+        refresh_profiles()
         row += 1
 
         tk.Label(win, text="Vector brightness / contrast:").grid(
@@ -1534,6 +2207,19 @@ class PythonView:
                         messagebox.showerror("PythonView",
                                              f"{reopen} reopen failed:\n{exc}")
             self.brightness, self.contrast = v_b.get(), v_c.get()
+
+            # Routing rules: strings the overlay reads at route time, so there
+            # is nothing to reopen — but a route already ON SCREEN was priced
+            # with the old ones, and leaving it there would be the dialog
+            # quietly lying about what it just changed. Re-run it instead.
+            profile = "" if v_rp.get() == self._NO_PROFILE else v_rp.get()
+            rerun = (v_rr.get() != self.route_rules_path or
+                     profile != self.route_profile)
+            self.route_rules_path = self.route.rules_path = v_rr.get()
+            self.route_profile = self.route.profile = profile
+            if rerun and self.route.road_legs is not None:
+                self.route.follow_roads()
+
             win.destroy()
             self.refresh()
 
@@ -1566,15 +2252,30 @@ class PythonView:
             "g                 lat/lon grid\n"
             "c                 coverage overlay\n"
             "l                 feature labels (vector)\n"
-            "click             identify (vector) / re-center (raster)\n"
+            "click             pick / identify (vector) / re-center (raster)\n"
+            "right-click       what is under the cursor (every overlay)\n"
             "shift+click       re-center\n"
-            "q / Esc           quit\n"
+            "q / Esc           quit (offers to save a changed overlay)\n"
             "\n"
-            "Route overlay (the demo route):\n"
+            "Overlay documents:\n"
+            "ctrl-N            new route\n"
+            "ctrl-O            open an overlay file\n"
+            "ctrl-S            save the current overlay\n"
+            "ctrl-W            close the current overlay\n"
+            "\n"
+            "Route overlay (only while its editor is active - Tools menu):\n"
             "click             select a waypoint\n"
+            "drag              move a waypoint (Esc mid-drag cancels)\n"
             "a                 arm add-point; next click inserts after it\n"
             "d / Delete        delete the selected waypoint\n"
-            "Esc               cancel add mode / deselect"))
+            "g                 leg geometry: great circle / rhumb / straight\n"
+            "u / ctrl-Z        undo the last waypoint edit\n"
+            "r                 follow the roads (needs [routing] graph)\n"
+            "b                 follow the roads by bicycle\n"
+            "                  (r uses the profile set in Options; both\n"
+            "                   reread the rule file, so an edited weight\n"
+            "                   applies to the very next route)\n"
+            "Esc               cancel add mode / straight legs / deselect"))
 
     def _ui_about(self):
         from tkinter import messagebox
@@ -1646,6 +2347,18 @@ class PythonView:
                    f"{self._frames}files/{self._ms:.0f}ms  {self.mouse_readout}")
         if self.render_error:
             txt += f"   [render error: {self.render_error}]"
+        # The mode and the hover are what the APP LAYER has to say about the
+        # frame, and they belong at the end where the eye is not hunting for
+        # coordinates.
+        mode = self.editors.current_mode if self.editors else ""
+        if mode:
+            desc = self.registry.find(mode)
+            txt += f"   [editing {desc.display_name if desc else mode}]"
+        doc = self._current_document()
+        if doc is not None and doc.dirty:
+            txt += f"   [{self._overlay_display_name(doc)} *]"
+        if self._hover_hint:
+            txt += f"   {self._hover_hint}"
         self.status.configure(text=txt)
         if self._info_visible:
             self.info.configure(state="normal")

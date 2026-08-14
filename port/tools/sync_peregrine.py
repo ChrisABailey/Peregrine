@@ -58,8 +58,9 @@ RUNTIME_DATA = [
     "fvw_core/PdfLib/sdk/lib/7_param.dat",
     "fvw_core/PdfLib/sdk/lib/ellips.dat",
     "fvw_core/PdfLib/sdk/lib/egm96.grd",
-    "port/Osm/styles/peregrine-osm.json",
 ]
+# `port/` needs no entries here: port_extras() ships everything git tracks
+# under port/, run-time data included.
 
 
 def canonical(repo, rel):
@@ -109,17 +110,22 @@ def build_closure(repo, build_dir):
 
 
 def port_extras(repo):
-    """port/ files the build never names but the repo still ships."""
-    out = []
-    for root, dirs, files in os.walk(os.path.join(repo, "port")):
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git")]
-        for fn in files:
-            if fn == ".DS_Store" or fn.endswith(".pyc"):
-                continue
-            if (fn.endswith((".md", ".py", ".sh", ".h", ".cpp", ".c", ".hpp"))
-                    or fn in ("CMakeLists.txt", "LICENSE", "COPYING.LESSER")):
-                out.append(os.path.relpath(os.path.join(root, fn), repo))
-    return out
+    """port/ files the build never names but the repo still ships.
+
+    The rule is GIT-TRACKED, not an extension whitelist. A whitelist of source
+    suffixes was what shipped 2026-08-14: it carried every .cpp and .md and
+    silently left behind the DATA the port keeps in its own tree — the three
+    `port/families/*.json`, `port/Routing/rules/route-weights.json`, and
+    `peregrine.ini.sample` — so the published clone built and then failed 21
+    tests that pass here. Tracked-ness is also what keeps local experiments
+    out: a scratch style .json or a hand-made .fvrte sitting untracked under
+    port/ is not something the repo ships, and an extension rule cannot tell
+    the difference.
+    """
+    out = subprocess.run(["git", "-C", repo, "ls-files", "-z", "port/"],
+                         capture_output=True, text=True, check=True)
+    return [p for p in out.stdout.split("\0")
+            if p and not p.endswith((".pyc", ".DS_Store"))]
 
 
 def main():

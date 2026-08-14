@@ -296,6 +296,25 @@ cells — including the mariner settings that change *what* is drawn
 `rules()` (a small text rule language for show/hide/priority) and
 `viewing_groups()` for decluttering.
 
+The mariner settings are **shared by both chart products**: on DNC they are
+GeoSym's `ssdc`/`msdc`/`mssc`/`idsm`/`isdm` under their S-52 names, so
+`GeoSymStyleEngine.mariner()` moves the depth ramp the same way. Their defaults
+differ on purpose (DNC 10 m with the shallow pattern on, ENC 30 m without), and
+DNC ignores `safety_depth` — its `ssdc` is both the contour and the sounding
+threshold. Use `set_mariner()` in a loop: reading through `mariner()` hands back
+a live reference and bumps the style epoch, which rebuilds a retained scene.
+
+Groups of features switch off together through `vector.FamilySet` — a JSON file
+of named families, each a list of rule selectors, with an `enabled` flag.
+Starters for all three products ship in `port/families/`:
+
+```python
+fams = pyfvw.vector.FamilySet()
+fams.load_file("port/families/dnc-families.json")
+fams.set_enabled("bottom", False)      # hide the bottom characteristics
+fams.append_rules(style.rules())       # families first, your own rules after
+```
+
 OSM vector tiles are the third product, and the same three classes again — with
 one extra step, because a tile pyramid is the one product where the SCALE picks
 which data is read:
@@ -327,7 +346,163 @@ for the **last** `render()`.
 
 ---
 
-## 5. Where to find more
+## 5. Overlays as documents: `pyfvw.app`
+
+Section 4's overlay draws. `pyfvw.app` is what turns a drawing into an
+**application**: overlay types the user can create and open, documents that
+know whether they are unsaved, an editor mode, and one pick that the hover, the
+click and the right-click menu all share. It is the Python face of the C++
+`fv::app` layer, so a shell written here and a shell written in C++ answer the
+same interface.
+
+Four ideas, and everything else follows from them.
+
+**A capability is a method you defined.** There is nothing to register and no
+base class to inherit. Define `file_open`/`file_new`/`file_save_as` and your
+overlay IS a document — it gets `.dirty`, `.file_spec`, and the New/Open/Save/
+Close flows. Define `hit_test_point` and it answers picks. Define `menu_items`
+and it contributes a right-click section. The full list is in
+`help(pyfvw.overlay.Overlay)`.
+
+```python
+class Notes(pyfvw.overlay.Overlay):
+    def __init__(self):
+        super().__init__("Notes")
+        self.lines = []
+
+    def file_new(self):
+        self.lines = []
+
+    def file_open(self, spec):              # raise to report a failure
+        self.lines = open(spec).read().split("\n")
+
+    def file_save_as(self, spec, format_index):
+        open(spec, "w").write("\n".join(self.lines))
+
+    def hit_test_point(self, proj, x, y, tolerance_px):
+        return [pyfvw.app.HitItem(feature=7, distance_px=0.0,
+                                  hint=pyfvw.app.HintText("a note", "line 7"))]
+```
+
+**A type is data, not a class.** An `OverlayTypeDesc` carries the identity, the
+menu text, where new instances land in the stack, the file sub-descriptor and
+the factory. A descriptor WITHOUT a `file` is *static*: at most one instance,
+toggled on and off (the lat/lon grid). One WITH a file has as many instances as
+the user opens documents.
+
+```python
+app = pyfvw.app
+registry = app.OverlayTypeRegistry()
+app.register_builtin_types(registry)        # fv.grid (static), fv.points (file)
+registry.register(app.OverlayTypeDesc(
+    id="user.notes", display_name="Notes",
+    factory=lambda: Notes(),
+    file=app.FileTypeDesc(default_extension="notes",
+                          open_filters=[("Notes (*.notes)", "*.notes")]),
+    default_display_order=1000))
+```
+
+**You are the dialogs.** The core never opens one: it calls back into an
+`AppShell` you subclass, and the flows cannot tell your tk dialog from a
+scripted table in a test. Five decisions and six presentation calls, all
+listed in `help(pyfvw.app.AppShell)`.
+
+```python
+class MyShell(app.AppShell):
+    def ask_save(self, name):               # -> SaveAnswer.SAVE/DISCARD/CANCEL
+        return app.AppShell.SaveAnswer.DISCARD
+    def choose_files_to_open(self, file_type):
+        return ["/tmp/a.notes"]             # [] means the user cancelled
+    def choose_save_spec(self, file_type, suggested):
+        return ("/tmp/a.notes", 0)          # "" means the user cancelled
+    def choose_from_list(self, title, rows):
+        return 0                            # None means the user cancelled
+    def confirm_revert(self, spec): return False
+    def set_cursor(self, cursor): pass
+    def show_hint(self, hint): pass
+    def show_context_menu(self, x, y, menu): pass
+    def request_invalidate(self): pass
+    def on_editor_changed(self, type_id, editor): pass
+    def report_error(self, code, message): print(message)
+```
+
+**A flow reports what happened, and a cancel is not an error.** Every verb
+returns a `FlowResult`: `DONE`, `CANCELED` (the user said no — say nothing,
+they know) or `FAILED` (already reported through `report_error`). One cancel in
+one save prompt aborts the whole `close_all`, and with it the application exit.
+
+```python
+manager = pyfvw.overlay.OverlayManager()
+manager.set_type_registry(registry)         # insertion by display order
+session = app.OverlaySession(registry, manager, MyShell(), pyfvw.Settings())
+
+session.toggle_static(app.GRID_TYPE_ID)     # static: on, then off again
+session.new_file_overlay("user.notes")      # a fresh untitled document
+session.open_file("", "/tmp/a.notes")       # "" dispatches by EXTENSION
+notes = manager.first_of_type("user.notes")
+notes.dirty = True
+session.save(notes)                         # Save As when never saved
+session.close(notes)                        # prompts, because it is dirty
+```
+
+Two more pieces sit on top of that.
+
+**Editors** are per TYPE, not per overlay — the editor is the tool state ("I am
+drawing routes") and the overlay being edited is whichever instance is current.
+An editor is duck-typed: any object with `activate()` and `deactivate()`, plus
+whichever of `tools()`, `default_cursor()`, `ui_constraints()` and
+`auto_enter_on_create()` it wants. `EditorManager.set_mode(t)` makes the current
+overlay match the mode — creating one through the session if none of that type
+is open — and making a different overlay current makes the mode match the
+overlay, which happens however the change was made.
+
+**Picking** aggregates: every overlay on screen answers, and a policy decides.
+`TOP_MOST` is what a mouse user expects (they aimed at what they saw),
+`NEAREST` is what a finger needs, `ASK_WHEN_AMBIGUOUS` turns a crowded point
+into `choose_from_list`. Who is asked is exactly the draw order reversed, so a
+tap always agrees with the screen.
+
+```python
+pick = app.PickSession(manager, shell)
+pick.update_hover(proj, x, y)               # tells the shell cursor + hint,
+                                            # only when the hit CHANGES
+hit = pick.resolve_click(proj, x, y, app.PickPolicy.ASK_WHEN_AMBIGUOUS)
+if hit is not None:
+    print(hit.overlay.name, hit.feature, hit.hint.status)
+pick.show_context_menu(proj, x, y)          # False = nobody contributed
+```
+
+`pyfvw.overlay.PointOverlay` is a complete worked example in C++: a point set
+in a SQLite document (`.fvpoints`), persistent, pickable and with a context
+menu. `PointOverlay.write_sample_file(path, symbol_dir="")` writes an arbitrary
+starter document to pick at.
+
+A point is drawn as its `shape` in its `color` — and, when it names one, with
+a raster symbol stamped on top of that badge. **The artwork is IN the
+document**, in a second table, so a `.fvpoints` file opens with its symbology
+intact on a machine that has never seen the icon set; and one row serves as
+many points as reference it, which is what makes an icon set affordable:
+
+```python
+o = pyfvw.overlay.PointOverlay("Forts")
+castle = o.add_symbol_from_png("testdata/GeoSymbol/makiPng/castle.png")
+o.add_symbol_from_png(".../castle.png") == castle   # same NAME, same row
+o.set_points([
+    pyfvw.overlay.MapPoint("Sumter",   32.7522, -79.8747, symbol_id=castle),
+    pyfvw.overlay.MapPoint("Moultrie", 32.7594, -79.8577, symbol_id=castle),
+])
+o.file_save_as("forts.fvpoints")        # the PNG is written once
+```
+
+A `color` with alpha 0 suppresses the badge, which is how a document asks for
+the bare icon; an unset `pivot` centres the tile; an id with no row (or a blob
+that will not decode) falls back to the shape rather than costing a point.
+Passing `symbol_dir` to `write_sample_file` embeds the ~20 maki icons the
+sample's points name — the three forts share one `castle` between them.
+
+---
+
+## 6. Where to find more
 
 The bindings are documented in the module itself; nothing here is the only copy.
 
@@ -340,14 +515,17 @@ The bindings are documented in the module itself; nothing here is the only copy.
   with the **semantic deltas** called out: feet → meters, HRESULT → `FvError`,
   cursor enumeration → whole lists, and so on. Read this if you are porting
   code written against the Windows interfaces.
-- **[`test/test_pyfvw.py`](test/test_pyfvw.py)** — the executable spec. Every
-  bound surface has a test with pinned values, and the tests are written to be
-  read as examples. Run them with
-  `ctest --test-dir build -R pyfvw_pytest`.
+- **[`test/test_pyfvw.py`](test/test_pyfvw.py)** and
+  **[`test/test_pyfvw_app.py`](test/test_pyfvw_app.py)** — the executable spec.
+  Every bound surface has a test with pinned values, and the tests are written
+  to be read as examples; the second file is section 5's whole surface with a
+  scripted shell. Run them with `ctest --test-dir build -R pyfvw_pytest`.
 - **[`../../apps/PythonView.py`](../../apps/PythonView.py)** — a complete
-  1,600-line desktop viewer over this API: catalog management, every data
-  family, pan/zoom, overlays, click-to-identify, headless `--shot` rendering.
-  The best source of realistic usage.
+  desktop viewer over this API: catalog management, every data family,
+  pan/zoom, overlays, click-to-identify, headless `--shot` rendering, and (A6)
+  an `AppShell` implementation in tk. The best source of realistic usage.
+  **[`../../apps/route.py`](../../apps/route.py)** is the smaller read: one
+  overlay that is a document, a pick target and an editor.
 - **[`pyfvw_module.cpp`](pyfvw_module.cpp)** — where the docstrings live. If a
   method's behavior is unclear, its binding is a few lines long and says which
   C++ call it forwards to.

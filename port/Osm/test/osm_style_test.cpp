@@ -514,6 +514,103 @@ TEST(OsmStyleSymbol, LinePlacementCarriesTheRoadNameOntoItsRoad) {
   EXPECT_DOUBLE_EQ(lb.offset_px, 6.0);
 }
 
+TEST(OsmStyleSymbol, HaloWidthAndColourCrossTheSeamInDevicePixels) {
+  fv::OsmStyleEngine e;
+  e.SetDrawLabels(true);
+  ASSERT_TRUE(
+      e.LoadText(Wrap(
+           R"J({"id":"place","type":"symbol","source-layer":"place",
+               "layout":{"text-field":"{name}","text-size":14},
+               "paint":{"text-color":"#333333","text-halo-blur":1,
+                        "text-halo-color":"rgba(255,255,255,0.75)",
+                        "text-halo-width":2}})J"))
+          .ok());
+  // Accepted, not rejected — and counted, so "why is my blur not soft?" has an
+  // answer that is not a guess.
+  EXPECT_EQ(e.ignored_halo_blur(), 1u);
+
+  fv::VectorFeature city;
+  city.type = fv::VectorGeometryType::kPoint;
+  city.layer = "place";
+  city.attributes.push_back({"name", "Atlanta"});
+  city.parts.push_back({{33.75, -84.39}});
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(city, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_DOUBLE_EQ(out[0].label.halo_width, 2.0);
+  EXPECT_EQ(out[0].label.halo_color.r, 255);
+  EXPECT_EQ(out[0].label.halo_color.g, 255);
+  EXPECT_EQ(out[0].label.halo_color.b, 255);
+  EXPECT_NEAR(out[0].label.halo_color.a, 191, 1) << "0.75 alpha, straight";
+
+  // CSS px at 96 dpi, like every other paint value: on a 192 dpi display the
+  // halo doubles with the widths and sizes beside it.
+  ctx.device_dpi = 192.0;
+  out.clear();
+  ASSERT_TRUE(e.Style(city, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_DOUBLE_EQ(out[0].label.halo_width, 4.0);
+}
+
+// A colour with no width is not a request to draw an outline — GL's default
+// text-halo-width is 0 and this loader must not invent one, or every style
+// that sets a halo colour for one zoom band grows an outline in all of them.
+TEST(OsmStyleSymbol, AHaloColourAloneDrawsNoHalo) {
+  fv::OsmStyleEngine e;
+  e.SetDrawLabels(true);
+  ASSERT_TRUE(
+      e.LoadText(Wrap(
+           R"({"id":"place","type":"symbol","source-layer":"place",
+               "layout":{"text-field":"{name}","text-size":14},
+               "paint":{"text-color":"#333333","text-halo-color":"#ffffff"}})"))
+          .ok());
+  fv::VectorFeature city;
+  city.type = fv::VectorGeometryType::kPoint;
+  city.layer = "place";
+  city.attributes.push_back({"name", "Atlanta"});
+  city.parts.push_back({{33.75, -84.39}});
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(city, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_DOUBLE_EQ(out[0].label.halo_width, 0.0);
+  EXPECT_EQ(e.ignored_halo_blur(), 0u);
+}
+
+// The halo is a zoom function like anything else in `paint`, and a stop table
+// is the form OpenMapTiles styles write it in.
+TEST(OsmStyleSymbol, HaloWidthTakesAZoomFunction) {
+  fv::OsmStyleEngine e;
+  e.SetDrawLabels(true);
+  e.SetZoomOverride(6.0);
+  ASSERT_TRUE(
+      e.LoadText(Wrap(
+           R"({"id":"place","type":"symbol","source-layer":"place",
+               "layout":{"text-field":"{name}","text-size":14},
+               "paint":{"text-color":"#333333",
+                        "text-halo-width":{"base":1,
+                                           "stops":[[4,1],[8,3]]}}})"))
+          .ok());
+  fv::VectorFeature city;
+  city.type = fv::VectorGeometryType::kPoint;
+  city.layer = "place";
+  city.attributes.push_back({"name", "Atlanta"});
+  city.parts.push_back({{33.75, -84.39}});
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(city, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_DOUBLE_EQ(out[0].label.halo_width, 2.0) << "halfway between the stops";
+  // No colour given: white, GL's default, so the common case of a light halo
+  // on dark text needs the width alone.
+  EXPECT_EQ(out[0].label.halo_color.r, 255);
+  EXPECT_EQ(out[0].label.halo_color.a, 255);
+}
+
 TEST(OsmStyleSymbol, PointPlacementIsStillTheDefaultAndUnknownOnesAreRejected) {
   fv::OsmStyleEngine e;
   e.SetDrawLabels(true);

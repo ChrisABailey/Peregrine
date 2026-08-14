@@ -13,10 +13,12 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pybind11)
 
-pybind11_add_module(pyfvw pyfvw_module.cpp)
+pybind11_add_module(pyfvw pyfvw_module.cpp pyfvw_app.cpp pyfvw_draw.cpp)
 # fv_vpf = VpfVectorSource, fv_geosym = GeoSymStyleEngine; both link fv_fvkit
 # (the shared VectorRenderer + canvas + projection).
-target_link_libraries(pyfvw PRIVATE fv_fvkit fv_geo_tool fv_vpf fv_geosym fv_enc fv_osm)
+# fv_routing = the O4 road graph + router (pyfvw.routing).
+target_link_libraries(pyfvw PRIVATE fv_fvkit fv_geo_tool fv_vpf fv_geosym fv_enc fv_osm
+                                   fv_routing)
 
 if(FVW_BUILD_TESTS)
   # pytest suite (skips itself when numpy/TestData are absent)

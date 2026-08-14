@@ -1,0 +1,139 @@
+// DNC / VPF data families — see port/include/fvkit/vector/families.h
+//
+// Set "enabled": false on a family to hide everything it names. As shipped
+// every family is on, so loading this file changes nothing that is drawn —
+// the neutral default every layer of the vector seam keeps.
+//
+// The grouping is DNC's OWN: a family here is a VPF COVERAGE, which is a
+// directory in the library, and the selectors are the feature-class names the
+// reader hands out as VectorFeature::layer. The two exceptions are marked
+// below — `depths` and `bottom` split one coverage in two, because a mariner
+// asks for the seabed and the depth ramp separately.
+//
+// Layer names are the union over the dnc17 libraries (harbour, approach,
+// coastal, general, browse); a library that does not carry a class simply has
+// no features for that selector.
+//
+// Comments are allowed: this file is read with JSON comments enabled.
+{
+  "product": "dnc",
+  "description": "Digital Nautical Chart (VPF) data families, by coverage",
+  "families": [
+    {
+      "name": "depths",
+      "title": "Depth areas, contours and soundings",
+      "note": "coverage hyd, minus the bottom characteristics",
+      "enabled": true,
+      "select": ["layer=hydarea", "layer=hydline", "layer=soundp"]
+    },
+    {
+      "name": "bottom",
+      "title": "Bottom characteristics",
+      "note": "coverage hyd — the seabed's nature (sand, mud, rock), not its depth",
+      "enabled": true,
+      "select": ["layer=botcharp"]
+    },
+    {
+      "name": "navaids",
+      "title": "Aids to navigation",
+      "note": "coverage nav — buoys, beacons, lights, leading lines, light sectors",
+      "enabled": true,
+      "select": ["layer=buoybcnp", "layer=lightsp", "layer=leadingl",
+                 "layer=sectora"]
+    },
+    {
+      "name": "obstructions",
+      "title": "Obstructions and hazards",
+      "note": "coverage obs",
+      "enabled": true,
+      "select": ["layer=bridgea", "layer=bridgel", "layer=bridgspl",
+                 "layer=dangera", "layer=dangerp", "layer=fishhata",
+                 "layer=hazarda", "layer=hazardl", "layer=hazardp",
+                 "layer=loadingp", "layer=obstruca", "layer=obstrucp",
+                 "layer=pipelinl", "layer=reefa", "layer=ruinsa",
+                 "layer=ruinsp"]
+    },
+    {
+      "name": "coastline",
+      "title": "Coastline and earth cover",
+      "note": "coverage ecr — the land/water edge, foreshore and islands",
+      "enabled": true,
+      "select": ["layer=coastl", "layer=ecrarea", "layer=foreshoa",
+                 "layer=foreshol", "layer=foreshop", "layer=islandp"]
+    },
+    {
+      "name": "port",
+      "title": "Port facilities",
+      "note": "coverage por — piers, structures, seawalls, moorings",
+      "enabled": true,
+      "select": ["layer=callinp", "layer=mooringp", "layer=piera",
+                 "layer=pierl", "layer=seawalll", "layer=structra",
+                 "layer=structrl"]
+    },
+    {
+      "name": "limits",
+      "title": "Limits, routes and boundaries",
+      "note": "coverage lim, plus ecr's administrative lines",
+      "enabled": true,
+      "select": ["layer=adminl", "layer=ferryl", "layer=limbndya",
+                 "layer=limbndyl", "layer=limbndyp", "layer=maritima",
+                 "layer=maritiml", "layer=routea", "layer=routel",
+                 "layer=separtna", "layer=separtnl", "layer=separtnp"]
+    },
+    {
+      "name": "cultural",
+      "title": "Cultural landmarks",
+      "note": "coverage cul — buildings, built-up areas, transport, power lines",
+      "enabled": true,
+      "select": ["layer=aerop", "layer=buildnga", "layer=buildngp",
+                 "layer=builtupp", "layer=commp", "layer=industp",
+                 "layer=landmrka", "layer=landmrkp", "layer=powerl",
+                 "layer=railrdl", "layer=transa", "layer=transl"]
+    },
+    {
+      "name": "inland_water",
+      "title": "Inland waterways",
+      "note": "coverage iwy",
+      "enabled": true,
+      "select": ["layer=canala", "layer=canall", "layer=daml", "layer=lakea",
+                 "layer=rivera", "layer=riverl"]
+    },
+    {
+      "name": "land_cover",
+      "title": "Land cover",
+      "note": "coverage lcr — embankments, tree cover",
+      "enabled": true,
+      "select": ["layer=embanka", "layer=lcrline", "layer=treea"]
+    },
+    {
+      "name": "relief",
+      "title": "Relief",
+      "note": "coverage rel — spot heights and contours",
+      "enabled": true,
+      "select": ["layer=relline", "layer=relpoint"]
+    },
+    {
+      "name": "environment",
+      "title": "Tides and currents",
+      "note": "coverage env",
+      "enabled": true,
+      "select": ["layer=currdiap", "layer=currflp", "layer=envarea",
+                 "layer=tidep"]
+    },
+    {
+      "name": "browse",
+      "title": "Browse coverage",
+      "note": "the browse library's coa/lib coverages — the small-scale index",
+      "enabled": true,
+      "select": ["layer=coaarea", "layer=coaline", "layer=coapoint",
+                 "layer=libarea", "layer=libline"]
+    },
+    {
+      "name": "deep_soundings",
+      "title": "Soundings deeper than 30 m",
+      "note": "NOT a coverage. A selector is a full rule-file selector, so a family can be any question the rule layer can ask — this one is a predicate.",
+      "enabled": true,
+      "select": ["layer=soundp where hdp > 30"]
+    }
+  ]
+}

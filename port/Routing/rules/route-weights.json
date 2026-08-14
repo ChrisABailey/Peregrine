@@ -1,0 +1,177 @@
+// route-weights.json — the routing cost rules (O5c).
+//
+// This file is DATA, not configuration-with-a-restart: fv::routing::RouteRulesFile
+// re-reads it whenever its timestamp or size changes, so editing a weight here
+// changes the next route the application computes. A file that fails to parse is
+// REJECTED WHOLE and the previously loaded rules stay in force — a half-written
+// save never leaves the router with half a profile.
+//
+// Comments are allowed (`//` and `/* */`); the loader parses JSONC. Everything
+// else is strict JSON, and an unknown key is an ERROR, not something ignored —
+// a misspelled "weigths" must not silently do nothing.
+//
+// WHAT A WEIGHT IS. Every weight is a multiplier on the arc's base cost, where
+// the base cost is the arc's length in metres (metric "distance") or the seconds
+// it takes at this profile's speed (metric "time"). 1.0 is neutral, below 1.0
+// prefers, above 1.0 avoids. Weights are a PREFERENCE, not a clock: the length
+// and duration reported for the finished route are always unweighted, so a bike
+// route down a cycleway still reports the real minutes it takes to ride.
+//
+//   cost(arc) = base(arc) * classes[arc.class] * (private ? private_penalty : 1)
+//                         * (tolled ? toll_penalty : 1) * (ferry ? ferry_penalty : 1)
+//
+// Weights bias which road is chosen. They cannot make one shorter than it is.
+//
+// "ferry" IS one of the classes, though it is not a `highway=*` value: a
+// `route=ferry` way is admitted to the graph as its own class, timed by its own
+// `duration` tag rather than by the profile's speed. A profile that excludes
+// what it does not list must name it or no route of that profile can board.
+
+{
+  "version": 1,
+  "default_profile": "car",
+
+  "profiles": {
+    // -----------------------------------------------------------------------
+    // Driving on the posted clock. Every class weight is 1.0: a car's cost IS
+    // the drive time, and biasing one road class over another here would make
+    // the reported ETA and the thing being minimised two different quantities.
+    // Weight a class up if you want that class avoided (see "car_avoid_unpaved").
+    // -----------------------------------------------------------------------
+    "car": {
+      "description": "Fastest driving route on posted/assumed speed limits.",
+      "mode": "motor_vehicle",
+      "speed": { "source": "posted" },
+      "metric": "time",
+      "turn_restrictions": true,
+
+      // What an arc this mode may use only `private`ly costs. A private road is
+      // passable — on a gated community it is the entire street network — but a
+      // route should not cut through one to save a minute. 1.0 makes private
+      // free; large values approach "only if there is no other way", which is
+      // NOT the same as deleting the arc.
+      "private_penalty": 1.1,
+
+      // The two avoidances. Same grammar as a class weight: a positive
+      // multiplier, or `false` / "exclude" to take them out of the network
+      // entirely. These are only the profile's DEFAULTS — a query may override
+      // either without a profile per combination — and excluding a ferry can
+      // legitimately leave an island unreachable, which is the answer.
+      "toll_penalty": 1.0,
+      "ferry_penalty": 1.0,
+
+      // A class not named below is not usable by this profile at all. Set
+      // "unlisted_classes" to a number to make unnamed classes usable at that
+      // weight instead.
+      "unlisted_classes": "exclude",
+      "classes": {
+        "motorway": 1.0,
+        "motorway_link": 1.0,
+        "trunk": 1.0,
+        "trunk_link": 1.0,
+        "primary": 1.0,
+        "primary_link": 1.0,
+        "secondary": 1.0,
+        "secondary_link": 1.0,
+        "tertiary": 1.0,
+        "tertiary_link": 1.0,
+        "unclassified": 1.0,
+        "residential": 1.0,
+        "living_street": 1.0,
+        "service": 12.0,
+        "track": 3.0,
+        "ferry": 1.0    // the crossing's own duration; see ferry_penalty above
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Bicycle: a flat speed, and the class weights that make a bike route look
+    // like a bike route rather than a slow car.
+    // -----------------------------------------------------------------------
+    "bicycle": {
+      "description": "Cycling at a flat speed, preferring cycleways and quiet streets.",
+      "mode": "bicycle",
+      "speed": { "source": "fixed", "kph": 15.0 },
+      "metric": "time",
+      // Turn signage is addressed to vehicles; a bicycle is not bound by it here.
+      "turn_restrictions": false,
+      "private_penalty": 0.9,
+
+      "unlisted_classes": "exclude",
+      "classes": {
+        "cycleway": 0.70,       // the whole point of a bike is to use these
+        "path": 0.75,           // what a bike is for
+        "residential": 0.75,    // quiet enough to be nearly as good
+        "living_street": 0.85,
+        "track": 1.0,
+        "unclassified": 3.0,    // OSM's minor public road, not "unknown"
+        "service": 1.0,
+        "tertiary": 2.0,
+        "secondary": 3.0,
+        "footway": 1.1,         // walking the bike
+        "pedestrian": 1.1,
+        "ferry": 1.0            // bikes board almost anything that floats
+        // Motorway/trunk/primary and every _link off them are absent, so a bike
+        // may not use them. Steps too — carrying a bike up a staircase is not a
+        // route anyone asked for.
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Walking: everything a foot may travel, at a flat speed, no preferences.
+    // -----------------------------------------------------------------------
+    "foot": {
+      "description": "Walking at a flat speed; anything on foot, no class preference.",
+      "mode": "foot",
+      "speed": { "source": "fixed", "kph": 5.0 },
+      "metric": "time",
+      "turn_restrictions": false,
+      "private_penalty": 1.0,
+
+      // Walking is the one profile with no class filter of its own: what a
+      // pedestrian may use is decided by the arc's foot-access bits alone.
+      "unlisted_classes": 1.0,
+      "classes": {}
+    },
+
+    // -----------------------------------------------------------------------
+    // Variants. `extends` copies a profile and overlays what is named here —
+    // "classes" merges key by key, every other field replaces. This is where to
+    // put a local preference without touching the profile it is derived from.
+    // -----------------------------------------------------------------------
+    "car_shortest": {
+      "description": "Driving, minimising distance instead of time.",
+      "extends": "car",
+      "metric": "distance"
+    },
+
+    "car_avoid_unpaved": {
+      "description": "Driving, treating tracks and service roads as a last resort.",
+      "extends": "car",
+      "classes": {
+        "track": 8.0,
+        "service": 2.0
+      }
+    },
+
+    // The placeholder that stood here through O5c/O5d is now a real profile:
+    // `toll=yes` reaches the arc as of O5e, so there is something to weight.
+    // "exclude" is the strict reading — no tolled road at any price. Use a
+    // large number instead if what is meant is "worth a detour".
+    "car_no_tolls": {
+      "description": "Driving, refusing tolled roads outright.",
+      "extends": "car",
+      "toll_penalty": "exclude"
+    },
+
+    "car_no_ferries": {
+      // A ferry is a timetable this router does not model: the crossing costs
+      // its `duration`, never the wait for the next sailing. Excluding it can
+      // leave an island with no route at all — that is the honest answer, not
+      // a failure.
+      "description": "Driving, refusing ferry crossings.",
+      "extends": "car",
+      "ferry_penalty": "exclude"
+    }
+  }
+}

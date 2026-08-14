@@ -13,6 +13,7 @@ Run via ctest (pyfvw_pytest) or directly:
 import glob
 import math
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -880,6 +881,137 @@ def test_geosym_rules_and_viewing_groups_change_the_render():
     assert 0 < decluttered < base
 
 
+def test_dnc_mariner_depth_ramp_follows_the_safety_contour():
+    """The DNC half of the mariner API: GeoSym's ssdc/msdc/mssc under their
+    S-52 names. Moving the safety contour re-shades the depth areas — until
+    this landed, DNC drew CECDISValues' defaults and a draft could not be
+    entered at all."""
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+
+    src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+    style = pyfvw.vector.GeoSymStyleEngine()
+    style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+    # GeoSym's own defaults, which are NOT the struct's (those are S-52's).
+    assert style.mariner().safety_contour == 10.0
+    assert style.mariner().shallow_pattern is True
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(200, 200)
+    proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+    proj.set_physical_scale(300000, 0.25)
+    r = pyfvw.vector.VectorRenderer(src, style)
+
+    def shot(contour):
+        m = pyfvw.vector.MarinerSettings()
+        m.safety_contour = contour
+        m.deep_contour = 30.0
+        m.shallow_contour = 2.0
+        style.set_mariner(m)
+        cv = pyfvw.canvas.CpuCanvas(200, 200); cv.clear((255, 255, 255))
+        r.render(proj, cv)
+        return np.asarray(cv.buffer).copy()
+
+    shallow_ship = shot(5.0)
+    deep_ship = shot(25.0)
+    assert not np.array_equal(shallow_ship, deep_ship), \
+        "the safety contour did not move DNC's depth ramp"
+    # Same object on both products — the S-52 spelling still resolves.
+    assert pyfvw.vector.S52MarinerSettings is pyfvw.vector.MarinerSettings
+
+
+def test_family_set_switches_a_group_of_layers_off(tmp_path):
+    """Data families: a name over rule-file selectors, so switching one off is
+    just hide rules in the engine's RuleSet."""
+    fams = pyfvw.vector.FamilySet()
+    fams.load_json("""{
+      "product": "dnc",
+      "families": [
+        {"name": "navaids", "title": "Aids to Navigation",
+         "select": ["layer=buoybcnp", "layer=lightsp"]},
+        {"name": "bottom", "select": ["layer=botcharp"]}
+      ]
+    }""")
+    assert len(fams) == 2
+    assert fams.product == "dnc"
+    assert [f.name for f in fams.families] == ["navaids", "bottom"]
+    assert fams.enabled("navaids")
+    assert fams.enabled("not_declared")      # unknown names hide nothing
+
+    rules = pyfvw.vector.RuleSet()
+    fams.append_rules(rules)
+    assert len(rules) == 0, "everything on means no rules at all"
+
+    fams.set_enabled("navaids", False)
+    assert fams.disabled_count == 1
+    fams.append_rules(rules)
+    assert len(rules) == 2                    # one hide per selector
+
+    with pytest.raises(KeyError):
+        fams.set_enabled("no_such_family", False)
+
+
+def test_shipped_family_files_load():
+    """The three files under port/families/ are the settings surface for this
+    feature, so a user's first contact with it must parse. Which families are
+    ON is deliberately NOT asserted — those are the user's settings, and
+    editing them must not break the build."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    families = os.path.normpath(
+        os.path.join(here, "..", "..", "..", "families"))
+    if not os.path.isdir(families):
+        pytest.skip("no port/families directory")
+    for name, product in (("dnc", "dnc"), ("enc", "enc"), ("osm", "osm")):
+        fams = pyfvw.vector.FamilySet()
+        fams.load_file(os.path.join(families, name + "-families.json"))
+        assert fams.product == product
+        assert len(fams) >= 8
+        rules = pyfvw.vector.RuleSet()
+        fams.append_rules(rules)
+        assert len(rules) == sum(len(f.select) for f in fams.families
+                                 if not f.enabled)
+
+
+def test_dnc_families_thin_a_real_chart():
+    lib = _harbor()
+    if lib is None:
+        pytest.skip("no dnc17 TestData")
+    data_dir = os.environ["FVW_TESTDATA_DIR"]
+    if not os.path.isdir(os.path.join(data_dir, "GeoSymbol")):
+        pytest.skip("no GeoSym assets")
+
+    def render(off=None):
+        src = pyfvw.vector.VpfVectorSource(); src.open(lib)
+        style = pyfvw.vector.GeoSymStyleEngine()
+        style.open(data_dir, pyfvw.vector.GEOSYM_DNC)
+        if off:
+            fams = pyfvw.vector.FamilySet()
+            fams.load_json("""{"families": [
+              {"name": "depths",
+               "select": ["layer=hydarea", "layer=hydline", "layer=soundp"]},
+              {"name": "navaids",
+               "select": ["layer=buoybcnp", "layer=lightsp"]}]}""")
+            for name in off:
+                fams.set_enabled(name, False)
+            fams.append_rules(style.rules())
+        proj = pyfvw.engine.MapProjection()
+        proj.set_surface_size(256, 256)
+        proj.set_center(pyfvw.geo.GeoPoint(41.70, -69.90))
+        proj.set_physical_scale(300000, 0.25)
+        cv = pyfvw.canvas.CpuCanvas(256, 256); cv.clear((255, 255, 255))
+        r = pyfvw.vector.VectorRenderer(src, style)
+        r.render(proj, cv)
+        return r.draws_emitted
+
+    full = render()
+    without_depths = render(["depths"])
+    assert 0 < without_depths < full
+
+
 # --- settings (the registry replacement) ------------------------------------
 
 def test_settings_read_the_r3a_knobs(tmp_path):
@@ -1235,3 +1367,843 @@ def test_osm_style_rejects_what_it_does_not_understand():
     # All-or-nothing: the previous style is still loaded.
     assert style.style_name == name
     assert style.layer_count > 10
+
+
+# ---------------------------------------------------------------------------
+# Road routing — phase O4
+# ---------------------------------------------------------------------------
+#
+# The binding surface the route overlay uses: build or load a graph, snap a
+# position to it, ask for a line between two positions. The graph itself is
+# tested in C++ (port/Routing/test); what these pin is that the seam survives
+# the trip through Python — geometry comes back as GeoPoints, an unreachable
+# pair is `found == False` rather than an exception, and an endpoint off the
+# network raises FvError rather than silently routing from somewhere else.
+
+
+def _kiawah_osm():
+    d = _testdata("OSM")
+    if d is None:
+        return None
+    paths = [os.path.join(d, n) for n in
+             ("map.osm", "map-2.osm", "map-3.osm", "map-4.osm")]
+    return paths if all(os.path.isfile(p) for p in paths) else None
+
+
+@pytest.fixture(scope="module")
+def kiawah_graph():
+    paths = _kiawah_osm()
+    if paths is None:
+        pytest.skip("TestData/OSM/map*.osm not present")
+    # honor_access=False: Kiawah is a gated island and honouring access=private
+    # fragments its driving network into a hundred pieces.
+    return pyfvw.routing.RoadGraph.build(paths, honor_access=False)
+
+
+def test_road_graph_builds_and_reports_its_shape(kiawah_graph):
+    assert kiawah_graph.node_count > 500
+    assert kiawah_graph.arc_count > 2 * kiawah_graph.node_count / 2
+    b = kiawah_graph.bounds
+    assert 32.5 < b.ll.lat < 32.7
+    assert -80.2 < b.ur.lon < -79.9
+
+
+def test_nearest_node_snaps_and_reports_the_distance(kiawah_graph):
+    hit = kiawah_graph.nearest_node(pyfvw.geo.GeoPoint(32.600, -80.120), 3000.0)
+    assert hit is not None
+    node, meters = hit
+    assert 0 <= node < kiawah_graph.node_count
+    assert 0.0 <= meters <= 3000.0
+    p = kiawah_graph.location(node)
+    assert abs(p.lat - 32.600) < 0.05
+
+    # Out of range is None, not an exception and not node 0.
+    assert kiawah_graph.nearest_node(pyfvw.geo.GeoPoint(40.0, -80.0), 500.0) is None
+
+
+def test_router_returns_a_drawable_line(kiawah_graph):
+    router = pyfvw.routing.Router(kiawah_graph)
+    route = router.route(pyfvw.geo.GeoPoint(32.590, -80.130),
+                         pyfvw.geo.GeoPoint(32.640, -80.005),
+                         snap_meters=3000.0)
+    assert route.found
+    assert route.length_m > 5000.0
+    assert route.seconds > 0.0
+    assert len(route.geometry) > len(route.nodes)   # road shape, not a chord
+    for p in route.geometry:
+        assert isinstance(p, pyfvw.geo.GeoPoint)
+
+    # The line starts and ends at the nodes it snapped to, which is what the
+    # overlay draws between.
+    start = kiawah_graph.location(route.start_node)
+    assert route.geometry[0].lat == pytest.approx(start.lat)
+    assert route.geometry[0].lon == pytest.approx(start.lon)
+
+    # Legs add up to the whole and name the roads.
+    assert route.legs
+    assert sum(l.length_m for l in route.legs) == pytest.approx(route.length_m, abs=1.0)
+    assert any(l.name for l in route.legs)
+    assert all(l.road_class for l in route.legs)
+
+
+def test_metric_and_snap_are_honoured(kiawah_graph):
+    router = pyfvw.routing.Router(kiawah_graph)
+    a = pyfvw.geo.GeoPoint(32.590, -80.130)
+    b = pyfvw.geo.GeoPoint(32.640, -80.005)
+    fast = router.route(a, b, snap_meters=3000.0, metric="time")
+    short = router.route(a, b, snap_meters=3000.0, metric="distance")
+    assert fast.found and short.found
+    # Each metric is optimal for its own quantity.
+    assert fast.seconds <= short.seconds + 1e-6
+    assert short.length_m <= fast.length_m + 1e-3
+
+    with pytest.raises(pyfvw.FvError):
+        router.route(a, b, metric="cheapest")
+
+    # An endpoint nowhere near a road is an error, not a route from elsewhere.
+    with pytest.raises(pyfvw.FvError):
+        router.route(pyfvw.geo.GeoPoint(40.0, -80.0), b, snap_meters=500.0)
+
+
+def test_graph_round_trips_through_a_file(tmp_path, kiawah_graph):
+    path = str(tmp_path / "kiawah.fvroad")
+    kiawah_graph.save(path)
+    loaded = pyfvw.routing.RoadGraph.load(path)
+    assert loaded.node_count == kiawah_graph.node_count
+    assert loaded.arc_count == kiawah_graph.arc_count
+
+    a = pyfvw.geo.GeoPoint(32.590, -80.130)
+    b = pyfvw.geo.GeoPoint(32.640, -80.005)
+    first = pyfvw.routing.Router(kiawah_graph).route(a, b, snap_meters=3000.0)
+    again = pyfvw.routing.Router(loaded).route(a, b, snap_meters=3000.0)
+    assert first.found == again.found
+    assert first.seconds == pytest.approx(again.seconds)
+    assert len(first.geometry) == len(again.geometry)
+
+    with pytest.raises(pyfvw.FvError):
+        pyfvw.routing.RoadGraph.load(str(tmp_path / "absent.fvroad"))
+
+
+def test_the_route_overlay_follows_roads(tmp_path, kiawah_graph):
+    """The app-side path: RouteOverlay.follow_roads over a saved graph."""
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "apps"))
+    try:
+        from route import RouteOverlay
+    finally:
+        sys.path.pop(0)
+
+    path = str(tmp_path / "kiawah.fvroad")
+    kiawah_graph.save(path)
+
+    overlay = RouteOverlay("island run", [
+        ("WP1", 32.590, -80.130),
+        ("WP2", 32.640, -80.005),
+    ], graph_path=path)
+
+    assert overlay.road_legs is None
+    assert overlay.follow_roads(snap_meters=3000.0)
+    assert len(overlay.road_legs) == 1
+    assert len(overlay.road_legs[0]) > 50
+    assert "km" in overlay.road_status
+
+    # A waypoint nowhere near a road leaves THAT leg straight and says so,
+    # rather than discarding the whole route.
+    overlay.waypoints.append(("WP3", 40.0, -80.0))
+    assert not overlay.follow_roads(snap_meters=3000.0)
+    assert len(overlay.road_legs) == 2
+    assert len(overlay.road_legs[1]) == 2   # a straight leg: just its ends
+    assert "not on the network" in overlay.road_status
+
+    overlay.clear_roads()
+    assert overlay.road_legs is None
+    assert overlay.road_status == ""
+
+
+def test_route_via_goes_through_its_stops(kiawah_graph):
+    """O5d: one route through ordered stops, not a string of pairs."""
+    router = pyfvw.routing.Router(kiawah_graph)
+    a = pyfvw.geo.GeoPoint(32.590, -80.130)
+    b = pyfvw.geo.GeoPoint(32.610, -80.070)
+    c = pyfvw.geo.GeoPoint(32.640, -80.005)
+
+    via = router.route_via([a, b, c], snap_meters=3000.0)
+    assert via.found
+    assert len(via.stop_nodes) == 3
+    assert len(via.stop_offsets_m) == 3
+    assert via.unreachable_leg == pyfvw.routing.Route.NO_LEG
+
+    # Every stop is somewhere on the drawn line, the first at its head and the
+    # last at its tail.
+    assert list(via.stop_geometry_index) == sorted(via.stop_geometry_index)
+    assert via.stop_geometry_index[0] == 0
+    assert via.stop_geometry_index[-1] == len(via.geometry) - 1
+
+    # Two stops is exactly route().
+    pair = router.route(a, c, snap_meters=3000.0)
+    two = router.route_via([a, c], snap_meters=3000.0)
+    assert two.found == pair.found
+    assert two.length_m == pytest.approx(pair.length_m)
+    assert list(two.nodes) == list(pair.nodes)
+
+    # The stop in the middle is a constraint, so it cannot make the route
+    # shorter than the direct one.
+    assert via.length_m >= pair.length_m - 1e-6
+
+
+def test_route_via_reports_which_stop_it_cannot_reach(kiawah_graph):
+    router = pyfvw.routing.Router(kiawah_graph)
+    a = pyfvw.geo.GeoPoint(32.590, -80.130)
+    b = pyfvw.geo.GeoPoint(32.640, -80.005)
+
+    # A stop in the middle of the Atlantic is a bad REQUEST, and it says which.
+    with pytest.raises(pyfvw.FvError) as err:
+        router.route_via([a, pyfvw.geo.GeoPoint(35.0, -70.0), b],
+                         snap_meters=3000.0)
+    assert err.value.code == pyfvw.OUT_OF_COVERAGE
+    assert "stop 1" in err.value.message
+
+    with pytest.raises(pyfvw.FvError):
+        router.route_via([a], snap_meters=3000.0)
+
+
+def test_the_route_overlay_routes_through_its_waypoints(tmp_path, kiawah_graph):
+    """The app-side path for O5d: three waypoints come back as ONE route cut
+    at the stops, not three separately-routed pairs."""
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "apps"))
+    try:
+        from route import RouteOverlay
+    finally:
+        sys.path.pop(0)
+
+    path = str(tmp_path / "kiawah-via.fvroad")
+    kiawah_graph.save(path)
+    overlay = RouteOverlay("island run", [
+        ("WP1", 32.590, -80.130),
+        ("WP2", 32.610, -80.070),
+        ("WP3", 32.640, -80.005),
+    ], graph_path=path)
+
+    assert overlay.follow_roads(snap_meters=3000.0)
+    assert len(overlay.road_legs) == 2          # one piece per pair of stops
+    assert "km" in overlay.road_status
+    assert "pairs" not in overlay.road_status   # the through route was had
+
+    # The pieces join: each leg ends where the next begins, because they are
+    # cuts of one line rather than separate routes.
+    for first, second in zip(overlay.road_legs, overlay.road_legs[1:]):
+        assert first[-1].lat == pytest.approx(second[0].lat)
+        assert first[-1].lon == pytest.approx(second[0].lon)
+
+    # A waypoint in the sea has no through route, so it falls back to pairs
+    # and says which answer the user is looking at.
+    overlay.waypoints.append(("WP4", 40.0, -80.0))
+    assert not overlay.follow_roads(snap_meters=3000.0)
+    assert "pairs" in overlay.road_status
+    assert "not on the network" in overlay.road_status
+
+
+def test_the_overlay_says_so_when_no_graph_is_configured():
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "apps"))
+    try:
+        from route import RouteOverlay
+    finally:
+        sys.path.pop(0)
+
+    overlay = RouteOverlay("no graph", [("A", 32.6, -80.1), ("B", 32.7, -80.0)])
+    assert not overlay.follow_roads()
+    assert "no road graph configured" in overlay.road_status
+    assert overlay.road_legs is None
+
+
+# ---------------------------------------------------------------------------
+# Tolls and ferries (O5e)
+# ---------------------------------------------------------------------------
+
+_BAY_OSM = """<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="32.7000000" lon="-80.0000000"/>
+ <node id="2" lat="32.7000000" lon="-79.9000000"/>
+ <node id="3" lat="32.7500000" lon="-79.9500000"/>
+ <node id="4" lat="32.4000000" lon="-79.9500000"/>
+ <node id="5" lat="32.7510000" lon="-79.9500000"/>
+ <way id="201">
+  <nd ref="1"/><nd ref="2"/>
+  <tag k="highway" v="primary"/><tag k="name" v="Toll Bridge"/>
+  <tag k="maxspeed" v="80"/><tag k="toll" v="yes"/>
+ </way>
+ <way id="202">
+  <nd ref="1"/><nd ref="3"/><nd ref="2"/>
+  <tag k="route" v="ferry"/><tag k="name" v="Bay Ferry"/>
+  <tag k="duration" v="00:45"/>
+ </way>
+ <way id="203">
+  <nd ref="1"/><nd ref="4"/><nd ref="2"/>
+  <tag k="highway" v="secondary"/><tag k="name" v="Long Way Round"/>
+ </way>
+ <way id="204">
+  <nd ref="3"/><nd ref="5"/>
+  <tag k="highway" v="service"/><tag k="name" v="Island Landing"/>
+ </way>
+</osm>
+"""
+
+
+@pytest.fixture(scope="module")
+def bay_graph(tmp_path_factory):
+    """A bay with three crossings — a tolled bridge (fastest), a ferry, and a
+    long free road round the head — so which one comes back says what the
+    query refused. See the same fixture in port/Routing/test/router_test.cpp."""
+    path = tmp_path_factory.mktemp("bay") / "bay.osm"
+    path.write_text(_BAY_OSM)
+    return pyfvw.routing.RoadGraph.build([str(path)])
+
+
+def _crossing(route):
+    return route.legs[0].name if route.legs else "(none)"
+
+
+def test_toll_and_ferry_penalties_steer_the_crossing(bay_graph):
+    router = pyfvw.routing.Router(bay_graph)
+    west = pyfvw.geo.GeoPoint(32.70, -80.00)
+    east = pyfvw.geo.GeoPoint(32.70, -79.90)
+
+    # No preference: the fastest crossing, which happens to be the toll bridge.
+    assert _crossing(router.route(west, east)) == "Toll Bridge"
+
+    # Both spellings of a refusal, and a number that merely prices.
+    assert _crossing(router.route(west, east, toll_penalty="exclude")) == "Bay Ferry"
+    assert _crossing(router.route(west, east, toll_penalty=False)) == "Bay Ferry"
+    assert _crossing(router.route(west, east, toll_penalty=10.0)) == "Bay Ferry"
+    assert _crossing(router.route(west, east, toll_penalty=1.5)) == "Toll Bridge"
+    assert _crossing(router.route(west, east, ferry_penalty=False)) == "Toll Bridge"
+    assert _crossing(router.route(
+        west, east, toll_penalty=False, ferry_penalty=False)) == "Long Way Round"
+
+
+def test_a_ferry_crossing_is_timed_by_the_boat_not_by_the_traveller(bay_graph):
+    router = pyfvw.routing.Router(bay_graph)
+    west = pyfvw.geo.GeoPoint(32.70, -80.00)
+    island = pyfvw.geo.GeoPoint(32.751, -79.95)
+
+    driven = router.route(west, island)
+    walked = router.route(west, island, driving=False)
+    assert driven.found and walked.found
+    # 00:45 for the whole crossing, whoever is aboard — walking it at 5 km/h
+    # would be hours.
+    assert abs(walked.seconds - driven.seconds) < 120.0
+    assert walked.seconds < 2000.0
+
+
+def test_refusing_the_ferry_can_strand_an_island(bay_graph):
+    router = pyfvw.routing.Router(bay_graph)
+    west = pyfvw.geo.GeoPoint(32.70, -80.00)
+    island = pyfvw.geo.GeoPoint(32.751, -79.95)
+
+    assert router.route(west, island).found
+    # Not an error — an unreachable destination is an answer.
+    assert not router.route(west, island, ferry_penalty="exclude").found
+    # A price, however steep, never strands anybody.
+    assert router.route(west, island, ferry_penalty=1e6).found
+
+
+def test_the_avoidances_outrank_the_profile(bay_graph, tmp_path):
+    """The one place these two differ from every other profile-backed setting:
+    the argument wins, so 'this profile, but no ferries today' needs no
+    profile of its own."""
+    rules = tmp_path / "rules.json"
+    rules.write_text("""{
+      "version": 1, "default_profile": "car",
+      "profiles": { "car": {
+        "mode": "motor_vehicle", "speed": {"source":"posted"},
+        "ferry_penalty": "exclude",
+        "unlisted_classes": 1.0, "classes": {} } } }""")
+    router = pyfvw.routing.Router(bay_graph)
+    west = pyfvw.geo.GeoPoint(32.70, -80.00)
+    island = pyfvw.geo.GeoPoint(32.751, -79.95)
+
+    # The profile refuses ferries, so the island is unreachable...
+    assert not router.route(west, island, profile="car", rules=str(rules)).found
+    # ... until the query says otherwise.
+    assert router.route(west, island, profile="car", rules=str(rules),
+                        ferry_penalty=1.0).found
+
+
+def test_a_nonsense_avoidance_is_rejected_rather_than_ignored(bay_graph):
+    router = pyfvw.routing.Router(bay_graph)
+    west = pyfvw.geo.GeoPoint(32.70, -80.00)
+    east = pyfvw.geo.GeoPoint(32.70, -79.90)
+    for bad in (0.0, -3.0, True, "never"):
+        with pytest.raises(pyfvw.FvError):
+            router.route(west, east, toll_penalty=bad)
+
+
+def test_a_graph_built_without_ferries_simply_has_none(tmp_path):
+    path = tmp_path / "bay.osm"
+    path.write_text(_BAY_OSM)
+    with_boat = pyfvw.routing.RoadGraph.build([str(path)])
+    without = pyfvw.routing.RoadGraph.build([str(path)], include_ferries=False)
+    assert without.arc_count < with_boat.arc_count
+    router = pyfvw.routing.Router(without)
+    assert not router.route(pyfvw.geo.GeoPoint(32.70, -80.00),
+                            pyfvw.geo.GeoPoint(32.751, -79.95)).found
+
+
+# ---------------------------------------------------------------------------
+# Dragging a waypoint (the route overlay's press-move-release gesture)
+# ---------------------------------------------------------------------------
+#
+# The gesture is the first thing in the tree to use OverlayManager's mouse
+# CAPTURE, so these pin both halves: that the overlay turns pixels into a
+# position, and that the stack sends it every move once it has taken a press.
+
+
+def _canvas_with_font(w, h):
+    """A canvas the route overlay can draw on -- it labels its waypoints, and
+    text needs a face."""
+    canvas = pyfvw.canvas.CpuCanvas(w, h)
+    for f in ("/System/Library/Fonts/Supplemental/Arial.ttf",
+              "/Library/Fonts/Arial.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"):
+        if os.path.isfile(f):
+            canvas.set_default_font(f)
+            return canvas
+    pytest.skip("no host TTF font")
+
+
+def _route_module():
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "apps"))
+    try:
+        import route as route_mod
+        return route_mod
+    finally:
+        sys.path.pop(0)
+
+
+def _drag_fixture():
+    """A route of two waypoints in a stack, drawn once so the overlay knows
+    where its diamonds ARE — hit testing and the pixel-to-position conversion
+    both read what the last frame put on screen."""
+    route_mod = _route_module()
+    mgr = pyfvw.overlay.OverlayManager()
+    overlay = route_mod.RouteOverlay("drag me", [
+        ("WP1", 32.70, -80.00),
+        ("WP2", 32.60, -79.90),
+    ], manager=mgr)
+    mgr.add(overlay)
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(400, 400)
+    proj.set_center(pyfvw.geo.GeoPoint(32.65, -79.95))
+    proj.set_resolution(0.0008, 0.0008)
+    canvas = _canvas_with_font(400, 400)
+    mgr.draw_all(proj, canvas)
+    return mgr, overlay, proj, canvas
+
+
+def _ev(x, y):
+    return pyfvw.overlay.MouseEvent(x, y)
+
+
+def test_a_press_on_a_waypoint_captures_the_mouse_and_a_move_drags_it():
+    mgr, overlay, proj, canvas = _drag_fixture()
+    (label, wx, wy) = overlay._drawn[0]
+    before = dict((l, (lat, lon)) for l, lat, lon in overlay.waypoints)
+
+    assert mgr.mouse_capture is None
+    assert mgr.route_mouse_down(_ev(wx, wy))
+    assert overlay.selected == label
+    # Capture is the point: the drag survives the cursor leaving the diamond.
+    assert mgr.mouse_capture is overlay
+    # A press alone is a SELECTION — nothing has moved and nothing is undoable.
+    assert not overlay.can_undo()
+    assert dict((l, (lat, lon)) for l, lat, lon in overlay.waypoints) == before
+
+    assert mgr.route_mouse_move(_ev(wx + 60, wy + 40))
+    assert mgr.route_mouse_up(_ev(wx + 60, wy + 40))
+    assert mgr.mouse_capture is None
+
+    moved = dict((l, (lat, lon)) for l, lat, lon in overlay.waypoints)
+    assert moved[label] != before[label]
+    # The other waypoint is untouched, and order is preserved.
+    other = overlay._drawn[1][0]
+    assert moved[other] == before[other]
+    assert [w[0] for w in overlay.waypoints] == [label, other]
+
+    # It landed where the cursor did, through the same projection that drew it.
+    want = proj.surface_to_geo(wx + 60, wy + 40)
+    assert moved[label][0] == pytest.approx(want.lat, abs=1e-9)
+    assert moved[label][1] == pytest.approx(want.lon, abs=1e-9)
+
+    # The whole drag is ONE undo step, not one per move event.
+    assert overlay.can_undo()
+    overlay.undo()
+    assert dict((l, (lat, lon)) for l, lat, lon in overlay.waypoints) == before
+    assert not overlay.can_undo()
+
+
+def test_a_press_on_empty_map_is_declined_so_the_shell_can_pan():
+    mgr, overlay, _proj, _canvas = _drag_fixture()
+    assert not mgr.route_mouse_down(_ev(5, 5))
+    assert mgr.mouse_capture is None
+    assert not mgr.route_mouse_move(_ev(50, 50))
+    assert not mgr.route_mouse_up(_ev(50, 50))
+
+
+def test_escape_mid_drag_puts_the_waypoint_back_and_leaves_no_history():
+    mgr, overlay, _proj, _canvas = _drag_fixture()
+    (label, wx, wy) = overlay._drawn[0]
+    before = list(overlay.waypoints)
+
+    assert mgr.route_mouse_down(_ev(wx, wy))
+    assert mgr.route_mouse_move(_ev(wx + 80, wy - 30))
+    assert overlay.waypoints != before
+
+    k = pyfvw.overlay.key
+    assert mgr.route_key_down(pyfvw.overlay.KeyEvent(key=k.ESCAPE))
+    assert overlay.waypoints == before
+    assert mgr.mouse_capture is None
+    assert not overlay.can_undo()           # a cancelled drag is not history
+
+
+def test_a_still_press_and_release_is_a_selection_and_not_an_edit():
+    mgr, overlay, _proj, _canvas = _drag_fixture()
+    (label, wx, wy) = overlay._drawn[0]
+    before = list(overlay.waypoints)
+
+    assert mgr.route_mouse_down(_ev(wx, wy))
+    assert mgr.route_mouse_move(_ev(wx + 1, wy))   # inside the 3px slop
+    assert mgr.route_mouse_up(_ev(wx + 1, wy))
+    assert overlay.waypoints == before
+    assert not overlay.can_undo()
+    assert overlay.selected == label
+
+
+def test_leaving_edit_focus_cancels_a_drag_in_flight():
+    mgr, overlay, _proj, _canvas = _drag_fixture()
+    (label, wx, wy) = overlay._drawn[0]
+    before = list(overlay.waypoints)
+
+    assert mgr.route_mouse_down(_ev(wx, wy))
+    assert mgr.route_mouse_move(_ev(wx + 50, wy + 50))
+    overlay.release_edit_focus()
+    assert overlay.waypoints == before
+    assert mgr.mouse_capture is None
+    # And the overlay now declines the mouse entirely.
+    overlay.enter_edit_focus()
+    assert mgr.route_mouse_down(_ev(wx, wy))
+    overlay.release_edit_focus()
+    assert not mgr.route_mouse_down(_ev(wx, wy))
+
+
+# ---------------------------------------------------------------------------
+# Geographic contours (G1) through the binding
+# ---------------------------------------------------------------------------
+
+
+def _wide_proj(w=600, h=400, center=(40.0, -40.0), dpp=0.25):
+    p = pyfvw.engine.MapProjection()
+    p.set_surface_size(w, h)
+    p.set_center(pyfvw.geo.GeoPoint(*center))
+    p.set_resolution(dpp, dpp)
+    return p
+
+
+def test_a_great_circle_bows_poleward_and_a_rhumb_line_does_not():
+    """The property that distinguishes the two, asserted on GEOGRAPHY rather
+    than on pixels: between two points at the same latitude the shortest path
+    over the sphere goes nearer the pole, the constant-bearing line does not."""
+    # 0.05 deg/px over 60 deg of longitude is ~1200 px, so the ~20-px chord
+    # gives a real run of points to look at. (At 0.5 deg/px the same line is
+    # 120 px wide and correctly comes back as SIX points -- the step tracks
+    # the screen, which is the next test.)
+    proj = _wide_proj(dpp=0.05)
+    a = pyfvw.geo.GeoPoint(45.0, -70.0)
+    b = pyfvw.geo.GeoPoint(45.0, -10.0)
+    k = pyfvw.geo.LineKind
+
+    gc = pyfvw.geo.line_points(proj, a, b, k.GREAT_CIRCLE, clip=False)
+    rh = pyfvw.geo.line_points(proj, a, b, k.RHUMB, clip=False)
+    simple = pyfvw.geo.line_points(proj, a, b, k.SIMPLE, clip=False)
+
+    assert len(gc) > 10                     # densified, not two endpoints
+    assert max(p.lat for p in gc) > 45.5     # bows toward the pole
+    assert max(p.lat for p in rh) == pytest.approx(45.0, abs=1e-6)
+    assert len(simple) == 2                  # nothing between the endpoints
+
+    # Both still start and end where they were asked to.
+    for run in (gc, rh, simple):
+        assert run[0].lat == pytest.approx(a.lat, abs=1e-6)
+        assert run[-1].lon == pytest.approx(b.lon, abs=1e-6)
+
+
+def test_the_step_size_tracks_the_SCREEN_and_not_the_line_length():
+    """The reason a 10,000 km arc is affordable: the walk steps in ~20-pixel
+    chords off the projection's degrees-per-pixel, so zooming IN over the same
+    two points buys more points, not the same ones spread further apart."""
+    a = pyfvw.geo.GeoPoint(20.0, -60.0)
+    b = pyfvw.geo.GeoPoint(50.0, 10.0)
+    k = pyfvw.geo.LineKind
+    coarse = pyfvw.geo.line_points(_wide_proj(dpp=0.5), a, b, k.GREAT_CIRCLE,
+                                   clip=False)
+    fine = pyfvw.geo.line_points(_wide_proj(dpp=0.05), a, b, k.GREAT_CIRCLE,
+                                 clip=False)
+    assert len(fine) > 3 * len(coarse)
+
+
+def test_a_line_that_misses_the_viewport_clips_away_to_nothing():
+    """Clipping happens in GEOGRAPHIC space BEFORE the densify, which is the
+    property worth having: a line nowhere near the screen costs a search."""
+    proj = _wide_proj(center=(0.0, 0.0), dpp=0.05)   # a small window at 0,0
+    k = pyfvw.geo.LineKind
+    far_a = pyfvw.geo.GeoPoint(60.0, 100.0)
+    far_b = pyfvw.geo.GeoPoint(61.0, 120.0)
+    assert pyfvw.geo.line_path(proj, far_a, far_b, k.GREAT_CIRCLE) == []
+    # ... and unclipped it is a real line; the clip is what emptied it.
+    assert pyfvw.geo.line_points(proj, far_a, far_b, k.GREAT_CIRCLE,
+                                 clip=False)
+
+
+def test_a_path_comes_back_as_strokable_subpaths():
+    proj = _wide_proj()
+    k = pyfvw.geo.LineKind
+    paths = pyfvw.geo.line_path(proj, pyfvw.geo.GeoPoint(35.0, -50.0),
+                                pyfvw.geo.GeoPoint(45.0, -30.0),
+                                k.GREAT_CIRCLE)
+    assert paths
+    for sub in paths:
+        assert len(sub) >= 2                 # a 1-point sub-path is dropped
+        for x, y in sub:
+            assert isinstance(x, float) and isinstance(y, float)
+
+
+def test_a_polyline_densifies_every_leg_and_a_circle_closes():
+    proj = _wide_proj(dpp=0.5)
+    k = pyfvw.geo.LineKind
+    pts = [pyfvw.geo.GeoPoint(30.0, -60.0),
+           pyfvw.geo.GeoPoint(45.0, -40.0),
+           pyfvw.geo.GeoPoint(35.0, -20.0)]
+    gc = pyfvw.geo.polyline_path(proj, pts, k.GREAT_CIRCLE)
+    simple = pyfvw.geo.polyline_path(proj, pts, k.SIMPLE)
+    assert sum(len(s) for s in gc) > sum(len(s) for s in simple)
+    assert sum(len(s) for s in simple) == 3        # one run, three corners
+
+    ring = pyfvw.geo.circle_path(proj, pyfvw.geo.GeoPoint(40.0, -40.0),
+                                 200000.0)
+    assert len(ring) == 1
+    assert ring[0][0] == pytest.approx(ring[0][-1])   # closed
+    arc = pyfvw.geo.arc_path(proj, pyfvw.geo.GeoPoint(40.0, -40.0), 200000.0,
+                             0.0, 90.0)
+    # A quarter sweep gets a quarter of the points, not the same number.
+    assert 0.2 < len(arc[0]) / len(ring[0]) < 0.35
+    assert arc[0][0] != arc[0][-1]                    # and is not closed
+
+
+def test_the_route_overlay_draws_its_legs_as_great_circles_by_default():
+    """Step 2's acceptance test: the route's own rendering goes through G1,
+    so a long leg is an ARC on screen and not the chord between two pixels."""
+    route_mod = _route_module()
+    overlay = route_mod.RouteOverlay("transatlantic", [
+        ("WP1", 45.0, -70.0),
+        ("WP2", 45.0, -10.0),
+    ])
+    assert overlay.leg_kind == pyfvw.geo.LineKind.GREAT_CIRCLE
+
+    proj = _wide_proj(w=600, h=400, center=(47.0, -40.0), dpp=0.25)
+    canvas = _canvas_with_font(600, 400)
+
+    def ink_rows():
+        canvas.clear((255, 255, 255))
+        overlay.on_draw(proj, canvas)
+        arr = np.asarray(canvas.buffer)
+        # The row the line occupies at the horizontal centre of the surface.
+        col = arr[:, 300, :3]
+        return [y for y in range(400) if (col[y] != 255).any()]
+
+    # Endpoints project to the same row, so a straight leg is flat there...
+    overlay.leg_kind = pyfvw.geo.LineKind.SIMPLE
+    flat = ink_rows()
+    overlay.leg_kind = pyfvw.geo.LineKind.GREAT_CIRCLE
+    bowed = ink_rows()
+    assert flat and bowed
+    # ... and the great circle is drawn NORTH of it (smaller y = further up).
+    assert min(bowed) < min(flat) - 5
+
+
+def test_a_clipped_away_leg_breaks_the_run(recwarn):
+    """G3 closed this, and the assertion below is the OPPOSITE of the one that
+    stood here through G1 and G2.
+
+    contour.cpp's AdvanceLeg always said that a leg which emitted nothing
+    (clipped away) BREAKS the run -- "otherwise two disjoint visible stretches
+    would be joined by a line that was never there" -- and it correctly kept
+    the next leg's first point. What it could not do was SAY so:
+    IGeoContour::NextPoint is a flat point stream, and BuildGeoPath broke a
+    sub-path only on a projection failure or a >180-degree longitude step, so
+    the join happened anyway. G3 added IGeoContour::AtBreak(), asked after
+    NextPoint and about the point that call produced, and BuildGeoPath flushes
+    on it.
+    """
+    proj = _wide_proj(center=(0.0, 0.0), dpp=0.02)   # a ~12x8 degree window
+    k = pyfvw.geo.LineKind
+    pts = [pyfvw.geo.GeoPoint(0.5, -1.0),            # in view
+           pyfvw.geo.GeoPoint(60.0, 150.0),          # far away
+           pyfvw.geo.GeoPoint(61.0, 155.0),          # this leg misses entirely
+           pyfvw.geo.GeoPoint(-0.5, 1.0)]            # back in view
+    broken = pyfvw.geo.polyline_path(proj, pts, k.SIMPLE)
+    assert len(broken) == 2, "the two visible stretches must not be joined"
+
+    # Leg by leg gives the same picture, which is the workaround RouteOverlay
+    # used before this and also the assertion that the clip really did reject
+    # the middle leg.
+    per_leg = [pyfvw.geo.line_path(proj, a, b, k.SIMPLE)
+               for a, b in zip(pts, pts[1:])]
+    assert per_leg[1] == []
+    assert per_leg[0] and per_leg[2]
+
+    # What does NOT break a run, and is not meant to: a waypoint merely off the
+    # edge of the SURFACE still projects, to a coordinate outside 0..w.
+    whole = pyfvw.geo.polyline_path(proj, pts, k.SIMPLE, clip=False)
+    assert len(whole) == 1 and len(whole[0]) == 4
+    assert any(x > 600 or x < 0 for x, _y in whole[0])
+
+
+# ---------------------------------------------------------------------------
+# pyfvw.symbol / pyfvw.draw (G2 + G3)
+# ---------------------------------------------------------------------------
+
+
+def _harbour_proj(w=400, h=300):
+    p = pyfvw.engine.MapProjection()
+    p.set_surface_size(w, h)
+    p.set_center(pyfvw.geo.GeoPoint(32.75, -79.90))
+    p.set_resolution(0.0004, 0.0004)
+    return p
+
+
+def _ink(canvas):
+    a = np.asarray(canvas.buffer)[:, :, :3]
+    return int((a != 255).any(axis=2).sum())
+
+
+def _count(canvas, rgb):
+    a = np.asarray(canvas.buffer)[:, :, :3]
+    return int((a == np.array(rgb, dtype=np.uint8)).all(axis=2).sum())
+
+
+def test_the_line_presets_are_a_table_and_solid_is_the_plain_pen():
+    """LineSegmentRenderer.cpp's 15 classes are one operation -- stamp a shape
+    every N px along the path -- so they are DATA here, not code. Solid is the
+    exception and deliberately carries no pattern: expressing it as a one-run
+    cycle would cost a placer walk to draw what draw_lines draws."""
+    assert "solid" in pyfvw.draw.PRESETS and "railroad" in pyfvw.draw.PRESETS
+    assert not pyfvw.draw.preset_line("solid", (0, 0, 0), 2).has_pattern
+    assert pyfvw.draw.preset_line("dash", (0, 0, 0), 2).has_pattern
+    # An unknown name draws a LINE rather than nothing.
+    assert not pyfvw.draw.preset_line("no-such", (0, 0, 0), 2).has_pattern
+
+
+def test_geodraw_strokes_a_geodesic_and_a_casing_goes_under_it():
+    proj = _harbour_proj()
+    canvas = pyfvw.canvas.CpuCanvas(400, 300)
+    canvas.clear((255, 255, 255))
+    d = pyfvw.draw.GeoDraw(proj, canvas)
+    style = pyfvw.draw.solid_line((40, 90, 210), 3)
+    style.add_casing((220, 30, 30), 2)
+    d.line(pyfvw.geo.GeoPoint(32.75, -79.94), pyfvw.geo.GeoPoint(32.75, -79.86),
+           style, pyfvw.geo.LineKind.SIMPLE)
+    col = np.asarray(canvas.buffer)[:, 200, :3]
+    rows = [y for y in range(300) if (col[y] != 255).any()]
+    assert rows
+    # The topmost ink in the column is the casing; the line is inside it.
+    assert tuple(col[rows[0]]) == (220, 30, 30)
+    assert any(tuple(col[y]) == (40, 90, 210) for y in rows)
+
+
+def test_geodraw_stamps_a_builtin_symbol_and_says_so_when_the_id_is_wrong():
+    proj = _harbour_proj()
+    canvas = pyfvw.canvas.CpuCanvas(400, 300)
+    canvas.clear((255, 255, 255))
+    lib = pyfvw.symbol.BuiltinSymbolLibrary()
+    lib.set_color((0, 0, 255))
+    d = pyfvw.draw.GeoDraw(proj, canvas, lib)
+    d.symbol(proj.center, pyfvw.symbol.builtin.DIAMOND, scale=2.0)
+    assert d.draws_emitted == 1
+    assert tuple(np.asarray(canvas.buffer)[150, 200, :3]) == (0, 0, 255)
+    # A mistyped id is the likeliest failure and is invisible otherwise, so it
+    # raises rather than drawing nothing.
+    with pytest.raises(pyfvw.FvError):
+        d.symbol(proj.center, "fv.no-such-symbol")
+
+
+def test_geodraw_fills_a_pick_index_from_the_ink_it_emitted():
+    proj = _harbour_proj()
+    canvas = pyfvw.canvas.CpuCanvas(400, 300)
+    canvas.clear((255, 255, 255))
+    d = pyfvw.draw.GeoDraw(proj, canvas)
+    assert not d.pick_enabled          # off by default, unlike the chart renderer
+    d.pick_enabled = True
+    d.set_feature(11)
+    d.line(pyfvw.geo.GeoPoint(32.75, -79.94), pyfvw.geo.GeoPoint(32.75, -79.86),
+           pyfvw.draw.solid_line((0, 0, 0), 3), pyfvw.geo.LineKind.SIMPLE)
+    hits = d.hit_test(200, 150, 4.0)
+    assert hits and hits[0][0] == 11
+    assert d.hit_test(200, 40, 4.0) == []
+
+
+def test_the_route_line_says_which_MODE_it_was_priced_as():
+    """The user-visible half of G3 on this overlay: a calculated route is blue
+    over a white casing, DASHED when it was priced as a bicycle route, and an
+    uncalculated one stays the overlay's own red straight legs."""
+    route_mod = _route_module()
+    proj = _harbour_proj()
+    overlay = route_mod.RouteOverlay("styled", [
+        ("A", 32.73, -79.94),
+        ("B", 32.77, -79.86),
+    ])
+
+    def draw():
+        canvas = _canvas_with_font(400, 300)
+        canvas.clear((200, 200, 200))
+        overlay.on_draw(proj, canvas)
+        return canvas
+
+    # Uncalculated: red, and no blue road line anywhere.
+    straight = draw()
+    assert _count(straight, (40, 90, 210)) == 0
+    assert _count(straight, overlay.color) > 100
+
+    legs = [[pyfvw.geo.GeoPoint(32.73, -79.94),
+             pyfvw.geo.GeoPoint(32.75, -79.90),
+             pyfvw.geo.GeoPoint(32.77, -79.86)]]
+    overlay.road_legs = legs
+    overlay.road_is_bicycle = False
+    car = draw()
+    overlay.road_is_bicycle = True
+    bike = draw()
+
+    car_blue = _count(car, (40, 90, 210))
+    bike_blue = _count(bike, (40, 90, 210))
+    assert car_blue > 0 and bike_blue > 0
+    # The dash is the whole point: the same geometry, less of it inked.
+    assert bike_blue < car_blue
+    # Both wear the white casing, which the grey background makes visible.
+    assert _count(car, (255, 255, 255)) > 0
+    assert _count(bike, (255, 255, 255)) > 0
+
+
+def test_which_requests_count_as_a_bicycle_route():
+    """The line's dash follows the ROUTE REQUEST, and a profile named on the
+    call wins because it overrides cycle_only in the router too. Matched on the
+    name because the rule file owns the profiles and a user may well call
+    theirs 'bicycle-winter'."""
+    is_bike = _route_module().RouteOverlay._is_bicycle_request
+    assert is_bike("bicycle", False)
+    assert is_bike("bike-fast", False)
+    assert is_bike("", True)
+    assert not is_bike("", False)
+    assert not is_bike("car_no_tolls", True)

@@ -39,6 +39,8 @@ add_library(fv_geosym STATIC
   ${GEOSYM}/SymColors.cpp
   ${GEOSYM}/CGMFile.cpp
   fv_cgm_symbol.cpp
+  fv_cgm_to_symbol.cpp
+  fv_cgm_library.cpp
   fv_geosym_style.cpp
 )
 # fvw_core/Common carries CGMDefines.h (the CGM opcode constants). NOTE it
@@ -57,7 +59,8 @@ target_link_libraries(fv_geosym PUBLIC fv_compat fv_fvkit)
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_geosym_test test/geosym_test.cpp test/cgm_symbol_test.cpp
-                             test/geosym_style_test.cpp)
+                             test/geosym_style_test.cpp
+                             test/cgm_library_test.cpp)
   # fv_vpf: the V5b end-to-end test renders real DNC through the seam.
 # fv_png: golden-PNG side channel, same convention as canvas_test.
 target_link_libraries(fv_geosym_test PRIVATE fv_geosym fv_vpf fv_png

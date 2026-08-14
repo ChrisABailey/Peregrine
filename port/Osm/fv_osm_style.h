@@ -49,7 +49,7 @@
 //   text-field     the `{tag}` token form ("{name:latin}", "{name} {ref}").
 //                  An expression form: rejected.
 //
-// TWO DELIBERATE DEVIATIONS, both counted rather than remembered:
+// THREE DELIBERATE DEVIATIONS, all counted rather than remembered:
 //
 //   * `sprite` and `glyphs` URLs are IGNORED by design (the ledger's O2 row
 //     says so). Icons and glyph atlases are network/asset plumbing; text goes
@@ -57,6 +57,15 @@
 //     is recorded in ignored_icons() instead of drawn. A symbol layer with an
 //     icon and no text therefore contributes nothing — which is visible in the
 //     diagnostics, not silent.
+//   * `text-halo-blur` is IGNORED, while `text-halo-color` and
+//     `text-halo-width` are honoured (T2). The halo is a stamped dilation —
+//     the string redrawn 4-8 times a pixel or two off in the halo colour, the
+//     way Windows FalconView drew it — so there is no coverage for a blur
+//     radius to soften. Ignored rather than rejected because every
+//     OpenMapTiles-derived style carries a blur beside a width, and failing
+//     the whole sheet over the one property whose absence is least visible
+//     would be the declared-subset rule turned against itself.
+//     ignored_halo_blur() counts it.
 //   * COLOUR STOPS STEP, numeric stops INTERPOLATE. MapLibre interpolates
 //     colour ramps too; stepping at the last stop at or below the zoom is a
 //     visible-only-side-by-side difference, and it keeps the one place where
@@ -170,6 +179,12 @@ class OsmStyleEngine : public LookupTableStyleEngine {
   // text-field tokens that named a tag the feature did not have. An empty
   // label is skipped rather than drawn blank.
   size_t empty_labels() const;
+  // Style layers that asked for `text-halo-blur`. A load-time count, not a
+  // per-render one, so ResetDiagnostics() leaves it alone: it describes the
+  // STYLE (see the header's deviation list — the halo is stamped, so a blur
+  // radius has nothing to act on), and the answer does not change until the
+  // next LoadText.
+  size_t ignored_halo_blur() const;
   void ResetDiagnostics();
 
  protected:

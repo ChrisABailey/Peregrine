@@ -619,6 +619,31 @@ TEST(S52Raster, AuthoredPivotIsKeptUnlessItIsOffTheTileEntirely) {
   EXPECT_DOUBLE_EQ(ctn->pivot_y, 14.5);
 }
 
+// The one family the rule above must not touch: a sounding digit is a 6x10
+// glyph whose PIVOT IS ITS SLOT on the 7 px grid S-52 sets a sounding on, so
+// nearly every one of them is "off its own tile" by construction. Re-centred,
+// a two-digit sounding stacks its digits on top of each other and its
+// decimetre stops being a subscript — which is what it did.
+TEST(S52Raster, SoundingDigitsKeepTheOffTilePivotThatIsTheirLayout) {
+  OPEN_LIB(lib);
+  // Positions 3, 2, 1, 0, 4 read left to right on a 7 px pitch...
+  const struct { const char* name; double pivot_x; } kSlots[] = {
+      {"SOUNDS30", 19.0}, {"SOUNDS20", 12.0}, {"SOUNDS10", 5.0},
+      {"SOUNDS00", -2.0}, {"SOUNDS40", -9.0}};
+  for (const auto& s : kSlots) {
+    const fv::SymbolPixmap* p = lib.SymbolBitmap(s.name);
+    ASSERT_NE(p, nullptr) << s.name << ": " << lib.raster_sheet_error();
+    EXPECT_DOUBLE_EQ(p->pivot_x, s.pivot_x) << s.name;
+    EXPECT_DOUBLE_EQ(p->pivot_y, 4.0) << s.name;
+  }
+  // ...and position 5 repeats position 0's column with the pivot 4 px higher,
+  // which drops the glyph half a line: the decimetre subscript.
+  const fv::SymbolPixmap* sub = lib.SymbolBitmap("SOUNDS50");
+  ASSERT_NE(sub, nullptr);
+  EXPECT_DOUBLE_EQ(sub->pivot_x, -2.0);
+  EXPECT_DOUBLE_EQ(sub->pivot_y, 0.0);
+}
+
 TEST(S52Raster, UnknownAndVectorOnlyNamesHaveNoTile) {
   OPEN_LIB(lib);
   EXPECT_EQ(lib.SymbolBitmap("NOSUCH99"), nullptr);

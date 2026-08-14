@@ -82,6 +82,13 @@ class GeoSymStyleEngine : public LookupTableStyleEngine {
   // engine hands out, exactly where sld.m_ColorAdjuster sat on Windows.
   void SetColorAdjust(int brightness, int contrast);
 
+  // MARINER SETTINGS come from the shared core (mariner() / SetMariner(),
+  // fvkit/vector/mariner.h). DNC honours all of them except `safety_depth`,
+  // which has no VPF counterpart — GeoSym's ssdc is both the safety contour
+  // and the sounding threshold, so `safety_contour` alone drives both. The
+  // engine's defaults are CECDISValues': safety 10 m, shallow 2 m, deep 30 m,
+  // four shades, shallow pattern ON.
+
   // Diagnostics / tests.
   size_t row_count() const;             // assignment rows kept for the product
   size_t symbols_loaded() const;        // CGM files parsed so far
@@ -96,6 +103,11 @@ class GeoSymStyleEngine : public LookupTableStyleEngine {
   bool AcceptContext(const StyleContext& ctx) const override;
 
  private:
+  // Re-derives the ATTEXP pseudo-attributes (ssdc/msdc/mssc/idsm/isdm) from
+  // the shared MarinerSettings. Called from the constructor and, when the
+  // mariner epoch has moved, from StyleFeature.
+  void ApplyMariner();
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

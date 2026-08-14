@@ -1409,6 +1409,72 @@ TEST(VectorRenderer, AnAlongPathLabelTurnsWithItsLine) {
   EXPECT_FALSE(rb.pick_index().empty()) << "an along-path label is identifiable";
 }
 
+// A point label hangs off its anchor by halign/valign. The canvas draws
+// baseline-left, so kLeft/kBaseline must stay a no-op — GeoSym and OSM both
+// pre-compute a dx/dy and say nothing about alignment, and neither may move.
+TEST(VectorRenderer, PointLabelAlignmentHangsTheBoxOffTheAnchor) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  // One vertex dead centre of a 200x200 viewport, so the anchor is (100, 100)
+  // and every assertion below is about which side of it the ink landed.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("p", {{0.0, 0.0}, {0.0, 0.0}}));
+
+  auto measure = [&](fv::LabelHAlign h, fv::LabelVAlign v) {
+    auto eng = std::make_shared<LabelStyleEngine>();
+    eng->label.valid = true;
+    eng->label.text = "Anchor";
+    eng->label.style.font_path = font;
+    eng->label.style.size = 20;
+    eng->label.style.color = fv::FvColor{255, 255, 255, 255};
+    eng->label.halign = h;
+    eng->label.valign = v;
+    fv::CpuCanvas c(200, 200);
+    c.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, eng);
+    EXPECT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+    return Measure(c.Buffer());
+  };
+
+  const Ink base = measure(fv::LabelHAlign::kLeft, fv::LabelVAlign::kBaseline);
+  ASSERT_GT(base.count, 20) << "the label drew nothing";
+  // The default: text runs RIGHT from the anchor and sits ABOVE the baseline.
+  EXPECT_GE(base.x0, 99);
+  EXPECT_LE(base.y1, 101);
+
+  const Ink right = measure(fv::LabelHAlign::kRight, fv::LabelVAlign::kBaseline);
+  EXPECT_LE(right.x1, 101) << "right-justified text ends at the anchor";
+  EXPECT_LT(right.x0, base.x0);
+  // Same string, same size: justification MOVES the box, it does not resize it.
+  EXPECT_NEAR(right.width(), base.width(), 2);
+  EXPECT_EQ(right.count, base.count);
+
+  const Ink centre =
+      measure(fv::LabelHAlign::kCenter, fv::LabelVAlign::kBaseline);
+  EXPECT_LT(centre.x0, 100);
+  EXPECT_GT(centre.x1, 100);
+  EXPECT_NEAR((centre.x0 + centre.x1) / 2.0, 100.0, 4.0);
+
+  // kTop pushes the baseline DOWN by the box height, so the ink hangs below
+  // the anchor instead of standing on it.
+  const Ink top = measure(fv::LabelHAlign::kLeft, fv::LabelVAlign::kTop);
+  EXPECT_GT(top.y0, base.y0);
+  EXPECT_GE(top.y0, 100) << "a top-aligned label hangs below its anchor";
+
+  const Ink vcentre =
+      measure(fv::LabelHAlign::kLeft, fv::LabelVAlign::kCenter);
+  EXPECT_LT(vcentre.y0, 100);
+  EXPECT_GT(vcentre.y1, 100) << "a centred label straddles its anchor";
+
+  // kBottom is the baseline by another name: the box model runs from
+  // baseline-height to baseline, so there is nothing left to subtract.
+  const Ink bottom =
+      measure(fv::LabelHAlign::kLeft, fv::LabelVAlign::kBottom);
+  EXPECT_EQ(bottom.y0, base.y0);
+  EXPECT_EQ(bottom.y1, base.y1);
+}
+
 TEST(VectorRenderer, ALabelLongerThanItsRoadIsNotDrawn) {
   const std::string font = SystemFont();
   if (font.empty()) GTEST_SKIP() << "no known system TTF";
@@ -1505,6 +1571,185 @@ TEST(VectorRenderer, ALabelReferenceScaleIsOffUntilItIsSet) {
   const Ink c = render(500000.0, 500000.0), d = render(250000.0, 500000.0);
   EXPECT_EQ(c.height(), a.height()) << "at the reference scale, nothing moves";
   EXPECT_NEAR(static_cast<double>(d.height()) / c.height(), 2.0, 0.35);
+}
+
+// --- halo (T2) --------------------------------------------------------------
+//
+// Counts of ink by COLOUR, which is what a halo test is really about: the
+// outline has to be its own colour, outside the face, without eating the face.
+struct Tally {
+  long fill = 0;   // green
+  long halo = 0;   // red
+  int x0 = 1 << 20, y0 = 1 << 20, x1 = -1, y1 = -1;  // the halo's box
+};
+Tally CountInk(const fv::PixelBuffer& b) {
+  Tally t;
+  for (int y = 0; y < b.Height(); ++y)
+    for (int x = 0; x < b.Width(); ++x) {
+      const unsigned char* p = Px(b, x, y);
+      // Deliberately a classification with a NEUTRAL BAND rather than a
+      // nearest-colour split. The glyph's antialiased rim is green over red
+      // and belongs to neither count; folding it into one would make "the
+      // halo ate the face" and "the face has a blended edge" the same
+      // measurement, which is exactly the distinction these tests exist for.
+      if (p[1] >= 150 && p[0] <= 100) {
+        ++t.fill;
+      } else if (p[0] >= 150 && p[1] <= 100) {
+        ++t.halo;
+        t.x0 = std::min(t.x0, x);
+        t.y0 = std::min(t.y0, y);
+        t.x1 = std::max(t.x1, x);
+        t.y1 = std::max(t.y1, y);
+      }
+    }
+  return t;
+}
+
+std::shared_ptr<LabelStyleEngine> HaloLabel(const std::string& font,
+                                            double halo_width) {
+  auto s = std::make_shared<LabelStyleEngine>();
+  s->label.valid = true;
+  s->label.text = "Ash";
+  s->label.style.font_path = font;
+  s->label.style.size = 24;
+  s->label.style.color = fv::FvColor{0, 255, 0, 255};
+  s->label.halo_width = halo_width;
+  s->label.halo_color = fv::FvColor{255, 0, 0, 255};
+  return s;
+}
+
+TEST(VectorRendererHalo, OutlinesTheTextWithoutEatingIt) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("p", {{0.0, 0.0}, {0.0, 0.0}}));
+
+  auto render = [&](double halo_width, Tally* t, size_t* halo_draws,
+                    size_t* draws) {
+    auto style = HaloLabel(font, halo_width);
+    fv::CpuCanvas c(200, 200);
+    c.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    ASSERT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+    *t = CountInk(c.Buffer());
+    *halo_draws = r.halo_draws();
+    *draws = r.draws_emitted();
+  };
+
+  Tally none, haloed;
+  size_t none_halo = 0, haloed_halo = 0, none_draws = 0, haloed_draws = 0;
+  render(0.0, &none, &none_halo, &none_draws);
+  render(1.0, &haloed, &haloed_halo, &haloed_draws);
+
+  ASSERT_GT(none.fill, 50) << "the label drew nothing to begin with";
+  EXPECT_EQ(none.halo, 0) << "no halo was asked for";
+  EXPECT_EQ(none_halo, 0u);
+
+  // Four stamps at one pixel — the offsets FalconView used.
+  EXPECT_EQ(haloed_halo, 4u);
+  // And the label is still ONE draw: a haloed label must not inflate the
+  // number every other draw-count assertion is written against.
+  EXPECT_EQ(haloed_draws, none_draws);
+
+  EXPECT_GT(haloed.halo, 50) << "the halo put no ink down";
+  // The face survives: the halo goes UNDER the text, so the glyph cores are
+  // all still there. (Not exactly equal — a rim pixel that was green over
+  // black is now green over red and falls into the neutral band.)
+  EXPECT_GT(haloed.fill, none.fill * 0.9);
+  // And it is OUTSIDE the face, so the coloured area grew.
+  EXPECT_GT(haloed.fill + haloed.halo, none.fill);
+}
+
+TEST(VectorRendererHalo, AWiderHaloReachesFurtherAndAddsTheDiagonals) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("p", {{0.0, 0.0}, {0.0, 0.0}}));
+
+  auto render = [&](double halo_width, Tally* t, size_t* halo_draws) {
+    auto style = HaloLabel(font, halo_width);
+    fv::CpuCanvas c(200, 200);
+    c.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    ASSERT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+    *t = CountInk(c.Buffer());
+    *halo_draws = r.halo_draws();
+  };
+
+  Tally thin, thick;
+  size_t thin_draws = 0, thick_draws = 0;
+  render(1.0, &thin, &thin_draws);
+  render(3.0, &thick, &thick_draws);
+
+  EXPECT_EQ(thin_draws, 4u);
+  EXPECT_EQ(thick_draws, 8u) << "past one pixel the corners need the diagonals";
+  // Three pixels out on each side, so the outline's box is wider and taller
+  // than the one-pixel outline's. Not an exact +4: the diagonals sit on the
+  // circle of radius r, not at the square's corner.
+  EXPECT_GT(thick.x1 - thick.x0, thin.x1 - thin.x0);
+  EXPECT_GT(thick.y1 - thick.y0, thin.y1 - thin.y0);
+  EXPECT_GT(thick.halo, thin.halo);
+}
+
+// A halo is authored in pixels against the authored text size. When the label
+// grows — kMeters, or a label reference scale — the outline has to grow with
+// it, or a 40 px name wears a one-pixel thread.
+TEST(VectorRendererHalo, TheOutlineGrowsWithTheTextItOutlines) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("r", {{-0.01, 0.0}, {0.01, 0.0}}));
+
+  auto render = [&](double scale, double ref) {
+    auto style = HaloLabel(font, 1.0);
+    fv::CpuCanvas c(400, 400);
+    c.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::MapProjection p;
+    p.SetSurfaceSize(400, 400);
+    p.SetCenter(fv::GeoPoint{0.0, 0.0});
+    p.SetScale(scale);
+    fv::VectorRenderer r(src, style);
+    r.SetLabelReferenceScale(ref);
+    EXPECT_TRUE(r.Render(p, &c).ok());
+    return r.halo_draws();
+  };
+
+  // At the reference scale the text is its authored size and the 1 px halo is
+  // the four-stamp ring. Zoomed in 4x the text is 4x and the halo is 4 px,
+  // which is past the point the diagonals are needed.
+  EXPECT_EQ(render(500000.0, 500000.0), 4u);
+  EXPECT_EQ(render(125000.0, 500000.0), 8u);
+}
+
+TEST(VectorRendererHalo, AnAlongPathLabelIsOutlinedGlyphByGlyph) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("r", {{-60.0, 0.0}, {60.0, 0.0}}));
+
+  auto style = HaloLabel(font, 1.0);
+  style->label.text = "Main Street";
+  style->label.placement = fv::LabelPlacement::kAlongPath;
+
+  fv::CpuCanvas c(200, 200);
+  c.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+
+  const Tally t = CountInk(c.Buffer());
+  ASSERT_GT(t.fill, 50) << "the rotated label drew nothing";
+  EXPECT_GT(t.halo, 50) << "a rotated glyph got no halo";
+  // Four stamps per drawn glyph, and the glyphs of a name on a north-south
+  // road all land on the canvas.
+  EXPECT_EQ(r.halo_draws() % 4, 0u);
+  EXPECT_GE(r.halo_draws(), 4u * 8u);
+  // The outline stands up with the text rather than lying flat, i.e. it is in
+  // screen space around a rotated run, not a horizontal smear.
+  EXPECT_GT(t.y1 - t.y0, t.x1 - t.x0);
 }
 
 TEST(VectorRenderer, StyleContextCarriesDpiAndSymbolScale) {

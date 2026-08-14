@@ -67,6 +67,20 @@ struct PixelRect {
   int height = 0;
 };
 
+// A SUB-PIXEL surface coordinate, same axes and origin as PixelPoint. It is
+// what everything between "project a geographic point" and "round it for the
+// canvas" carries: a projected vertex, a placer's stamp position, a clipped
+// polyline vertex.
+//
+// Lives here rather than in fvkit/vector/renderer.h (where it was declared
+// through G1) because it is a D4 pixel primitive and nothing about it is
+// vector-specific — fvkit/geo/contour.h needs it and has no business pulling
+// in the whole vector seam to get it.
+struct SurfacePoint {
+  double x = 0.0;
+  double y = 0.0;
+};
+
 // ---------------------------------------------------------------------------
 // GeoPoint / GeoRect (D2)
 // ---------------------------------------------------------------------------

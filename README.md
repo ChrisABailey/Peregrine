@@ -10,9 +10,11 @@ incremental port: modules move over one at a time, each one compiler-driven,
 test-pinned against real map data, and kept byte-faithful to the Windows
 original.
 
-Status: **the core raster and vector readers work headlessly.** You can render a
-georeferenced map to a PNG from the command line, pan it interactively in the
-Python demo, and read a DNC vector database — all without Windows, MFC or COM.
+Status: **the core raster and vector readers work headlessly, and there is now
+an application layer over them.** You can render a georeferenced map to a PNG
+from the command line, pan it interactively in the Python demo, read DNC, ENC
+and OpenStreetMap vector data, stack and save overlays, and compute a road
+route — all without Windows, MFC or COM.
 
 ## Build
 
@@ -41,14 +43,17 @@ which is not distributed here (`ctest` reports a skipped test as passing; the
 |-------|-----------|
 | Geodesy | Geoid separation, GEOTRANS datum/ellipsoid conversion, MGRS/UTM/DMS parsing, great-circle and rhumb-line geodesics |
 | Raster formats | DTED elevation, DTED shaded relief (hill-shading, elevation/slope bands, contours, time-of-day sun), CADRG/RPF (VQ decode), GeoTIFF, TIROS, GeoPackage tile packs |
-| Vector formats | VPF/DNC — libraries, coverages, tile grids, feature classes, and point/line/area features with face topology; ENC (S-57 over an ISO 8211 reader, base editions) |
-| Symbology | GeoSym rule engine (ATTEXP conditions, COLOR/TEXT tables) and CGM symbol parsing, driving a shared vector renderer: styled strokes, area fills, depth-shaded bathymetry, point symbols and labels |
+| Vector formats | VPF/DNC — libraries, coverages, tile grids, feature classes, and point/line/area features with face topology; ENC (S-57 over an ISO 8211 reader, base editions); OpenStreetMap vector tiles (MBTiles containers, Mapbox Vector Tile decode) |
+| Symbology | GeoSym rule engine (ATTEXP conditions, COLOR/TEXT tables) and CGM symbol parsing, S-52 presentation library for charts, and a MapLibre style-JSON loader for OSM — all driving one vector renderer: styled strokes, area fills, depth-shaded bathymetry, point symbols, and labels set along a path |
 | Identify | Click-to-identify over a pick index built from the primitives actually drawn, with VPF value dictionaries decoding codes to text |
 | Catalog | SQLite + R-tree coverage catalog, scale-aware series selection, antimeridian-correct queries |
-| Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), equal-arc projection at true physical scale, a map engine that resamples frames into a viewport, and an overlay system |
-| Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays, vector sources and style engines |
-| Apps | `PythonView.py` — a desktop map viewer over the bindings (family menus, coverage overlay, identify) |
-| Tools | `fvrender` renders a map to PNG; `fvpack` builds offline GeoPackage tile packs |
+| Routing | A routable road graph built offline from raw `.osm`/`.osm.pbf` extracts: bidirectional Dijkstra, driving/walking/cycling profiles, turn restrictions, gated and tolled ways, ferries, and ordered via-stops; costs live in an editable JSON rule file that is reread while the app runs |
+| Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), equal-arc projection at true physical scale, a map engine that resamples frames into a viewport, and geographic drawing (great-circle lines, symbol libraries) |
+| App layer | Overlay stack with a type registry, session save/restore, editors and click-to-pick — the shell an interactive map application needs, headless and testable |
+| File overlays | `.fvpoints` — a SQLite point document that carries its own PNG symbol artwork, so a file opens with its symbology anywhere |
+| Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays, vector sources, style engines, routing and the app layer |
+| Apps | `PythonView.py` — a desktop map viewer over the bindings (family menus, coverage overlay, identify, route editing) |
+| Tools | `fvrender` renders a map to PNG; `fvpack` builds offline GeoPackage tile packs; `fvgraph` builds and queries road graphs |
 
 Render a chart headlessly (needs map data — see *Test data* below):
 
@@ -118,8 +123,10 @@ render straight to a PNG.
 
 ## Test data
 
-No map data is included — the sample DTED, CADRG, GeoTIFF, DNC/VPF and TIROS
-sets are large and separately distributed. Tests that need it skip cleanly.
+No map data is included — the sample DTED, CADRG, GeoTIFF, DNC/VPF, ENC, OSM
+and TIROS sets are large and separately distributed. Tests that need it skip
+cleanly: a clone with no map data at all builds and runs the full suite green
+(most of it skipping itself).
 
 To run them, point `FVW_TESTDATA_DIR` at a tree laid out as:
 
@@ -130,6 +137,8 @@ TestData/
   geotiff/   USGS DOQ quads
   vpf/dnc17/ DNC 17 database
   tiros3/    TIROS .WLD GeoJPEGs + .wld sidecars
+  ENC/       S-57 base editions
+  OSM/       map*.osm extracts, mbtiles/ vector-tile pyramids
 ```
 
 The build passes this path to the tests automatically when the directory

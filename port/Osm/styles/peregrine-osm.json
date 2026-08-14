@@ -238,7 +238,8 @@
         "text-field": "{name:latin}",
         "text-size": { "stops": [[9, 10.0], [14, 13.0]] }
       },
-      "paint": { "text-color": "#3f7ea8" }
+      "paint": { "text-color": "#3f7ea8",
+                 "text-halo-color": "#eef4f8", "text-halo-width": 1.5 }
     },
     {
       "id": "road-name",
@@ -253,7 +254,8 @@
         "text-max-angle": 40,
         "text-offset": [0, -0.7]
       },
-      "paint": { "text-color": "#5a5a5a" }
+      "paint": { "text-color": "#5a5a5a",
+                 "text-halo-color": "#ffffff", "text-halo-width": 1.5 }
     },
     {
       "id": "place-town",
@@ -265,7 +267,8 @@
         "text-field": "{name:latin}",
         "text-size": { "stops": [[9, 10.0], [14, 15.0]] }
       },
-      "paint": { "text-color": "#4a4a4a" }
+      "paint": { "text-color": "#4a4a4a",
+                 "text-halo-color": "#ffffff", "text-halo-width": 1.5 }
     },
     {
       "id": "place-city",
@@ -277,7 +280,8 @@
         "text-field": "{name:latin}",
         "text-size": { "base": 1.2, "stops": [[4, 11.0], [12, 20.0]] }
       },
-      "paint": { "text-color": "#333333" }
+      "paint": { "text-color": "#333333",
+                 "text-halo-color": "#ffffff", "text-halo-width": 2 }
     },
     {
       "id": "place-state",
@@ -290,7 +294,8 @@
         "text-field": "{name:latin}",
         "text-size": { "stops": [[3, 10.0], [7, 14.0]] }
       },
-      "paint": { "text-color": "#7a7a7a" }
+      "paint": { "text-color": "#7a7a7a",
+                 "text-halo-color": "#ffffff", "text-halo-width": 2 }
     }
   ]
 }

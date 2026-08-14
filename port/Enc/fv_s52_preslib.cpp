@@ -624,9 +624,22 @@ struct S52PresentationLibrary::Impl {
     // legitimately hangs off its pivot (a daymark standing on its post, pivot
     // y=30 of a 33 px tile) stays inside it and keeps what it was authored
     // with.
+    //
+    // EXCEPT the SOUNDING DIGITS, where a far-off pivot is the whole design.
+    // `SOUNDS`/`SOUNDG` + position + digit is a 6x10 glyph placed in one of
+    // five slots on a 7 px grid around the sounding's position, and the slot IS
+    // the pivot: 19, 12, 5, -2, -9 for positions 3, 2, 1, 0, 4, with position 5
+    // repeating 0's column half a line lower to make the decimetre a
+    // subscript. Every slot but two is outside a quarter of a 6 px tile, so the
+    // rule above would re-centre them and stack a two-digit sounding on top of
+    // itself — which is exactly what it did. The rule cannot tell these apart
+    // by geometry (a 19 px offset on a 6 px tile looks precisely like the
+    // INT_MIN garbage it was written for), so the family is named.
+    const bool laid_out_by_pivot = name.compare(0, 5, "SOUND") == 0;
     const double mx = 0.25 * w, my = 0.25 * h;
-    if (out.pivot_x < -mx || out.pivot_x > w + mx || out.pivot_y < -my ||
-        out.pivot_y > h + my) {
+    if (!laid_out_by_pivot &&
+        (out.pivot_x < -mx || out.pivot_x > w + mx || out.pivot_y < -my ||
+         out.pivot_y > h + my)) {
       out.pivot_x = w / 2.0;
       out.pivot_y = h / 2.0;
     }

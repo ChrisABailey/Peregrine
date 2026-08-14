@@ -244,6 +244,8 @@ struct StyleLayer {
   std::vector<double> dash;  // line-dasharray, in line-width units
   std::string text_field;    // "{name:latin}"-style token template
   std::string icon_image;    // recorded, never drawn
+  ColorFn halo_color;        // text-halo-color
+  NumberFn halo_width;       // text-halo-width, CSS px
   // symbol-placement / symbol-spacing / text-max-angle / text-offset[1],
   // i.e. everything that makes a road name follow its road. Constants only,
   // like every other layout property here.
@@ -311,6 +313,7 @@ struct OsmStyleEngine::Impl {
   std::map<std::string, size_t> ignored_icons;
   std::vector<bool> layer_drew;
   size_t empty_labels = 0;
+  size_t ignored_halo_blur = 0;  // style layers carrying a text-halo-blur
 
   // source-layer -> indices into `layers`, in style order. The dispatch: a
   // feature only ever visits the style layers aimed at its own MVT layer.
@@ -326,6 +329,7 @@ struct OsmStyleEngine::Impl {
     ignored_icons.clear();
     layer_drew.clear();
     empty_labels = 0;
+    ignored_halo_blur = 0;
     by_source_layer.clear();
   }
 };
@@ -628,6 +632,9 @@ size_t OsmStyleEngine::layers_that_drew() const {
   return n;
 }
 size_t OsmStyleEngine::empty_labels() const { return impl_->empty_labels; }
+size_t OsmStyleEngine::ignored_halo_blur() const {
+  return impl_->ignored_halo_blur;
+}
 void OsmStyleEngine::ResetDiagnostics() {
   impl_->ignored_icons.clear();
   impl_->empty_labels = 0;
@@ -820,6 +827,23 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
         if (!(s = col(paint, "text-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "text-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = num(layout, "text-size", &L.width)).ok()) return fail(s);
+        if (!(s = col(paint, "text-halo-color", &L.halo_color)).ok())
+          return fail(s);
+        if (!(s = num(paint, "text-halo-width", &L.halo_width)).ok())
+          return fail(s);
+        // `text-halo-blur` is the fourth thing this loader ignores by design
+        // (see the header): the halo is a stamped dilation, and a blur radius
+        // has no meaning without coverage to blur. Counted, not rejected —
+        // every OpenMapTiles-derived style carries it next to a width that IS
+        // honoured, and rejecting it would fail the whole style over the one
+        // property whose absence is least visible.
+        if (paint.contains("text-halo-blur")) {
+          if (!paint["text-halo-blur"].is_number() &&
+              !paint["text-halo-blur"].is_object())
+            return fail(Reject(id, "text-halo-blur is not a constant or a "
+                                   "zoom function"));
+          ++fresh.ignored_halo_blur;
+        }
         if (layout.contains("icon-image")) {
           if (!layout["icon-image"].is_string())
             return fail(Reject(id, "icon-image is a function or expression"));
@@ -1046,6 +1070,17 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
         lb.style.color = L.color.set
                              ? WithOpacity(L.color.At(zoom), L.opacity, zoom)
                              : FvColor{0, 0, 0, 255};
+        // The halo is CSS px like every other GL paint value, so it goes
+        // through the same dpi conversion the sizes and widths do. A style
+        // that gives a colour and no width gets the GL default of 0, i.e.
+        // nothing — the colour alone is not a request to draw an outline.
+        if (L.halo_width.set) {
+          lb.halo_width = L.halo_width.At(zoom) * dpi_scale;
+          lb.halo_color =
+              L.halo_color.set
+                  ? WithOpacity(L.halo_color.At(zoom), L.opacity, zoom)
+                  : FvColor{255, 255, 255, 255};
+        }
         // A road name follows its road; a place name does not. The style says
         // which, and a placement of `line` on a point feature is harmless —
         // the renderer falls back to the point path for it.

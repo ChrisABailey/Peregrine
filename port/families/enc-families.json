@@ -1,0 +1,184 @@
+// ENC / S-57 data families — see port/include/fvkit/vector/families.h
+//
+// Set "enabled": false on a family to hide everything it names. This file is
+// SETTINGS, not a fixture — the flags below are whatever was last chosen, and
+// the tests deliberately do not pin them (they check that every selector
+// parses and that the rules produced match the flags, so editing this file
+// cannot break the build; a typo in a selector still will, which is the point).
+//
+// The grouping is by S-57 OBJECT CLASS, the six-letter acronym the reader puts
+// in both VectorFeature::style_key and ::layer — so `key=` and `layer=` select
+// the same thing on ENC and `key=` is used here because that is what the
+// acronym is. The families themselves follow S-52's own idea of what belongs
+// together; the delivered chartsymbols.xml carries display CATEGORIES
+// (base/standard/other, already on ViewingGroupSet::SetMaxCategory) but NOT
+// viewing groups, so this file is where that axis lives for ENC.
+//
+// Acronyms are from the delivered s57objectclasses.csv, so a name that is not
+// in this file is a name that is not in Appendix A.
+//
+// Comments are allowed: this file is read with JSON comments enabled.
+{
+  "product": "enc",
+  "description": "S-57 object classes grouped for display",
+  "families": [
+    {
+      "name": "depths",
+      "title": "Depth areas and contours",
+      "note": "the depth ramp; the mariner's contours reshade it, they do not hide it",
+      "enabled": true,
+      "select": ["key=DEPARE", "key=DEPCNT", "key=DRGARE", "key=SWPARE",
+                 "key=UNSARE", "key=ZEMCNT", "key=DEPCNT"]
+    },
+    {
+      "name": "soundings",
+      "title": "Soundings",
+      "note": "SOUNDG is one multi-point feature per cell area, so this is the whole spot-depth carpet",
+      "enabled": true,
+      "select": ["key=SOUNDG"]
+    },
+    {
+      "name": "bottom",
+      "title": "Seabed and bottom characteristics",
+      "note": "SBDARE is ENC's answer to DNC's botcharp",
+      "enabled": true,
+      "select": ["key=SBDARE", "key=SNDWAV", "key=WEDKLP", "key=MARCUL",
+                 "key=SPRING"]
+    },
+    {
+      "name": "navaids",
+      "title": "Aids to navigation",
+      "note": "buoys, beacons, lights, daymarks, topmarks, fog and radar aids",
+      "enabled": true,
+      "select": ["key=BCNCAR", "key=BCNISD", "key=BCNLAT", "key=BCNSAW",
+                 "key=BCNSPP", "key=BOYCAR", "key=BOYINB", "key=BOYISD",
+                 "key=BOYLAT", "key=BOYSAW", "key=BOYSPP", "key=DAYMAR",
+                 "key=TOPMAR", "key=LIGHTS", "key=LITFLT", "key=LITVES",
+                 "key=FOGSIG", "key=RTPBCN", "key=RADRFL", "key=RETRFL",
+                 "key=DISMAR", "key=MORFAC"]
+    },
+    {
+      "name": "hazards",
+      "title": "Wrecks, rocks and obstructions",
+      "note": "the objects UDWHAZ03 promotes to an isolated-danger symbol",
+      "enabled": true,
+      "select": ["key=WRECKS", "key=UWTROC", "key=OILBAR",
+                 "key=PILPNT", "key=FSHFAC"]
+    },
+    {"name": "ugly_things",
+      "title": "Ugly things that are not drawn",
+      "note": "these are the objects that S-52's rules hide, so they are not drawn",
+      "enabled": false,
+      "select": ["key=OBSTRN"]
+    },
+    {
+      "name": "traffic",
+      "title": "Traffic separation and routes",
+      "enabled": true,
+      "select": ["key=TSSLPT", "key=TSELNE", "key=TSEZNE", "key=TSSBND",
+                 "key=TSSCRS", "key=TSSRON", "key=ISTZNE", "key=DWRTCL",
+                 "key=DWRTPT", "key=RCRTCL", "key=RCTLPT", "key=RECTRC",
+                 "key=TWRTPT", "key=NAVLNE", "key=FAIRWY", "key=PRCARE",
+                 "key=RDOCAL", "key=RADLNE", "key=TRFLNE"]
+    },
+    {
+      "name": "restrictions",
+      "title": "Restricted, caution and prohibited areas",
+      "enabled": false,
+      "select": ["key=RESARE", "key=CTNARE", "key=MIPARE", "key=DMPGRD",
+                 "key=SPLARE", "key=ICNARE", "key=CBLARE", "key=PIPARE",
+                 "key=FSHZNE", "key=FSHGRD", "key=SUBTLN", "key=RESTRC"]
+    },
+    {
+      "name": "anchorages",
+      "title": "Anchorages and berths",
+      "enabled": true,
+      "select": ["key=ACHARE", "key=ACHBRT", "key=ACHPNT", "key=BERTHS"]
+    },
+    {
+      "name": "port",
+      "title": "Harbour and port facilities",
+      "enabled": true,
+      "select": ["key=HRBARE", "key=HRBFAC", "key=CRANES", "key=CONVYR",
+                 "key=DOCARE", "key=DRYDOC", "key=FLODOC", "key=GATCON",
+                 "key=GRIDRN", "key=LOKBSN", "key=PONTON", "key=SLCONS",
+                 "key=SMCFAC", "key=PILBOP", "key=CHKPNT", "key=SILTNK",
+                 "key=HULKES", "key=LOGPON", "key=CGUSTA", "key=RSCSTA",
+                 "key=SISTAT", "key=SISTAW", "key=RDOSTA", "key=RADSTA",
+                 "key=RADRNG"]
+    },
+    {
+      "name": "land",
+      "title": "Land, buildings and landmarks",
+      "enabled": true,
+      "select": ["key=LNDARE", "key=LNDELV", "key=LNDRGN", "key=LNDMRK",
+                 "key=BUAARE", "key=BUISGL", "key=BUIREL", "key=MONUMT",
+                 "key=TOWERS", "key=PYLONS", "key=VEGATN", "key=SLOTOP",
+                 "key=SLOGRD", "key=DYKCON", "key=FNCLNE", "key=FORSTC",
+                 "key=SQUARE", "key=CTRPNT"]
+    },
+    {
+      "name": "coastline",
+      "title": "Coastline and shore",
+      "enabled": true,
+      "select": ["key=COALNE", "key=SLCONS", "key=LAKSHR", "key=RIVBNK",
+                 "key=CANBNK", "key=SHORES"]
+    },
+    {
+      "name": "inland_water",
+      "title": "Rivers, lakes and canals",
+      "enabled": true,
+      "select": ["key=LAKARE", "key=RIVERS", "key=CANALS", "key=RAPIDS",
+                 "key=WATFAL", "key=DAMCON", "key=TIDEWY"]
+    },
+    {
+      "name": "transport_land",
+      "title": "Roads, railways and bridges",
+      "enabled": true,
+      "select": ["key=ROADWY", "key=RAILWY", "key=BRIDGE", "key=TUNNEL",
+                 "key=CAUSWY", "key=AIRARE", "key=RUNWAY", "key=FERYRT",
+                 "key=CBLOHD", "key=PIPOHD", "key=CBLSUB", "key=PIPSOL",
+                 "key=CHNWIR"]
+    },
+    {
+      "name": "offshore",
+      "title": "Offshore installations",
+      "enabled": true,
+      "select": ["key=OFSPLF", "key=OSPARE", "key=PRDARE"]
+    },
+    {
+      "name": "tides_currents",
+      "title": "Tides, currents and magnetics",
+      "enabled": true,
+      "select": ["key=CURENT", "key=TIDEWY", "key=MAGVAR", "key=LOCMAG",
+                 "key=T_HMON", "key=T_NHMN", "key=T_TIMS", "key=TS_FEB",
+                 "key=TS_PAD", "key=TS_PNH", "key=TS_PRH", "key=TS_TIS"]
+    },
+    {
+      "name": "administrative",
+      "title": "Administrative and jurisdictional areas",
+      "note": "the zone boundaries a chart carries but a pilot rarely wants drawn",
+      "enabled": false,
+      "select": ["key=ADMARE", "key=CONZNE", "key=COSARE", "key=CTSARE",
+                 "key=CUSZNE", "key=EXEZNE", "key=FRPARE", "key=TESARE",
+                 "key=STSLNE", "key=SEAARE"]
+    },
+    {
+      "name": "meta",
+      "title": "Metadata objects (M_QUAL, M_COVR, ...)",
+      "note": "already OFF through S52StyleEngine::SetShowMetaObjects; this is the same switch on the rule axis, for a host that does not touch the engine",
+      "enabled": false,
+      "select": ["key=M_ACCY", "key=M_COVR", "key=M_CSCL", "key=M_HDAT",
+                 "key=M_HOPA", "key=M_NPUB", "key=M_NSYS", "key=M_PROD",
+                 "key=M_QUAL", "key=M_SDAT", "key=M_SREL", "key=M_UNIT",
+                 "key=M_VDAT"]
+    },
+    {
+      "name": "cartographic",
+      "title": "Cartographic objects and annotation",
+      "enabled": false,
+      "select": ["key=$AREAS", "key=$LINES", "key=$CSYMB", "key=$COMPS",
+                 "key=$TEXTS", "key=ANNOTA", "key=NEWOBJ"]
+    }
+  ]
+}

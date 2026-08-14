@@ -1,0 +1,246 @@
+# Peregrine settings — the port's replacement for FalconView's registry keys.
+#
+# Copy this file to one of these, first one found wins:
+#
+#   $FVW_SETTINGS                             explicit override
+#   ./peregrine.ini                           the working directory
+#   ~/.config/peregrine/settings.ini          POSIX ($XDG_CONFIG_HOME honoured)
+#   ~/Library/Application Support/Peregrine/settings.ini      (macOS also)
+#   %APPDATA%\Peregrine\settings.ini          (Windows)
+#
+# Everything here is OPTIONAL: a key you leave out keeps the default shown
+# next to it, and running with no settings file at all is normal. Keys are
+# case-insensitive. Values may be quoted with " or ' to keep spaces or a
+# literal # or ;. Unknown keys are ignored, not rejected.
+#
+# The application never rewrites this file, so your comments and ordering
+# survive. Read once at startup: restart to pick up an edit.
+
+
+[vector]
+# --- the two R3a performance knobs (vector charts: DNC, ENC) ---------------
+#
+# scene_margin — how much MORE than the window to keep styled and ready, as a
+# fraction of the window on each side. A pan that stays inside the margin
+# skips the source query and the whole style pass: measured on the Nantucket
+# DNC harbour at 900x650, a frame goes 133 ms -> 76 ms. Costs memory and a
+# slower FIRST draw (a wider area is queried), and note that a margin draws
+# slightly MORE than the window strictly needs — symbology anchored just off
+# screen legitimately inks into it. 0 disables retention across pans.
+# Default: 0.25 in PythonView, 0 for the library.
+scene_margin = 0.25
+
+# simplify_pixels — Douglas-Peucker tolerance applied once when the scene is
+# built. DNC coastlines carry far more vertices than a screen can show: at
+# 0.5 the harbour drops 112,330 vertices to 24,284 and the frame goes 76 ms
+# -> 33 ms, moving about 1% of pixels by less than a pixel each. Purely a
+# DRAWING simplification — click-to-identify still goes back to the full
+# source geometry. Try 0.5, then 1.0; 0 is exact.
+# Default: 0 (exact).
+simplify_pixels = 0.5
+
+# label_reference_scale — makes labels scale WITH the map instead of staying a
+# constant size on screen. Every product authors label size in pixels (GeoSym
+# in points, a GL style in px), which keeps text the same size while the map
+# zooms under it. Set a scale denominator here and that authored size is
+# treated as the size AT THAT SCALE: text is then size * this / current, so a
+# road name grows into a zoom along with its road. Pick the scale you consider
+# the chart's "natural" one — 50000 is PythonView's opening vector scale.
+# Labels sized in ground units by their style engine ignore this.
+# Default: 0 (constant on-screen size).
+# label_reference_scale = 50000
+
+# --- data families: turning groups of features off -------------------------
+#
+# A family is a NAMED GROUP of features with an on/off flag — DNC's aids to
+# navigation, ENC's soundings, OSM's points of interest. Every vector product
+# groups its data differently (DNC by VPF coverage, ENC by S-57 object class,
+# OSM by tile source layer), so the grouping is stated in a JSON file per
+# product rather than guessed here, and these keys just say where that file
+# is. Starters ship in port/families/ with every family ON, so pointing at one
+# changes nothing until you edit it: set "enabled": false on a family and
+# everything it names stops being drawn.
+#
+# A family's "select" entries are RULE-FILE SELECTORS (the same syntax as a
+# rule file: layer=, key=, geom=, scale=, group=, category=, where <predicate>),
+# which is why a family can be anything — a coverage, one layer, or "soundings
+# deeper than 30 m". Switching one off adds `hide <selector>` rules to the
+# engine, so a rule file loaded afterwards can still put one thing back.
+#
+# JSON, not ini, because a family is a name plus a LIST — and comments are
+# enabled in these files, so they can be annotated like this one.
+# Default: none (no families, everything drawn).
+# families_dnc = /path/to/port/families/dnc-families.json
+# families_enc = /path/to/port/families/enc-families.json
+# families_osm = /path/to/port/families/osm-families.json
+
+
+[mariner]
+# The MARINER's own depth settings — not the chart producer's. These change
+# WHAT is drawn, not just how: the safety contour is the single most important
+# line on an ECDIS display, and it is where the depth ramp splits.
+#
+# BOTH CHART PRODUCTS, one set of keys. S-52 names them; DNC/GeoSym has the
+# same six values under VPF names, and they are applied to whichever engine is
+# drawing:
+#
+#   key               S-52                     DNC/GeoSym
+#   ----------------  -----------------------  ------------------------------
+#   safety_contour    the bold contour         ssdc — and ALSO the sounding
+#                                              threshold, since DNC has one
+#                                              number where S-52 has two
+#   shallow_contour   inner edge of the        mssc
+#                     shallow shade
+#   deep_contour      outer edge of the        msdc
+#                     deep shade
+#   safety_depth      soundings at or below    (no counterpart; ignored)
+#                     print bold/black
+#   two_shades        two depth shades         idsm = 1
+#                     instead of four
+#   shallow_pattern   pattern the shallowest   isdm = 1 (area symbol 0949)
+#                     band
+#
+# All depths are METRES. A key you leave commented out keeps the PRODUCT's own
+# default, and the two products' defaults differ on purpose (they are what
+# their goldens were pinned over):
+#
+#   DNC   safety 10, shallow 2, deep 30, four shades, shallow pattern ON
+#   ENC   safety 30, shallow 2, deep 30, safety depth 30, four shades, no
+#         pattern
+#
+# So: enter your vessel's draft plus your under-keel clearance as
+# safety_contour and the ramp reshades around it, on either product.
+# safety_contour  = 10
+# shallow_contour = 2
+# deep_contour    = 30
+# safety_depth    = 30
+# two_shades      = off
+# shallow_pattern = on
+
+
+[display]
+# Assumed physical pixel pitch, millimetres per pixel. This is what makes a
+# 1:1,000,000 chart actually measure 1:1,000,000 on your screen. 0.25 is the
+# reference pitch; measure your own as (screen width in mm / pixels across).
+# Also the zoom knob: halving it doubles the magnification.
+# Default: 0.25
+# mm_per_pixel = 0.25
+
+
+[geosym]
+# Directory holding the GeoSym assets (expects SymAssign/ and Graphics/
+# beneath it). Needed to draw DNC.
+# Default: the TestData dir in the repo.
+# data_dir = "/path/to/TestData"
+
+# Symbology brightness and contrast, -100..+100.
+# Default: 0, 0
+# brightness = 0
+# contrast = 0
+
+
+[enc]
+# Directory holding the S-52 presentation library (chartsymbols.xml) and the
+# S-57 Appendix A catalogue (s57objectclasses.csv, s57attributes.csv,
+# s57expectedinput.csv). Needed to draw ENC: without the catalogue nothing
+# can be symbolized, so the source refuses to open rather than draw a blank
+# chart.
+#
+# The ENC CELLS themselves are not configured here — they are catalogued like
+# any other map data (File > Add Map Data), one series per S-57 usage band
+# (Overview/General/Coastal/Approach/Harbour/Berthing).
+#
+# Default: the TestData/enc dir in the repo.
+# data_dir = "/path/to/enc-assets"
+
+# Draw S-57 META objects: M_QUAL (zones of confidence), M_COVR (coverage),
+# M_NSYS (navigation system in force), M_NPUB. These describe the DATASET
+# rather than the world, and M_QUAL patterns its ZOC triangles over the whole
+# chart — on the Charleston cells they were more than half of all the ink.
+# Off by default, where an ECDIS keeps them; also on the Overlays menu.
+# Default: false
+# show_meta_objects = false
+
+
+[osm]
+# The MapLibre/Mapbox GL style sheet OSM vector tiles are drawn with.
+#
+# Unlike GeoSym's tables and the S-52 presentation library, this asset ships
+# WITH the port (port/Osm/styles/peregrine-osm.json) rather than with the
+# data: it is a deliverable of the OSM work, not something a producer hands
+# out. The key exists so a different sheet can be used, which is the point of
+# a GL style — the same tiles under different cartography.
+#
+# The sheet has to stay inside the supported subset (legacy filters, constant
+# or {base, stops} paint values, {token} text fields). A sheet that steps
+# outside it FAILS TO LOAD, naming the layer and the property, and the
+# previously loaded one stays in force. Also on Tools > Options.
+#
+# Default: port/Osm/styles/peregrine-osm.json in the repo.
+# style = "/path/to/style.json"
+
+# The .mbtiles PYRAMIDS themselves are not configured here — they are
+# catalogued like any other map data (File > Add Map Data), one series per
+# file. A pyramid declares no scale (it is a scale RANGE), so it opens fitted
+# to its own coverage and the zoom keys walk it continuously; the source picks
+# the tile level from the display scale, and keeps drawing z14 geometry under
+# z15+ symbology past the bottom of the pyramid.
+
+
+[catalog]
+# The coverage catalog PythonView opens on startup.
+# Default: build/pythonview.sqlite in the repo.
+# db = "/path/to/catalog.sqlite"
+
+
+[routing]
+# The routable road graph the route overlay follows when you press "r"
+# (O4). This is a BUILD ARTIFACT, not sample data and not the .mbtiles
+# pyramid: vector tiles are simplified and clipped per tile, so a junction
+# in them is not a junction. Make one from a raw OSM extract:
+#
+#   fvgraph build -o roads.fvroad south-carolina-latest.osm.pbf
+#   fvgraph info roads.fvroad          # nodes, arcs, connected components
+#
+# The overlay routes each pair of consecutive waypoints separately, so a
+# waypoint nowhere near a road leaves that one leg straight and says so
+# rather than throwing the whole route away. Esc goes back to straight legs.
+#
+# No default: without this key "r" reports that no graph is configured.
+# graph = "/path/to/roads.fvroad"
+
+# The JSON cost rules a route is priced with (O5c): every class weight,
+# speed and penalty, plus the named profiles built out of them. See
+# port/Routing/rules/route-weights.json — its header comment is the schema,
+# and its contents are exactly the weights compiled into the router, so
+# copying it and editing the copy starts from where you already are.
+#
+# The file is REREAD WHILE THE APP RUNS: the router stats it (mtime + size)
+# at most once every half second and reparses when it moves, so editing a
+# weight changes the next route with nothing restarted. A file that will not
+# parse is rejected whole — the last good weights keep routing and the route
+# status line says what is wrong — so a save mid-edit is harmless.
+#
+# No default: without this key the built-in weights route, which is the
+# pre-O5c behaviour exactly.
+# rules = "/path/to/route-weights.json"
+
+# Which profile in that file "r" follows. Empty (or absent) means the rule
+# file's own `default` profile. Options > Route profile lists what the file
+# defines; "b" always rides the `bicycle` profile when there is one.
+# profile = "car"
+
+
+[points]
+# Where File > Sample points takes the ICONS it embeds in the starter
+# document it writes (schema 2). A directory of loose `<name>.png` files —
+# the port's own is `testdata/GeoSymbol/makiPng`, a copy of the maki icon
+# set — from which the sample takes only the ~20 names its points ask for.
+#
+# The artwork is copied INTO the .fvpoints file, so the document keeps
+# working after this directory moves, and the icons a point wears are the
+# document's own rather than this machine's. A directory that is missing an
+# icon costs those points their icon and nothing else: they draw as plain
+# shapes, which is what a document written with no icons at all looks like.
+# Default: <geosym.data_dir>/GeoSymbol/makiPng.
+# symbol_dir = "/path/to/testdata/GeoSymbol/makiPng"

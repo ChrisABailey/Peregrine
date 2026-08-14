@@ -108,7 +108,10 @@ struct S52StyleEngine::Impl {
   S52ColorScheme scheme = S52ColorScheme::kDay;
   S52PointStyle point_style = S52PointStyle::kPaperChart;
   S52AreaStyle area_style = S52AreaStyle::kPlainBoundaries;
-  S52MarinerSettings mariner;
+  // NOTE the mariner settings are NOT here: they moved onto the shared
+  // LookupTableStyleEngine core when the DNC half of the same API landed
+  // (fvkit/vector/mariner.h). S-52's defaults ARE the struct's defaults, so
+  // nothing this engine draws moved with them.
   bool show_meta = false;
 
   std::map<std::string, size_t> unhandled_cs;
@@ -278,21 +281,85 @@ std::string SlCons03(const VectorFeature& f, const S52MarinerSettings&) {
   return "LS(SOLD,2,CSTLN)";
 }
 
-// SOUNDG02 — soundings. DEVIATION, and a visible one: S-52 draws a sounding
-// as a row of digit SYMBOLS from the library, and in the delivered library
-// those (SOUNDS01 and friends) are RASTER-ONLY definitions with no HPGL, so
-// there is no vector display list to stamp. The number is emitted as TEXT
-// instead — same information, wrong typography — and it is drawn in CHBLK
-// when at or below the mariner's safety depth, CHGRD when deeper, which is
-// the distinction the mariner actually reads. The source publishes the depth
-// as the pseudo-attribute DEPTH (see fv_enc_vector_source.cpp) because S-57
-// keeps it in the geometry, not in an attribute.
+// SNDFRM02 — the sounding NUMBER, as S-52 actually sets it: one library symbol
+// per digit, with the decimetre as a SUBSCRIPT. It used to be emitted as plain
+// text (same information, wrong typography) because the digit symbols are
+// RASTER-ONLY definitions with no HPGL — which stopped being a reason when E6
+// added the pixmap half of the symbol seam.
+//
+// The library names a digit `SOUND` + family + POSITION + digit, and the
+// POSITION is a slot on a 7 px grid that the delivered BITMAP PIVOTS lay out
+// for us — pivot x 19, 12, 5, -2, -9 for positions 3, 2, 1, 0, 4, which is a
+// contiguous left-to-right row (a pivot is subtracted from the anchor, so a
+// larger one sits further left). Position 5 repeats position 0's x with the
+// pivot 4 px higher, i.e. the same slot dropped half a line: THE SUBSCRIPT.
+// Composing the tiles by their own pivots gives "9<sub>4</sub>", "35",
+// "12<sub>6</sub>" and "127", which is how this was checked.
+//
+// The family is the colour AND the emphasis: SOUNDS* is black, for a sounding
+// at or below the mariner's safety depth, SOUNDG* grey for one deeper — the
+// same distinction the old text made with CHBLK/CHGRD, now made the way the
+// library makes it.
+//
+// The rule for what to print is S-52's: under 10 m and under 31 m keep the
+// decimetre, anything deeper is whole metres. Positions run right-to-left
+// ending at slot 1, so the number is right-aligned on the sounding and the
+// subscript hangs off it; a number too long for that (4 or 5 digits, an ocean
+// trench rather than a harbour) starts at the leftmost slot instead.
+//
+// NOT DONE, and each is one more symbol from the same family: the drying
+// height bar (SOUNDSA1/GA1), the swept-sounding bar (SOUNDSB1/GB1) and the
+// low-accuracy mark (SOUNDSC2/GC2). A drying height prints its magnitude here
+// without the bar that says it is drying.
+std::string SoundingSymbols(double depth, const S52MarinerSettings& m) {
+  const char family = depth <= m.safety_depth ? 'S' : 'G';
+  // A drying height is authored negative; print its magnitude (see above).
+  const double v = std::fabs(depth);
+
+  int whole = 0;
+  int decimetre = -1;  // -1 = none
+  if (v < 31.0) {
+    whole = static_cast<int>(v);
+    const int d = static_cast<int>(std::lround((v - whole) * 10.0));
+    if (d == 10) {  // 9.97 rounds up into the next metre
+      ++whole;
+    } else if (d > 0) {
+      decimetre = d;
+    }
+  } else {
+    whole = static_cast<int>(std::lround(v));
+  }
+
+  // Slots left to right. The whole digits end on slot 1 (index 2) when they
+  // fit, which is what puts the subscript's slot 5 immediately right of them.
+  const int kSlots[] = {3, 2, 1, 0, 4};
+  const int kSlotCount = 5;
+  std::string digits = std::to_string(whole);
+  if (digits.size() > static_cast<size_t>(kSlotCount))
+    digits = digits.substr(digits.size() - kSlotCount);
+  const int first = digits.size() <= 3
+                        ? 3 - static_cast<int>(digits.size())
+                        : 0;
+
+  std::string out;
+  for (size_t i = 0; i < digits.size(); ++i) {
+    out += std::string(out.empty() ? "" : ";") + "SY(SOUND" + family +
+           std::to_string(kSlots[first + i]) + digits[i] + ")";
+  }
+  if (decimetre >= 0 && digits.size() <= 3) {
+    out += ";SY(SOUND" + std::string(1, family) + "5" +
+           std::to_string(decimetre) + ")";
+  }
+  return out;
+}
+
+// SOUNDG02 — soundings. The source publishes the depth as the pseudo-attribute
+// DEPTH (see fv_enc_vector_source.cpp) because S-57 keeps it in the geometry,
+// not in an attribute.
 std::string Soundg02(const VectorFeature& f, const S52MarinerSettings& m) {
   const std::string* depth = f.Attribute("DEPTH");
   if (depth == nullptr || depth->empty()) return std::string();
-  const double v = ToDouble(*depth, 0.0);
-  const char* color = v <= m.safety_depth ? "CHBLK" : "CHGRD";
-  return std::string("TX(DEPTH,2,1,2,'15110',-1,-1,") + color + ",21)";
+  return SoundingSymbols(ToDouble(*depth, 0.0), m);
 }
 
 // UDWHAZ03 — "is this underwater feature a danger to the mariner?" The one
@@ -322,13 +389,14 @@ const char* DangerSymbol(double valsou, const S52MarinerSettings& m) {
   return valsou > 20.0 ? "DANGER02" : "DANGER01";
 }
 
-// The sounding a hazard carries, printed the way SOUNDG02 prints one.
+// The sounding a hazard carries, set the way SOUNDG02 sets one — the same
+// SNDFRM02 call the published procedures make, so a wreck's depth and the
+// sounding beside it are the same typography instead of two different ones.
 std::string ValsouText(const VectorFeature& f, const S52MarinerSettings& m) {
   const std::string* v = f.Attribute("VALSOU");
   if (v == nullptr || v->empty()) return std::string();
-  const char* color = ToDouble(*v, 0.0) <= m.safety_depth ? "CHBLK" : "CHGRD";
-  return std::string(";TE('%4.1lf','VALSOU',2,1,2,'15110',-1,-1,") + color +
-         ",21)";
+  const std::string sndg = SoundingSymbols(ToDouble(*v, 0.0), m);
+  return sndg.empty() ? sndg : ";" + sndg;
 }
 
 // OBSTRN04 — obstructions: the single heaviest procedure in these cells (105
@@ -396,6 +464,18 @@ std::string Wrecks02(const VectorFeature& f, const S52MarinerSettings& m) {
   return out + ValsouText(f, m);
 }
 
+// Which way a light flare points, as a bearing (clockwise from up, the sense
+// the renderer rotates a symbol in and the sense S-52's ORIENT is written in).
+//
+// The HPGL flare rises straight UP from its pivot, and drawn unrotated it grew
+// out of the top of the buoy it belongs to. The delivered library says where
+// it really goes, in its own RASTER copy of the same symbol: LIGHTS11/12/13's
+// tile puts the light position at the tile corner (bitmap pivot 0,0) with the
+// bulb down and to the right — ink centroid at bearing 133.5 degrees, its
+// farthest lit pixel at 131.6, both 135 to within a 22x22 tile's rounding.
+// So the two forms of one symbol agree once the display list is turned 135.
+constexpr int kFlareBearingDeg = 135;
+
 // LIGHTS05 — lights (100 features here). The flare colour comes straight from
 // COLOUR through the library's own symbol descriptions (LIGHTS11 red, 12
 // green, 13 white/yellow, 14 magenta, LITDEF11 the default).
@@ -409,6 +489,9 @@ std::string Wrecks02(const VectorFeature& f, const S52MarinerSettings& m) {
 //    in sector_lights_simplified().
 //  * The light DESCRIPTION string ("Fl(2)R.10s12M") is not composed. That is
 //    a text formatter over six attributes, and labels are a separate axis.
+//
+// The flare is drawn at kFlareBearingDeg, which is the whole difference
+// between a chart and a buoy with a bulb growing out of its head.
 std::string Lights05(const VectorFeature& f, const S52MarinerSettings&) {
   // CATLIT 8 = flood light, 11 = strip light: both have their own symbol and
   // neither takes a flare.
@@ -423,7 +506,8 @@ std::string Lights05(const VectorFeature& f, const S52MarinerSettings&) {
   else if (AttrIn(f, "COLOUR", {4})) sym = "LIGHTS12";
   else if (AttrIn(f, "COLOUR", {1, 6, 9, 11})) sym = "LIGHTS13";
   else if (AttrIn(f, "COLOUR", {12})) sym = "LIGHTS14";
-  return std::string("SY(") + sym + ")";
+  return std::string("SY(") + sym + "," + std::to_string(kFlareBearingDeg) +
+         ")";
 }
 
 // TOPMAR01 — a topmark on a buoy or beacon. TOPSHP names the shape; the
@@ -597,17 +681,6 @@ void S52StyleEngine::SetAreaStyle(S52AreaStyle s) {
   BumpStyleEpoch();
 }
 
-// The MUTABLE accessor bumps, unconditionally. A caller that reaches for it to
-// read (there is a const overload for that) costs one scene rebuild; a caller
-// that moves the safety contour and did NOT cause a bump would keep drawing the
-// old depth ramp, which is the failure worth ruling out.
-S52MarinerSettings& S52StyleEngine::mariner() {
-  BumpStyleEpoch();
-  return impl_->mariner;
-}
-const S52MarinerSettings& S52StyleEngine::mariner() const {
-  return impl_->mariner;
-}
 const S52PresentationLibrary& S52StyleEngine::library() const {
   return impl_->lib;
 }
@@ -656,6 +729,10 @@ const SymbolPixmap* S52StyleEngine::Pixmap(const std::string& symbol_id) {
   return impl_->lib.SymbolBitmap(symbol_id);
 }
 
+double S52StyleEngine::himetric_per_symbol_pixel() const {
+  return kS52HimetricPerSymbolPixel;
+}
+
 // ---------------------------------------------------------------------------
 // Instruction execution
 // ---------------------------------------------------------------------------
@@ -681,13 +758,14 @@ void ApplyPenStyle(const std::string& style, Pen* pen) {
 }
 
 // Pixels per HIMETRIC unit for SYMBOL geometry — must match what the renderer
-// itself uses (renderer.h's kHimetricPerHundredthInch), because the placer's
-// run lengths are measured in the same pixels the symbol is drawn at. This is
-// NOT the dpi-based conversion pen widths use; see the note on
-// kHimetricPerHundredthInch for why symbols are sized at a nominal 100 dpi.
+// itself uses (it asks the engine, via himetric_per_symbol_pixel()), because
+// an area pattern's pitch and a complex line's period are measured in the same
+// pixels the symbol is drawn at. This is NOT the dpi-based conversion pen
+// widths use; symbols still ignore the device DPI (a standing ledger defect) —
+// what changed is WHOSE nominal pixel they are sized on, and S-52's is 0.32 mm.
 double PxPerHimetric(const StyleContext& ctx) {
   const double s = ctx.symbol_scale > 0.0 ? ctx.symbol_scale : 1.0;
-  return s / kHimetricPerHundredthInch;
+  return s / kS52HimetricPerSymbolPixel;
 }
 
 // S-57 META object classes describe the DATASET rather than the world: data
@@ -724,6 +802,38 @@ double TextSizeFromSpec(const std::string& spec) {
   const std::string tail = s.substr(s.size() - 2);
   const double v = ToDouble(tail, 0.0);
   return v > 0.0 ? v : 10.0;
+}
+
+// S-52 HJUST/VJUST. The library states them as single digits, and the delivered
+// tables decode themselves: SEAARE labels an area with (HJUST 1, VJUST 2) and
+// no offset — a sea name centred on its own centroid, which fixes 1 = centre
+// and 2 = centre. BOYLAT uses HJUST 2 at XOFFS -1 and the 127-row majority uses
+// HJUST 3 at XOFFS +1, so 2 must place the text's RIGHT edge at the offset
+// point and 3 its LEFT edge. Anything else (a `$JUSTH=3` variable reference,
+// which nine rows carry) keeps the canvas default rather than guessing.
+LabelHAlign HAlignFromSpec(const std::string& spec, LabelHAlign fallback) {
+  const std::string s = Clean(spec);
+  if (s == "1") return LabelHAlign::kCenter;
+  if (s == "2") return LabelHAlign::kRight;
+  if (s == "3") return LabelHAlign::kLeft;
+  return fallback;
+}
+
+LabelVAlign VAlignFromSpec(const std::string& spec, LabelVAlign fallback) {
+  const std::string s = Clean(spec);
+  if (s == "1") return LabelVAlign::kBottom;
+  if (s == "2") return LabelVAlign::kCenter;
+  if (s == "3") return LabelVAlign::kTop;
+  return fallback;
+}
+
+// XOFFS/YOFFS are in units of the text's own BODY SIZE, x positive right and
+// y positive DOWN — the same sense as the presentation library's bitmap pivot
+// points (E7), and the same sense as the screen. The library's two commonest
+// pairs are (+1,-1) and (-1,-1): a name up and to one side of its symbol,
+// which is what a paper chart does and what these produce.
+int OffsetPixels(const std::string& spec, double body_px) {
+  return static_cast<int>(std::lround(ToDouble(Clean(spec), 0.0) * body_px));
 }
 
 // TE's format string, applied to one attribute value. Only the conversions the
@@ -773,6 +883,10 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
 
   StyleResultBuilder builder(priority, out);
   size_t unhandled_here = 0;
+  // Held back until the geometry passes are flushed, then appended at the text
+  // band. A row may carry more than one TX/TE (a light's characteristic and its
+  // name), and each keeps its own result exactly as the builder would have.
+  std::vector<LabelStyle> labels;
 
   // A CS procedure's output is executed in the same pass, so its instructions
   // land in the same StyleResult sequence. One level deep is enough: no
@@ -797,7 +911,7 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       }
       if (name == "LIGHTS05" && IsSimplifiedSectorLight(f))
         ++impl_->sector_lights_simplified;
-      const std::string emitted = it->second(f, impl_->mariner);
+      const std::string emitted = it->second(f, current_mariner());
       if (emitted.empty()) continue;
       const std::vector<S52Instruction> sub = ParseS52Instructions(emitted);
       if (program.size() + sub.size() > kMaxProgram) continue;
@@ -926,14 +1040,25 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       }
       // The optional second parameter is a rotation: either a number of
       // degrees or the acronym of the attribute holding one (ORIENT).
+      //
+      // NEGATED, and this is a unit conversion rather than a fix. S-52 writes
+      // every rotation as a COMPASS BEARING — ORIENT is degrees clockwise from
+      // north, and so is the flare's 135 — while the renderer's rotation is
+      // CCGMSymbol::DrawSymbol's, `x' = x cos r - y sin r` over a y-up symbol
+      // space drawn into a y-down device, which turns a symbol
+      // COUNTER-clockwise on screen for a positive angle. The shared renderer
+      // keeps FalconView's sense under the bit-faithful rule, so the product
+      // that authors in bearings converts at its own seam. Without this a
+      // recommended track (SY(RECTRC57,ORIENT)) and a traffic lane
+      // (SY(TSSLPT51,ORIENT)) point at their own mirror image about north.
       if (ins.params.size() >= 2) {
         const std::string p = Clean(ins.params[1]);
         double deg = 0.0;
         if (RuleValueAsNumber(p, &deg)) {
-          s.rotation_deg = deg;
+          s.rotation_deg = -deg;
         } else {
           const std::string* v = f.Attribute(p);
-          if (v != nullptr) s.rotation_deg = ToDouble(*v, 0.0);
+          if (v != nullptr) s.rotation_deg = -ToDouble(*v, 0.0);
         }
       }
       continue;
@@ -946,7 +1071,10 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       const std::string* value = f.Attribute(Clean(ins.params[attr_index]));
       if (value == nullptr || value->empty()) continue;
 
-      LabelStyle& label = builder.Label();
+      // NOT into `builder`: text is drawn above all geometry, which means a
+      // priority of its own and therefore a StyleResult of its own. See
+      // kS52PrioTextBase.
+      LabelStyle label;
       label.valid = true;
       label.text = is_te ? ApplyTextFormat(ins.params[0], *value) : *value;
       // Parameter layout after the attribute: hjust, vjust, space, chars,
@@ -956,6 +1084,18 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
         label.style.size = TextSizeFromSpec(ins.params[base + 3]) * symbol_scale;
       if (ins.params.size() > base + 6)
         label.style.color = impl_->Color(ins.params[base + 6]);
+      if (ins.params.size() > base + 0)
+        label.halign = HAlignFromSpec(ins.params[base + 0], label.halign);
+      if (ins.params.size() > base + 1)
+        label.valign = VAlignFromSpec(ins.params[base + 1], label.valign);
+      // The offsets are in body sizes, so they need the size that was just
+      // resolved — including the symbol scale, or a magnified chart would keep
+      // its text the same distance from a symbol that grew.
+      if (ins.params.size() > base + 5) {
+        label.dx = OffsetPixels(ins.params[base + 4], label.style.size);
+        label.dy = OffsetPixels(ins.params[base + 5], label.style.size);
+      }
+      labels.push_back(std::move(label));
       continue;
     }
   }
@@ -965,13 +1105,29 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
   // question mark — but ONLY when nothing else in the row put ink down, since
   // a beacon that already drew its own symbol needs its missing topmark
   // counted, not a question mark stamped on top of it.
-  if (unhandled_here > 0 && !builder.AnythingDrawn()) {
+  if (unhandled_here > 0 && !builder.AnythingDrawn() && labels.empty()) {
     PointSymbolStyle& s = builder.Symbol();
     s.valid = true;
     s.symbol_id = kQuestionMark;
     ++impl_->placeholders;
   }
   builder.Finish();
+
+  // A large minority of S-52 rows are text ONLY — a sounding IS its number —
+  // so this is frequently the row's whole output, not an afterthought on it.
+  // A rule that overrode the priority is obeyed literally and keeps its text
+  // with its geometry: an override says where the caller wants this object,
+  // and silently lifting half of it out of that band would make the override
+  // mean something the caller did not ask for.
+  const int text_priority =
+      pass.has_priority ? priority
+                        : kS52PrioTextBase + PriorityOf(*row);
+  for (LabelStyle& lb : labels) {
+    StyleResult r;
+    r.priority = text_priority;
+    r.label = std::move(lb);
+    out->push_back(std::move(r));
+  }
   return Status::Ok();
 }
 

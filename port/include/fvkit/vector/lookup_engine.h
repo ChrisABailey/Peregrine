@@ -53,6 +53,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "fvkit/vector/mariner.h"
 #include "fvkit/vector/rules.h"
 #include "fvkit/vector/style.h"
 
@@ -115,6 +116,37 @@ class LookupTableStyleEngine : public IStyleEngine {
   ViewingGroupSet& viewing_groups() { return groups_; }
   const ViewingGroupSet& viewing_groups() const { return groups_; }
 
+  // --- the mariner's depth numbers (fvkit/vector/mariner.h) ----------------
+  // Shared, because S-52's safety/shallow/deep contours and GeoSym's
+  // ssdc/msdc/mssc are the same settings under two names — see mariner.h for
+  // the row-by-row derivation. A product engine seeds its OWN defaults in its
+  // constructor (they differ, and both sets are pinned by goldens) and reads
+  // them back out in StyleFeature.
+  //
+  // TWO ACCESSORS, NOT AN OVERLOAD PAIR, and the naming is the point:
+  // mutable_mariner() bumps the style epoch ON CALL, because a caller holding
+  // the reference can change anything at any time and the retained scene has
+  // to be told — the contract S52StyleEngine::mariner() has carried since E3a.
+  // Spelling both `mariner()` would make a plain READ through a non-const
+  // engine silently pick the bumping one, which is a scene rebuild per read
+  // (it cost this session two failing tests before the names were split).
+  MarinerSettings& mutable_mariner() {
+    ++own_epoch_;
+    ++mariner_epoch_;
+    return mariner_;
+  }
+  const MarinerSettings& mariner() const { return mariner_; }
+  void SetMariner(const MarinerSettings& m) {
+    if (m == mariner_) return;
+    mariner_ = m;
+    ++own_epoch_;
+    ++mariner_epoch_;
+  }
+  // Bumped whenever the settings could have changed. A product that derives
+  // something from them (GeoSym's CECDISValues) compares this instead of
+  // re-deriving per feature.
+  uint64_t mariner_epoch() const { return mariner_epoch_; }
+
   // Diagnostics: predicate evaluations performed by the rule plan since the
   // last Style() that recompiled it. Proves the plan's fast path.
   size_t rule_predicate_evaluations() const {
@@ -154,6 +186,13 @@ class LookupTableStyleEngine : public IStyleEngine {
   // under-bumping draws stale symbology, so bump when in doubt.
   void BumpStyleEpoch() { ++own_epoch_; }
 
+  // What a product's own StyleFeature reads. Deliberately NOT spelled
+  // mariner(): that overload set resolves to the MUTABLE one inside a
+  // non-const member, so a product reading its safety contour per feature
+  // would bump the epoch per feature and the retained scene would rebuild
+  // every frame — the exact stall the epoch exists to prevent.
+  const MarinerSettings& current_mariner() const { return mariner_; }
+
   // Called once per feature that survived the rule layer.
   virtual Status StyleFeature(const VectorFeature& f, const StyleContext& ctx,
                              const StylePass& pass,
@@ -179,6 +218,9 @@ class LookupTableStyleEngine : public IStyleEngine {
   bool open_ = false;
   bool draw_labels_ = false;
   uint64_t own_epoch_ = 1;
+
+  MarinerSettings mariner_;
+  uint64_t mariner_epoch_ = 1;
 
   RuleSet rules_;
   ViewingGroupSet groups_;

@@ -1,0 +1,83 @@
+// OSM / OpenMapTiles data families — see port/include/fvkit/vector/families.h
+//
+// Set "enabled": false on a family to hide everything it names. As shipped
+// every family is on, so loading this file changes nothing that is drawn.
+//
+// The grouping is by MVT SOURCE LAYER, which is what the reader puts in
+// VectorFeature::layer, and the seventeen layers below are the inventory of
+// TestData/OSM/mbtiles/us-south.mbtiles — a pyramid built to a different
+// schema will name its layers differently, and a selector that matches
+// nothing simply hides nothing.
+//
+// NOTE THE OTHER TWO SWITCHES, which do different things:
+//   * the STYLE SHEET (port/Osm/styles/peregrine-osm.json) decides what is
+//     drawn at all and in what order — a family cannot show what the style
+//     never styles;
+//   * `key=` on OSM is the feature's `class` tag (motorway, lake, ...), which
+//     is why the sub-family examples below select on it.
+//
+// Comments are allowed: this file is read with JSON comments enabled.
+{
+  "product": "osm",
+  "description": "OpenMapTiles source layers grouped for display",
+  "families": [
+    {
+      "name": "water",
+      "title": "Water bodies and waterways",
+      "enabled": true,
+      "select": ["layer=water", "layer=waterway", "layer=water_name"]
+    },
+    {
+      "name": "landcover",
+      "title": "Land cover and land use",
+      "enabled": true,
+      "select": ["layer=landcover", "layer=landuse", "layer=park"]
+    },
+    {
+      "name": "buildings",
+      "title": "Buildings",
+      "enabled": true,
+      "select": ["layer=building", "layer=housenumber"]
+    },
+    {
+      "name": "roads",
+      "title": "Roads, rail and paths",
+      "note": "transportation_name is where the road labels come from; hiding it silences the names without removing the roads",
+      "enabled": true,
+      "select": ["layer=transportation", "layer=transportation_name"]
+    },
+    {
+      "name": "aviation",
+      "title": "Airports and runways",
+      "enabled": true,
+      "select": ["layer=aeroway", "layer=aerodrome_label"]
+    },
+    {
+      "name": "places",
+      "title": "Place names and peaks",
+      "enabled": true,
+      "select": ["layer=place", "layer=mountain_peak"]
+    },
+    {
+      "name": "poi",
+      "title": "Points of interest",
+      "enabled": true,
+      "select": ["layer=poi"]
+    },
+    {
+      "name": "boundaries",
+      "title": "Administrative boundaries",
+      "enabled": true,
+      "select": ["layer=boundary"]
+    },
+    {
+      "name": "minor_roads",
+      "title": "Minor roads (service, track, path)",
+      "note": "a family INSIDE another one: turning this off declutters a city view while the highways stay. Selectors are per class tag, and the two families compose because both are just hide rules.",
+      "enabled": true,
+      "select": ["layer=transportation key=service",
+                 "layer=transportation key=track",
+                 "layer=transportation key=path"]
+    }
+  ]
+}

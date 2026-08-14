@@ -131,6 +131,12 @@ class SqliteStmt {
   // 0-based column indexes, as in sqlite.
   int64_t ColInt64(int i) const { return sqlite3_column_int64(stmt_, i); }
   double ColDouble(int i) const { return sqlite3_column_double(stmt_, i); }
+  // SQLITE_NULL, SQLITE_INTEGER, ... — the one thing the Col* accessors above
+  // cannot express, because sqlite coerces a NULL to 0 / "" rather than
+  // saying so. A nullable column (an optional pivot, an unset elevation) is
+  // only readable through this.
+  int ColType(int i) const { return sqlite3_column_type(stmt_, i); }
+
   std::string ColText(int i) const {
     const unsigned char* t = sqlite3_column_text(stmt_, i);
     return t ? (const char*)t : "";
