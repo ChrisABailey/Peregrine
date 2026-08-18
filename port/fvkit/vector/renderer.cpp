@@ -707,6 +707,10 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   // The same zoom in the other symbol form's units: a tile is authored in
   // pixels, so the user's symbol scale IS its scale factor.
   const double pixmap_scale = symbol_scale_;
+  // PR2: the chart's own turn, taken out of every NORTH-UP symbol angle below.
+  // Read once per frame — the projection cannot turn mid-render, and a point
+  // symbol per feature is the wrong place to ask.
+  const double chart_rotation = proj.Rotation();
   std::vector<SurfacePoint> proj_part;
 
   const std::vector<GeoPoint>& pts = scene_.points();
@@ -764,6 +768,13 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                                  sr.area_pattern.spacing_y,
                                  sr.area_pattern.staggered, anchor_x, anchor_y,
                                  size.width, size.height)) {
+                // PR2 leaves this 0.0. An area pattern is a screen-space FILL
+                // TEXTURE — PlaceOverArea lays its stamps on a grid aligned to
+                // the surface axes, not to the geography — so turning the
+                // stamps while their grid stayed put would be half a rotation
+                // and would read worse than none. The ring being filled turns
+                // with the chart because it is projected; the hatch inside it
+                // stays upright, which is what a hatch does.
                 DrawResolvedSymbol(
                     canvas, pat, at.x, at.y,
                     px_per_himetric * sr.area_pattern.symbol_scale,
@@ -833,7 +844,8 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                   canvas, ResolveSymbol(style_.get(), sr.symbol.symbol_id),
                   a.x, a.y, px_per_himetric * sr.symbol.scale,
                   pixmap_scale * sr.symbol.scale,
-                  sr.symbol.rotation_deg * kPi / 180.0,
+                  SymbolAngleOnChart(sr.symbol.rotation_deg, chart_rotation) *
+                      kPi / 180.0,
                   pick_enabled_ ? &ink : nullptr)) {
             ++draws_emitted_;
             if (pick_enabled_) {
@@ -881,7 +893,9 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
             if (GlyphAdvances(canvas, sr.label.text, ts, &adv)) {
               for (const PlacedTextRun& run : PlaceTextAlongPath(
                        proj_part, adv, sr.label.spacing_px,
-                       sr.label.max_angle_deg, sr.label.offset_px)) {
+                       sr.label.max_angle_deg,
+                       sr.label.offset_px +
+                           AlongPathAnchorShift(sr.label, ts.size))) {
                 InkBox ink;
                 bool drew = false;
                 // The WHOLE run's halo goes down before ANY of its fill. Per

@@ -14,6 +14,21 @@
 // across the region (exact for equal-arc CADRG/TIROS; a small-region affine
 // approximation for projected GeoTIFF — same trade the demo made, now
 // documented here). Nearest-neighbor sampling, non-AA, deterministic.
+//
+// ROTATION (PR3). A turned projection needs a turned blit, and the two cases
+// are separate code paths on purpose:
+//   * rotation 0 runs exactly the arithmetic it ran before rotation existed,
+//     in the same order, so every pinned raster golden stays byte-identical
+//     (PR1's rule);
+//   * a turned chart maps the target's AXIS-ALIGNED BOX back through
+//     SurfaceToGeo -> GeoToPixel and MASKS what falls outside the frame.
+// The mask is the whole difference in kind. The unturned path can CLAMP a
+// source coordinate to the block it read, because the target region it built
+// is exactly the overlap; a turned frame's box has corners that are not in
+// the frame at all, and clamping there would smear the edge pixels out to
+// fill them. So the turned path leaves an unmapped pixel at alpha 0 and
+// DrawPixmap's blend drops it, which is what gives a turned frame straight
+// edges at the angle it was turned to.
 
 #pragma once
 
@@ -57,6 +72,11 @@ class MapEngine {
   Status SetPhysicalScale(double series_scale, int series_scale_units,
                           double mm_per_pixel);
 
+  // Turns the chart clockwise on screen (MapProjection::SetRotation). Both
+  // paths honour it as of PR3: the vector overlays because they draw through
+  // the projection, the base map because CompositeRow resamples through it.
+  Status SetRotation(double degrees);
+
   const MapProjection& CurrentProj() const { return proj_; }
 
   // Composites all catalog coverage intersecting the viewport (restricted
@@ -75,6 +95,11 @@ class MapEngine {
  private:
   std::shared_ptr<IRasterSource> SourceFor(const CoverageRow& row, Status* s);
   Status CompositeRow(const CoverageRow& row, ICanvas& canvas);
+  // The turned blit (PR3). Takes the geographic overlap CompositeRow has
+  // already computed, in the same unwrapped longitude frame.
+  Status CompositeRowTurned(IRasterSource& src, const ImageInfo& info,
+                            double o_top, double o_bot, double o_west,
+                            double o_east, ICanvas& canvas);
 
   std::shared_ptr<Catalog> catalog_;
   std::shared_ptr<IElevationSource> elevation_;

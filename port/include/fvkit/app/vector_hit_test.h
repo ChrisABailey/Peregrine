@@ -5,7 +5,7 @@
 
 // fvkit/app/vector_hit_test.h — the adapter that makes A5 real: a vector
 // overlay's HitTest capability over the L4 PickIndex it already builds
-// (fvkit-app-plan.md §3e, "a thin adapter over the pick index").
+// (fvkit-app-plan-COMPLETE.md §3e, "a thin adapter over the pick index").
 //
 // It is a separate header from pick.h on purpose. pick.h is the aggregation
 // and knows nothing about vectors; this is the one file in fv::app that

@@ -334,6 +334,95 @@ def test_engine_render():
         assert e.get_elevation(31.5, -81.5) == 9.0
 
 
+def test_projection_rotation_turns_the_chart_clockwise():
+    """PR1's turn, PR2's binding. No data: this is the transform itself.
+
+    The sign is the thing worth pinning from Python, because it is the one
+    property a shell cannot fix later — set_rotation turns the CHART clockwise
+    on screen, so a point due north of the centre swings to the RIGHT at 90.
+    """
+    p = pyfvw.engine.MapProjection()
+    p.set_surface_size(401, 301)
+    p.set_center(pyfvw.geo.GeoPoint(32.75, -79.90))
+    p.set_resolution(0.0002, 0.0002)
+    cx, cy = p.geo_to_surface(p.center)
+
+    north = pyfvw.geo.GeoPoint(32.76, -79.90)
+    x0, y0 = p.geo_to_surface(north)
+    assert y0 < cy - 40 and abs(x0 - cx) < 1e-9, "north is up on an unturned map"
+
+    assert p.rotation == 0.0
+    p.set_rotation(90.0)
+    assert p.rotation == 90.0
+    x1, y1 = p.geo_to_surface(north)
+    assert x1 > cx + 40, "a clockwise quarter turn puts north to the right"
+    assert abs(y1 - cy) < 1e-9
+
+    # Any finite angle, wrapped; and the round trip still inverts.
+    p.set_rotation(-45.0)
+    assert p.rotation == 315.0
+    back = p.surface_to_geo(*p.geo_to_surface(north))
+    assert abs(back.lat - north.lat) < 1e-9 and abs(back.lon - north.lon) < 1e-9
+
+    # A turned viewport reads a BIGGER box than it draws — the honest price of
+    # rotating the projection rather than the image.
+    straight = pyfvw.engine.MapProjection()
+    straight.set_surface_size(401, 301)
+    straight.set_center(pyfvw.geo.GeoPoint(32.75, -79.90))
+    straight.set_resolution(0.0002, 0.0002)
+    p.set_rotation(45.0)
+    assert p.bounds.ur.lat - p.bounds.ll.lat > straight.bounds.ur.lat - straight.bounds.ll.lat
+    assert p.bounds.ur.lon - p.bounds.ll.lon > straight.bounds.ur.lon - straight.bounds.ll.lon
+
+    # Back to zero is back to the identity, exactly.
+    p.set_rotation(0.0)
+    assert p.geo_to_surface(north) == (x0, y0)
+
+    with pytest.raises(Exception):
+        p.set_rotation(float("nan"))
+
+
+def test_engine_render_turns_the_raster_too():
+    """PR3, from the shell's side: engine.set_rotation turns the BASE MAP.
+
+    PR2 left the one combination to avoid — turned vectors over image tiles
+    still blitted axis-aligned — so what this pins is that the raster really
+    moved, and that rotation 0 is still the blit the engine has always done.
+    """
+    root = _testdata("rpf")
+    if root is None:
+        pytest.skip("no TestData")
+    pyfvw.catalog.register_builtin_formats()
+    c = pyfvw.catalog.Catalog()
+    c.scan(c.add_data_source(root, "cadrg"))
+    lfc = next(s.id for s in c.series() if s.series_key == "LFC")
+
+    def render(deg):
+        e = pyfvw.engine.MapEngine(c)
+        e.set_surface(200, 150)
+        e.set_center(pyfvw.geo.GeoPoint(33.7488, -84.3882))
+        e.set_scale(500000)
+        e.set_rotation(deg)
+        assert e.proj.rotation == deg
+        cv = pyfvw.canvas.CpuCanvas(200, 150)
+        assert e.render(cv, lfc) >= 1
+        return np.asarray(cv.buffer).copy()
+
+    straight = render(0.0)
+    turned = render(90.0)
+    assert not np.array_equal(straight, turned), "the chart must actually turn"
+    # It is the same chart, not a different one: the same colours in about the
+    # same quantities, rearranged. (A quarter turn on a square-ish window keeps
+    # nearly all of the ink; the histogram is the cheap way to say so.)
+    h0 = np.bincount(straight[:, :, 0].ravel(), minlength=256)
+    h1 = np.bincount(turned[:, :, 0].ravel(), minlength=256)
+    assert np.count_nonzero(h1) > 8, "still chart content, not a flat smear"
+    assert abs(int(h0.argmax()) - int(h1.argmax())) <= 2
+
+    # And 0 is the exact identity, byte for byte, after a round trip.
+    assert np.array_equal(render(0.0), straight)
+
+
 def test_engine_physical_scale():
     # A cartographic series draws at its denominator; the mm_per_pixel knob
     # zooms; and the projection has physically-correct aspect (dpp_lon/dpp_lat
@@ -1289,10 +1378,14 @@ def test_osm_source_open_layers_bounds():
     for want in ("water", "transportation", "building", "place"):
         assert want in s.layers()
     # Bounds are DERIVED from the tile index: an MBTiles `bounds` value cannot
-    # be trusted, and this file's claims the whole world.
+    # be trusted (see Mbtiles.BoundsAreDerivedFromTheTilesNotBelieved — the
+    # same declared number was a lie in one cut of this file and the truth in
+    # the next). The 2026-08-17 re-cut runs east to the Greenwich meridian, so
+    # the standing claim is the latitude band and the western edge.
     b = s.bounds
     assert b.contains(pyfvw.geo.GeoPoint(33.749, -84.388))
-    assert b.ur.lon < -70.0 and b.ll.lon > -110.0
+    assert b.ur.lon <= 0.0 and b.ll.lon > -110.0
+    assert b.ll.lat > 20.0 and b.ur.lat < 45.0
 
 
 def test_osm_scale_picks_the_zoom_and_clipping_is_on():
@@ -2140,6 +2233,42 @@ def test_geodraw_stamps_a_builtin_symbol_and_says_so_when_the_id_is_wrong():
         d.symbol(proj.center, "fv.no-such-symbol")
 
 
+def test_a_highlighted_symbol_keeps_its_own_colour_and_gains_a_ring():
+    """G4. A selected marker used to be REPAINTED in the selection colour,
+    which said 'selected' by throwing away the one thing that said which route
+    or which category it belongs to. The highlight is its own silhouette
+    stamped around it instead, so both facts are on screen at once."""
+    proj = _harbour_proj()
+
+    def render(state):
+        canvas = pyfvw.canvas.CpuCanvas(400, 300)
+        canvas.clear((255, 255, 255))
+        lib = pyfvw.symbol.BuiltinSymbolLibrary()
+        lib.set_color((0, 0, 255))
+        d = pyfvw.draw.GeoDraw(proj, canvas, lib)
+        d.state = state
+        d.symbol(proj.center, pyfvw.symbol.builtin.DIAMOND, scale=2.0)
+        return canvas, d
+
+    plain, dp = render(pyfvw.draw.RenderState.NORMAL)
+    lit, dl = render(pyfvw.draw.RenderState.HIGHLIGHTED)
+    assert dp.highlight_draws == 0 and dl.highlight_draws > 0
+    assert dp.draws_emitted == dl.draws_emitted == 1
+    assert _count(plain, (0, 0, 255)) == _count(lit, (0, 0, 255))
+    assert _count(lit, (255, 220, 0)) > 0
+    assert _count(plain, (255, 220, 0)) == 0
+    # The colour is the caller's, not the port's.
+    canvas = pyfvw.canvas.CpuCanvas(400, 300)
+    canvas.clear((255, 255, 255))
+    lib = pyfvw.symbol.BuiltinSymbolLibrary()
+    lib.set_color((0, 0, 255))
+    d = pyfvw.draw.GeoDraw(proj, canvas, lib)
+    d.state = pyfvw.draw.RenderState.HIGHLIGHTED
+    d.set_highlight((255, 0, 255), 4.0)
+    d.symbol(proj.center, pyfvw.symbol.builtin.DIAMOND, scale=2.0)
+    assert _count(canvas, (255, 0, 255)) > 0
+
+
 def test_geodraw_fills_a_pick_index_from_the_ink_it_emitted():
     proj = _harbour_proj()
     canvas = pyfvw.canvas.CpuCanvas(400, 300)
@@ -2194,6 +2323,42 @@ def test_the_route_line_says_which_MODE_it_was_priced_as():
     # Both wear the white casing, which the grey background makes visible.
     assert _count(car, (255, 255, 255)) > 0
     assert _count(bike, (255, 255, 255)) > 0
+
+
+def test_a_selected_waypoint_keeps_the_routes_colour(tmp_path):
+    """G4's acceptance test on the app's own overlay. Before it, selecting a
+    waypoint repainted that marker yellow, so a two-route session could not
+    tell you which route the selected point belonged to. Now the marker keeps
+    the route's colour and the selection is a band around it."""
+    route_mod = _route_module()
+    proj = _harbour_proj()
+    overlay = route_mod.RouteOverlay("sel", [
+        ("A", 32.73, -79.94),
+        ("B", 32.77, -79.86),
+    ])
+    overlay.color = (0, 160, 0)
+
+    def draw():
+        canvas = _canvas_with_font(400, 300)
+        canvas.clear((255, 255, 255))
+        overlay.on_draw(proj, canvas)
+        return canvas
+
+    none = draw()
+    overlay.select("A")
+    one = draw()
+
+    x, y = proj.geo_to_surface(pyfvw.geo.GeoPoint(32.73, -79.94))
+    at = lambda c: tuple(np.asarray(c.buffer)[int(round(y)), int(round(x)), :3])
+    assert at(none) == (0, 160, 0)
+    assert at(one) == (0, 160, 0), "the selected marker is not recoloured"
+    assert _count(none, (255, 220, 0)) == 0
+    assert _count(one, (255, 220, 0)) > 0
+    # The highlight lands UNDER its own marker and over what was already
+    # there, so the leg line loses a few pixels to it — a handful, not the
+    # marker. Anything approaching a whole diamond (~50 px at scale 1.6)
+    # would mean the marker itself had been repainted.
+    assert _count(none, (0, 160, 0)) - _count(one, (0, 160, 0)) < 20
 
 
 def test_which_requests_count_as_a_bicycle_route():

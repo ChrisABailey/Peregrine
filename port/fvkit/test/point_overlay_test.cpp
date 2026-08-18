@@ -407,11 +407,11 @@ TEST(PointOverlay, EveryShapeDrawsInkAtTheProjectedPosition) {
 }
 
 TEST(PointOverlay, SelectionIsTheEDGEAndIsDrawnOUTSIDETheFill) {
-  // G3. The marker is now a builtin symbol stamped twice — the edge one size
-  // up, underneath, then the point's own colour over it — so "selected" has to
-  // stay a property of the OUTLINE. A test that only counted yellow pixels
-  // would pass on a yellow fill, which is the wrong picture: the fill is what
-  // the user identifies the point by.
+  // G4. Selection is now a RenderState rather than a swapped edge colour, so
+  // the marker gains a band instead of trading one: outside-in the column
+  // above a selected point reads highlight, black edge, own colour. Before
+  // G4 the yellow REPLACED the black edge, and this test could not tell the
+  // difference — the sibling below pins the ordering that says which it is.
   const fv::MapProjection proj = HarbourProj();
   auto edge_and_centre = [&](bool select) {
     fv::CpuCanvas canvas(800, 600);
@@ -450,6 +450,43 @@ TEST(PointOverlay, SelectionIsTheEDGEAndIsDrawnOUTSIDETheFill) {
   EXPECT_LT((int)sel.first.b, 80);
   EXPECT_GT((int)sel.second.b, 200)
       << "selection must not repaint the fill — that is what identifies it";
+}
+
+TEST(PointOverlay, ASelectedMarkerGAINSABandRatherThanRecolouringOne) {
+  // The G4 property the test above cannot see. Walking IN from outside a
+  // selected point must meet three bands in this order — the highlight, the
+  // badge's own black edge, then the point's colour. Pre-G4 the middle band
+  // did not exist: the yellow WAS the edge, so a selected point silently lost
+  // its outline, and on a light chart it lost the contrast the outline is for.
+  const fv::MapProjection proj = HarbourProj();
+  fv::CpuCanvas canvas(800, 600);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  PointOverlay o;
+  MapPoint p = MakePoint(1, "X", 32.74, -79.89);
+  p.shape = PointShape::kSquare;
+  p.size_px = 21;
+  p.color = fv::FvColor{0, 0, 255, 255};
+  o.SetPoints({p});
+  o.SetSelected(1);
+  ASSERT_TRUE(o.OnDraw(proj, canvas).ok());
+
+  // The bands met walking down column 400 towards the centre at y = 300.
+  std::vector<char> bands;
+  for (int y = 275; y <= 300; ++y) {
+    const unsigned char* px = canvas.Buffer().Row(y) + 400 * 4;
+    char band = 0;
+    if (px[0] > 200 && px[1] > 180 && px[2] < 80) band = 'H';        // yellow
+    else if (px[0] < 60 && px[1] < 60 && px[2] < 60) band = 'E';     // black
+    else if (px[2] > 150 && px[0] < 80 && px[1] < 80) band = 'F';    // blue
+    if (band != 0 && (bands.empty() || bands.back() != band))
+      bands.push_back(band);
+  }
+  ASSERT_EQ(bands.size(), 3u)
+      << "expected highlight, edge, fill — got " << std::string(bands.begin(),
+                                                               bands.end());
+  EXPECT_EQ(bands[0], 'H');
+  EXPECT_EQ(bands[1], 'E') << "the badge keeps its own outline when selected";
+  EXPECT_EQ(bands[2], 'F');
 }
 
 TEST(PointOverlay, AnIconIsStampedOnTopOfItsOwnBadge) {

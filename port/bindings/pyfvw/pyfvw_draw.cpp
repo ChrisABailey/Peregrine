@@ -198,6 +198,7 @@ void BindDraw(py::module_& m) {
   bs.attr("NOTCH") = fv::builtin_symbol::kNotch;
   bs.attr("NORTH") = fv::builtin_symbol::kNorthArrow;
   bs.attr("CROSSHAIR") = fv::builtin_symbol::kCrosshair;
+  bs.attr("OWNSHIP") = fv::builtin_symbol::kOwnship;
   {
     std::vector<std::string> all;
     for (const char* const* n = fv::builtin_symbol::kAll; *n != nullptr; ++n)
@@ -211,6 +212,14 @@ void BindDraw(py::module_& m) {
       "G3 GeoDraw: geographic verbs over a canvas. An overlay draws lines "
       "that are really geodesics, stamps symbols from a library and writes "
       "haloed labels, with no geometry of its own.");
+
+  py::enum_<fv::RenderState>(
+      draw, "RenderState",
+      "What a draw MEANS as opposed to how it is styled (G4). HIGHLIGHTED "
+      "stamps the ink's own silhouette around it in the highlight colour, so "
+      "a selected thing keeps the colour it is identified by.")
+      .value("NORMAL", fv::RenderState::kNormal)
+      .value("HIGHLIGHTED", fv::RenderState::kHighlighted);
 
   py::enum_<fv::LabelHAlign>(draw, "HAlign")
       .value("LEFT", fv::LabelHAlign::kLeft)
@@ -304,6 +313,17 @@ void BindDraw(py::module_& m) {
                     "products are pinned to their own nominal pixel and cannot "
                     "move; overlay symbology has no goldens, so a shell that "
                     "knows its device can set dpi/100 here.")
+      .def_property("state", &fv::GeoDraw::state, &fv::GeoDraw::SetState,
+                    "RenderState for every following verb. An overlay sets it "
+                    "for the selected feature, draws, and sets it back.")
+      .def(
+          "set_highlight",
+          [](fv::GeoDraw& d, py::sequence color, double width_px) {
+            d.SetHighlight(ToColor(color), width_px);
+          },
+          "color"_a, "width_px"_a = 3.0,
+          "The highlight colour and how far past the ink it shows. Defaults "
+          "to FalconView's selection yellow at 3 px.")
       .def("set_clip", &fv::GeoDraw::SetClip, "on"_a)
       .def_property("pick_enabled", &fv::GeoDraw::pick_enabled,
                     &fv::GeoDraw::SetPickEnabled)
@@ -328,6 +348,10 @@ void BindDraw(py::module_& m) {
           "topmost first. Empty unless pick_enabled was set before drawing.")
       .def_property_readonly("draws_emitted", &fv::GeoDraw::draws_emitted)
       .def_property_readonly("halo_draws", &fv::GeoDraw::halo_draws)
+      .def_property_readonly("highlight_draws", &fv::GeoDraw::highlight_draws,
+                             "Highlight passes since the last reset. Never in "
+                             "the pick index: the user aims at the feature, "
+                             "not at its glow.")
 
       // --- lines ---------------------------------------------------------
       .def(

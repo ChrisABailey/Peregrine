@@ -1,10 +1,21 @@
 # FvKit Overlay Drawing — geographic lines, symbols and render state (plan)
 
-**Status: G1 built 2026-08-13; G2 and G3 built 2026-08-14. G4 (render state) and G5 (SVG)
-not started.** Where the built code differs from what is written below, the LEDGER row is the
-record — notably G3's `GeoLineStyle` grew a `casing` (a halo for a line, and the thing that makes
-an overlay line readable over a chart), and picking is off by default there rather than on. Companion docs: `port/fvkit-app-plan.md` (the app
-layer this serves, A1–A6 done), `port/vpf-geosym-plan.md` (§5 = the vector seam this reuses),
+**Status: COMPLETE for the work that was taken. G1 built 2026-08-13, G2 and G3 on 2026-08-14,
+G4 on 2026-08-15; see their rows in `port/PORTING-ARCHIVE.md`.** Two things here were deliberately
+NOT built and are recorded as choices in the ledger's §2f: **dimming** as a render state (deferred
+by Chris 2026-08-13 — §3d below holds the two decisions already worked out, and nothing in G1–G4 is
+shaped around its absence) and **G5**, an SVG symbol library, which is gated on wanting somebody
+else's symbol sets. Read this file only if a bug turns up in the drawing stack; the ledger's §1a is
+the summary.
+
+Where the built code differs from what is written below, **the archive row wins** — notably G3's
+`GeoLineStyle` grew a `casing` (a halo for a line, and the thing that makes an overlay line
+readable over a chart) and picking is OFF by default there rather than on; and G4's highlight is
+the stamped halo for a SYMBOL and a LABEL as the plan says, but ONE WIDER STROKE for a LINE, which
+draws the same picture for an eighth of the cost.
+
+Companion docs: `port/fvkit-app-plan-COMPLETE.md` (the app layer this serves),
+`port/vpf-geosym-plan.md` (§5 = the vector seam this reuses),
 `port/fvkit-contracts.md` (D1–D6 bind here too), ledger `port/PORTING.md`.
 
 Reference implementation this is measured against: `fvw_core/FvMappingGraphics/` —

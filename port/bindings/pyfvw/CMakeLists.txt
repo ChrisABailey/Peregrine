@@ -13,7 +13,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pybind11)
 
-pybind11_add_module(pyfvw pyfvw_module.cpp pyfvw_app.cpp pyfvw_draw.cpp)
+pybind11_add_module(pyfvw pyfvw_module.cpp pyfvw_app.cpp pyfvw_draw.cpp pyfvw_nav.cpp)
 # fv_vpf = VpfVectorSource, fv_geosym = GeoSymStyleEngine; both link fv_fvkit
 # (the shared VectorRenderer + canvas + projection).
 # fv_routing = the O4 road graph + router (pyfvw.routing).

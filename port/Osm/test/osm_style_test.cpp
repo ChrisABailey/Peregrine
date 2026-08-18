@@ -26,10 +26,15 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "fv_osm_vector_source.h"
+#include "fvkit/tools/png_write.h"
+#include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/vector/renderer.h"
 #include "fv_web_mercator.h"
 
 namespace fs = std::filesystem;
@@ -214,19 +219,35 @@ TEST(OsmStyleLoad, RejectsDataDrivenFunctions) {
   EXPECT_NE(s.message.find("data-driven"), std::string::npos) << s.message;
 }
 
-TEST(OsmStyleLoad, RejectsUnsupportedLayerTypesAndSprites) {
+TEST(OsmStyleLoad, RejectsUnsupportedLayerTypesAndExpressions) {
   fv::OsmStyleEngine e;
   EXPECT_EQ(e.LoadText(Wrap(R"({"id":"h","type":"hillshade","source-layer":"x"})"))
-                .code,
-            fv::kUnsupported);
-  EXPECT_EQ(e.LoadText(Wrap(R"({"id":"b","type":"fill","source-layer":"building",
-                                "paint":{"fill-pattern":"hatch"}})"))
                 .code,
             fv::kUnsupported);
   EXPECT_EQ(e.LoadText(Wrap(R"({"id":"t","type":"symbol","source-layer":"place",
                                 "layout":{"text-field":["get","name"]}})"))
                 .code,
             fv::kUnsupported);
+  // A pattern NAME is a constant or a token template, never an expression —
+  // the same rule every other property here follows.
+  EXPECT_EQ(e.LoadText(Wrap(R"({"id":"b","type":"fill","source-layer":"building",
+                                "paint":{"fill-pattern":["get","kind"]}})"))
+                .code,
+            fv::kUnsupported);
+}
+
+// `fill-pattern` used to be in the test above. O6 loads sprite sheets, so it
+// is supported now and the load must SUCCEED — deliberately, which is why the
+// change of behaviour gets an assertion of its own rather than a quiet
+// deletion from the rejection list.
+TEST(OsmStyleLoad, AFillPatternLoadsNowThatSheetsAreRead) {
+  fv::OsmStyleEngine e;
+  EXPECT_TRUE(e.LoadText(Wrap(
+                   R"({"id":"b","type":"fill","source-layer":"building",
+                       "paint":{"fill-pattern":"hatch"}})"))
+                  .ok());
+  // With no sheet behind it the layer simply draws nothing and says so.
+  EXPECT_TRUE(e.sprite_ids().empty());
 }
 
 TEST(OsmStyleLoad, RejectsUnknownColourAndBadJson) {
@@ -798,4 +819,393 @@ TEST(OsmReferenceStyle, StylesRealAtlantaFeatures) {
       << "Style() must append in style-layer order";
   EXPECT_GT(eng.layers_that_drew(), 4u);
   EXPECT_TRUE(eng.unresolved_symbols().empty());
+}
+
+// ---------------------------------------------------------------------------
+// 9. Sprites: icons and pattern fills (O6)
+// ---------------------------------------------------------------------------
+//
+// Everything here is SYNTHETIC — a two-sprite sheet written to a scratch dir —
+// because no sprite set ships with the port and the assertions are about the
+// wiring, not about anybody's artwork.
+
+namespace {
+
+class SpriteDir {
+ public:
+  explicit SpriteDir(const std::string& name)
+      : path_(fs::temp_directory_path() / ("fv_osmsprite_" + name)) {
+    std::error_code ec;
+    fs::remove_all(path_, ec);
+    fs::create_directories(path_, ec);
+  }
+  ~SpriteDir() {
+    std::error_code ec;
+    fs::remove_all(path_, ec);
+  }
+  std::string file(const std::string& n) const { return (path_ / n).string(); }
+
+  // `hatch` is 8x4 and `dot` is 8x8, so a test can tell the two apart by the
+  // spacing a pattern fill derives from the tile.
+  void WriteSheet(const std::string& stem = "sprite") const {
+    fv::PixelBuffer sheet(16, 8);
+    for (int y = 0; y < 8; ++y) {
+      unsigned char* row = sheet.Row(y);
+      for (int x = 0; x < 16; ++x) {
+        const bool left = x < 8;
+        row[x * 4 + 0] = left ? 255 : 0;
+        row[x * 4 + 1] = left ? 0 : 255;
+        row[x * 4 + 2] = 0;
+        row[x * 4 + 3] = 255;
+      }
+    }
+    EXPECT_TRUE(fv::WritePng(sheet, file(stem + ".png")).ok());
+    std::ofstream(file(stem + ".json"))
+        << R"({"dot":   {"x": 0, "y": 0, "width": 8, "height": 8},)"
+        << R"( "hatch": {"x": 8, "y": 0, "width": 8, "height": 4}})";
+  }
+
+ private:
+  fs::path path_;
+};
+
+fv::VectorFeature Poi(const char* klass) {
+  fv::VectorFeature f;
+  f.type = fv::VectorGeometryType::kPoint;
+  f.layer = "poi";
+  f.style_key = klass;
+  f.attributes.push_back({"class", klass});
+  f.parts.push_back({{33.75, -84.39}});
+  return f;
+}
+
+fv::VectorFeature Landuse(const char* klass) {
+  fv::VectorFeature f;
+  f.type = fv::VectorGeometryType::kArea;
+  f.layer = "landuse";
+  f.style_key = klass;
+  f.attributes.push_back({"class", klass});
+  f.parts.push_back({{33.75, -84.39}, {33.76, -84.39}, {33.76, -84.38},
+                     {33.75, -84.38}, {33.75, -84.39}});
+  return f;
+}
+
+}  // namespace
+
+TEST(OsmSprite, AnIconLayerDrawsItsSpriteInsteadOfBeingCounted) {
+  SpriteDir dir("icon");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"poi","type":"symbol","source-layer":"poi",
+          "layout":{"icon-image":"dot"}})")).ok());
+  EXPECT_EQ(e.sprite_ids().size(), 2u);
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi("cafe"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].symbol.valid) << "the icon half of a symbol layer";
+  EXPECT_EQ(out[0].symbol.symbol_id, "sprite:dot");
+  // The whole point of O6: this used to be the only outcome.
+  EXPECT_TRUE(e.ignored_icons().empty());
+
+  // And it RESOLVES — through Pixmap(), not Symbol(), because a sprite has no
+  // display list. Both halves matter: a symbol_id the renderer cannot resolve
+  // draws nothing at all.
+  EXPECT_EQ(e.Symbol("sprite:dot"), nullptr);
+  const fv::SymbolPixmap* tile = e.Pixmap("sprite:dot");
+  ASSERT_NE(tile, nullptr);
+  EXPECT_EQ(tile->tile.Width(), 8);
+  EXPECT_EQ(tile->tile.Height(), 8);
+
+  // AND asking for the display list must not have counted the sprite as
+  // unresolved symbology. The base class counts a failed LoadSymbol, so
+  // without the short-circuit in Symbol() every icon that drew perfectly
+  // would be listed in the one diagnostic that means "this did not draw".
+  EXPECT_TRUE(e.unresolved_symbols().empty())
+      << "a sprite resolves through Pixmap(); that is not a miss";
+}
+
+TEST(OsmSprite, AnIconNameIsATokenTemplateLikeATextField) {
+  // `"icon-image": "{class}"` is how OpenMapTiles styles key a POI icon off
+  // the feature, and it is far more common than a literal name.
+  SpriteDir dir("token");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"poi","type":"symbol","source-layer":"poi",
+          "layout":{"icon-image":"{class}"}})")).ok());
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi("dot"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].symbol.symbol_id, "sprite:dot");
+
+  // A class the sheet has no sprite for is counted and drawn as nothing —
+  // which is what ignored_icons() means now.
+  out.clear();
+  ASSERT_TRUE(e.Style(Poi("helipad"), ctx, &out).ok());
+  EXPECT_TRUE(out.empty());
+  ASSERT_EQ(e.ignored_icons().count("helipad"), 1u);
+}
+
+TEST(OsmSprite, IconSizeAndRotateReachTheSymbol) {
+  SpriteDir dir("sizerot");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"poi","type":"symbol","source-layer":"poi",
+          "layout":{"icon-image":"dot","icon-size":1.5,"icon-rotate":30}})"))
+                  .ok());
+
+  fv::StyleContext ctx;
+  ctx.device_dpi = 96.0;  // dpi_scale == 1, so the multiplier stands alone
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi("cafe"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_DOUBLE_EQ(out[0].symbol.scale, 1.5);
+  EXPECT_DOUBLE_EQ(out[0].symbol.rotation_deg, 30.0);
+}
+
+TEST(OsmSprite, AnIconAndAName_AreTwoHalvesOfOneLayer) {
+  // A GL symbol layer can carry both, and before O6 the icon half was dropped
+  // — so a layer with an icon and NO text contributed nothing at all.
+  SpriteDir dir("both");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"poi","type":"symbol","source-layer":"poi",
+          "layout":{"icon-image":"dot","text-field":"{class}"},
+          "paint":{"text-color":"#000"}})")).ok());
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  e.SetDrawLabels(true);
+  ASSERT_TRUE(e.Style(Poi("cafe"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u) << "one layer is still one pass";
+  EXPECT_TRUE(out[0].symbol.valid);
+  EXPECT_TRUE(out[0].label.valid);
+  EXPECT_EQ(out[0].label.text, "cafe");
+
+  // The halves are independent BOTH ways: the label switch must not take the
+  // icon down with it. (It is off by default, which is why the icon has to be
+  // emitted before the `draw_labels` early-out and not after.)
+  e.SetDrawLabels(false);
+  out.clear();
+  ASSERT_TRUE(e.Style(Poi("cafe"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].symbol.valid) << "labels off must not hide the icon";
+  EXPECT_FALSE(out[0].label.valid);
+}
+
+TEST(OsmSprite, AFillPatternSpacesItselfByItsOwnTile) {
+  // GL tiles a fill-pattern seamlessly, so the stamp lattice's spacing has to
+  // be the tile's own size — anything else is a field of stamps with gaps.
+  SpriteDir dir("pattern");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"lu","type":"fill","source-layer":"landuse",
+          "paint":{"fill-pattern":"hatch"}})")).ok());
+
+  fv::StyleContext ctx;
+  ctx.device_dpi = 96.0;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Landuse("wood"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  ASSERT_TRUE(out[0].area_pattern.valid);
+  EXPECT_EQ(out[0].area_pattern.symbol_id, "sprite:hatch");
+  // `hatch` is 8 wide and 4 tall: the spacing is the tile, not a square.
+  EXPECT_DOUBLE_EQ(out[0].area_pattern.spacing_x, 8.0);
+  EXPECT_DOUBLE_EQ(out[0].area_pattern.spacing_y, 4.0);
+  EXPECT_FALSE(out[0].area_pattern.staggered) << "GL tiles on a plain grid";
+  EXPECT_DOUBLE_EQ(out[0].area_pattern.symbol_scale, 1.0);
+}
+
+TEST(OsmSprite, APatternsSpacingAndItsStampScaleTogether) {
+  // THE SEAMLESSNESS INVARIANT: the lattice step must equal the tile's DRAWN
+  // size, so the spacing and the scale have to carry the same factors. Scaling
+  // only the spacing (which is what this did first) opens a gutter of exactly
+  // the missing factor at every device DPI but 96, turning a texture fill into
+  // a grid of stamps.
+  SpriteDir dir("patdpi");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"lu","type":"fill","source-layer":"landuse",
+          "paint":{"fill-pattern":"hatch"}})")).ok());
+
+  for (double dpi : {96.0, 192.0, 144.0}) {
+    fv::StyleContext ctx;
+    ctx.device_dpi = dpi;
+    std::vector<fv::StyleResult> out;
+    ASSERT_TRUE(e.Style(Landuse("wood"), ctx, &out).ok());
+    ASSERT_EQ(out.size(), 1u) << dpi;
+    const fv::AreaPatternStyle& ap = out[0].area_pattern;
+    ASSERT_TRUE(ap.valid) << dpi;
+    // The tile is 8x4 at pixelRatio 1, so the drawn size is 8*scale by
+    // 4*scale and the step must be exactly that in both axes.
+    EXPECT_DOUBLE_EQ(ap.spacing_x, 8.0 * ap.symbol_scale) << "dpi " << dpi;
+    EXPECT_DOUBLE_EQ(ap.spacing_y, 4.0 * ap.symbol_scale) << "dpi " << dpi;
+    // And the DPI really is reaching it, or the assertion above is vacuous.
+    EXPECT_DOUBLE_EQ(ap.symbol_scale, dpi / 96.0) << "dpi " << dpi;
+  }
+}
+
+TEST(OsmSprite, APatternAndAColourCanBothBeAsked) {
+  // fill-color under fill-pattern is legal and common: the colour shows
+  // wherever the artwork is transparent, so both slots are filled.
+  SpriteDir dir("patcol");
+  dir.WriteSheet();
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"lu","type":"fill","source-layer":"landuse",
+          "paint":{"fill-color":"#abcdef","fill-pattern":"dot"}})")).ok());
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Landuse("wood"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].fill.valid);
+  EXPECT_EQ(out[0].fill.brush.color.r, 0xAB);
+  EXPECT_TRUE(out[0].area_pattern.valid);
+}
+
+TEST(OsmSprite, AStyleWithNoSheetStillLoadsAndCountsItsIcons) {
+  // The web case: `sprite` is an https URL, nothing here fetches, and failing
+  // the style over it would reject every style published on the internet.
+  fv::OsmStyleEngine e;
+  ASSERT_TRUE(e.LoadText(
+                   R"({"version":8,"name":"t",
+                       "sprite":"https://example.invalid/sprite",
+                       "layers":[{"id":"poi","type":"symbol",
+                                  "source-layer":"poi",
+                                  "layout":{"icon-image":"dot"}}]})")
+                  .ok());
+  EXPECT_EQ(e.sprite_url(), "https://example.invalid/sprite");
+  EXPECT_TRUE(e.sprite_base().empty()) << "nothing here fetches";
+  EXPECT_TRUE(e.sprite_ids().empty());
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi("cafe"), ctx, &out).ok());
+  EXPECT_TRUE(out.empty());
+  EXPECT_EQ(e.ignored_icons().count("dot"), 1u);
+}
+
+TEST(OsmSprite, ASpriteBaseTheCallerNamedMustActuallyLoad) {
+  // The asymmetry is deliberate: a base the CALLER asserted is a caller error
+  // when it does not open, while a style's own missing sheet is not.
+  SpriteDir dir("explicit");
+  fv::OsmStyleEngine e;
+  e.SetSpriteBase(dir.file("nothing-here"));
+  std::string err;
+  EXPECT_FALSE(e.LoadText(Wrap(
+      R"({"id":"poi","type":"symbol","source-layer":"poi",
+          "layout":{"icon-image":"dot"}})"), &err).ok());
+  EXPECT_NE(err.find("SetSpriteBase"), std::string::npos) << err;
+}
+
+TEST(OsmSprite, ARelativeSpriteResolvesBesideTheStyleFile) {
+  SpriteDir dir("relative");
+  dir.WriteSheet("icons");
+  std::ofstream(dir.file("style.json"))
+      << R"({"version":8,"name":"t","sprite":"icons","layers":[)"
+      << R"({"id":"poi","type":"symbol","source-layer":"poi",)"
+      << R"("layout":{"icon-image":"dot"}}]})";
+
+  fv::OsmStyleEngine e;
+  ASSERT_TRUE(e.LoadFile(dir.file("style.json")).ok());
+  EXPECT_EQ(e.sprite_ids().size(), 2u) << "resolved next to its style";
+
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi("cafe"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].symbol.valid);
+}
+
+TEST(OsmSprite, LinePatternAndBackgroundPatternAreStillRejectedAndSayWhy) {
+  // The declared-subset rule: the sheet loading now, these fail for their OWN
+  // reasons, and the message has to carry the new reason rather than the old
+  // "no sprite sheet" one.
+  fv::OsmStyleEngine e;
+  std::string err;
+  EXPECT_FALSE(e.LoadText(Wrap(
+      R"({"id":"r","type":"line","source-layer":"transportation",
+          "paint":{"line-pattern":"dot"}})"), &err).ok());
+  EXPECT_EQ(err.find("does not load"), std::string::npos) << err;
+  EXPECT_NE(err.find("stretches"), std::string::npos) << err;
+
+  EXPECT_FALSE(e.LoadText(Wrap(
+      R"({"id":"bg","type":"background",
+          "paint":{"background-pattern":"dot"}})"), &err).ok());
+  EXPECT_NE(err.find("canvas clear"), std::string::npos) << err;
+}
+
+// The end-to-end half: a sprite named by a style has to reach the CANVAS.
+// Everything above stops at the StyleResult, and the seam between the two is
+// exactly where this module's one real bug lived — ResolveSymbol asks
+// Symbol() before Pixmap(), and answering the first one wrongly makes an icon
+// that styles perfectly draw nothing at all.
+namespace {
+
+class OneFeatureSource : public fv::IVectorSource {
+ public:
+  std::vector<fv::VectorFeature> features;
+  fv::Status Open(const std::string&) override { return fv::Status::Ok(); }
+  bool IsOpen() const override { return true; }
+  fv::GeoRect Bounds() const override { return fv::GeoRect::World(); }
+  std::vector<std::string> Layers() const override { return {"poi"}; }
+  fv::Status Query(const fv::VectorQuery&,
+                   std::vector<fv::VectorFeature>* out) override {
+    for (const auto& f : features) out->push_back(f);
+    return fv::Status::Ok();
+  }
+};
+
+}  // namespace
+
+TEST(OsmSprite, ASpriteReachesTheCanvasThroughTheRenderer) {
+  SpriteDir dir("render");
+  dir.WriteSheet();
+  auto style = std::make_shared<fv::OsmStyleEngine>();
+  style->SetSpriteBase(dir.file("sprite"));
+  ASSERT_TRUE(style->LoadText(Wrap(
+      R"({"id":"poi","type":"symbol","source-layer":"poi",
+          "layout":{"icon-image":"dot"}})")).ok());
+
+  auto src = std::make_shared<OneFeatureSource>();
+  src->features.push_back(Poi("cafe"));
+
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(64, 64).ok());
+  ASSERT_TRUE(proj.SetCenter(fv::GeoPoint{33.75, -84.39}).ok());
+  ASSERT_TRUE(proj.SetResolution(0.001, 0.001).ok());
+
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(proj, &canvas).ok());
+
+  // `dot` is the solid RED half of the sheet, so its ink is unmistakable.
+  int red = 0;
+  for (int y = 0; y < 64; ++y)
+    for (int x = 0; x < 64; ++x) {
+      const unsigned char* px = canvas.Buffer().Row(y) + 4 * x;
+      if (px[0] > 200 && px[1] < 60 && px[2] < 60) ++red;
+    }
+  EXPECT_EQ(red, 64) << "the whole 8x8 sprite, blitted once";
+  EXPECT_EQ(r.draws_emitted(), 1u);
+  EXPECT_TRUE(style->unresolved_symbols().empty());
+  EXPECT_TRUE(style->ignored_icons().empty());
 }

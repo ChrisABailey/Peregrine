@@ -1,14 +1,23 @@
 # FvKit App Layer — platform-agnostic overlay/application framework (plan)
 
-**Status: plan, 2026-08-11. A1, A2 and A3 built 2026-08-12, A4 on 2026-08-13 (see their rows in
-`port/PORTING-ARCHIVE.md`); A5–A6 not started.** `shell.h` is complete (A3 added `FlowResult` and
-`AppShell`) and so is `editor.h` (A4 added `EditorManager`). Two shape changes A4 made to §3d as
-written: `EditorManager`'s dependency on `OverlaySession` is MUTUAL, so it is wired through
-`SetSession`/`SetEditorManager` after construction rather than through either constructor, and both
-sides are optional (no session ⇒ a mode with nothing to edit waits; no EditorManager ⇒ the A3 flows
-unchanged). Invariants §3d.2 and §3d.3 are **observed** through a private `StackObserver` rather
-than called, so they hold for a `MakeCurrent` or a `Remove` from anywhere. **There is no `stack.h`**: A2 grew `fvkit/overlay/manager.h` in place,
-as §3c says to, so that file is the stack and `StackObserver` lives in it, in namespace `fv`.
+**Status: COMPLETE. A1–A6 all built (2026-08-12 → 2026-08-13); see their rows in
+`port/PORTING-ARCHIVE.md`.** Nothing here is a to-do. Read this file only if a bug turns up in
+`fv::app` and you want the design intent behind a component; the ledger's §1b is the summary and
+the archive rows are the record of what was actually built and why.
+
+Where the built code differs from what is written below, **the archive row wins**. The three that
+matter: **there is no `stack.h`** — A2 grew `fvkit/overlay/manager.h` in place, as §3c says to, so
+that file is the stack and `StackObserver` lives in it in namespace `fv`; `EditorManager`'s
+dependency on `OverlaySession` is **MUTUAL**, so it is wired through `SetSession`/`SetEditorManager`
+after construction and both sides are optional; and invariants §3d.2/§3d.3 are **observed** through
+a private `StackObserver` rather than called, so they hold for a `MakeCurrent` or a `Remove` from
+anywhere. A5's hit id is a **handle**, not the packing §3e assumes (a `FeatureRef` does not fit in
+a uint64_t).
+
+What this plan deliberately never covered, and is tracked in the ledger's §2b/§2c instead: the
+reorder DIALOG, an editor for `fv.points`, session persistence (blocked on rule S1), and the
+top-most band's opacity (blocked on `ICanvas`).
+
 Companion docs: `port/fvkit-contracts.md` (D1–D6 still bind), `port/vpf-geosym-plan.md`,
 ledger `port/PORTING.md`.
 

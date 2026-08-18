@@ -83,6 +83,8 @@ namespace pyfvw {
 void BindApp(py::module_& m);
 // pyfvw_draw.cpp — pyfvw.symbol + pyfvw.draw, the G2/G3 surface.
 void BindDraw(py::module_& m);
+// pyfvw_nav.cpp — pyfvw.nav, the moving map (MM1-MM4).
+void BindNav(py::module_& m);
 }  // namespace pyfvw
 
 namespace {
@@ -1650,6 +1652,23 @@ PYBIND11_MODULE(pyfvw, m) {
            "scale_denominator"_a, "mm_per_pixel"_a,
            "1:N at a known display pitch, with correct latitude-dependent "
            "aspect (WGS84 metres-per-degree, not MapScaleUtil).")
+      .def("set_rotation",
+           [](fv::MapProjection& p, double deg) {
+             ThrowIfError(p.SetRotation(deg));
+           },
+           "degrees"_a,
+           "Turn the chart CLOCKWISE on screen about the surface centre (PR1). "
+           "Any finite angle, wrapped into [0, 360); 0 is the exact identity. "
+           "Orthogonal to every set_* scale call.\n\n"
+           "BOTH paths honour it. Vector (PR2): geometry, labels along a path "
+           "and north-up point symbols all turn, point labels stay upright, "
+           "and picking follows the ink. Raster (PR3): MapEngine resamples "
+           "each frame through the turned projection and masks what falls "
+           "outside it, so a turned frame keeps its own edges. The price is "
+           "in the query — a turned viewport's bounds grow to (w cos + h sin) "
+           "by (w sin + h cos), so a turned frame reads more data.")
+      .def_property_readonly("rotation", &fv::MapProjection::Rotation,
+                             "Clockwise chart rotation in degrees, [0, 360).")
       .def_property_readonly("deg_per_pixel_lat", &fv::MapProjection::DegPerPixelLat)
       .def_property_readonly("deg_per_pixel_lon", &fv::MapProjection::DegPerPixelLon)
       .def_property_readonly("scale", &fv::MapProjection::Scale)
@@ -1714,6 +1733,13 @@ PYBIND11_MODULE(pyfvw, m) {
            "screen: a 1:N map draws at 1:N, imagery draws at 100% at the "
            "reference pitch. Pass a SeriesRow's .scale and .scale_units; "
            "mm_per_pixel is the zoom knob (larger = zoomed out).")
+      .def("set_rotation",
+           [](fv::MapEngine& e, double deg) { ThrowIfError(e.SetRotation(deg)); },
+           "degrees"_a,
+           "Turn the chart CLOCKWISE on screen (PR3). The base map is "
+           "resampled through the turned projection, so the image turns with "
+           "the vectors over it; 0 is the exact identity and is the blit the "
+           "engine has always done.")
       .def_property_readonly("proj", &fv::MapEngine::CurrentProj,
                              py::return_value_policy::reference_internal)
       .def(
@@ -2740,6 +2766,11 @@ PYBIND11_MODULE(pyfvw, m) {
   // After pyfvw.canvas and pyfvw.geo, whose types (ICanvas, MapProjection,
   // GeoPoint, LineKind) it names.
   pyfvw::BindDraw(m);
+
+  // ---- pyfvw.nav -------------------------------------------------------
+  // The moving map. After pyfvw.overlay (MovingMapOverlay derives from
+  // Overlay) and pyfvw.geo/engine (it names GeoPoint and MapProjection).
+  pyfvw::BindNav(m);
 
   pyfvw::BindApp(m);
 

@@ -255,18 +255,19 @@ TEST(OsmXmlReader, ReadsNodesWaysAndTags) {
   const fv::Status s = fv::routing::ReadOsmFile(OsmPath("map.osm"), &sink);
   ASSERT_EQ(s.code, fv::kOk) << s.message;
 
-  // Pinned against the file: 30,799 <node> and 1,605 <way>, 493 of them with a
-  // highway tag. (A grep for k="highway" counts 541 — the other 48 are on
-  // nodes, crossings and the like, which is why the count is taken here from
-  // ways only.)
+  // Pinned against the file: 23,261 <node> and 1,236 <way>, 348 of them with a
+  // highway tag. (The count is taken from ways only; a grep for k="highway"
+  // counts more, because crossings and the like carry the tag on nodes.)
   //
-  // RE-PINNED 2026-08-12 when Chris refreshed the extract: was 14,450 / 747 /
-  // 245 over a smaller box. The counts are on ONE NAMED FILE, which is what
-  // the ledger's rule allows — but the file is one a person replaces, so if
-  // this fails again check the data before the reader.
-  EXPECT_EQ(sink.nodes, 30799);
-  EXPECT_EQ(sink.ways, 1605);
-  EXPECT_EQ(sink.highway_ways, 493);
+  // RE-PINNED 2026-08-17, the second refresh of this extract: 30,799 / 1,605 /
+  // 493 on the 2026-08-12 cut, 14,450 / 747 / 245 before that. The counts are
+  // on ONE NAMED FILE, which is what the ledger's rule allows — but the file
+  // is one a person replaces, so if this fails again check the data before the
+  // reader. Both re-pins were confirmed by an independent ElementTree walk of
+  // the same file, so what moved was the extract and not this reader.
+  EXPECT_EQ(sink.nodes, 23261);
+  EXPECT_EQ(sink.ways, 1236);
+  EXPECT_EQ(sink.highway_ways, 348);
   EXPECT_GT(sink.refs, sink.ways);  // every way is a polyline
   EXPECT_GT(sink.tags, sink.ways);  // and carries tags
 
@@ -275,16 +276,19 @@ TEST(OsmXmlReader, ReadsNodesWaysAndTags) {
   // the map*.osm exports share nodes at all, and why nothing here pins the
   // declared bounds.
   //
-  // The 2026-08-12 refresh extended the extract SOUTH-WEST and nowhere else:
-  // min moved 32.5591137 -> 32.5089149 and -80.1965704 -> -80.2401359 while
-  // both maxima are the numbers this test has always carried.
-  EXPECT_NEAR(sink.min_lat, 32.5089149, 1e-6);
+  // Every refresh so far has moved the SOUTH-WEST corner and nothing else:
+  // 2026-08-12 pushed min out to 32.5089149 / -80.2401359, and 2026-08-17
+  // pulled it back to 32.5591137 / -80.1965704, which are the numbers this
+  // test carried before 08-12. Both maxima have never moved across three cuts
+  // of this extract, which is the one thing here worth reading as a property
+  // rather than a pin.
+  EXPECT_NEAR(sink.min_lat, 32.5591137, 1e-6);
   EXPECT_NEAR(sink.max_lat, 32.7179000, 1e-6);
-  EXPECT_NEAR(sink.min_lon, -80.2401359, 1e-6);
+  EXPECT_NEAR(sink.min_lon, -80.1965704, 1e-6);
   EXPECT_NEAR(sink.max_lon, -79.9666451, 1e-6);
 
   // Node IDs are real OSM identities, not indices.
-  EXPECT_EQ(sink.first_node_id, 110069523);
+  EXPECT_EQ(sink.first_node_id, 110064724);
 }
 
 TEST(OsmXmlReader, WantNodesFalseSkipsNodeRecords) {
@@ -294,7 +298,7 @@ TEST(OsmXmlReader, WantNodesFalseSkipsNodeRecords) {
   const fv::Status s = fv::routing::ReadOsmFile(OsmPath("map.osm"), &sink);
   ASSERT_EQ(s.code, fv::kOk) << s.message;
   EXPECT_EQ(sink.nodes, 0);
-  EXPECT_EQ(sink.ways, 1605);
+  EXPECT_EQ(sink.ways, 1236);  // re-pinned 2026-08-17, was 1605
 }
 
 TEST(OsmXmlReader, ContinueFalseStopsEarlyAndIsNotAnError) {

@@ -69,6 +69,9 @@ DEFAULT_DB = os.path.join(REPO, "build", "pythonview.sqlite")
 # static: at most one instance, toggled rather than opened.
 CROSSHAIR_TYPE_ID = "app.crosshair"
 COVERAGE_TYPE_ID = "app.coverage"
+# MM4. A BUILT-IN type (fvkit registers it), so unlike the two above the app
+# does not describe it — it only configures the instance the toggle creates.
+MOVING_MAP_TYPE_ID = "fv.movingmap"
 NATIVE_MM_PER_PIXEL = pyfvw.engine.NATIVE_DISPLAY_MM_PER_PIXEL  # 0.25
 ZOOM_STEP = 2.0 ** 0.5
 FEATURE_STEP = 1.25
@@ -386,6 +389,13 @@ class PythonView(pyfvw.app.AppShell):
         self.catalog = None
         self.W, self.H = 1000, 700
         self.center = pyfvw.geo.GeoPoint(0.0, 0.0)
+        # The chart's clockwise turn, in degrees. It sits BESIDE the centre
+        # because it is the same kind of thing — where the map is, as against
+        # what is on it — and like the centre it is pushed into whichever
+        # projection is about to draw (PR3). The moving map is the only thing
+        # that writes it today; a user-facing "turn the chart" gesture would
+        # write it the same way.
+        self.rotation = 0.0
         self.mm_per_pixel = cfg.get_float("display.mm_per_pixel",
                                           NATIVE_MM_PER_PIXEL)
         self.font = _find_host_font()
@@ -436,6 +446,60 @@ class PythonView(pyfvw.app.AppShell):
         # written out where it can be edited.
         self.route_rules_path = cfg.get("routing.rules", "")
         self.route_profile = cfg.get("routing.profile", "")
+        # MM4: the moving map. FalconView kept AUTO_CENTER/AUTO_ROTATE in the
+        # registry; these are the same three toggles plus the two numbers MM3
+        # added, and they are STARTUP state — the menu and the keys move them
+        # afterwards, and S1 means nothing writes them back.
+        self.mm_modes = pyfvw.nav.CameraModes(
+            auto_center=cfg.get_bool("movingmap.auto_center", True),
+            auto_rotate=cfg.get_bool("movingmap.auto_rotate", False),
+            continuous=cfg.get_bool("movingmap.continuous", False))
+        # 0 is the FalconView jump, reachable on purpose (MM3).
+        self.mm_slew_seconds = cfg.get_float("movingmap.slew_seconds", 0.35)
+        # The demo feed: the routed track is replayed at this ground speed,
+        # sampled at 1 Hz like a receiver, and the shell ticks this often.
+        self.mm_speed_mps = cfg.get_float("movingmap.speed_mps", 15.0)
+        self.mm_tick_ms = int(cfg.get_float("movingmap.tick_ms", 100.0))
+        self.mm_symbol_px = cfg.get_float("movingmap.symbol_px", 24.0)
+        self.mm_show_apron = cfg.get_bool("movingmap.show_apron", False)
+        # MM5: put the ship on the road it is on. Needs the same [routing]
+        # graph the route overlay follows, so the key is on by default and
+        # simply does nothing without one — a shell with no .fvroad is the
+        # supported "snapping off" state rather than an error.
+        self.mm_snap = cfg.get_bool("movingmap.snap_to_road", True)
+        # A DEMO KNOB, and it is honest about being one. The scripted feed
+        # replays a track that is already exactly on the roads, so snapping it
+        # is a no-op and invisible; this scatters the replayed track by up to
+        # this many metres, which is what a receiver under tree cover does and
+        # what makes the snapping something a person can SEE. 0 = the clean
+        # track. Seeded, so a demo runs the same way twice.
+        self.mm_noise_m = cfg.get_float("movingmap.noise_m", 0.0)
+        # MM7: THE FEED. The core reads three of them (MM6) and until now this
+        # application could open none -- the demo replay of the route was the
+        # only thing it could drive the ship with. These keys are the startup
+        # choice between them, and the File and Overlays menus move it
+        # afterwards:
+        #
+        #   track_file  a recorded ride, .gpx or an NMEA log, replayed at the
+        #               speed it was recorded at;
+        #   nmea_host   a LIVE feed -- a phone serving NMEA over TCP. An empty
+        #   nmea_port   host with a port set listens for UDP broadcast instead,
+        #               which is the other half of "phone GPS".
+        #
+        # A track file wins if both are set, because it is the deterministic
+        # one and a live feed is a thing you turn on deliberately.
+        self.mm_track_file = cfg.get("movingmap.track_file", "")
+        self.mm_nmea_host = cfg.get("movingmap.nmea_host", "")
+        self.mm_nmea_port = int(cfg.get_float("movingmap.nmea_port", 10110.0))
+        # A cap on a gap between recorded fixes, and a replay rate. 0 and 1.0
+        # replay a ride exactly as it happened, which is the honest default and
+        # also 28 real minutes of it.
+        self.mm_track_max_gap_s = cfg.get_float("movingmap.track_max_gap_s", 0.0)
+        self.mm_track_time_scale = cfg.get_float("movingmap.track_time_scale", 1.0)
+        self.mm_feed = self._startup_feed()
+        self._mm_track = None         # (path, script), so a re-open is free
+        self._mm_job = None
+        self._mm_network = None       # nav.RoadGraphNetwork, built on demand
         self.osm = None               # shared OsmStyleEngine
         self._osm_ref_lat = None      # latitude that engine is currently set to
         # R3a knobs, applied to every vector renderer as it is created.
@@ -584,6 +648,384 @@ class PythonView(pyfvw.app.AppShell):
 
     def _set_grid(self, on):
         self._set_static(pyfvw.app.GRID_TYPE_ID, on)
+
+    # --- the moving map (MM4) ----------------------------------------------
+
+    @property
+    def moving_map(self):
+        """The ship, or None when the moving map is off. Static, like the
+        grid: off and not-open are the same state."""
+        return self.mgr.first_of_type(MOVING_MAP_TYPE_ID)
+
+    def _set_moving_map(self, on):
+        was = self.moving_map is not None
+        self._set_static(MOVING_MAP_TYPE_ID, on)
+        if on and not was:
+            self._configure_moving_map()
+        elif not on and was:
+            if self._mm_job is not None:
+                self.tk.after_cancel(self._mm_job)
+                self._mm_job = None
+            # THE CHART COMES BACK TO NORTH-UP when the ship goes away. The
+            # moving map is the only thing that turns it, so leaving the turn
+            # behind would strand the user on a tilted chart with no gesture
+            # to straighten it — and rotation 0 is the exact identity, so this
+            # really does put the map back rather than nearly.
+            self.rotation = 0.0
+
+    def _configure_moving_map(self):
+        """Wire the overlay the toggle just created to THIS application's
+        feed, slew and modes.
+
+        It is done here and not in a factory because `fv.movingmap` is a
+        BUILT-IN type: fvkit registers the descriptor, so the app never gets
+        to supply one (unlike `fv.route`, whose factory is `_make_route`). A
+        type registered by a library is configured by its instance, which is
+        the shape every shell will meet the moment a plugin registers a type
+        of its own."""
+        ovl = self.moving_map
+        if ovl is None:
+            return
+        settings = pyfvw.nav.SlewSettings()
+        settings.duration_s = self.mm_slew_seconds
+        # Continuous centring retargets on EVERY fix, and restarting an
+        # ease restarts its slow opening — MM3's decision 4, which says
+        # continuous mode wants a short duration or a linear ease.
+        settings.easing = (pyfvw.nav.SlewEasing.LINEAR if
+                           self.mm_modes.continuous else
+                           pyfvw.nav.SlewEasing.EASE_IN_OUT)
+        ovl.set_slew_settings(settings)
+        # THIS SHELL CAN NOW ROTATE THE MAP (PR3), and it has to say so. Both
+        # projections it draws through carry a rotation, and both paths honour
+        # one: the vector overlays because they project through it (PR2), the
+        # base map because MapEngine resamples through it (PR3). So
+        # tick().slew.rotation_deg has somewhere to go, _moving_map_tick puts
+        # it there, and track-up is an ORIENTATION rather than the anchor it
+        # degraded to through MM4.
+        #
+        # Saying yes is what earns the ownship's counter-rotation: the overlay
+        # draws the ship at heading + map_rotation, which is the right angle
+        # exactly when the map really did turn by that much. It is also why
+        # this shell must never turn the chart by any route but self.rotation —
+        # the overlay reads the applied rotation back off the projection each
+        # tick, so the projection is the one place the number is true.
+        ovl.rotation_supported = True
+        ovl.set_modes(self.mm_modes)
+        ovl.size_px = self.mm_symbol_px
+        ovl.show_apron = self.mm_show_apron
+        # The map is where the app says it is, not where the slew last left
+        # it: the user has been panning and zooming with the feed off.
+        ovl.reset_map(self.center, self.rotation)
+        ovl.set_road_network(self._road_network())
+        ovl.set_source(self._make_moving_map_source())
+        try:
+            ovl.start()
+        except pyfvw.FvError as e:
+            self.report_error(e.code, str(e.message))
+            return
+        # HEADLESS IS A REAL STATE for this application (--shot, and every
+        # test that drives it as a library), and it is the tick and not the
+        # feed that needs tk: the source, the camera and the slew all work
+        # with no window at all.
+        if self.tk is not None:
+            self._mm_job = self.tk.after(self.mm_tick_ms, self._moving_map_tick)
+
+    def _road_network(self):
+        """The road network the moving map snaps to (MM5), or None.
+
+        THE GRAPH IS SHARED WITH THE ROUTE OVERLAY when it has one open, and
+        loaded here only when it has not. Both want the same file and the file
+        is the big one in this application.
+
+        A failure to load is reported once and then answered as None: snapping
+        is a refinement, and an application that refused to show the ship
+        because it could not open a graph would have got the priority exactly
+        backwards."""
+        if not self.mm_snap or not self.road_graph_path:
+            return None
+        if self._mm_network is not None:
+            return self._mm_network
+        graph = None
+        route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
+        if route is not None:
+            graph = route.graph()
+        if graph is None:
+            try:
+                graph = pyfvw.routing.RoadGraph.load(self.road_graph_path)
+            except pyfvw.FvError as e:
+                self.report_error(e.code, str(e.message))
+                return None
+        self._mm_network = pyfvw.nav.RoadGraphNetwork(graph)
+        return self._mm_network
+
+    # --- the feed (MM7) ----------------------------------------------------
+    #
+    # MM6 gave the core three real feeds and this application could open none
+    # of them. These few methods are the whole of that gap: a recorded ride
+    # (GPX or an NMEA log) and a live NMEA stream (TCP, or UDP broadcast) join
+    # the demo replay the app has always had, and `self.mm_feed` is which one
+    # is running. It is a TUPLE and not a class because it is a choice with
+    # arguments -- ("demo",), ("track", path), ("tcp", host, port), ("udp",
+    # port) -- and every branch of it ends at the same `set_source`.
+
+    def _startup_feed(self):
+        """What the settings file asked for. A track file wins over a live
+        host: the deterministic one is the one to start in."""
+        if self.mm_track_file:
+            return ("track", self.mm_track_file)
+        if self.mm_nmea_host:
+            return ("tcp", self.mm_nmea_host, self.mm_nmea_port)
+        return ("demo",)
+
+    def feed_description(self):
+        """One line for the status bar."""
+        kind = self.mm_feed[0]
+        if kind == "track":
+            return os.path.basename(self.mm_feed[1])
+        if kind == "tcp":
+            return f"{self.mm_feed[1]}:{self.mm_feed[2]}"
+        if kind == "udp":
+            # The BOUND port, not the asked-for one: port 0 means "any", and a
+            # status line reading "udp:0" tells the user nothing about where to
+            # point their phone.
+            source = self.moving_map.source if self.moving_map else None
+            bound = getattr(getattr(source, "transport", None), "bound_port", 0)
+            return f"udp:{bound or self.mm_feed[1]}"
+        return "demo"
+
+    def _read_track(self, path):
+        """A recorded ride as a SCHEDULE, or None having reported why.
+
+        GPX AND AN NMEA LOG ARE THE SAME THREE CALLS with the first one
+        swapped, which is MM6's whole point: the moving map does not learn a
+        second kind of track, so this method is a dispatch on an extension and
+        then one shared path. The result is cached by the caller, because a
+        1705-point ride re-parsed on every feed change is a stutter nobody
+        needs to pay for."""
+        nav = pyfvw.nav
+        try:
+            if os.path.splitext(path)[1].lower() == ".gpx":
+                fixes = nav.flatten_gpx_fixes(nav.read_gpx_file(path))
+            else:
+                fixes = nav.read_nmea_log(path)
+        except pyfvw.FvError as e:
+            self.report_error(e.code, str(e.message))
+            return None
+        options = nav.FixScriptOptions()
+        options.max_gap_s = self.mm_track_max_gap_s
+        script = nav.build_scripted_track_from_fixes(fixes, options)
+        if len(script) < 2:
+            # A file that opens and holds no track is not an exception in the
+            # core (an empty log is data) and IS a dead end for a shell that
+            # just offered to fly it, so the shell is where it is reported.
+            self.report_error(pyfvw.INVALID_ARG,
+                              f"No track to replay in\n{path}\n"
+                              f"({len(script)} usable fixes).")
+            return None
+        return script
+
+    def open_track(self, path):
+        """File > Open Track. Turns the moving map on if it is off, because a
+        user who just chose a ride to watch has said which overlay they mean.
+
+        IT RE-READS THE FILE even when that is the file already open, which is
+        the opposite of the cache below and deliberate: asking for a file by
+        name is how a user says "this, from disk, now" -- a log being appended
+        to is the obvious case. Switching feeds or toggling the overlay uses
+        the cached schedule."""
+        script = self._read_track(path)
+        if script is None:
+            return False
+        self._mm_track = (path, script)
+        self.mm_feed = ("track", path)
+        self._set_feed_running()
+        return True
+
+    def connect_nmea(self, host, port):
+        """The live feed. An empty host LISTENS on UDP instead of connecting
+        over TCP -- the two shapes a phone comes in (an app that serves and an
+        app that broadcasts), told apart by the one field that differs."""
+        self.mm_feed = (("tcp", host, port) if host else ("udp", port))
+        self._set_feed_running()
+        return True
+
+    def use_demo_feed(self):
+        self.mm_feed = ("demo",)
+        self._set_feed_running()
+        return True
+
+    def _set_feed_running(self):
+        """Put the chosen feed on the air, whether or not there was one."""
+        if self.moving_map is None:
+            self._set_moving_map(True)
+            if getattr(self, "var_mm", None) is not None:
+                self.var_mm.set(True)
+        else:
+            self._apply_moving_map_feed()
+        self.refresh()
+
+    def _apply_moving_map_feed(self):
+        """Swap the feed under a LIVE overlay. The map is reset to where the
+        app has it first: a new ride starts from the chart the user is looking
+        at, not from wherever the last one left the slew."""
+        ovl = self.moving_map
+        if ovl is None:
+            return
+        ovl.stop()
+        ovl.reset_map(self.center, self.rotation)
+        ovl.set_source(self._make_moving_map_source())
+        try:
+            ovl.start()
+        except pyfvw.FvError as e:
+            self.report_error(e.code, str(e.message))
+
+    def _make_moving_map_source(self):
+        """The feed `self.mm_feed` names."""
+        kind = self.mm_feed[0]
+        if kind == "track":
+            return self._make_track_source(self.mm_feed[1])
+        if kind in ("tcp", "udp"):
+            return self._make_nmea_source()
+        return self._make_demo_source()
+
+    def _make_track_source(self, path):
+        """A recorded ride, played at the speed it was ridden.
+
+        THE FIXES' OWN STAMPS ARE THE SCHEDULE (MM6), so this is
+        `ScriptedSource` again and not a fourth kind of feed -- the camera, the
+        heading resolver and the road snapper never learn that the ship is a
+        recording. Looping is OFF, unlike the demo: a ride ends."""
+        if self._mm_track is None or self._mm_track[0] != path:
+            script = self._read_track(path)
+            if script is None:
+                # The file has gone since it was chosen (a deleted log, an
+                # unplugged card). Falling back to the demo is right; falling
+                # back to it while STILL SAYING the track is the feed is not,
+                # and the status bar is the only thing that would have told
+                # the user which ship they are watching.
+                self.mm_feed = ("demo",)
+                return self._make_demo_source()
+            self._mm_track = (path, script)
+        source = pyfvw.nav.ScriptedSource(self._mm_track[1])
+        source.time_scale = self.mm_track_time_scale
+        source.looping = False
+        return source
+
+    def _make_nmea_source(self):
+        """The live feed: a transport, a parser and no thread.
+
+        `NmeaLineSource.poll()` goes on the tick this shell already has, which
+        is why `_moving_map_tick` needed no change at all -- it has polled
+        whatever source it was given since MM4. EMIT PER SENTENCE is on here
+        and nowhere else: the assembler's default costs one epoch of latency
+        (a whole second at 1 Hz) waiting to see whether more sentences of the
+        same instant are coming, which a recording can afford and a live map
+        cannot."""
+        nav = pyfvw.nav
+        if self.mm_feed[0] == "udp":
+            transport = nav.UdpLineTransport(self.mm_feed[1])
+        else:
+            transport = nav.TcpLineTransport(self.mm_feed[1], self.mm_feed[2])
+        source = nav.NmeaLineSource(transport)
+        source.assembler.emit_per_sentence = True
+        return source
+
+    def _make_demo_source(self):
+        """The demo feed: the route, replayed.
+
+        THE FOLLOWED ROAD IS PREFERRED OVER THE WAYPOINTS, because that is the
+        acceptance demo the plan asked for — a ship that drives the actual
+        streets of Kiawah rather than cutting across the marsh in two straight
+        legs. Press "r" first and the ship follows the road; press "m" with a
+        bare route and it flies the legs. With no route at all it circles the
+        map centre, so the moving map is never a menu item that appears to do
+        nothing."""
+        path = []
+        route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
+        if route is not None and route.road_legs:
+            for leg in route.road_legs:
+                path.extend(leg)
+        elif route is not None and len(route.waypoints) >= 2:
+            path = [pyfvw.geo.GeoPoint(lat, lon)
+                    for _label, lat, lon in route.waypoints]
+        if len(path) < 2:
+            c, d = self.center, 0.02
+            path = [pyfvw.geo.GeoPoint(c.lat - d, c.lon - d),
+                    pyfvw.geo.GeoPoint(c.lat + d, c.lon - d),
+                    pyfvw.geo.GeoPoint(c.lat + d, c.lon + d),
+                    pyfvw.geo.GeoPoint(c.lat - d, c.lon + d),
+                    pyfvw.geo.GeoPoint(c.lat - d, c.lon - d)]
+        if self.mm_noise_m > 0.0:
+            # The demo receiver (see movingmap.noise_m). Seeded on purpose:
+            # a demonstration that scatters differently every run is not one.
+            import random
+            rng = random.Random(20260817)
+            m_per_deg = 6371008.8 * math.pi / 180.0
+            noisy = []
+            for p in path:
+                east = self.mm_noise_m * (2.0 * rng.random() - 1.0)
+                north = self.mm_noise_m * (2.0 * rng.random() - 1.0)
+                noisy.append(pyfvw.geo.GeoPoint(
+                    p.lat + north / m_per_deg,
+                    p.lon + east / (m_per_deg * math.cos(math.radians(p.lat)))))
+            path = noisy
+        source = pyfvw.nav.ScriptedSource(
+            pyfvw.nav.build_scripted_track(path, self.mm_speed_mps))
+        source.looping = True
+        return source
+
+    def _moving_map_tick(self):
+        """One frame of the moving map, on the shell's own clock.
+
+        THE SHELL APPLIES THE ANSWER; the overlay never touches the map. That
+        is MM2/MM3's rule reaching its first real consumer, and it is why
+        there is a `self.center = ...` in this method and nowhere in fvkit."""
+        self._mm_job = None
+        ovl = self.moving_map
+        if ovl is None or self.tk is None:
+            return
+        source = ovl.source
+        if source is not None and hasattr(source, "poll"):
+            source.poll()
+        proj = self.proj
+        if proj is not None:
+            tick = ovl.tick(proj, self.mm_tick_ms / 1000.0)
+            if tick.slew.changed:
+                self.center = tick.slew.center
+                # THE ROTATION IS APPLIED IN THE SAME BREATH AS THE CENTRE, and
+                # that is not tidiness. They are one motion (MM3: the two share
+                # a duration), and the overlay reads the rotation back off the
+                # projection on the next tick — so applying one and not the
+                # other would leave the ship drawn against a turn that half
+                # happened. self.rotation is the only place this shell writes
+                # it; _render_* pushes it into whichever projection draws.
+                self.rotation = tick.slew.rotation_deg
+                self.refresh()
+            elif tick.new_fix:
+                # The ship moved inside its apron: the map is right where it
+                # was and only the symbol has to be redrawn.
+                self.refresh()
+        self._mm_job = self.tk.after(self.mm_tick_ms, self._moving_map_tick)
+
+    def _apply_moving_map_modes(self):
+        """The three toggles, applied to a live overlay. Setting them FORCES a
+        recentre (MM4), which is what makes ticking 'Auto Centre' move the map
+        now rather than whenever the ship next leaves a stale apron."""
+        ovl = self.moving_map
+        if ovl is None:
+            return
+        ovl.set_modes(self.mm_modes)
+        settings = pyfvw.nav.SlewSettings()
+        settings.duration_s = self.mm_slew_seconds
+        settings.easing = (pyfvw.nav.SlewEasing.LINEAR if
+                           self.mm_modes.continuous else
+                           pyfvw.nav.SlewEasing.EASE_IN_OUT)
+        ovl.set_slew_settings(settings)
+        ovl.show_apron = self.mm_show_apron
+        # Snapping can be turned on and off with the feed running: the snapper
+        # forgets its road when the network goes away, so turning it back on
+        # starts from where the ship IS rather than from where it was.
+        ovl.set_road_network(self._road_network())
 
     def _set_static(self, type_id, on):
         """Toggling a static overlay IS the flow — there is no visibility flag
@@ -1062,6 +1504,7 @@ class PythonView(pyfvw.app.AppShell):
 
     def _render_raster(self):
         self.engine.set_center(self.center)
+        self.engine.set_rotation(self.rotation)
         if self.series.scale_denom > 0:
             self.engine.set_physical_scale(
                 self.series.scale, self.series.scale_units, self.mm_per_pixel)
@@ -1075,6 +1518,9 @@ class PythonView(pyfvw.app.AppShell):
         self.vproj.set_surface_size(self.W, self.H)
         self.vproj.set_center(self.center)
         self.vproj.set_physical_scale(self.vscale, self.mm_per_pixel)
+        # Rotation is orthogonal to the scale calls and must follow them all
+        # the same: set it last so it cannot be read as one of them.
+        self.vproj.set_rotation(self.rotation)
         self.vrenderer.set_symbol_scale(self.feature_scale)
         self.vrenderer.set_device_dpi(
             _dpi_for(self.mm_per_pixel) * self.feature_scale)
@@ -1204,6 +1650,24 @@ class PythonView(pyfvw.app.AppShell):
                                         min(NATIVE_MM_PER_PIXEL * 256.0,
                                             self.mm_per_pixel * factor))
 
+    @staticmethod
+    def _chart_pixels(proj, dx, dy):
+        """A drag in SCREEN pixels, expressed in the chart's own axes.
+
+        Everything that moves the centre does it by multiplying a pixel delta
+        by deg-per-pixel, and that is a statement about the chart's axes, not
+        the screen's. They are the same axes until the chart turns (PR3), at
+        which point a drag to the right slides the map off at the rotation
+        angle unless the delta is turned back first. This is the inverse of
+        the projection's own clockwise turn, and at rotation 0 it returns its
+        arguments unchanged rather than multiplied by cos 0."""
+        deg = proj.rotation
+        if deg == 0.0:
+            return dx, dy
+        r = math.radians(deg)
+        c, s = math.cos(r), math.sin(r)
+        return dx * c + dy * s, -dx * s + dy * c
+
     def pan_pixels(self, dx, dy):
         proj = self.proj
         if proj is None:
@@ -1212,6 +1676,7 @@ class PythonView(pyfvw.app.AppShell):
             dpp_lat, dpp_lon = proj.deg_per_pixel_lat, proj.deg_per_pixel_lon
         except pyfvw.FvError:
             return
+        dx, dy = self._chart_pixels(proj, dx, dy)
         self.center = pyfvw.geo.GeoPoint(self.center.lat - dy * dpp_lat,
                                          self.center.lon + dx * dpp_lon)
         self.center.normalize()
@@ -1341,6 +1806,12 @@ class PythonView(pyfvw.app.AppShell):
         m_file.add_command(label="Manage Data Sources...",
                            command=self._ui_manage_sources)
         m_file.add_separator()
+        # MM7. The one File item MM6 was waiting for: a recorded ride, replayed
+        # at the speed it was ridden. It turns the moving map on itself, so
+        # this is the whole gesture rather than two the user has to know about.
+        m_file.add_command(label="Open Track (GPX or NMEA)...",
+                           command=self._ui_open_track)
+        m_file.add_separator()
         m_file.add_command(label="Save Screenshot...", command=self._ui_screenshot)
         m_file.add_separator()
         # Quitting goes through the session, so a dirty document is offered a
@@ -1383,6 +1854,49 @@ class PythonView(pyfvw.app.AppShell):
                               variable=self.var_grid, command=self._ui_apply_overlays)
         m_ovl.add_checkbutton(label="Crosshair", variable=self.var_cross,
                               command=self._ui_apply_overlays)
+        m_ovl.add_separator()
+        # MM4. The overlay and its three modes: the modes are a sub-menu
+        # because they are meaningless with the moving map off, and because
+        # they are one another's context (auto-rotate and continuous both
+        # change what auto-centre DOES).
+        self.var_mm = tk.BooleanVar(value=self.moving_map is not None)
+        m_ovl.add_checkbutton(label="Moving Map", accelerator="m",
+                              variable=self.var_mm,
+                              command=self._ui_apply_overlays)
+        m_mm = tk.Menu(m_ovl, tearoff=0)
+        self.var_mm_center = tk.BooleanVar(value=self.mm_modes.auto_center)
+        self.var_mm_rotate = tk.BooleanVar(value=self.mm_modes.auto_rotate)
+        self.var_mm_cont = tk.BooleanVar(value=self.mm_modes.continuous)
+        self.var_mm_apron = tk.BooleanVar(value=self.mm_show_apron)
+        m_mm.add_checkbutton(label="Auto Centre", accelerator="M",
+                             variable=self.var_mm_center,
+                             command=self._ui_apply_overlays)
+        # Plain "Track Up" since PR3: the chart really turns now, so the
+        # caveat this label carried from MM4 would be the lie instead.
+        m_mm.add_checkbutton(label="Track Up", accelerator="T",
+                             variable=self.var_mm_rotate,
+                             command=self._ui_apply_overlays)
+        m_mm.add_checkbutton(label="Centre On Every Fix", accelerator="S",
+                             variable=self.var_mm_cont,
+                             command=self._ui_apply_overlays)
+        m_mm.add_separator()
+        self.var_mm_snap = tk.BooleanVar(value=self.mm_snap)
+        m_mm.add_checkbutton(label="Snap To Road", variable=self.var_mm_snap,
+                             command=self._ui_apply_overlays)
+        m_mm.add_checkbutton(label="Show The Apron", variable=self.var_mm_apron,
+                             command=self._ui_apply_overlays)
+        m_mm.add_separator()
+        # MM7: WHICH SHIP. The three feeds the core reads, as the three things
+        # a user actually has -- a file, a phone, and the demo that needs
+        # neither. They are commands and not radio buttons because two of them
+        # ask a question first, and the answer is what selects them.
+        m_mm.add_command(label="Open Track (GPX or NMEA)...",
+                         command=self._ui_open_track)
+        m_mm.add_command(label="Connect NMEA Feed...",
+                         command=self._ui_connect_nmea)
+        m_mm.add_command(label="Use The Demo Feed",
+                         command=self._ui_demo_feed)
+        m_ovl.add_cascade(label="Moving Map Modes", menu=m_mm)
         m_ovl.add_separator()
         m_ovl.add_checkbutton(label="Coverage Overlay", accelerator="c",
                               variable=self.var_cov, command=self._ui_apply_overlays)
@@ -1553,6 +2067,13 @@ class PythonView(pyfvw.app.AppShell):
             "c": lambda: self._ui_toggle(self.var_cov),
             "l": lambda: self._ui_toggle(self.var_labels),
             "q": self._ui_quit,
+            # MM4. Lower case turns the moving map on; the three UPPER case
+            # keys are its modes, which is what makes them read as one family
+            # rather than as three more letters.
+            "m": lambda: self._ui_toggle(self.var_mm),
+            "M": lambda: self._ui_toggle(self.var_mm_center),
+            "T": lambda: self._ui_toggle(self.var_mm_rotate),
+            "S": lambda: self._ui_toggle(self.var_mm_cont),
         }
         ch = chr(ev.text) if ev.text else ""
         return by_char.get(ch)
@@ -1647,6 +2168,7 @@ class PythonView(pyfvw.app.AppShell):
             dpp_lat, dpp_lon = proj.deg_per_pixel_lat, proj.deg_per_pixel_lon
         except pyfvw.FvError:
             return
+        dx, dy = self._chart_pixels(proj, dx, dy)
         self.center = pyfvw.geo.GeoPoint(lat0 + dy * dpp_lat, lon0 - dx * dpp_lon)
         self.center.normalize()
         now = time.time()
@@ -1819,6 +2341,7 @@ class PythonView(pyfvw.app.AppShell):
             self.var_grid.set(self.grid is not None)
             self.var_cross.set(self.cross is not None)
             self.var_cov.set(self.coverage is not None)
+            self.var_mm.set(self.moving_map is not None)
         self._rebuild_tools_menu()
 
     def _current_document(self):
@@ -1892,6 +2415,13 @@ class PythonView(pyfvw.app.AppShell):
     def _ui_apply_overlays(self):
         self._set_grid(self.var_grid.get())
         self._set_static(CROSSHAIR_TYPE_ID, self.var_cross.get())
+        self.mm_modes.auto_center = self.var_mm_center.get()
+        self.mm_modes.auto_rotate = self.var_mm_rotate.get()
+        self.mm_modes.continuous = self.var_mm_cont.get()
+        self.mm_show_apron = self.var_mm_apron.get()
+        self.mm_snap = self.var_mm_snap.get()
+        self._set_moving_map(self.var_mm.get())
+        self._apply_moving_map_modes()
         self._set_static(COVERAGE_TYPE_ID, self.var_cov.get())
         if self.coverage is not None:
             self.coverage.enabled_formats = {
@@ -1932,6 +2462,78 @@ class PythonView(pyfvw.app.AppShell):
         else:
             self.center = self.series_bounds_center(self.series)
         self.refresh()
+
+    # --- the moving map's feed (MM7) ---------------------------------------
+
+    def _ui_open_track(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Open Track",
+            filetypes=[("Recorded tracks", "*.gpx *.nmea *.log"),
+                       ("GPX track", "*.gpx"),
+                       ("NMEA log", "*.nmea *.log"),
+                       ("All files", "*")],
+            initialdir=(os.path.dirname(self.mm_track_file)
+                        if self.mm_track_file else TESTDATA),
+            parent=self.tk)
+        if path:
+            self.open_track(path)
+
+    def _ui_connect_nmea(self):
+        """Host and port, and the one field that chooses the transport.
+
+        A PHONE COMES IN TWO SHAPES (MM6): an app that SERVES NMEA over TCP
+        (GPS2IP and friends -- you connect to it) and one that BROADCASTS over
+        UDP (you listen). They differ by exactly one thing the user knows, so
+        they are asked for exactly one thing: a host, or nothing."""
+        tk = self._tkmod
+        win = tk.Toplevel(self.tk)
+        win.title("Connect NMEA Feed")
+        win.transient(self.tk)
+        v_host = tk.StringVar(value=(self.mm_feed[1] if self.mm_feed[0] == "tcp"
+                                     else self.mm_nmea_host))
+        v_port = tk.StringVar(value=str(
+            self.mm_feed[-1] if self.mm_feed[0] in ("tcp", "udp")
+            else self.mm_nmea_port))
+        tk.Label(win, justify="left", anchor="w",
+                 text="A phone or receiver serving NMEA 0183 over the network.\n"
+                      "Leave the host EMPTY to listen for UDP broadcast on the "
+                      "port instead.").grid(row=0, column=0, columnspan=2,
+                                            sticky="w", padx=8, pady=(8, 6))
+        tk.Label(win, text="Host:").grid(row=1, column=0, sticky="e", padx=(8, 4))
+        e_host = tk.Entry(win, textvariable=v_host, width=28)
+        e_host.grid(row=1, column=1, sticky="w", padx=(0, 8))
+        tk.Label(win, text="Port:").grid(row=2, column=0, sticky="e", padx=(8, 4))
+        tk.Entry(win, textvariable=v_port, width=10).grid(
+            row=2, column=1, sticky="w", padx=(0, 8), pady=(2, 0))
+        done = []
+
+        def ok():
+            try:
+                port = int(v_port.get().strip())
+            except ValueError:
+                port = 0
+            if not 0 < port <= 65535:
+                self.report_error(pyfvw.INVALID_ARG,
+                                  f"'{v_port.get()}' is not a port number.")
+                return
+            done.append((v_host.get().strip(), port))
+            win.destroy()
+
+        row = tk.Frame(win)
+        row.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=8)
+        tk.Button(row, text="Cancel", command=win.destroy).pack(side="right")
+        tk.Button(row, text="Connect", command=ok).pack(side="right", padx=(0, 6))
+        win.bind("<Return>", lambda _e: ok())
+        win.bind("<Escape>", lambda _e: win.destroy())
+        e_host.focus_set()
+        win.grab_set()
+        self.tk.wait_window(win)
+        if done:
+            self.connect_nmea(*done[0])
+
+    def _ui_demo_feed(self):
+        self.use_demo_feed()
 
     def _ui_screenshot(self):
         from tkinter import filedialog
@@ -2252,6 +2854,9 @@ class PythonView(pyfvw.app.AppShell):
             "g                 lat/lon grid\n"
             "c                 coverage overlay\n"
             "l                 feature labels (vector)\n"
+            "m                 moving map on / off (replays the route)\n"
+            "M / T / S         auto centre / track up / centre on\n"
+            "                  every fix\n"
             "click             pick / identify (vector) / re-center (raster)\n"
             "right-click       what is under the cursor (every overlay)\n"
             "shift+click       re-center\n"
@@ -2354,6 +2959,36 @@ class PythonView(pyfvw.app.AppShell):
         if mode:
             desc = self.registry.find(mode)
             txt += f"   [editing {desc.display_name if desc else mode}]"
+        # MM5: which road the ship is on. It is the one thing the snapper
+        # produces that a user can check against the chart in front of them,
+        # and without it a snap that quietly went wrong looks like a snap that
+        # quietly went right.
+        mm = self.moving_map
+        if mm is not None and mm.snapping:
+            snap = mm.last_snap
+            if snap.snapped:
+                road = snap.road_name or "an unnamed road"
+                txt += f"   [on {road}{' (held)' if snap.held else ''}]"
+            elif mm.has_fix:
+                txt += "   [off road]"
+        # MM7: WHICH FEED, and -- for a live one -- whether anything is
+        # arriving. "Receiving, but nothing parses" is the single most common
+        # thing to be wrong about an NMEA feed and it looks EXACTLY like
+        # silence unless the bytes and the sentences are shown next to the
+        # fixes, which is why NmeaLineSource counts all three.
+        if mm is not None:
+            txt += f"   [feed {self.feed_description()}"
+            source = mm.source
+            if isinstance(source, pyfvw.nav.NmeaLineSource):
+                a = source.assembler
+                got = getattr(source.transport, "bytes_received", 0)
+                txt += (f": {got}B {a.sentences_parsed}/{a.lines_seen} "
+                        f"sentences {source.fixes_emitted} fixes")
+                if source.error_message:
+                    txt += f" - {source.error_message}"
+                elif source.at_end:
+                    txt += " - closed"
+            txt += "]"
         doc = self._current_document()
         if doc is not None and doc.dirty:
             txt += f"   [{self._overlay_display_name(doc)} *]"

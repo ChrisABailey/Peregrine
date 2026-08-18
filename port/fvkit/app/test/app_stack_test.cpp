@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See LICENSE and NOTICE.md for the full licensing picture.
 
-// App layer A2: the stack, grown in place (fvkit-app-plan.md §3c).
+// App layer A2: the stack, grown in place (fvkit-app-plan-COMPLETE.md §3c).
 //
 // The code under test is fv::OverlayManager, which lives in fvkit/overlay --
 // the plan's `stack.h` IS manager.h. The tests live here because A2 is what

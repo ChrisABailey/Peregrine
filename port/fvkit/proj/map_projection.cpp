@@ -9,6 +9,7 @@
 
 #include "fvkit/proj.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "fv_map_enums.h"
@@ -88,6 +89,56 @@ Status MapProjection::SetPhysicalScale(double scale_denominator,
   return Update();
 }
 
+Status MapProjection::SetRotation(double degrees) {
+  if (!std::isfinite(degrees))
+    return Status::Error(kInvalidArg, "rotation must be finite");
+  double d = std::fmod(degrees, 360.0);
+  if (d < 0) d += 360.0;
+  if (d == 360.0) d = 0.0;  // fmod of a tiny negative can round up to 360
+  rot_deg_ = d;
+  // Cardinal turns come off a table: cos(pi/2) is 6.1e-17, which is small
+  // enough to ignore in a pixel and large enough to show up in a viewport's
+  // bounds and in the "0 is the identity" family of tests.
+  if (d == 0.0) {
+    rot_cos_ = 1;
+    rot_sin_ = 0;
+  } else if (d == 90.0) {
+    rot_cos_ = 0;
+    rot_sin_ = 1;
+  } else if (d == 180.0) {
+    rot_cos_ = -1;
+    rot_sin_ = 0;
+  } else if (d == 270.0) {
+    rot_cos_ = 0;
+    rot_sin_ = -1;
+  } else {
+    const double rad = d * M_PI / 180.0;
+    rot_cos_ = std::cos(rad);
+    rot_sin_ = std::sin(rad);
+  }
+  return Status::Ok();  // rotation feeds no dpp; nothing to recompute
+}
+
+// Screen axes are x right, y down, so a CLOCKWISE turn on the screen is the
+// positive-angle matrix: (1,0) -> (0,1) at 90 degrees, i.e. east goes down.
+// Both take their inputs BY VALUE and write only at the end, so the callers
+// below can rotate a pair in place.
+void MapProjection::RotateOffset(double dx, double dy, double* rx,
+                                 double* ry) const {
+  const double x = dx * rot_cos_ - dy * rot_sin_;
+  const double y = dx * rot_sin_ + dy * rot_cos_;
+  *rx = x;
+  *ry = y;
+}
+
+void MapProjection::RotateOffsetInverse(double dx, double dy, double* rx,
+                                        double* ry) const {
+  const double x = dx * rot_cos_ + dy * rot_sin_;
+  const double y = -dx * rot_sin_ + dy * rot_cos_;
+  *rx = x;
+  *ry = y;
+}
+
 Status MapProjection::Update() {
   ready_ = false;
   if (mode_ == Mode::kResolution) {
@@ -130,10 +181,35 @@ Status MapProjection::Update() {
 GeoRect MapProjection::VmapBounds() const {
   if (!ready_) return GeoRect{};
   GeoRect r;
-  r.ll.lat = std::max(center_.lat - (height_ / 2.0) * dpp_lat_, -90.0);
-  r.ur.lat = std::min(center_.lat + (height_ / 2.0) * dpp_lat_, 90.0);
-  double west = center_.lon - (width_ / 2.0) * dpp_lon_;
-  double east = center_.lon + (width_ / 2.0) * dpp_lon_;
+  // Half-extents of the viewport in surface pixels. Rotated, they become the
+  // four turned corners and the box is their min/max — the pixel-space AABB
+  // maps to the geographic AABB because the surface->geo map is an
+  // axis-aligned scaling. At rotation 0 the loop is skipped entirely and the
+  // arithmetic below is what it always was, term for term.
+  double hx = width_ / 2.0, hy = height_ / 2.0;
+  double x_min = -hx, x_max = hx, y_min = -hy, y_max = hy;
+  if (rot_deg_ != 0.0) {
+    const double cx[4] = {-hx, hx, hx, -hx};
+    const double cy[4] = {-hy, -hy, hy, hy};
+    for (int i = 0; i < 4; ++i) {
+      double rx = 0, ry = 0;
+      RotateOffset(cx[i], cy[i], &rx, &ry);
+      if (i == 0) {
+        x_min = x_max = rx;
+        y_min = y_max = ry;
+      } else {
+        x_min = std::min(x_min, rx);
+        x_max = std::max(x_max, rx);
+        y_min = std::min(y_min, ry);
+        y_max = std::max(y_max, ry);
+      }
+    }
+  }
+  // y is DOWN, so the largest y is the southern edge.
+  r.ll.lat = std::max(center_.lat - y_max * dpp_lat_, -90.0);
+  r.ur.lat = std::min(center_.lat - y_min * dpp_lat_, 90.0);
+  double west = center_.lon + x_min * dpp_lon_;
+  double east = center_.lon + x_max * dpp_lon_;
   if (east - west >= 360.0) {  // whole-world viewport
     r.ll.lon = -180.0;
     r.ur.lon = 180.0;
@@ -150,16 +226,22 @@ Status MapProjection::GeoToSurface(const GeoPoint& p, double* sx,
     return Status::Error(kInvalidArg, "sx/sy is null");
   if (!ready_) return Status::Error(kInvalidArg, "projection not configured");
   double dlon = UnwrapLonNear(p.lon, center_.lon) - center_.lon;
-  *sx = (width_ - 1) / 2.0 + dlon / dpp_lon_;
-  *sy = (height_ - 1) / 2.0 + (center_.lat - p.lat) / dpp_lat_;
+  double dx = dlon / dpp_lon_;
+  double dy = (center_.lat - p.lat) / dpp_lat_;
+  if (rot_deg_ != 0.0) RotateOffset(dx, dy, &dx, &dy);
+  *sx = (width_ - 1) / 2.0 + dx;
+  *sy = (height_ - 1) / 2.0 + dy;
   return Status::Ok();
 }
 
 Status MapProjection::SurfaceToGeo(double sx, double sy, GeoPoint* p) const {
   if (p == nullptr) return Status::Error(kInvalidArg, "p is null");
   if (!ready_) return Status::Error(kInvalidArg, "projection not configured");
-  p->lat = center_.lat - (sy - (height_ - 1) / 2.0) * dpp_lat_;
-  p->lon = NormalizeLon(center_.lon + (sx - (width_ - 1) / 2.0) * dpp_lon_);
+  double dx = sx - (width_ - 1) / 2.0;
+  double dy = sy - (height_ - 1) / 2.0;
+  if (rot_deg_ != 0.0) RotateOffsetInverse(dx, dy, &dx, &dy);
+  p->lat = center_.lat - dy * dpp_lat_;
+  p->lon = NormalizeLon(center_.lon + dx * dpp_lon_);
   return Status::Ok();
 }
 

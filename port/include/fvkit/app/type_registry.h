@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See LICENSE and NOTICE.md for the full licensing picture.
 
-// fvkit/app/type_registry.h — overlay types as DATA (fvkit-app-plan.md §3a).
+// fvkit/app/type_registry.h — overlay types as DATA (fvkit-app-plan-COMPLETE.md §3a).
 //
 // FalconView's central insight, and the one worth keeping: an overlay type is
 // a descriptor, not a class. `OverlayTypeDescriptor` carries identity, display

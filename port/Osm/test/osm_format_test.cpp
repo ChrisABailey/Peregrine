@@ -59,11 +59,16 @@ TEST(OsmFormat, OneFileIsOneFrameAndTheKeyIsTheStem) {
   // and keeps it off the PageUp/PageDown ladder.
   EXPECT_EQ(frames[0].scale, 0.0);
 
-  // Bounds are the DERIVED coverage: Atlanta is inside, and the box is the
-  // US South rather than the whole world the metadata claims.
+  // Bounds are the DERIVED coverage: Atlanta is inside, and the box is a
+  // region rather than the whole world. Its east edge is the Greenwich
+  // meridian as of the 2026-08-17 re-cut (-74.685 before it, when the ocean
+  // merge stopped short of the Atlantic's far side), so the standing claim is
+  // the LATITUDE band — the pyramid is the US South's, not a global one.
   EXPECT_TRUE(frames[0].bounds.Contains(fv::GeoPoint{33.749, -84.388}));
-  EXPECT_LT(frames[0].bounds.ur.lon, -70.0);
+  EXPECT_LE(frames[0].bounds.ur.lon, 0.0);
   EXPECT_GT(frames[0].bounds.ll.lon, -110.0);
+  EXPECT_GT(frames[0].bounds.ll.lat, 20.0);
+  EXPECT_LT(frames[0].bounds.ur.lat, 45.0);
 }
 
 TEST(OsmFormat, TheFileItselfCanBeTheScanRoot) {

@@ -101,10 +101,11 @@ class RouteOverlay(pyfvw.overlay.Overlay):
         self.road_is_bicycle = False
         # G2/G3. The waypoint markers come from a symbol library instead of
         # being hand-rolled polygons. Colour is a LIBRARY setting rather than a
-        # per-draw one — a display list carries its own colours — so this one
-        # is re-baked per marker, which costs nothing: there are no files
-        # behind it, only thirteen literals.
+        # per-draw one — a display list carries its own colours. Since G4 it is
+        # baked only when the route's colour actually changes: selection no
+        # longer needs a second colour, so the per-marker re-bake is gone.
         self._symbols = pyfvw.symbol.BuiltinSymbolLibrary()
+        self._symbol_color = None
         # A COPY of the projection the last frame was drawn with. The SPI
         # hands a projection to on_draw and none to on_mouse_down, so an
         # overlay that turns a click into a position has to keep one — and
@@ -220,12 +221,23 @@ class RouteOverlay(pyfvw.overlay.Overlay):
                         for _l, lat, lon in self.waypoints],
                        self._straight_style(), kind=self.leg_kind)
 
+        # G4. The marker library is baked ONCE now, in the route's own colour,
+        # and selection is a RenderState rather than a re-bake: the selected
+        # waypoint keeps the route's colour and gains a halo of its own
+        # silhouette in the selection colour. Before G4 a selected waypoint
+        # turned yellow, which said "selected" by throwing away the one thing
+        # that said which route it belongs to.
+        if self._symbol_color != tuple(self.color):
+            self._symbols.set_color(self.color)
+            self._symbol_color = tuple(self.color)
         for label, x, y in self._drawn:
-            # Selection is the marker's colour, still hand-swapped: G4's
-            # RenderState is what replaces this, and the plan says so.
-            sel = label == self.selected
-            self._symbols.set_color((255, 220, 0) if sel else self.color)
+            d.state = (pyfvw.draw.RenderState.HIGHLIGHTED
+                       if label == self.selected
+                       else pyfvw.draw.RenderState.NORMAL)
             d.symbol_at_pixel(x, y, pyfvw.symbol.builtin.DIAMOND, scale=1.6)
+            # The name is not highlighted; the marker is (the same rule
+            # PointOverlay follows).
+            d.state = pyfvw.draw.RenderState.NORMAL
             d.label_at_pixel(x + 10, y - 10, label, (0, 0, 0), size=12.0,
                              halo_color=(255, 255, 255), halo_width=1.0)
 
@@ -442,6 +454,15 @@ class RouteOverlay(pyfvw.overlay.Overlay):
             return f"road graph: {err}"
         self._router = pyfvw.routing.Router(self._graph)
         return ""
+
+    def graph(self):
+        """The opened road graph, or None until the user first follows a road.
+
+        Public because the moving map's snapper (MM5) wants THE SAME graph
+        rather than a second copy: a `.fvroad` is a build artifact that runs to
+        hundreds of megabytes on anything larger than an island, and two of
+        them in memory is a cost with nothing to show for it."""
+        return self._graph
 
     def profiles(self):
         """The profile names the current rule file defines, for a menu to be

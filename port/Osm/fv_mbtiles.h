@@ -18,12 +18,16 @@
 //
 //   * `tile_row` is TMS (row 0 = south). The rest of the port is XYZ. The
 //     flip happens at this boundary and nowhere else.
-//   * The `bounds` metadata value CANNOT BE TRUSTED. TestData's us-south
-//     file (Tilemaker) declares an east edge of exactly 0.000000 degrees, a
-//     thousand miles into the Atlantic past its easternmost tile. So the
-//     tile pyramid is authoritative — `Bounds()` derives coverage from the
-//     tiles that exist — and the declared value is kept separately, for a
-//     caller that wants to report the discrepancy.
+//   * The `bounds` metadata value CANNOT BE TRUSTED. The 2026-08-04 cut of
+//     TestData's us-south file (Tilemaker) declared an east edge of exactly
+//     0.000000 degrees, a thousand miles into the Atlantic past its
+//     easternmost tile. (The 2026-08-17 re-cut declares the same 0.000000 and
+//     is now telling the truth — its ocean tiles really do run to the
+//     Greenwich meridian — which is exactly why the reader must derive rather
+//     than believe: the same number was wrong in one file and right in the
+//     next.) So the tile pyramid is authoritative — `Bounds()` derives
+//     coverage from the tiles that exist — and the declared value is kept
+//     separately, for a caller that wants to report the discrepancy.
 
 #ifndef FV_MBTILES_H_
 #define FV_MBTILES_H_

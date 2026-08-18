@@ -9,7 +9,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <unordered_map>
 
@@ -17,6 +20,7 @@
 
 #include "fv_web_mercator.h"
 #include "fvkit/proj.h"  // kNativeDisplayMmPerPixel
+#include "fvkit/symbol/png_library.h"
 
 namespace fv {
 namespace {
@@ -243,7 +247,13 @@ struct StyleLayer {
   NumberFn width;         // line-width / circle-radius / text-size
   std::vector<double> dash;  // line-dasharray, in line-width units
   std::string text_field;    // "{name:latin}"-style token template
-  std::string icon_image;    // recorded, never drawn
+  // Sprite names, both the SAME token-template form as text_field: an
+  // OpenMapTiles style writes `"icon-image": "{class}"` far more often than it
+  // writes a literal, and a pattern is occasionally keyed off a tag too.
+  std::string icon_image;    // symbol layers
+  std::string fill_pattern;  // fill layers
+  NumberFn icon_size;        // icon-size, a multiplier on the sprite
+  NumberFn icon_rotate;      // icon-rotate, degrees clockwise
   ColorFn halo_color;        // text-halo-color
   NumberFn halo_width;       // text-halo-width, CSS px
   // symbol-placement / symbol-spacing / text-max-angle / text-offset[1],
@@ -310,6 +320,19 @@ struct OsmStyleEngine::Impl {
   double zoom_override = -1.0;
   double scaleless_zoom = 14.0;
 
+  // The sprite sheet. `sprite_url` is what the style said; `sprite_base` is
+  // where that resolved on disk, empty when nothing was resolvable. The
+  // library outlives every pointer it hands out, per ISymbolLibrary.
+  std::string sprite_url;
+  std::string sprite_base;
+  bool sprite_base_is_explicit = false;  // SetSpriteBase, not derived
+  bool prefer_high_dpi = false;
+  std::shared_ptr<PngSymbolLibrary> sprites;
+  // The directory of the file LoadFile is reading, so a relative `sprite`
+  // resolves beside its style. Empty for LoadText, which has no location —
+  // which is exactly why SetSpriteBase exists.
+  std::string load_dir;
+
   std::map<std::string, size_t> ignored_icons;
   std::vector<bool> layer_drew;
   size_t empty_labels = 0;
@@ -331,6 +354,12 @@ struct OsmStyleEngine::Impl {
     empty_labels = 0;
     ignored_halo_blur = 0;
     by_source_layer.clear();
+    sprite_url.clear();
+    sprites.reset();
+    // An EXPLICIT sprite base survives a reload: the caller set it against
+    // this engine, not against the style that happens to be in it. A derived
+    // one does not, because the next style resolves its own.
+    if (!sprite_base_is_explicit) sprite_base.clear();
   }
 };
 
@@ -655,8 +684,56 @@ Status OsmStyleEngine::LoadFile(const std::string& path, std::string* error) {
   }
   std::ostringstream ss;
   ss << in.rdbuf();
-  return LoadText(ss.str(), error);
+  // The one thing LoadText cannot know: where this style is, and therefore
+  // what a relative `sprite` is relative to.
+  impl_->load_dir = std::filesystem::path(path).parent_path().string();
+  const Status s = LoadText(ss.str(), error);
+  impl_->load_dir.clear();
+  return s;
 }
+
+// --- the sprite sheet -------------------------------------------------------
+
+void OsmStyleEngine::SetSpriteBase(const std::string& path_without_extension) {
+  impl_->sprite_base = path_without_extension;
+  impl_->sprite_base_is_explicit = !path_without_extension.empty();
+}
+
+const std::string& OsmStyleEngine::sprite_base() const {
+  return impl_->sprite_base;
+}
+
+void OsmStyleEngine::SetPreferHighDpiSprites(bool on) {
+  impl_->prefer_high_dpi = on;
+}
+
+const std::string& OsmStyleEngine::sprite_url() const {
+  return impl_->sprite_url;
+}
+
+std::vector<std::string> OsmStyleEngine::sprite_ids() const {
+  return impl_->sprites ? impl_->sprites->ids() : std::vector<std::string>();
+}
+
+namespace {
+
+// GL's `sprite` is a URL without an extension; the sheet is `<it>.json` plus
+// `<it>.png`. Only a LOCAL one can be honoured — nothing here fetches — so an
+// http(s) or mapbox:// value resolves to nothing and the icons go unresolved.
+std::string ResolveSpriteBase(const std::string& url, const std::string& dir) {
+  if (url.empty()) return std::string();
+  auto starts = [&](const char* p) {
+    return url.compare(0, std::strlen(p), p) == 0;
+  };
+  if (starts("http://") || starts("https://") || starts("mapbox://"))
+    return std::string();
+  std::string path = starts("file://") ? url.substr(7) : url;
+  std::filesystem::path p(path);
+  if (p.is_relative() && !dir.empty()) p = std::filesystem::path(dir) / p;
+  return p.lexically_normal().string();
+}
+
+}  // namespace
 
 Status OsmStyleEngine::LoadText(const std::string& json_text,
                                 std::string* error) {
@@ -692,6 +769,36 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
   }
   if (root.contains("name") && root["name"].is_string())
     fresh.name = root["name"].get<std::string>();
+
+  // The sprite sheet, before the layers, because a fill-pattern's spacing is
+  // its TILE'S OWN SIZE and the layer loop needs the sheet to ask.
+  fresh.sprite_base_is_explicit = impl_->sprite_base_is_explicit;
+  fresh.prefer_high_dpi = impl_->prefer_high_dpi;
+  if (root.contains("sprite") && root["sprite"].is_string())
+    fresh.sprite_url = root["sprite"].get<std::string>();
+  fresh.sprite_base =
+      impl_->sprite_base_is_explicit
+          ? impl_->sprite_base
+          : ResolveSpriteBase(fresh.sprite_url, impl_->load_dir);
+  if (!fresh.sprite_base.empty()) {
+    auto lib = std::make_shared<PngSymbolLibrary>();
+    lib->SetPreferHighDpi(fresh.prefer_high_dpi);
+    const Status s =
+        lib->OpenSheet(fresh.sprite_base + ".png", fresh.sprite_base + ".json");
+    if (s.ok()) {
+      fresh.sprites = std::move(lib);
+    } else if (impl_->sprite_base_is_explicit) {
+      // A base the CALLER named and that does not open is a caller error, and
+      // silently drawing an iconless map is the least useful answer to it.
+      return fail(Status::Error(
+          kIoError, "sprite sheet named by SetSpriteBase does not load: " +
+                        fresh.sprite_base + " (" + s.message + ")"));
+    }
+    // A DERIVED base that does not open is not an error: a style is very often
+    // published without the sheet beside it, and MapLibre draws it too — just
+    // without icons, which ignored_icons() then counts.
+  }
+
   if (!root.contains("layers") || !root["layers"].is_array())
     return fail(Status::Error(kInvalidArg, "style has no 'layers' array"));
 
@@ -787,29 +894,39 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
       case OsmStyleLayerType::kBackground:
         if (!(s = col(paint, "background-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "background-opacity", &L.opacity)).ok()) return fail(s);
+        // Still rejected with the sheet loading (O6): a background is not a
+        // feature here, it is the colour the application CLEARS the canvas
+        // with, and there is no geometry to stamp a pattern over.
         if (paint.contains("background-pattern"))
           return fail(Reject(id,
-                             "background-pattern needs a sprite sheet, which "
-                             "this port does not load"));
+                             "background-pattern has no geometry to repeat "
+                             "over: a background is a canvas clear"));
         break;
       case OsmStyleLayerType::kFill:
         if (!(s = col(paint, "fill-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "fill-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = col(paint, "fill-outline-color", &L.outline_color)).ok())
           return fail(s);
-        if (paint.contains("fill-pattern"))
-          return fail(Reject(id,
-                             "fill-pattern needs a sprite sheet, which this "
-                             "port does not load"));
+        if (paint.contains("fill-pattern")) {
+          if (!paint["fill-pattern"].is_string())
+            return fail(Reject(id, "fill-pattern is a function or expression"));
+          L.fill_pattern = paint["fill-pattern"].get<std::string>();
+        }
         break;
       case OsmStyleLayerType::kLine:
         if (!(s = col(paint, "line-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "line-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = num(paint, "line-width", &L.width)).ok()) return fail(s);
+        // O6 loads the sheet, so the artwork is now reachable — but a GL
+        // line-pattern STRETCHES a tile along the line, and LinePatternStyle
+        // repeats a symbol at a fixed step. Those are different pictures, and
+        // guessing which one the style meant is what the declared-subset rule
+        // exists to prevent. Rejected until it is built properly.
         if (paint.contains("line-pattern"))
           return fail(Reject(id,
-                             "line-pattern needs a sprite sheet, which this "
-                             "port does not load"));
+                             "line-pattern stretches a tile along the line; "
+                             "this port repeats a symbol at a fixed step, "
+                             "which is not the same picture"));
         if (paint.contains("line-dasharray")) {
           const Json& d = paint["line-dasharray"];
           if (!d.is_array() || d.empty())
@@ -849,6 +966,9 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
             return fail(Reject(id, "icon-image is a function or expression"));
           L.icon_image = layout["icon-image"].get<std::string>();
         }
+        if (!(s = num(layout, "icon-size", &L.icon_size)).ok()) return fail(s);
+        if (!(s = num(layout, "icon-rotate", &L.icon_rotate)).ok())
+          return fail(s);
         if (layout.contains("text-field")) {
           if (!layout["text-field"].is_string())
             return fail(Reject(id,
@@ -947,6 +1067,14 @@ const char* GeometryToken(VectorGeometryType t) {
   return "Point";
 }
 
+// Sprite ids are namespaced so they cannot collide with the generated
+// "circle:" ones, and so Pixmap() knows an id is its business at a glance.
+constexpr char kSpritePrefix[] = "sprite:";
+
+std::string SpriteSymbolId(const std::string& name) {
+  return std::string(kSpritePrefix) + name;
+}
+
 // "circle:<radius in himetric>:<rrggbbaa>" — self-describing, so LoadSymbol
 // can build the display list from the id alone and the base class's cache
 // dedupes every feature that shares a radius and colour.
@@ -1020,6 +1148,44 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
           ss.pen.color = WithOpacity(L.outline_color.At(zoom), L.opacity, zoom);
           ss.pen.width = 1;
         }
+        if (!L.fill_pattern.empty()) {
+          std::string name;
+          if (ExpandTokens(L.fill_pattern, f, &name)) {
+            const SymbolPixmap* tile = SpriteTile(name);
+            if (tile == nullptr) {
+              ++impl_->ignored_icons[name];
+            } else {
+              // SEAMLESS, so the spacing is the tile's OWN drawn size — that
+              // is what makes a stamped lattice look like GL's texture tiling
+              // instead of a field of stamps with gutters between them.
+              //
+              // The spacing and the scale therefore carry THE SAME FACTORS or
+              // the tiling comes apart: `dpi_scale` because a style engine
+              // owns its unit conversion (the renderer's own pixmap_scale has
+              // no device DPI in it), and the pass's symbol scale because the
+              // stamp obeys it. Scaling only the spacing opens a gutter of
+              // exactly the missing factor at every DPI but 96.
+              //
+              // pixel_ratio is divided out because it is tile pixels per
+              // NOMINAL pixel — the same division DrawResolvedSymbol does to
+              // the scale, so a 2x sprite tiles at the same spacing as its 1x
+              // twin and merely carries more detail.
+              const double ratio =
+                  tile->pixel_ratio > 0.0 ? tile->pixel_ratio : 1.0;
+              const double scale = dpi_scale * pass.SymbolScaleOr(1.0);
+              const double w = tile->tile.Width() / ratio * scale;
+              const double h = tile->tile.Height() / ratio * scale;
+              if (w > 0.0 && h > 0.0) {
+                AreaPatternStyle& ap = b.AreaPattern();
+                ap.valid = true;
+                ap.symbol_id = SpriteSymbolId(name);
+                ap.spacing_x = w;
+                ap.spacing_y = h;
+                ap.symbol_scale = scale;
+              }
+            }
+          }
+        }
         break;
       }
       case OsmStyleLayerType::kLine: {
@@ -1055,7 +1221,31 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
         break;
       }
       case OsmStyleLayerType::kSymbol: {
-        if (!L.icon_image.empty()) ++impl_->ignored_icons[L.icon_image];
+        // The icon and the text are INDEPENDENT halves of a GL symbol layer:
+        // a POI draws both, a shield draws only the icon, a place name only
+        // the text. Before O6 the icon half was counted and dropped, so a
+        // layer with an icon and no text contributed nothing at all.
+        if (!L.icon_image.empty()) {
+          std::string name;
+          if (ExpandTokens(L.icon_image, f, &name)) {
+            if (SpriteTile(name) == nullptr) {
+              ++impl_->ignored_icons[name];
+            } else {
+              PointSymbolStyle& sy = b.Symbol();
+              sy.valid = true;
+              sy.symbol_id = SpriteSymbolId(name);
+              // icon-size is a multiplier on the sprite's own size, and
+              // dpi_scale is the same CSS-px-to-device conversion every other
+              // value here goes through.
+              sy.scale = (L.icon_size.set ? L.icon_size.At(zoom) : 1.0) *
+                         dpi_scale * pass.SymbolScaleOr(1.0);
+              // GL's icon-rotate is degrees CLOCKWISE, which is what
+              // PointSymbolStyle::rotation_deg already means (GeoSym's
+              // convention).
+              if (L.icon_rotate.set) sy.rotation_deg = L.icon_rotate.At(zoom);
+            }
+          }
+        }
         if (L.text_field.empty()) break;
         if (!pass.draw_labels) break;
         std::string text;
@@ -1089,6 +1279,10 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
           lb.spacing_px = L.spacing * dpi_scale;
           lb.max_angle_deg = L.max_angle;
           lb.offset_px = L.offset_em * lb.style.size;
+          // GL centres a line label ON its line and measures `text-offset`
+          // from there; the placer's own anchor is the baseline, which put
+          // every street name along the top edge of its street.
+          lb.along_anchor = LabelAlongAnchor::kCenter;
         }
         break;
       }
@@ -1100,6 +1294,31 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
     if (b.AnythingDrawn()) impl_->layer_drew[idx] = true;
   }
   return Status::Ok();
+}
+
+// The sheet lookup both emission sites go through, by BARE name (no prefix).
+// nullptr = no sheet, or the sheet has no such sprite; the caller counts it.
+const SymbolPixmap* OsmStyleEngine::SpriteTile(const std::string& name) const {
+  if (!impl_->sprites || name.empty()) return nullptr;
+  return impl_->sprites->Pixmap(name);
+}
+
+const SymbolPixmap* OsmStyleEngine::Pixmap(const std::string& symbol_id) {
+  const size_t n = std::strlen(kSpritePrefix);
+  if (symbol_id.compare(0, n, kSpritePrefix) != 0) return nullptr;
+  return SpriteTile(symbol_id.substr(n));
+}
+
+const VectorSymbol* OsmStyleEngine::Symbol(const std::string& symbol_id) {
+  // A sprite has no display list, and that is not a failure — it resolves
+  // through Pixmap(), which is the next thing ResolveSymbol asks. Answered
+  // HERE rather than by letting LoadSymbol return false, because the base
+  // class counts a false LoadSymbol as an UNRESOLVED SYMBOL: every icon that
+  // drew perfectly would show up in the one diagnostic whose whole job is to
+  // list the symbology that did not.
+  if (symbol_id.compare(0, std::strlen(kSpritePrefix), kSpritePrefix) == 0)
+    return nullptr;
+  return LookupTableStyleEngine::Symbol(symbol_id);
 }
 
 bool OsmStyleEngine::LoadSymbol(const std::string& symbol_id,

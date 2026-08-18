@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // App layer A1: overlay types as data, and capabilities by accessor.
-// Covers fvkit-app-plan.md §3a/§3b -- register / duplicate-reject /
+// Covers fvkit-app-plan-COMPLETE.md §3a/§3b -- register / duplicate-reject /
 // by-extension / static-vs-file, the capability accessors' nullptr default,
 // Persistence's change-only notification, and the grid toggled through its
 // descriptor over the existing L4 stack.

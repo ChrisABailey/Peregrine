@@ -54,6 +54,29 @@ double HaloPixels(const LabelStyle& lb, double drawn_size_px);
 double LabelPixelSize(const LabelStyle& lb, double scale_denominator,
                       double meters_per_pixel, double ref_scale);
 
+// Cap height as a fraction of the em, for the one thing that needs it and
+// cannot ask: centring an along-path run on the line it names.
+//
+// MEASURED, not assumed, over the fonts this port actually draws with —
+// Arial 0.7163, Helvetica 0.7173, Verdana 0.7271, Geneva 0.7578 (OS/2
+// sCapHeight / unitsPerEm). 0.72 is central to that spread, and the whole
+// spread is 0.042 em: at a 12 px label the worst font is half a pixel from
+// where this puts it, which is smaller than the rounding the canvas does to
+// place a glyph at all. A per-font number would need ICanvas to report cap
+// height, and every backend — including pyfvw's Python subclasses — would
+// have to grow that method to gain half a pixel.
+constexpr double kCapHeightEm = 0.72;
+
+// The perpendicular shift, in pixels, that puts `lb`'s along-path run where
+// its anchor asks. ADDED to LabelStyle::offset_px by the caller, in the same
+// sense (positive = LEFT of travel), so kBaseline returns 0 and changes
+// nothing — which is what keeps every pinned golden byte-identical.
+//
+// kCenter returns a NEGATIVE shift: left of travel is up on screen for a
+// left-to-right run, and centring moves the baseline DOWN so the caps
+// straddle the line.
+double AlongPathAnchorShift(const LabelStyle& lb, double drawn_size_px);
+
 // Per-glyph advances, measured through the canvas because the canvas owns the
 // font. Taken as DIFFERENCES OF PREFIX WIDTHS rather than per-character
 // widths: GetTextExtent returns whole pixels, so summing rounded characters

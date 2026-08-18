@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See LICENSE and NOTICE.md for the full licensing picture.
 
-// pyfvw.app — the app layer (fv::app, port/fvkit-app-plan.md) in Python (A6).
+// pyfvw.app — the app layer (fv::app, port/fvkit-app-plan-COMPLETE.md) in Python (A6).
 //
 // A1-A5 were C++-only by design, and this is where every seam gets its first
 // non-test consumer. Three shapes are worth reading before the code:

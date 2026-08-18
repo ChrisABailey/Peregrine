@@ -51,12 +51,15 @@
 //
 // THREE DELIBERATE DEVIATIONS, all counted rather than remembered:
 //
-//   * `sprite` and `glyphs` URLs are IGNORED by design (the ledger's O2 row
-//     says so). Icons and glyph atlases are network/asset plumbing; text goes
-//     through the canvas font like S-52's and GeoSym's does, and `icon-image`
-//     is recorded in ignored_icons() instead of drawn. A symbol layer with an
-//     icon and no text therefore contributes nothing — which is visible in the
-//     diagnostics, not silent.
+//   * `glyphs` URLs are IGNORED by design (the ledger's O2 row said `sprite`
+//     was too; O6 closed that half). A glyph atlas is network plumbing and
+//     text goes through the canvas font like S-52's and GeoSym's does.
+//     `sprite` IS honoured now, but only from the LOCAL FILESYSTEM: the pair
+//     `<base>.json` + `<base>.png` read through PngSymbolLibrary's sheet form,
+//     resolved next to the style file (LoadFile) or wherever SetSpriteBase
+//     says. An `http(s)` sprite with no local override is not a load failure —
+//     that would reject every style published on the web — it just leaves the
+//     icons unresolved, which ignored_icons() counts.
 //   * `text-halo-blur` is IGNORED, while `text-halo-color` and
 //     `text-halo-width` are honoured (T2). The halo is a stamped dilation —
 //     the string redrawn 4-8 times a pixel or two off in the halo colour, the
@@ -127,6 +130,27 @@ class OsmStyleEngine : public LookupTableStyleEngine {
   Status LoadText(const std::string& json_text, std::string* error = nullptr);
   Status LoadFile(const std::string& path, std::string* error = nullptr);
 
+  // --- the sprite sheet (O6) -----------------------------------------------
+  // Where `sprite` resolves to on disk, WITHOUT its extension: the loader
+  // reads `<base>.json` and `<base>.png`. Set it before Load*, because the
+  // load is what binds icon names to tiles.
+  //
+  // LoadFile derives this on its own from the style's own `sprite` value when
+  // that value is a relative path — the usual shape of a style shipped beside
+  // its sprite — so a caller with a style file and a sheet next to it needs
+  // none of this. It is here for LoadText (which has no directory to resolve
+  // against) and for pointing a web-published style at a local sheet.
+  void SetSpriteBase(const std::string& path_without_extension);
+  const std::string& sprite_base() const;
+  // Take the `@2x` sprites when the sheet defines both. Like
+  // PngSymbolLibrary::SetPreferHighDpi it must be set BEFORE the load.
+  void SetPreferHighDpiSprites(bool on);
+
+  // What the style's own `sprite` member said, unresolved and as written.
+  const std::string& sprite_url() const;
+  // Sprite ids the sheet actually offers, sorted. Empty when no sheet loaded.
+  std::vector<std::string> sprite_ids() const;
+
   // --- the zoom<->scale relation ------------------------------------------
   // A StyleContext carries a scale and no geography, so the latitude half of
   // the Web Mercator relation has to be told to the engine. Set it to the
@@ -169,8 +193,10 @@ class OsmStyleEngine : public LookupTableStyleEngine {
   bool background(double scale_denominator, FvColor* out) const;
 
   // --- diagnostics ---------------------------------------------------------
-  // `icon-image` values the style asked for; icons are out of scope (see the
-  // header comment). name -> times requested.
+  // `icon-image` / `fill-pattern` values the style asked for that NO SHEET
+  // ANSWERED — no sprite loaded, or loaded and missing that name. Kept under
+  // its original name because its meaning is unchanged: these are the icons
+  // that did not get drawn. Before O6 that was all of them. name -> times.
   const std::map<std::string, size_t>& ignored_icons() const;
   // Style layers whose `source-layer` no feature ever carried, and layers that
   // did style something. Together they answer "is this style aimed at this
@@ -193,11 +219,26 @@ class OsmStyleEngine : public LookupTableStyleEngine {
                      std::vector<StyleResult>* out) override;
 
   // `circle` layers become a generated ellipse display list, keyed
-  // "circle:<r_himetric>". A sprite-backed symbol has no definition here (see
-  // ignored_icons()).
+  // "circle:<r_himetric>". A sprite-backed symbol has no display list at all
+  // and resolves through Pixmap() instead.
   bool LoadSymbol(const std::string& symbol_id, VectorSymbol* out) override;
 
+ public:
+  // The raster half of the library: "sprite:<name>" resolves out of the loaded
+  // sheet. Public because ISymbolLibrary is, and the renderer calls it through
+  // that interface after Symbol() comes back empty.
+  const SymbolPixmap* Pixmap(const std::string& symbol_id) override;
+
+  // Sprite ids short-circuit to nullptr here instead of falling through to
+  // the base class, whose miss path would count every drawn icon as an
+  // unresolved symbol. Everything else is the base class's answer.
+  const VectorSymbol* Symbol(const std::string& symbol_id) override;
+
  private:
+  // The loaded sheet, looked up by BARE sprite name. nullptr when no sheet
+  // loaded or the sheet has no such sprite.
+  const SymbolPixmap* SpriteTile(const std::string& name) const;
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

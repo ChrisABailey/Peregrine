@@ -35,9 +35,19 @@ add_library(fv_fvkit STATIC
   proj/map_projection.cpp
   settings.cpp
   engine/map_engine.cpp
+  nav/position.cpp
+  nav/heading.cpp
+  nav/scripted_source.cpp
+  nav/camera.cpp
+  nav/camera_slew.cpp
+  nav/road_snap.cpp
+  nav/line_transport.cpp
+  nav/nmea.cpp
+  nav/gpx.cpp
   overlay/manager.cpp
   overlay/grid_overlay.cpp
   overlay/point_overlay.cpp
+  overlay/moving_map_overlay.cpp
   app/type_registry.cpp
   app/session.cpp
   app/editor.cpp
@@ -62,6 +72,11 @@ target_include_directories(fv_fvkit PRIVATE ${CMAKE_SOURCE_DIR}/port/vendor)
 # nlohmann/json (header-only) for vector/families.cpp. PRIVATE: no fvkit
 # header exposes a json type, so this dependency stops at the .cpp.
 target_link_libraries(fv_fvkit PRIVATE fv_json)
+# expat (header-only from fvkit's point of view: PRIVATE, no fvkit header
+# names an XML type) for nav/gpx.cpp. A GPX file comes off the open internet,
+# so it is parsed by the modern vendored expat and never by hand — same rule
+# as §2e's gate on network-facing input.
+target_link_libraries(fv_fvkit PRIVATE expat)
 target_link_libraries(fv_fvkit
   PUBLIC fv_dted fv_dted_shaded fv_imagelib_geotiff fv_geotiff_frame
          fv_cadrg fv_cadrg_frame
@@ -90,12 +105,22 @@ if(FVW_BUILD_TESTS)
     test/canvas_test.cpp
     test/proj_engine_test.cpp
     test/overlay_test.cpp
+    nav/test/nav_position_test.cpp
+    nav/test/nav_heading_test.cpp
+    nav/test/nav_scripted_source_test.cpp
+    nav/test/nav_camera_test.cpp
+    nav/test/nav_camera_slew_test.cpp
+    nav/test/nav_road_snap_test.cpp
+    nav/test/nav_line_transport_test.cpp
+    nav/test/nav_nmea_test.cpp
+    nav/test/nav_gpx_test.cpp
     app/test/app_type_registry_test.cpp
     app/test/app_stack_test.cpp
     app/test/app_session_test.cpp
     app/test/app_editor_test.cpp
     app/test/app_pick_test.cpp
     test/point_overlay_test.cpp
+    test/moving_map_overlay_test.cpp
     test/tile_pack_test.cpp
     test/vpf_adapter_test.cpp
     test/vector_renderer_test.cpp

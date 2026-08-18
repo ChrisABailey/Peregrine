@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // fvkit/app/editor.h — the editor half of the overlay model
-// (fvkit-app-plan.md §3d, ~ IFvOverlayEditor + IFvOverlayLimitUserInterface).
+// (fvkit-app-plan-COMPLETE.md §3d, ~ IFvOverlayEditor + IFvOverlayLimitUserInterface).
 //
 // A1 SLICE: `EditorUiConstraints` and the `OverlayEditor` interface, both
 // exactly as the plan specifies them. They are here rather than in A4 for a
@@ -84,7 +84,7 @@ class OverlayEditor {
 };
 
 // ---------------------------------------------------------------------------
-// EditorManager — the mode dance (fvkit-app-plan.md §3d)
+// EditorManager — the mode dance (fvkit-app-plan-COMPLETE.md §3d)
 // ---------------------------------------------------------------------------
 //
 // ~ C_ovl_mgr::set_mode / toggle_editor / SwitchToEditor /

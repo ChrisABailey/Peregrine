@@ -8,7 +8,7 @@
 // the app owns the loop). Draw order is bottom-up (index 0 first = deepest);
 // event routing is top-down until an overlay reports handled.
 //
-// A2 (fvkit-app-plan.md §3c) grew this class IN PLACE rather than adding a
+// A2 (fvkit-app-plan-COMPLETE.md §3c) grew this class IN PLACE rather than adding a
 // second stack type: the plan's `stack.h` is this file. What A2 added, all of
 // it inert until a shell asks for it, so a pyfvw user who only ever calls
 // Add/DrawAll/Route* sees the pre-A2 stack unchanged (rule R7):

@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See LICENSE and NOTICE.md for the full licensing picture.
 
-// App layer A4: editors and the mode dance (fvkit-app-plan.md §3d).
+// App layer A4: editors and the mode dance (fvkit-app-plan-COMPLETE.md §3d).
 //
 // The proof the plan asks for is "tests for invariants 3d.1-4; a trivial
 // points editor test double", and that is what these are. The doubles share

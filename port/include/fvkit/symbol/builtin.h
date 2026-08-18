@@ -68,6 +68,14 @@ constexpr const char* kNotch = "fv.notch";      // half-tick to one side
 constexpr const char* kNorthArrow = "fv.north";
 constexpr const char* kCrosshair = "fv.crosshair";
 
+// The moving map's own ship (nav plan MM4). An aircraft in plan view, nose at
+// +y, so a stamp rotated to the heading points where the platform is going.
+// It is the only builtin authored to be drawn LARGER than the shape box (an
+// ownship is furniture the user's eye returns to, not a marker in a set), and
+// a caller whose platform is not an aircraft asks for `fv.north` instead — a
+// plain chevron is the generic form and there is no reason to author it twice.
+constexpr const char* kOwnship = "fv.ownship";
+
 // Every id above, in this order. Terminated by nullptr.
 extern const char* const kAll[];
 

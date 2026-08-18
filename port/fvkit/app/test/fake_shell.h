@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See LICENSE and NOTICE.md for the full licensing picture.
 
-// FakeShell — a scripted AppShell (fvkit-app-plan.md §3f).
+// FakeShell — a scripted AppShell (fvkit-app-plan-COMPLETE.md §3f).
 //
 // This is what rule R1 buys. Because the core never opens a dialog and instead
 // STATES what it needs decided, every branch a user could take through a flow

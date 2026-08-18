@@ -18,7 +18,7 @@ namespace fv {
 
 void DrawSymbolAt(ICanvas* canvas, const VectorSymbol& sym, double ax,
                   double ay, double px_per_himetric, double rotation_rad,
-                  InkBox* ink) {
+                  InkBox* ink, const FvColor* tint) {
   const double cs = std::cos(rotation_rad), sn = std::sin(rotation_rad);
   auto map = [&](const SymbolPoint& p) {
     // Rotate in symbol space (y up), then scale and flip to screen.
@@ -32,11 +32,11 @@ void DrawSymbolAt(ICanvas* canvas, const VectorSymbol& sym, double ax,
 
   for (const SymbolPrimitive& prim : sym.primitives) {
     Pen pen;
-    pen.color = prim.stroke_color;
+    pen.color = tint != nullptr ? *tint : prim.stroke_color;
     pen.width = std::max(1, static_cast<int>(std::lround(prim.stroke_width *
                                                         px_per_himetric)));
     Brush brush;
-    brush.color = prim.fill_color;
+    brush.color = tint != nullptr ? *tint : prim.fill_color;
 
     switch (prim.type) {
       case SymbolPrimitiveType::kPolyline: {
@@ -91,7 +91,9 @@ void DrawSymbolAt(ICanvas* canvas, const VectorSymbol& sym, double ax,
         const SurfacePoint p = map(prim.center);
         TextStyle ts;
         ts.size = prim.text_height * px_per_himetric;
-        ts.color = prim.has_fill ? prim.fill_color : prim.stroke_color;
+        ts.color = tint != nullptr
+                       ? *tint
+                       : (prim.has_fill ? prim.fill_color : prim.stroke_color);
         if (ts.size >= 1.0) {
           canvas->DrawTextString(prim.text, static_cast<int>(std::lround(p.x)),
                                  static_cast<int>(std::lround(p.y)), ts);
@@ -109,9 +111,36 @@ void DrawSymbolAt(ICanvas* canvas, const VectorSymbol& sym, double ax,
 
 void DrawPixmapSymbolAt(ICanvas* canvas, const SymbolPixmap& sym, double ax,
                         double ay, double scale, double rotation_rad,
-                        InkBox* ink) {
+                        InkBox* ink, const FvColor* tint) {
   const int sw = sym.tile.Width(), sh = sym.tile.Height();
   if (sw <= 0 || sh <= 0) return;
+
+  // G4. A tinted stamp is the tile's SHAPE in one flat colour: RGB replaced,
+  // alpha kept (scaled by the tint's own, so a translucent highlight is
+  // expressible). Done into a local copy the two paths below then treat as
+  // the tile — the caller's tile is const and shared, and a library hands the
+  // same one out to every stamp of that id.
+  if (tint != nullptr) {
+    SymbolPixmap recoloured;
+    recoloured.pivot_x = sym.pivot_x;
+    recoloured.pivot_y = sym.pivot_y;
+    recoloured.pixel_ratio = sym.pixel_ratio;
+    recoloured.tile = PixelBuffer(sw, sh);
+    for (int y = 0; y < sh; ++y) {
+      const unsigned char* src = sym.tile.Row(y);
+      unsigned char* dst = recoloured.tile.Row(y);
+      for (int x = 0; x < sw; ++x) {
+        const unsigned a = src[x * 4 + 3];
+        dst[x * 4 + 0] = tint->r;
+        dst[x * 4 + 1] = tint->g;
+        dst[x * 4 + 2] = tint->b;
+        dst[x * 4 + 3] = static_cast<unsigned char>((a * tint->a + 127) / 255);
+      }
+    }
+    DrawPixmapSymbolAt(canvas, recoloured, ax, ay, scale, rotation_rad, ink,
+                       nullptr);
+    return;
+  }
 
   // The anchor is snapped to a whole pixel FIRST, for both paths. D4 puts a
   // pixel's centre ON the integer, so a symbol at a half-pixel anchor has no
@@ -213,9 +242,11 @@ ResolvedSymbol ResolveSymbol(ISymbolLibrary* lib, const std::string& id) {
 
 bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
                         double ay, double px_per_himetric, double pixmap_scale,
-                        double rotation_rad, InkBox* ink) {
+                        double rotation_rad, InkBox* ink,
+                        const FvColor* tint) {
   if (sym.vec != nullptr) {
-    DrawSymbolAt(canvas, *sym.vec, ax, ay, px_per_himetric, rotation_rad, ink);
+    DrawSymbolAt(canvas, *sym.vec, ax, ay, px_per_himetric, rotation_rad, ink,
+                 tint);
     return true;
   }
   if (sym.pix == nullptr) return false;
@@ -226,7 +257,7 @@ bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
   const double ratio =
       sym.pix->pixel_ratio > 0.0 ? sym.pix->pixel_ratio : 1.0;
   DrawPixmapSymbolAt(canvas, *sym.pix, ax, ay, pixmap_scale / ratio,
-                     rotation_rad, ink);
+                     rotation_rad, ink, tint);
   return true;
 }
 

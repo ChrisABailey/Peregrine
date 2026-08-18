@@ -244,3 +244,100 @@ simplify_pixels = 0.5
 # shapes, which is what a document written with no icons at all looks like.
 # Default: <geosym.data_dir>/GeoSymbol/makiPng.
 # symbol_dir = "/path/to/testdata/GeoSymbol/makiPng"
+
+[movingmap]
+# The moving map (MM4) — the ownship symbol, FalconView's screen-positioning
+# algorithm and the slew that smooths it. The overlay is `fv.movingmap`, a
+# STATIC type: "m" toggles it, and PythonView's demo feed replays the route
+# overlay's track (the FOLLOWED ROAD when "r" has been pressed, the straight
+# waypoint legs otherwise, a box round the map centre when there is no route).
+#
+# The three toggles are FalconView's own, and they are startup state only —
+# the Overlays > Moving Map Modes menu and the keys M / T / S move them
+# afterwards. Nothing writes them back (rule S1: this file is yours).
+#
+# auto_center 'ACEN' — the master switch. Off and the map never moves.
+# auto_rotate 'AROT' — track up: the chart turns so the course points up the
+#   screen and the ship is anchored about a third below centre.
+# continuous  'CCEN' — recentre on EVERY fix rather than only when the ship
+#   leaves its apron. Note this also selects a LINEAR slew: an ease-in-out
+#   restarted every fix spends the whole animation in its slow opening and
+#   the map lags a duration behind the ship.
+# auto_center = true
+# auto_rotate = false
+# continuous = false
+
+# How long the map takes to arrive, in seconds. 0 IS FALCONVIEW: the map
+# jumps a third of a window between one frame and the next, which is what the
+# original does and is reachable here on purpose. The rate caps (1200 px/s,
+# 120 deg/s) never resurrect a jump — they only extend a slew that would
+# otherwise be too fast to follow.
+# slew_seconds = 0.35
+
+# The demo feed: the ground speed the route is replayed at (metres/second —
+# 15 is about 30 knots) and how often the shell ticks (milliseconds). The
+# track itself is sampled at 1 Hz, which is what a receiver delivers.
+# speed_mps = 15.0
+# tick_ms = 100
+
+# The ownship symbol's full width in pixels, and whether to draw the APRON —
+# the box the ship may wander inside before the map moves. The apron is the
+# hardest part of the moving map to believe, and a picture of it settles an
+# argument that a log line does not.
+# symbol_px = 24.0
+# show_apron = false
+
+# SNAP TO ROAD (MM5). Puts the ship on the road it is most likely on before
+# anything else sees the fix — the heading, the apron, the drawn symbol — and
+# a snapped fix that is moving takes the ROAD'S bearing as its heading, which
+# is a far better one than two noisy positions can give. The raw fix is never
+# destroyed: the status bar names the road, and tick().snap.raw is still what
+# the receiver said.
+#
+# It needs the same graph [routing] graph names, and shares the one the route
+# overlay has already opened rather than loading a second copy. WITHOUT A
+# GRAPH THIS DOES NOTHING AND SAYS NOTHING — snapping off is a supported
+# state, not an error. Overlays > Moving Map Modes > Snap To Road turns it off
+# and on with the feed running.
+#
+# What it will not do: it removes the ACROSS-track error and leaves the
+# ALONG-track error alone (a fix 10 m up the road projects onto the road 10 m
+# up it). Removing that needs a motion model rather than a projection.
+# snap_to_road = true
+
+# THE FEED (MM7). The core reads three kinds and these two keys choose which
+# one the application starts with; File > Open Track and Overlays > Moving Map
+# Modes > Connect NMEA Feed move it afterwards, and Use The Demo Feed comes
+# back to the replayed route below.
+#
+# track_file is a RECORDED ride — a .gpx (a phone, a watch, a bike computer)
+# or an NMEA log (what a receiver hands a program). It is replayed at the
+# speed it was recorded at, because the fixes' own timestamps are the
+# schedule, and it does not loop: a ride ends. Everything downstream — the
+# camera, the heading, the road snapping — never learns the ship is a
+# recording.
+# track_file = /path/to/kiawah_cycle.gpx
+
+# nmea_host / nmea_port are a LIVE feed. A phone running GPS2IP or any of its
+# relatives SERVES NMEA 0183 over TCP and the map connects to it; leave the
+# host EMPTY and the port is listened to for UDP BROADCAST instead, which is
+# the other shape those apps come in. An asleep phone never hangs the app: the
+# connect is non-blocking and a tick with nothing on the socket costs nothing.
+# The status bar shows bytes, sentences and fixes, because "receiving but
+# nothing parses" looks exactly like silence otherwise.
+# nmea_host = 192.168.1.42
+# nmea_port = 10110
+
+# Two knobs for a recorded track. track_max_gap_s caps a gap between
+# consecutive fixes (0 = replay the 40-minute coffee stop as well), and
+# track_time_scale is the replay rate — 10 watches a 28-minute ride in under
+# three. Both leave the fixes themselves alone; only the schedule changes.
+# track_max_gap_s = 0.0
+# track_time_scale = 1.0
+
+# A DEMO KNOB. The scripted feed replays a track that is already exactly on
+# the roads, so snapping it is a no-op you cannot see. This scatters the
+# replayed track by up to this many metres — 12 is an honest bad day for a
+# phone under trees — which is what makes the snapping visible. Seeded, so a
+# demonstration runs the same way twice. 0 = the clean track.
+# noise_m = 0.0

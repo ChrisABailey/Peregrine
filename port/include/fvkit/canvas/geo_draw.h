@@ -51,6 +51,26 @@
 namespace fv {
 
 // ---------------------------------------------------------------------------
+// Render state (draw plan G4)
+// ---------------------------------------------------------------------------
+
+// What a draw MEANS, as opposed to how it is styled. A selected waypoint, a
+// hovered feature and a search result are all "this one, not the others", and
+// before G4 every overlay said it by swapping a colour by hand — which loses
+// the thing's own colour, the one property the user identifies it by.
+//
+// kHighlighted is the caller's to set and nothing sets it for you: the app
+// layer knows what is selected, this layer knows how to draw it.
+//
+// DIMMING IS DEFERRED (Chris, 2026-08-13). Adding it later is one enum value
+// and one filter; the two decisions already worked out are parked in §3d of
+// port/fvkit-draw-plan-COMPLETE.md so they are not re-derived.
+enum class RenderState {
+  kNormal,
+  kHighlighted,
+};
+
+// ---------------------------------------------------------------------------
 // Line style
 // ---------------------------------------------------------------------------
 
@@ -169,6 +189,29 @@ class GeoDraw {
   void SetSymbolDpiScale(double s) { dpi_scale_ = s > 0.0 ? s : 1.0; }
   double symbol_dpi_scale() const { return dpi_scale_; }
 
+  // --- render state (G4) --------------------------------------------------
+  //
+  // Applies to every verb until it is set back. An overlay drawing a selected
+  // feature sets it, draws, and clears it — the state is on the DRAW and not
+  // on the style, because the same style at both states is the point.
+  //
+  // The highlight is T2's halo mechanism reused, which is what makes it need
+  // NOTHING from ICanvas (R6): the same ink stamped at 4-8 offsets in the
+  // highlight colour, then the normal pass over it. A line takes the cheap
+  // equivalent — one wider stroke under everything, in the highlight colour —
+  // because stamping a polyline eight times draws the same picture for eight
+  // times the cost.
+  void SetState(RenderState s) { state_ = s; }
+  RenderState state() const { return state_; }
+
+  // The highlight colour and how far past the ink it shows. The default is
+  // FalconView's selection yellow at 3 px, which is what PointOverlay and
+  // route.py both hand-rolled before G4 — a caller that wants a hover tint or
+  // a search colour says so.
+  void SetHighlight(FvColor color, double width_px = 3.0);
+  FvColor highlight_color() const { return highlight_color_; }
+  double highlight_width() const { return highlight_px_; }
+
   // Clip contours in geographic space before densifying (G1's whole point).
   // On by default; off is for a caller that wants the geometry off-canvas too.
   void SetClip(bool on) { clip_ = on; }
@@ -229,11 +272,20 @@ class GeoDraw {
   // A symbol the library does not have is a kNotFound Status and no ink —
   // never a silent nothing, because a mistyped id is the most likely failure
   // and it is invisible otherwise.
+  //
+  // PR2: `style.rotation_deg` is measured against the CHART'S NORTH, so a
+  // turned projection turns this symbol with it (SymbolAngleOnChart).
   Status DrawSymbol(const GeoPoint& at, const std::string& symbol_id,
                     const PointSymbolStyle& style = PointSymbolStyle{});
 
   // The same at a surface pixel, for map furniture (a north arrow, a scale
   // bar) that belongs to the CANVAS and not to a position on the earth.
+  //
+  // PR2: and because it belongs to the canvas, `style.rotation_deg` is a
+  // SCREEN angle here and the chart's rotation is NOT applied — the caller
+  // that chose the pixel owns the angle too. A north arrow drawn this way asks
+  // the projection for its rotation itself; the ownship (MM4) already does,
+  // because `screen_angle_deg()` is heading + map rotation + convergence.
   Status DrawSymbolAtPixel(double x, double y, const std::string& symbol_id,
                            const PointSymbolStyle& style = PointSymbolStyle{});
 
@@ -265,18 +317,36 @@ class GeoDraw {
   // VectorRenderer reports, for the same reason.
   size_t draws_emitted() const { return draws_emitted_; }
   size_t halo_draws() const { return halo_draws_; }
-  void ResetCounts() { draws_emitted_ = halo_draws_ = 0; }
+  // Highlight passes, counted separately for the same reason halo passes are:
+  // they are ink the caller did not ask for by name, and a test that wants to
+  // know the state changed anything asks THIS. A highlight pass is never in
+  // the pick index either — the user aims at the feature, not at its glow.
+  size_t highlight_draws() const { return highlight_draws_; }
+  void ResetCounts() { draws_emitted_ = halo_draws_ = highlight_draws_ = 0; }
 
  private:
   Status StrokePaths(const std::vector<std::vector<SurfacePoint>>& paths,
                      const StrokeStyle& stroke);
+  // `stamp_tint` recolours the pattern's SYMBOLS, which `pen_override` cannot
+  // reach (it is the dash pen). Used by the highlight pass and deliberately
+  // not by the casing: a casing's stamps have come out in the library's own
+  // colour since G3 and every G3 assertion is pinned over that.
   Status PatternPaths(const std::vector<std::vector<SurfacePoint>>& paths,
                       const LinePatternStyle& pattern, const Pen* pen_override,
-                      double width_override);
+                      double width_override,
+                      const FvColor* stamp_tint = nullptr);
   // px_per_himetric for a display list, given the library's own grid.
   double PxPerHimetric() const;
+  // `chart_rotation_deg` is the turn `SymbolAngleOnChart` takes out of the
+  // style's north-up angle: the projection's rotation for a GEOGRAPHIC anchor,
+  // and zero for a PIXEL one, which is the whole difference between DrawSymbol
+  // and DrawSymbolAtPixel.
   Status StampSymbol(double x, double y, const std::string& symbol_id,
-                     const PointSymbolStyle& style);
+                     const PointSymbolStyle& style,
+                     double chart_rotation_deg);
+  // Draws the highlight under one line's geometry. No-op at kNormal.
+  void HighlightPaths(const std::vector<std::vector<SurfacePoint>>& paths,
+                      const GeoLineStyle& style);
 
   const MapProjection& proj_;
   ICanvas* canvas_ = nullptr;
@@ -284,12 +354,16 @@ class GeoDraw {
   double symbol_scale_ = 1.0;
   double dpi_scale_ = 1.0;
   bool clip_ = true;
+  RenderState state_ = RenderState::kNormal;
+  FvColor highlight_color_{255, 220, 0, 255};
+  double highlight_px_ = 3.0;
   bool pick_enabled_ = false;
   FeatureRef feature_;
   int priority_ = 0;
   PickIndex pick_;
   size_t draws_emitted_ = 0;
   size_t halo_draws_ = 0;
+  size_t highlight_draws_ = 0;
 };
 
 }  // namespace fv

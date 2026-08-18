@@ -17,6 +17,7 @@
 add_library(fv_routing STATIC
   fv_osm_reader.cpp
   fv_road_graph.cpp
+  fv_road_network.cpp
   fv_route_rules.cpp
   fv_router.cpp
 )
@@ -41,12 +42,20 @@ if(FVW_BUILD_TESTS)
   add_executable(fv_routing_test
     test/osm_reader_test.cpp
     test/road_graph_test.cpp
+    test/road_snap_test.cpp
     test/route_rules_test.cpp
     test/router_test.cpp
   )
   # fv_zlib: osm_reader_test encodes its own .osm.pbf fixture, so it needs the
   # compressor the reader only ever inflates with.
-  target_link_libraries(fv_routing_test PRIVATE fv_routing fv_zlib GTest::gtest_main)
+  #
+  # fv_fvkit: road_snap_test drives fv::RoadSnapper (MM5) over the adapter, and
+  # the snapper lives in fvkit. TEST-ONLY, and deliberately not on fv_routing
+  # itself -- the adapter needs nothing from fvkit but headers (see the inline
+  # ProjectOntoSegment), which is what keeps fvgraph from linking the map
+  # engine. The dependency runs one way: fvkit does not link the router.
+  target_link_libraries(fv_routing_test PRIVATE fv_routing fv_zlib fv_fvkit
+                        GTest::gtest_main)
   target_compile_definitions(fv_routing_test PRIVATE
     FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}")
   gtest_discover_tests(fv_routing_test

@@ -94,7 +94,10 @@ TEST(BuiltinSymbols, EveryAdvertisedIdResolvesToADisplayList) {
     EXPECT_GT((s->max_x - s->min_x) + (s->max_y - s->min_y), 0.0) << *id;
     ++n;
   }
-  EXPECT_EQ(n, 13u);
+  // 13 as authored in G2, +1 for MM4's ownship. The count is here so that an
+  // id added to kAll without a display list behind it fails LOUDLY rather
+  // than silently drawing nothing.
+  EXPECT_EQ(n, 14u);
   EXPECT_EQ(lib.Symbol("no.such.symbol"), nullptr);
 }
 

@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // fvkit/app/pick.h — hover, click deconfliction, snap-to and context-menu
-// composition (fvkit-app-plan.md §3e).
+// composition (fvkit-app-plan-COMPLETE.md §3e).
 //
 // This is the one place the plan REORGANISES FalconView rather than mirroring
 // it. FalconView's test_select/selected pair gives each overlay a veto in stack

@@ -37,6 +37,15 @@ double LabelPixelSize(const LabelStyle& lb, double scale_denominator,
   return (std::min)(px, kMaxLabelPx);
 }
 
+// Where an along-path run sits across its line. See text_draw.h for why the
+// cap height is a constant fraction of the em and not a font metric.
+double AlongPathAnchorShift(const LabelStyle& lb, double drawn_size_px) {
+  if (lb.along_anchor != LabelAlongAnchor::kCenter) return 0.0;
+  // Half the cap height, and negative: the placer's positive offset is left of
+  // travel (up on screen), and centring lowers the baseline.
+  return -0.5 * kCapHeightEm * drawn_size_px;
+}
+
 // --- halo (T2) --------------------------------------------------------------
 //
 // The offsets one halo pass draws the string at. Windows FalconView drew FOUR —

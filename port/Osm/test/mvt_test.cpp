@@ -535,7 +535,9 @@ std::string MbtilesPath() {
 namespace {
 
 // Downtown Atlanta. The layer inventory, the feature counts and the two
-// pinned coordinates below all come from the Python oracle.
+// pinned coordinates below all come from the Python oracle, which now lives
+// beside this file as test/mvt_oracle.py — run it against the .mbtiles to
+// re-derive every number in MvtRealData after a data re-cut.
 const fv::webmerc::TileId kAtlanta{14, 4351, 6558};
 
 fv::Status ReadAndDecode(const std::string& path, const fv::webmerc::TileId& id,
@@ -556,10 +558,12 @@ TEST(MvtRealData, TheAtlantaTileDecodesToWhatTheOracleSaw) {
   fv::MvtTile tile;
   ASSERT_TRUE(ReadAndDecode(mb_path, kAtlanta, &tile).ok());
 
-  EXPECT_EQ(tile.layers().size(), 12u);
-  EXPECT_EQ(tile.feature_count(), 7389u);
+  EXPECT_EQ(tile.layers().size(), 13u);      // 12 before the 2026-08-17 re-cut
+  EXPECT_EQ(tile.feature_count(), 7552u);    // 7389 before it
 
-  // Per-layer counts, straight from the oracle's listing.
+  // Per-layer counts, straight from the oracle's listing. Re-run against the
+  // 2026-08-17 re-cut: ten of the twelve layers came back with the same count
+  // they had at O1, landuse went 79 -> 238, and man_made is new.
   const struct {
     const char* name;
     size_t count;
@@ -567,8 +571,8 @@ TEST(MvtRealData, TheAtlantaTileDecodesToWhatTheOracleSaw) {
       {"place", 5},        {"poi", 694},        {"housenumber", 377},
       {"transportation", 4363}, {"transportation_name", 728},
       {"building", 923},   {"water", 21},       {"water_name", 2},
-      {"aeroway", 3},      {"park", 1},         {"landuse", 79},
-      {"landcover", 193},
+      {"aeroway", 3},      {"park", 1},         {"landuse", 238},
+      {"landcover", 193},  {"man_made", 4},
   };
   for (const auto& e : kExpected) {
     const fv::MvtLayer* l = tile.Layer(e.name);
@@ -644,7 +648,7 @@ TEST(MvtRealData, WaterIsAreaGeometryWithClosedOuterRings) {
 TEST(MvtRealData, EveryVertexLandsNearTheTileItCameFrom) {
   SKIP_WITHOUT_MBTILES();
   // The single pinned coordinate above proves the projection for one point.
-  // This proves it for all 205,000 of them, which is what catches an extent
+  // This proves it for all 42,888 of them, which is what catches an extent
   // that was assumed rather than read, or a y-axis flipped the wrong way:
   // either mistake moves vertices by whole tiles.
   //
@@ -673,10 +677,18 @@ TEST(MvtRealData, EveryVertexLandsNearTheTileItCameFrom) {
       }
     }
   }
-  // Exact, and it matches the oracle's independent walk of the same command
-  // integers vertex for vertex — which also says this tile has no ring the
-  // decoder dropped, since a drop would have made the two disagree.
-  EXPECT_EQ(vertices, 40780u);
+  // Exact, and it reconciles with the oracle's independent walk of the same
+  // command integers — which also says this tile has no ring the decoder
+  // dropped, since a drop would have made the two disagree.
+  //
+  // "Reconciles" and not "matches": the oracle counts the PARAMETER PAIRS the
+  // command integers carry (MoveTo + LineTo = 8825 + 32572 = 41,397) while
+  // this decoder closes each ring by re-emitting its first point, so it is
+  // longer by exactly one vertex per ClosePath command (1491 of them). A
+  // renderer needs the closing point; an oracle counting wire bytes has no
+  // reason to invent it. 41,397 + 1491 = 42,888, and if that identity ever
+  // stops holding, one of the two is dropping geometry.
+  EXPECT_EQ(vertices, 42888u);  // 40,780 before the 2026-08-17 re-cut
 }
 
 TEST(MvtRealData, ASweepOfTilesDecodesWithNothingDropped) {

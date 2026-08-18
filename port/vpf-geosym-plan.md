@@ -1,6 +1,17 @@
 # Vector charts plan — VPF/GeoSym, plus OSM tiles & ENC (S-57/S-52)
 
-**Status: plan only (2026-07-16, surveyed with Chris's direction). No code yet.**
+**Status: MOSTLY BUILT — this stays the standing design reference for the vector/symbology
+stack, not a to-do list.** Survey 2026-07-16. Built and finished: V1–V6 (the VPF reader, the catalog
+rows, GeoSym, CGM symbols, the vector seam + `VectorRenderer`, the offline tile packer), §5's whole
+cross-product middle layer (R1 identify, R2 rules, R3a–R3c the retained scene and the perf passes,
+M1 mariner settings + data families), §6 OSM (O1–O6) and §7 ENC/S-52 (E1–E8) — see their rows in
+`port/PORTING-ARCHIVE.md`. **Still open from this plan, and tracked in the ledger's §2**: V7 a
+CoreGraphics `ICanvas` backend, V8 the symbol atlas / batching pass (R3c measured it away as a
+non-goal at current frame times), WVS support (§2b, root cause known), and the canvas gaps §5 keeps
+running into — no pattern brush, no clip region, no layer alpha, no label collision.
+**The sections worth reading are §5 (the cross-product middle layer — why GeoSym, S-52 and MapLibre
+are one machine) and §7 (ENC).** Everything phrased below as a future phase has either landed or is
+in the ledger; where the two disagree, the ledger and the archive row win.
 Companion to `port/fvkit-contracts.md` and the ledger. Scope: VpfMapServer +
 its embedded GeoSymServer — FalconView's largest module (~62K lines, 111
 files) and the only one that *draws* (GDI) rather than just decodes pixels.

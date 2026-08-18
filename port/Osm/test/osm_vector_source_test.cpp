@@ -65,15 +65,17 @@ TEST(OsmVectorSource, OpensAndAnswersTheSeamsMetadataQuestions) {
 
   EXPECT_TRUE(src.IsOpen());
   const std::vector<std::string> layers = src.Layers();
-  ASSERT_EQ(layers.size(), 16u);
+  ASSERT_EQ(layers.size(), 17u);  // 16 before the 2026-08-17 re-cut
   EXPECT_EQ(layers[0], "place");
   EXPECT_NE(std::find(layers.begin(), layers.end(), "transportation"),
             layers.end());
 
-  // Bounds come from the pyramid, not the (wrong) declared metadata.
+  // Bounds come from the pyramid, not from the declared metadata — see
+  // Mbtiles.BoundsAreDerivedFromTheTilesNotBelieved for why the two agreeing
+  // in this cut is not a reason to stop deriving.
   const fv::GeoRect b = src.Bounds();
-  EXPECT_LT(b.ur.lon, -70.0);
-  EXPECT_GT(b.ll.lon, -110.0);
+  EXPECT_NEAR(b.ll.lon, -106.6552734375, 1e-9);
+  EXPECT_NEAR(b.ur.lon, 0.0, 1e-9);  // -74.685 before the re-cut
   EXPECT_TRUE(b.Contains(fv::GeoPoint{33.749, -84.388}));
 }
 
@@ -200,8 +202,9 @@ TEST(OsmVectorSource, AScalelessQueryIsCappedByTileCountNotAttempted) {
   OPEN_SOURCE(src);
 
   // scale 0 is the seam's "no scale filter". Over this pyramid's whole
-  // coverage that would be 594,419 tiles at maxzoom; the guard steps the
-  // level coarser until the range is affordable.
+  // coverage that would be 3,647,283 tiles at maxzoom (594,419 before the
+  // 2026-08-17 re-cut); the guard steps the level coarser until the range is
+  // affordable.
   fv::VectorQuery q;
   q.area = src.Bounds();
   q.scale_denominator = 0.0;
@@ -214,12 +217,19 @@ TEST(OsmVectorSource, AScalelessQueryIsCappedByTileCountNotAttempted) {
   EXPECT_LE(src.last_query_zoom(), 6);
   EXPECT_GE(src.last_query_zoom(), 0);
   EXPECT_LE(out.size(), 5000u);
-  EXPECT_TRUE(src.last_query_truncated());
+  // Deliberately NOT an assertion that the feature cap was hit. It was, on the
+  // pre-2026-08-17 pyramid, but only because that data's coarsest affordable
+  // level still held 5000+ features; the wider re-cut is coarser still and
+  // comes back under the cap. Whether a scan reaches max_features is a
+  // property of the sample data, and the cap has its own test
+  // (MaxFeaturesStopsTheScanWhereItSaysItDoes).
+  //
   // The contract is the tile budget, so assert the budget and not a zoom
   // number that depends on where the coverage happens to fall on the grid.
   const size_t attempted =
       src.last_query_tiles_read() + src.last_query_tiles_missing();
-  EXPECT_LE(attempted, 64u);
+  EXPECT_LE(attempted, 64u)
+      << "zoom " << src.last_query_zoom() << ", " << out.size() << " features";
 
   // A smaller budget picks a coarser level, and stays inside the new budget.
   const int wide_zoom = src.last_query_zoom();
@@ -428,7 +438,7 @@ TEST(OsmVectorSource, ReopeningKeepsTheApplicationsKnobs) {
   EXPECT_DOUBLE_EQ(src.display_mm_per_pixel(), 0.125);
   EXPECT_EQ(src.zoom_override(), 11);
   // The layer inventory is rebuilt from the file, not accumulated.
-  EXPECT_EQ(src.Layers().size(), 16u);
+  EXPECT_EQ(src.Layers().size(), 17u);  // 16 before the 2026-08-17 re-cut
 }
 
 TEST(OsmVectorSource, MaxFeaturesStopsTheScanWhereItSaysItDoes) {

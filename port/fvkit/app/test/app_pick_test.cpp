@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // App layer A5: hover, click deconfliction, snap-to and context-menu
-// composition (fvkit-app-plan.md §3e).
+// composition (fvkit-app-plan-COMPLETE.md §3e).
 //
 // The proof the plan asks for is "ambiguity tests (2 overlays, overlapping
 // items, each policy); hover hint text", and the shape those tests take is

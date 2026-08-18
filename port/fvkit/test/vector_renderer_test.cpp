@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/vector/text_draw.h"
 
 namespace {
 
@@ -596,6 +597,68 @@ TEST(TextPlacer, OffsetPutsTheTextOnTheLeftOfTravel) {
   EXPECT_DOUBLE_EQ(up[0].glyphs[0].x, down[0].glyphs[0].x);
 }
 
+// The anchor is a shift the CALLER folds into the offset, so it is tested as
+// the number it contributes and then, below, as the side it lands on.
+TEST(LabelAnchor, BaselineIsNoShiftAtAllAndCentreIsHalfACap) {
+  fv::LabelStyle lb;
+  // The default must contribute exactly zero: every pinned golden in the tree
+  // was taken with the baseline sitting on the geometry.
+  EXPECT_DOUBLE_EQ(fv::AlongPathAnchorShift(lb, 20.0), 0.0);
+
+  lb.along_anchor = fv::LabelAlongAnchor::kCenter;
+  EXPECT_DOUBLE_EQ(fv::AlongPathAnchorShift(lb, 20.0),
+                   -0.5 * fv::kCapHeightEm * 20.0);
+  // It scales with the DRAWN size, not the authored one — a ground-sized name
+  // that grew must keep straddling its road.
+  EXPECT_DOUBLE_EQ(fv::AlongPathAnchorShift(lb, 40.0),
+                   2.0 * fv::AlongPathAnchorShift(lb, 20.0));
+}
+
+TEST(LabelAnchor, CentringLowersTheBaselineSoTheCapsStraddleTheRoad) {
+  // The bug this closes: baseline-on-the-line puts every glyph body ABOVE the
+  // road, so a street's name ran along its top edge instead of down its
+  // middle. Centring must move the baseline DOWN (larger y) by half a cap, so
+  // the ink ends up half above the line and half below it.
+  std::vector<SurfacePoint> path{{0, 50}, {100, 50}};
+  fv::LabelStyle lb;
+  lb.along_anchor = fv::LabelAlongAnchor::kCenter;
+  const double size = 20.0;
+  const double cap = fv::kCapHeightEm * size;
+
+  const auto base = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0);
+  const auto centred = PlaceTextAlongPath(
+      path, Word(), 0.0, 45.0, fv::AlongPathAnchorShift(lb, size));
+  ASSERT_EQ(base.size(), 1u);
+  ASSERT_EQ(centred.size(), 1u);
+
+  EXPECT_DOUBLE_EQ(base[0].glyphs[0].y, 50.0);
+  EXPECT_DOUBLE_EQ(centred[0].glyphs[0].y, 50.0 + cap / 2.0);
+  // Baseline-anchored, the caps sit entirely above the road; centred, the road
+  // runs through the middle of them.
+  EXPECT_LT(base[0].glyphs[0].y - cap, 50.0);
+  EXPECT_LT(centred[0].glyphs[0].y - cap, 50.0);
+  EXPECT_GT(centred[0].glyphs[0].y, 50.0);
+  // Perpendicular only, again: the word does not slide along its road.
+  EXPECT_DOUBLE_EQ(centred[0].glyphs[0].x, base[0].glyphs[0].x);
+}
+
+TEST(LabelAnchor, ACentredNameFollowsTheRoadItNamesRoundABend) {
+  // The shift is applied per glyph along the LOCAL normal, so on a bend the
+  // run stays parallel to the road rather than sliding off the outside of it.
+  // A due-south leg: travel is +y, left of travel is +x, so a negative shift
+  // must move the glyphs to SMALLER x.
+  std::vector<SurfacePoint> path{{50, 0}, {50, 100}};
+  fv::LabelStyle lb;
+  lb.along_anchor = fv::LabelAlongAnchor::kCenter;
+  const double shift = fv::AlongPathAnchorShift(lb, 20.0);
+  const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 45.0, shift);
+  ASSERT_EQ(runs.size(), 1u);
+  // Due north/south reads UPWARD by the placer's tie rule, so travel is -y and
+  // the shift lands on +x. Either way it is off the centreline by half a cap.
+  for (const auto& g : runs[0].glyphs)
+    EXPECT_DOUBLE_EQ(std::fabs(g.x - 50.0), std::fabs(shift));
+}
+
 TEST(TextPlacer, SpacingRepeatsTheNameAlongALongRoad) {
   // 1000 px of road, a 60 px word, one every 200 px.
   std::vector<SurfacePoint> path{{0, 0}, {1000, 0}};
@@ -646,6 +709,8 @@ class StubStyle : public fv::IStyleEngine {
   int priority = 0;
   bool emit_symbol = false;
   int wide_pen = 1;
+  // PR2: a NORTH-UP symbol angle, the kind a chart rotation acts on.
+  double symbol_rotation_deg = 0.0;
   fv::VectorSymbol symbol;
   std::vector<std::string> styled_keys;
 
@@ -658,6 +723,7 @@ class StubStyle : public fv::IStyleEngine {
     if (emit_symbol) {
       r.symbol.valid = true;
       r.symbol.symbol_id = "stub";
+      r.symbol.rotation_deg = symbol_rotation_deg;
     } else {
       r.stroke.valid = true;
       r.stroke.pen.color = color;
@@ -1750,6 +1816,254 @@ TEST(VectorRendererHalo, AnAlongPathLabelIsOutlinedGlyphByGlyph) {
   // The outline stands up with the text rather than lying flat, i.e. it is in
   // screen space around a rotated run, not a horizontal smear.
   EXPECT_GT(t.y1 - t.y0, t.x1 - t.x0);
+}
+
+// --- PR2: the vector path on a TURNED chart --------------------------------
+//
+// PR1 put the rotation in the projection, which means most of this file's
+// subject matter turns without being asked: a projected vertex is a projected
+// vertex. What is NOT free is the one angle the projection never sees — a
+// point symbol's NORTH-UP rotation — and what has to be PROVED not to have
+// changed is everything the goldens are pinned over. Both are below.
+
+fv::MapProjection TurnedProj(int w, int h, double lat, double lon, double dpp,
+                             double rotation_deg) {
+  fv::MapProjection p = Proj(w, h, lat, lon, dpp);
+  EXPECT_TRUE(p.SetRotation(rotation_deg).ok());
+  return p;
+}
+
+// Ink bounds over a non-black canvas, for "which way did it point".
+struct Bounds {
+  int x0 = 1 << 30, y0 = 1 << 30, x1 = -1, y1 = -1;
+  bool any() const { return x1 >= 0; }
+};
+Bounds InkBounds(const fv::PixelBuffer& b) {
+  Bounds t;
+  for (int y = 0; y < b.Height(); ++y)
+    for (int x = 0; x < b.Width(); ++x) {
+      const unsigned char* px = Px(b, x, y);
+      if (px[0] == 0 && px[1] == 0 && px[2] == 0) continue;
+      t.x0 = std::min(t.x0, x);
+      t.x1 = std::max(t.x1, x);
+      t.y0 = std::min(t.y0, y);
+      t.y1 = std::max(t.y1, y);
+    }
+  return t;
+}
+
+TEST(VectorRendererRotation, GeometryTurnsWithTheChartAndCostsNoCode) {
+  // An EAST-WEST line, which draws along the centre ROW on an unturned chart.
+  // At 90 degrees clockwise, east points down the screen and the same line is
+  // a COLUMN. Nothing in the renderer was taught this; the projection was.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("a", {{0.0, -10.0}, {0.0, 10.0}}));
+
+  for (const bool turned : {false, true}) {
+    auto style = std::make_shared<StubStyle>();
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    ASSERT_TRUE(
+        r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, turned ? 90.0 : 0.0),
+                 &canvas)
+            .ok());
+    const Bounds t = InkBounds(canvas.Buffer());
+    ASSERT_TRUE(t.any());
+    if (turned)
+      EXPECT_GT(t.y1 - t.y0, t.x1 - t.x0) << "a turned chart draws a column";
+    else
+      EXPECT_GT(t.x1 - t.x0, t.y1 - t.y0) << "north up draws a row";
+  }
+}
+
+TEST(VectorRendererRotation, ANorthUpPointSymbolTurnsWithTheChart) {
+  // THE ONE THING THE PROJECTION CANNOT DO FOR US. The symbol is a bar from
+  // the origin along +y in symbol space, which is UP on screen; its angle is
+  // authored against the chart's north, so a chart turned 90 clockwise must
+  // lay the bar to the RIGHT.
+  auto src = std::make_shared<StubSource>();
+  fv::VectorFeature pt;
+  pt.type = fv::VectorGeometryType::kPoint;
+  pt.style_key = "p";
+  pt.parts.push_back({fv::GeoPoint{0.0, 0.0}});
+  src->features.push_back(pt);
+
+  auto style = std::make_shared<StubStyle>();
+  style->emit_symbol = true;
+  fv::SymbolPrimitive bar;
+  bar.type = fv::SymbolPrimitiveType::kPolygon;
+  bar.points = {{-20, 0}, {20, 0}, {20, 400}, {-20, 400}};
+  bar.has_fill = true;
+  bar.fill_color = fv::FvColor{0, 0, 255, 255};
+  style->symbol.primitives.push_back(bar);
+
+  auto draw_at = [&](double rotation_deg) {
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    EXPECT_TRUE(
+        r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, rotation_deg), &canvas)
+            .ok());
+    return InkBounds(canvas.Buffer());
+  };
+
+  const Bounds up = draw_at(0.0);
+  ASSERT_TRUE(up.any());
+  EXPECT_LT(up.y0, 32) << "the bar points up on an unturned chart";
+  EXPECT_LE(up.y1, 34);
+
+  const Bounds right = draw_at(90.0);
+  ASSERT_TRUE(right.any());
+  EXPECT_GT(right.x1, 32) << "a 90 degree clockwise turn lays it to the right";
+  EXPECT_GE(right.x0, 30);
+  // And it is the same bar, not a longer or shorter one: a quarter turn swaps
+  // the two extents. Within a pixel, because the polygon rasteriser fills
+  // whole pixels and a turned edge lands on a different set of them — the
+  // arithmetic is exact at 90 (PR1's cardinal table), the coverage is not.
+  EXPECT_NEAR(right.x1 - right.x0, up.y1 - up.y0, 1);
+  EXPECT_NEAR(right.y1 - right.y0, up.x1 - up.x0, 1);
+}
+
+TEST(VectorRendererRotation, TheSymbolTURNSRatherThanTheAnchorMoving) {
+  // A symbol at the chart's own centre does not move when the chart turns —
+  // the centre is the pivot — so this isolates the angle from the placement.
+  auto src = std::make_shared<StubSource>();
+  fv::VectorFeature pt;
+  pt.type = fv::VectorGeometryType::kPoint;
+  pt.style_key = "p";
+  pt.parts.push_back({fv::GeoPoint{0.0, 0.0}});
+  src->features.push_back(pt);
+
+  auto style = std::make_shared<StubStyle>();
+  style->emit_symbol = true;
+  // A symbol authored at bearing 090 in the canvas's own sense (rotation_deg
+  // turns COUNTER-clockwise, so east is -90). On an unturned chart it lies to
+  // the right; turn the chart 90 clockwise and east is now DOWN the screen.
+  style->symbol_rotation_deg = -90.0;
+  fv::SymbolPrimitive bar;
+  bar.type = fv::SymbolPrimitiveType::kPolygon;
+  bar.points = {{-20, 0}, {20, 0}, {20, 400}, {-20, 400}};
+  bar.has_fill = true;
+  bar.fill_color = fv::FvColor{0, 0, 255, 255};
+  style->symbol.primitives.push_back(bar);
+
+  auto draw_at = [&](double rotation_deg) {
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    EXPECT_TRUE(
+        r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, rotation_deg), &canvas)
+            .ok());
+    return InkBounds(canvas.Buffer());
+  };
+
+  const Bounds east = draw_at(0.0);
+  ASSERT_TRUE(east.any());
+  EXPECT_GT(east.x1, 40) << "bearing 090 lies to the right of an unturned map";
+
+  const Bounds down = draw_at(90.0);
+  ASSERT_TRUE(down.any());
+  EXPECT_GT(down.y1, 40) << "turn the chart 90 clockwise and east points down";
+  EXPECT_LE(down.x1, 34);
+}
+
+TEST(VectorRendererRotation, PickFollowsTheINKOnATurnedChart) {
+  // The pick index is built from emitted ink, so putting rotation in the
+  // projection keeps it agreeing for free — which is the claim, and a claim
+  // that costs nothing is exactly the kind worth a test.
+  auto src = std::make_shared<StubSource>();
+  fv::VectorFeature f = Line("a", {{0.0, -10.0}, {0.0, 10.0}});
+  f.ref.feature = 77;
+  src->features.push_back(f);
+  auto style = std::make_shared<StubStyle>();
+
+  fv::CpuCanvas canvas(64, 64);
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(
+      r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, 90.0), &canvas).ok());
+
+  // The 20-degree line is 20 px long at 1 deg/px, so it now runs down the
+  // centre COLUMN from y=22 to y=42. A tap on it hits; a tap at the mirror
+  // point along the centre ROW, where the UNTURNED line drew, does not.
+  auto hits = r.pick_index().HitTest(32, 26, 2.0);
+  ASSERT_EQ(hits.size(), 1u);
+  EXPECT_EQ(hits[0].ref.feature, 77);
+  EXPECT_TRUE(r.pick_index().HitTest(26, 32, 2.0).empty())
+      << "the index still points at where the chart used to draw";
+}
+
+TEST(VectorRendererRotation, RotationZeroIsTheBYTEIdentityEvenAfterATurn) {
+  // The acceptance test PR1 set for itself, carried into the path that draws:
+  // every pinned golden in the tree was made before rotation existed, so a
+  // projection turned to 137.5 and back must render the identical buffer.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("a", {{2.0, -10.0}, {-3.0, 10.0}}));
+  auto style = std::make_shared<StubStyle>();
+  style->wide_pen = 3;
+
+  auto render = [&](bool detour) {
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::MapProjection p = Proj(64, 64, 0.0, 0.0, 1.0);
+    if (detour) {
+      EXPECT_TRUE(p.SetRotation(137.5).ok());
+      EXPECT_TRUE(p.SetRotation(0.0).ok());
+    }
+    fv::VectorRenderer r(src, style);
+    EXPECT_TRUE(r.Render(p, &canvas).ok());
+    const fv::PixelBuffer& b = canvas.Buffer();
+    return std::vector<unsigned char>(b.Row(0),
+                                      b.Row(b.Height() - 1) + 4 * b.Width());
+  };
+
+  EXPECT_EQ(render(false), render(true));
+}
+
+TEST(VectorRendererRotation, ARetainedSceneNeedsNoRotationInItsKey) {
+  // PR1 §6, as behaviour. R3a's scene holds GEOGRAPHIC ink, so a scene built
+  // for an unturned chart re-projects correctly through a turned one. With a
+  // generous margin the scene is REUSED across the turn — and the picture
+  // still turns, which is the whole reason no cache key was added.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("a", {{0.0, -10.0}, {0.0, 10.0}}));
+  auto style = std::make_shared<StubStyle>();
+
+  fv::CpuCanvas canvas(64, 64);
+  fv::VectorRenderer r(src, style);
+  r.SetSceneMargin(2.0);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  ASSERT_TRUE(r.Render(Proj(64, 64, 0.0, 0.0, 1.0), &canvas).ok());
+  ASSERT_FALSE(r.scene_reused()) << "the first frame builds";
+
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  ASSERT_TRUE(
+      r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, 90.0), &canvas).ok());
+  EXPECT_TRUE(r.scene_reused()) << "a turn inside the margin reuses the scene";
+  const Bounds t = InkBounds(canvas.Buffer());
+  ASSERT_TRUE(t.any());
+  EXPECT_GT(t.y1 - t.y0, t.x1 - t.x0)
+      << "the REUSED scene still came out turned";
+}
+
+TEST(VectorRendererRotation, WithoutAMarginTheTurnedBoxRebuildsByItself) {
+  // The other half of §6: a turned viewport's query box is up to sqrt(2)
+  // larger, so containment fails and CanServe rebuilds — which is what the
+  // corners a turned chart newly shows actually need.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("a", {{0.0, -10.0}, {0.0, 10.0}}));
+  auto style = std::make_shared<StubStyle>();
+
+  fv::CpuCanvas canvas(64, 64);
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(Proj(64, 64, 0.0, 0.0, 1.0), &canvas).ok());
+  ASSERT_TRUE(r.Render(Proj(64, 64, 0.0, 0.0, 1.0), &canvas).ok());
+  ASSERT_TRUE(r.scene_reused()) << "the same frame twice reuses";
+
+  ASSERT_TRUE(
+      r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, 45.0), &canvas).ok());
+  EXPECT_FALSE(r.scene_reused())
+      << "45 degrees grows the box on both axes, so it must requery";
 }
 
 TEST(VectorRenderer, StyleContextCarriesDpiAndSymbolScale) {

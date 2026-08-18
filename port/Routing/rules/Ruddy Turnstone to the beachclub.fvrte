@@ -1,0 +1,28 @@
+{
+  "format": "peregrine-route",
+  "version": 1,
+  "name": "Ruddy Turnstone to the beach",
+  "color": [
+    220,
+    30,
+    30
+  ],
+  "profile": "",
+  "waypoints": [
+    {
+      "label": "RTURN",
+      "lat": 32.6044007,
+      "lon": -80.1083007
+    },
+    {
+      "label": "WP2",
+      "lat": 32.59297596527702,
+      "lon": -80.11767417454368
+    },
+    {
+      "label": "WP3",
+      "lat": 32.59303776115624,
+      "lon": -80.11886651782085
+    }
+  ]
+}

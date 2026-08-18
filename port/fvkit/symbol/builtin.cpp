@@ -15,7 +15,7 @@ namespace builtin_symbol {
 const char* const kAll[] = {
     kCircle, kSquare,   kTriangle, kDiamond,  kCross,     kStar,
     kTick,   kArrowhead, kCrosstie, kTee,     kNotch,
-    kNorthArrow, kCrosshair, nullptr};
+    kNorthArrow, kCrosshair, kOwnship, nullptr};
 
 }  // namespace builtin_symbol
 
@@ -198,6 +198,37 @@ void BuiltinSymbolLibrary::Rebuild() {
                                     Line({P(g, 0), P(e, 0)}, c, w),
                                     Line({P(0, -e), P(0, -g)}, c, w),
                                     Line({P(0, g), P(0, e)}, c, w)});
+  }
+  // The ownship (MM4): an aircraft in plan view, nose at +y. ONE closed ring
+  // and not a fuselage stroke plus two wing strokes, because a filled
+  // silhouette is what stays readable when the map under it is a chart — and
+  // because a stroked cross is what an ownship is most often mistaken for.
+  //
+  // It is deliberately ASYMMETRIC front-to-back — the wings sit forward of
+  // centre, the tailplane is a third of their span, and THE NOSE REACHES
+  // FURTHER FORWARD (1.00) THAN THE TAIL DOES AFT (0.85) — so that the symbol
+  // says which way it is pointing even at 12 px, where the nose alone is two
+  // pixels. That last one is what a test can state about the INK at any
+  // heading, and per the ledger's rule this behaviour gets its own directional
+  // assertion rather than only a golden.
+  {
+    const double u = kR;  // half the shape box; the ring reaches +/-1.0 of it
+    symbols_[bs::kOwnship] = One({Ring(
+        {P(0.00 * u, 1.00 * u),    // nose
+         P(0.09 * u, 0.45 * u),
+         P(0.80 * u, -0.10 * u),   // starboard wing, leading tip
+         P(0.80 * u, -0.32 * u),   // starboard wing, trailing tip
+         P(0.11 * u, -0.32 * u),
+         P(0.26 * u, -0.72 * u),   // starboard tailplane
+         P(0.26 * u, -0.85 * u),
+         P(0.00 * u, -0.75 * u),   // tail cone
+         P(-0.26 * u, -0.85 * u),
+         P(-0.26 * u, -0.72 * u),
+         P(-0.11 * u, -0.32 * u),
+         P(-0.80 * u, -0.32 * u),
+         P(-0.80 * u, -0.10 * u),
+         P(-0.09 * u, 0.45 * u)},
+        c, w)});
   }
 }
 

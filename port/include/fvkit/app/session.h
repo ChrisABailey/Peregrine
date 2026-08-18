@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See LICENSE and NOTICE.md for the full licensing picture.
 
-// fvkit/app/session.h — the flows (fvkit-app-plan.md §3g).
+// fvkit/app/session.h — the flows (fvkit-app-plan-COMPLETE.md §3g).
 //
 // `OverlaySession` is the verb layer. It owns nothing: it composes the type
 // REGISTRY (what can be opened), the STACK (what is open), the SHELL (what the

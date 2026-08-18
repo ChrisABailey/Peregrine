@@ -153,8 +153,16 @@ Scene MakeScene(const std::string& mb_path, const std::string& style_path) {
 // it, the block grid drawn as building fills with the dashed footway network
 // threading between them, and every road casing below every road fill (the O2
 // draw-order rule, here across thousands of features).
+// RE-PINNED 2026-08-17 for the re-cut us-south pyramid, 0x3f49f779d29c7887 ->
+// 0x4c8ca75e922f59ff, after diffing the two frames pixel for pixel: 78 pixels
+// of 262,144 (0.03%) moved, every one of them a swap between the two greys
+// (198,188,178) and (217,208,201), scattered a few pixels at a time over the
+// downtown blocks. That is the tile's landuse count going 79 -> 238 changing
+// which fill wins along a polygon edge, and nothing else in the frame moved —
+// no feature shifted, no colour appeared or vanished, the description above
+// still reads true off the PNG.
 // 0 = probe mode (prints the hash, asserts nothing).
-constexpr uint64_t kHashAtlanta = 0x3f49f779d29c7887ull;
+constexpr uint64_t kHashAtlanta = 0x4c8ca75e922f59ffull;
 
 TEST(OsmRender, AtlantaViewport) {
   SKIP_WITHOUT_DATA();

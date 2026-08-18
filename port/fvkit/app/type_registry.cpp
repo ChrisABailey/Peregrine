@@ -8,6 +8,7 @@
 #include <cctype>
 
 #include "fvkit/overlay/grid.h"
+#include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
 
 namespace fv {
@@ -122,7 +123,22 @@ Status RegisterBuiltinOverlayTypes(OverlayTypeRegistry& registry) {
   file.save_filters = file.open_filters;
   points.file = std::move(file);
   points.factory = [] { return std::make_shared<PointOverlay>(); };
-  return registry.Register(std::move(points));
+  s = registry.Register(std::move(points));
+  if (!s.ok()) return s;
+
+  // The moving map (MM4). STATIC, like the grid and for the same reason: there
+  // is one ship and it has no document. It is NOT restored at startup —
+  // FalconView's own moving map is a mode the user enters, and an overlay that
+  // came back by itself would start asking a receiver for fixes on every run.
+  OverlayTypeDesc moving_map;
+  moving_map.id = MovingMapOverlay::kTypeId;
+  moving_map.display_name = "Moving Map";
+  moving_map.icon = "movingmap";
+  // Above the points and the graticule: the ship is what the user is watching,
+  // and nothing on the chart should be drawn over it. Below a top-most HUD.
+  moving_map.default_display_order = 980;
+  moving_map.factory = [] { return std::make_shared<MovingMapOverlay>(); };
+  return registry.Register(std::move(moving_map));
 }
 
 }  // namespace app

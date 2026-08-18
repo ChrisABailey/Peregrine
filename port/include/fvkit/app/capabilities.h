@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // fvkit/app/capabilities.h — the optional interfaces an overlay may implement
-// (fvkit-app-plan.md §3b).
+// (fvkit-app-plan-COMPLETE.md §3b).
 //
 // FalconView discovers these with `dynamic_cast` at the call site
 // (IFvOverlayPersistence, OverlayContextMenu_Interface, ...). The same

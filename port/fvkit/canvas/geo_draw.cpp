@@ -30,6 +30,37 @@ Pen WidenedPen(const Pen& base, int extra_each_side) {
   return p;
 }
 
+// Diverts one pass's bookkeeping (G4). A highlight is ink UNDER a feature and
+// not ink OF it: it must not enter the pick index, because the user aims at
+// the waypoint and not at its glow, and it must not count as a draw the caller
+// asked for. Scoped so an early return out of the pass cannot leave picking
+// switched off.
+class AsHighlightPass {
+ public:
+  AsHighlightPass(bool* pick, size_t* emitted, size_t* highlight)
+      : pick_(pick),
+        emitted_(emitted),
+        highlight_(highlight),
+        pick_was_(*pick),
+        emitted_was_(*emitted) {
+    *pick_ = false;
+  }
+  ~AsHighlightPass() {
+    *pick_ = pick_was_;
+    *highlight_ += *emitted_ - emitted_was_;
+    *emitted_ = emitted_was_;
+  }
+  AsHighlightPass(const AsHighlightPass&) = delete;
+  AsHighlightPass& operator=(const AsHighlightPass&) = delete;
+
+ private:
+  bool* pick_;
+  size_t* emitted_;
+  size_t* highlight_;
+  bool pick_was_;
+  size_t emitted_was_;
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -144,6 +175,11 @@ GeoDraw::GeoDraw(const MapProjection& proj, ICanvas* canvas,
   feature_.layer = 0;  // an overlay's own ink: one notional layer
 }
 
+void GeoDraw::SetHighlight(FvColor color, double width_px) {
+  highlight_color_ = color;
+  highlight_px_ = width_px > 0.0 ? width_px : 1.0;
+}
+
 void GeoDraw::SetFeature(int32_t id, int priority) {
   FeatureRef r;
   r.layer = 0;
@@ -186,7 +222,7 @@ Status GeoDraw::StrokePaths(
 Status GeoDraw::PatternPaths(
     const std::vector<std::vector<SurfacePoint>>& paths,
     const LinePatternStyle& pattern, const Pen* pen_override,
-    double width_override) {
+    double width_override, const FvColor* stamp_tint) {
   if (!pattern.valid || pattern.runs.empty()) return Status::Ok();
   const PixelSize size = canvas_->Size();
   const Pen& pen = pen_override != nullptr ? *pen_override : pattern.pen;
@@ -220,7 +256,7 @@ Status GeoDraw::PatternPaths(
                               ps.x, ps.y, px_per_himetric * sc,
                               symbol_scale_ * dpi_scale_ * sc,
                               ps.rotation_deg * kPi / 180.0,
-                              pick_enabled_ ? &ink : nullptr))
+                              pick_enabled_ ? &ink : nullptr, stamp_tint))
         continue;
       ++draws_emitted_;
       if (pick_enabled_) {
@@ -232,11 +268,56 @@ Status GeoDraw::PatternPaths(
   return first;
 }
 
+// A LINE'S HIGHLIGHT IS ONE WIDER STROKE, not eight offset ones (G4). Offset-
+// stamping a polyline in N directions and stroking it once at N pixels wider
+// draw the same picture — a line has no interior for the offsets to reveal,
+// which is exactly what makes the halo trick worth its cost on a GLYPH — so
+// the line takes the cheap form. It goes under the casing as well as under the
+// line, because a casing is part of what is being highlighted.
+void GeoDraw::HighlightPaths(
+    const std::vector<std::vector<SurfacePoint>>& paths,
+    const GeoLineStyle& style) {
+  if (state_ != RenderState::kHighlighted) return;
+  const bool patterned = style.pattern.valid;
+  if (!patterned && !style.stroke.valid && !style.casing.valid) return;
+
+  const Pen& base = patterned ? style.pattern.pen : style.stroke.pen;
+  int base_w = std::max(1, base.width);
+  if (style.casing.valid) base_w = std::max(base_w, style.casing.pen.width);
+  const int extra = std::max(1, static_cast<int>(std::lround(highlight_px_)));
+
+  Pen hp = base;
+  hp.color = highlight_color_;
+  hp.width = std::max(1, base_w + 2 * extra);
+
+  AsHighlightPass pass(&pick_enabled_, &draws_emitted_, &highlight_draws_);
+  if (patterned) {
+    // The stamps grow with the highlight AND take its colour, so a highlighted
+    // railroad glows around its crossties rather than around its rail only.
+    //
+    // CAPPED AT 2x, which the casing (same arithmetic, G3) is not. The ratio
+    // is the widened pen over the plain one, and on a THIN line that is a big
+    // number — a 3-px highlight on a 2-px railroad asks for 4x crossties, and
+    // a 4x crosstie is not that railroad glowing, it is a different and much
+    // coarser railroad drawn underneath. Doubling is already unmistakable.
+    const double grow = std::min(
+        2.0, hp.width / static_cast<double>(std::max(1, style.pattern.pen.width)));
+    PatternPaths(paths, style.pattern, &hp, grow, &highlight_color_);
+  } else {
+    StrokeStyle hs;
+    hs.valid = true;
+    hs.pen = hp;
+    StrokePaths(paths, hs);
+  }
+}
+
 Status GeoDraw::DrawSurfacePath(
     const std::vector<std::vector<SurfacePoint>>& paths,
     const GeoLineStyle& style) {
   if (canvas_ == nullptr) return Status::Error(kInvalidArg, "null canvas");
   Status first = Status::Ok();
+
+  HighlightPaths(paths, style);
 
   // The casing goes down first, and it follows whichever of the two passes is
   // actually drawing: a solid casing under a dashed line would read as a solid
@@ -312,7 +393,8 @@ Status GeoDraw::DrawGeoArc(const GeoPoint& center, double radius_m,
 // --- symbols ---------------------------------------------------------------
 
 Status GeoDraw::StampSymbol(double x, double y, const std::string& symbol_id,
-                            const PointSymbolStyle& style) {
+                            const PointSymbolStyle& style,
+                            double chart_rotation_deg) {
   if (canvas_ == nullptr) return Status::Error(kInvalidArg, "null canvas");
   if (symbols_ == nullptr)
     return Status::Error(kInvalidArg, "no symbol library");
@@ -321,10 +403,33 @@ Status GeoDraw::StampSymbol(double x, double y, const std::string& symbol_id,
     return Status::Error(kNotFound, "no symbol '" + symbol_id + "'");
 
   const double sc = style.scale > 0.0 ? style.scale : 1.0;
+  // PR2: the one conversion, done once, so the highlight silhouette and the
+  // symbol over it can never disagree about which way the chart is turned.
+  const double rot_rad =
+      SymbolAngleOnChart(style.rotation_deg, chart_rotation_deg) * kPi / 180.0;
+
+  // G4: T2's halo, applied to a shape instead of to a string. The symbol's own
+  // SILHOUETTE stamped at the halo offsets in the highlight colour, then the
+  // symbol over it — so the marker keeps its own colour, which is the property
+  // the user identifies it by and the thing a swapped fill colour destroys.
+  // The offsets are literally HaloOffsets, so a highlight and a text halo can
+  // never drift apart.
+  if (state_ == RenderState::kHighlighted) {
+    double hdx[kMaxHaloOffsets], hdy[kMaxHaloOffsets];
+    const int n = HaloOffsets(highlight_px_, hdx, hdy);
+    AsHighlightPass pass(&pick_enabled_, &draws_emitted_, &highlight_draws_);
+    for (int i = 0; i < n; ++i) {
+      if (DrawResolvedSymbol(canvas_, sym, x + hdx[i], y + hdy[i],
+                             PxPerHimetric() * sc,
+                             symbol_scale_ * dpi_scale_ * sc, rot_rad, nullptr,
+                             &highlight_color_))
+        ++draws_emitted_;
+    }
+  }
+
   InkBox ink;
   if (!DrawResolvedSymbol(canvas_, sym, x, y, PxPerHimetric() * sc,
-                          symbol_scale_ * dpi_scale_ * sc,
-                          style.rotation_deg * kPi / 180.0,
+                          symbol_scale_ * dpi_scale_ * sc, rot_rad,
                           pick_enabled_ ? &ink : nullptr))
     return Status::Ok();  // resolved, but wholly off the canvas
   ++draws_emitted_;
@@ -351,13 +456,15 @@ Status GeoDraw::DrawSymbol(const GeoPoint& at, const std::string& symbol_id,
   double x = 0.0, y = 0.0;
   Status s = proj_.GeoToSurface(at, &x, &y);
   if (!s.ok()) return s;
-  return StampSymbol(x, y, symbol_id, style);
+  return StampSymbol(x, y, symbol_id, style, proj_.Rotation());
 }
 
 Status GeoDraw::DrawSymbolAtPixel(double x, double y,
                                   const std::string& symbol_id,
                                   const PointSymbolStyle& style) {
-  return StampSymbol(x, y, symbol_id, style);
+  // Zero, deliberately: see the header. The pixel is the caller's and so is
+  // the angle.
+  return StampSymbol(x, y, symbol_id, style, 0.0);
 }
 
 // --- labels ----------------------------------------------------------------
@@ -414,6 +521,21 @@ Status GeoDraw::DrawLabelAtPixel(double x, double y, const std::string& text,
   if (lx < -1000 || ly < -1000 || lx > size.width + 1000 ||
       ly > size.height + 1000)
     return Status::Ok();
+
+  // G4. A highlighted label wears the highlight OUTSIDE its own halo, at the
+  // sum of the two radii — a name that already has a white outline for
+  // legibility keeps it and gains a coloured one around it, rather than
+  // trading legibility for selection.
+  if (state_ == RenderState::kHighlighted) {
+    double sx[kMaxHaloOffsets], sy[kMaxHaloOffsets];
+    const int n = HaloOffsets(halo_px + highlight_px_, sx, sy);
+    TextStyle hi = ts;
+    hi.color = highlight_color_;
+    for (int i = 0; i < n; ++i)
+      canvas_->DrawTextString(text, lx + static_cast<int>(std::lround(sx[i])),
+                              ly + static_cast<int>(std::lround(sy[i])), hi);
+    highlight_draws_ += static_cast<size_t>(n);
+  }
 
   for (int i = 0; i < halo_n; ++i) {
     canvas_->DrawTextString(text, lx + static_cast<int>(std::lround(hdx[i])),
@@ -479,9 +601,26 @@ Status GeoDraw::DrawLabelAlongPath(
     if (sub.size() < 2) continue;
     for (const PlacedTextRun& run :
          PlaceTextAlongPath(sub, adv, style.spacing_px, style.max_angle_deg,
-                            style.offset_px)) {
+                            style.offset_px +
+                                AlongPathAnchorShift(style, ts.size))) {
       InkBox ink;
       bool drew = false;
+      // G4's highlight is the outermost band and so goes down first, and for
+      // the same reason as the halo below it is a WHOLE-RUN pass.
+      if (state_ == RenderState::kHighlighted) {
+        double sx[kMaxHaloOffsets], sy[kMaxHaloOffsets];
+        const int n = HaloOffsets(halo_px + highlight_px_, sx, sy);
+        TextStyle hi = ts;
+        hi.color = highlight_color_;
+        for (const PlacedGlyph& g : run.glyphs) {
+          if (!on_canvas(g)) continue;
+          const std::string gs = text.substr(g.index, 1);
+          for (int i = 0; i < n; ++i)
+            canvas_->DrawRotatedTextString(gs, g.x + sx[i], g.y + sy[i],
+                                           g.angle_rad, hi);
+          highlight_draws_ += static_cast<size_t>(n);
+        }
+      }
       // The WHOLE run's halo before ANY of its fill: per glyph, glyph N's halo
       // lands on glyph N-1's face at a tight bend and eats it.
       if (halo_n > 0) {

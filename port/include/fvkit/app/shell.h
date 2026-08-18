@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // fvkit/app/shell.h — the seam between the app layer and a native UI
-// (fvkit-app-plan.md §3f, rule R1: the core never opens a dialog).
+// (fvkit-app-plan-COMPLETE.md §3f, rule R1: the core never opens a dialog).
 //
 // A1 landed the value types the rest of the app layer passes around --
 // CursorId, HintText, MenuNode. A3 adds the other half: `FlowResult`, the

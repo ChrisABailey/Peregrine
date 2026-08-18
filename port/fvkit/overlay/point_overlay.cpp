@@ -436,25 +436,37 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
 
     // A fully transparent colour means "no badge": the icon stands alone, and
     // so does the edge, which is a ring around nothing without it. There is
-    // still an edge when SELECTED, because selection has to be visible on a
-    // bare icon too.
+    // still an edge when SELECTED, because the highlight below needs a
+    // silhouette to be a halo OF, and a bare icon may be nearly all
+    // transparent.
     const bool badge = p.color.a != 0;
     const bool edge = badge || sel;
 
-    // Selection is drawn as the EDGE, not as a different fill: the fill is the
-    // point's own colour and is the thing the user identifies it by. The edge
-    // is the same symbol one size up, stamped underneath — which is the halo
-    // trick T2 used for text and which G4's RenderState will formalise. Until
-    // then this is the hand-swapped colour the draw plan says to replace, and
-    // it is at least now one mechanism instead of three (the old code had a
-    // pen for the polygons, a thicker pen for the cross and a rectangle for a
-    // selected cross).
+    // G4. SELECTION IS A RENDER STATE, not a colour. The edge is now always
+    // black — it is the badge's outline and nothing to do with selection — and
+    // the selected marker instead wears GeoDraw's highlight: its own
+    // silhouette stamped around it in the selection colour. That keeps the
+    // point's own colour, which is what a user identifies it by and what the
+    // pre-G4 swap threw away.
+    //
+    // THE HIGHLIGHT GOES ON THE OUTERMOST STAMP AND ON THAT ONE ONLY. A marker
+    // is up to three stamps deep (edge, badge, icon); highlighting all three
+    // would draw the badge's glow over the edge and the icon's over the badge,
+    // and the marker would read as a set of rings rather than as one selected
+    // thing.
+    bool highlight_pending = sel;
+    auto next_state = [&]() {
+      const RenderState st =
+          highlight_pending ? RenderState::kHighlighted : RenderState::kNormal;
+      highlight_pending = false;
+      return st;
+    };
+
     Status s = Status::Ok();
     if (edge) {
-      const FvColor edge_color =
-          sel ? FvColor{255, 220, 0, 255} : FvColor{0, 0, 0, 255};
-      const double edge_px = p.size_px + (sel ? 4.0 : 2.0);
-      draw.SetSymbols(LibraryFor(edge_color));
+      const double edge_px = p.size_px + 2.0;
+      draw.SetState(next_state());
+      draw.SetSymbols(LibraryFor(FvColor{0, 0, 0, 255}));
       s = draw.DrawSymbolAtPixel(
           sx, sy, id,
           PointSymbolStyle{true, id, 0.0, edge_px / kBuiltinSymbolNominalPx});
@@ -462,6 +474,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     }
 
     if (badge) {
+      draw.SetState(next_state());
       draw.SetSymbols(LibraryFor(p.color));
       s = draw.DrawSymbolAtPixel(sx, sy, id,
                                  PointSymbolStyle{true, id, 0.0, scale});
@@ -484,6 +497,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
         const double want_px =
             badge ? p.size_px * kIconFractionOfBadge : p.size_px;
         const std::string icon_id = EmbeddedSymbolLibrary::IdFor(p.symbol_id);
+        draw.SetState(next_state());
         draw.SetSymbols(SymbolLibrary());
         s = draw.DrawSymbolAtPixel(
             sx, sy, icon_id,
@@ -493,6 +507,10 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     }
 
     if (show_labels_ && !p.name.empty()) {
+      // The NAME is not highlighted: the selection belongs to the marker, and
+      // a yellow-outlined name over a chart is less legible than the white
+      // halo it already has, not more.
+      draw.SetState(RenderState::kNormal);
       LabelStyle ls;
       ls.valid = true;
       ls.style.size = 12.0;

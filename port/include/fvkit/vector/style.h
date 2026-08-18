@@ -96,6 +96,26 @@ enum class LabelVAlign {
   kTop,           // the anchor is the top of the box; the text hangs below it
 };
 
+// Where an ALONG-PATH run sits across the line it names (kAlongPath only).
+//
+// PlaceTextAlongPath returns baseline-left origins and puts that baseline ON
+// the geometry, so the glyph bodies stand entirely on one side of it and a
+// road name rides along the top edge of its road rather than down the middle.
+// That is the original behaviour and it is the DEFAULT, because every pinned
+// S-52 and GeoSym golden was taken with it.
+//
+// kCenter shifts the baseline across the path by half the CAP HEIGHT, which is
+// what MapLibre and every other road renderer means by a name being "on" its
+// road. Half of the box the canvas measures would be wrong: GetTextExtent
+// returns ascent-descent, so centring on it would hang the name low by half a
+// descender. ICanvas cannot report cap height and is deliberately not being
+// grown to (every implementor, including pyfvw's Python subclasses, would have
+// to follow), so it is taken as a fraction of the em — see kCapHeightEm.
+enum class LabelAlongAnchor {
+  kBaseline = 0,  // the baseline lies on the path; glyphs stand above it
+  kCenter,        // the cap-height box straddles the path
+};
+
 // What LabelStyle::style.size means.
 enum class LabelSizeUnit {
   kPixels = 0,  // a constant on-screen size at any scale
@@ -156,6 +176,10 @@ struct LabelStyle {
   // direction of travel — the same sense as PathRun::offset. Lifts a name off
   // the centreline it would otherwise sit on.
   double offset_px = 0.0;
+  // Applied BEFORE offset_px, so a style that asks for both gets its own
+  // offset measured from the centred position rather than from the baseline —
+  // which is what a MapLibre `text-offset` beside a line placement means.
+  LabelAlongAnchor along_anchor = LabelAlongAnchor::kBaseline;
 };
 
 // --- along-path and area pattern placement (E3b) ----------------------------

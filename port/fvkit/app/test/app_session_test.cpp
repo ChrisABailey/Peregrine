@@ -4,7 +4,7 @@
 // See LICENSE and NOTICE.md for the full licensing picture.
 
 // App layer A3: the shell seam and the session flows
-// (fvkit-app-plan.md §3f/§3g).
+// (fvkit-app-plan-COMPLETE.md §3f/§3g).
 //
 // The proof the plan asks for is "every FlowResult path unit-tested against a
 // scripted FakeShell", and that is what these are. No file is written: a
