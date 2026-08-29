@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 # OSM vector tiles (MBTiles container + Mapbox Vector Tiles) — vpf-geosym-plan
 # section 6, phase O1.
@@ -20,6 +20,7 @@ add_library(fv_osm STATIC
   fv_mvt.cpp
   fv_mbtiles.cpp
   fv_osm_vector_source.cpp
+  fv_osm_name_index.cpp
   fv_osm_style.cpp
   fv_osm_format.cpp
 )
@@ -27,6 +28,13 @@ target_include_directories(fv_osm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fv_osm
   PUBLIC fv_compat fv_fvkit
   PRIVATE fv_vtzero fv_json fv_zlib)
+
+# fvnames — builds the pack's own name index (S3). A HOST tool like fvpack and
+# fvgraph: it makes the data a phone reads, so an iOS cross-build skips it.
+if(NOT FVW_IOS)
+  add_executable(fvnames tools/fvnames.cpp)
+  target_link_libraries(fvnames PRIVATE fv_osm)
+endif()
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_osm_test
@@ -37,6 +45,7 @@ if(FVW_BUILD_TESTS)
     test/osm_style_test.cpp
     test/osm_format_test.cpp
     test/osm_render_test.cpp
+    test/osm_search_test.cpp
   )
   # fv_zlib: mvt_test builds its own gzip-framed tiles, so it needs the
   # compressor the reader only ever inflates with.

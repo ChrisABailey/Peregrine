@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // pyfvw — Python bindings for FvKit (slice 1: L0 types + L1 adapters).
 // Conventions per port/fvkit-contracts.md D3/D5:
@@ -17,6 +17,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,9 @@
 #include "pyfvw_common.h"
 
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/properties.h"
+#include "fvkit/app/search.h"
+#include "fvkit/overlay/vector_map_overlay.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/engine.h"
@@ -85,6 +89,8 @@ void BindApp(py::module_& m);
 void BindDraw(py::module_& m);
 // pyfvw_nav.cpp — pyfvw.nav, the moving map (MM1-MM4).
 void BindNav(py::module_& m);
+// pyfvw_route.cpp -- RouteKit, which links the router that fvkit may not.
+void BindRoute(py::module_& m);
 }  // namespace pyfvw
 
 namespace {
@@ -114,7 +120,8 @@ class PyOverlay : public fv::Overlay,
                   public fv::app::SnapTo,
                   public fv::app::ContextMenu,
                   public fv::app::RoutingOverrides,
-                  public fv::app::EditTarget {
+                  public fv::app::EditTarget,
+                  public fv::app::SearchProvider {
  public:
   using fv::Overlay::Overlay;
 
@@ -142,6 +149,9 @@ class PyOverlay : public fv::Overlay,
                    {"enter_edit_focus", "release_edit_focus", "undo", "redo"})
                ? this
                : nullptr;
+  }
+  fv::app::SearchProvider* AsSearch() override {
+    return Capable(kCapSearch, {"search"}) ? this : nullptr;
   }
 
   // --- Persistence ------------------------------------------------------
@@ -179,6 +189,34 @@ class PyOverlay : public fv::Overlay,
         // attribute a hit to somebody else's overlay.
         item.overlay = this;
         out.push_back(std::move(item));
+      }
+    } catch (py::error_already_set&) {
+      PyErr_Clear();
+    }
+  }
+
+  // --- SearchProvider ---------------------------------------------------
+
+  // `search(query)` returns an iterable of pyfvw.app.SearchResult, and — like
+  // every other capability here — DEFINING it is what makes the overlay
+  // searchable. The overlay is stamped in C++ for the reason a hit is: a
+  // provider must not be able to attribute a result to somebody else's
+  // overlay. The cancel flag is passed as a plain bool: it is read once, at
+  // the top, because a Python provider that wanted to poll it mid-scan would
+  // be holding the GIL for the whole scan anyway.
+  void Search(const fv::app::SearchQuery& q, const std::atomic<bool>& cancel,
+              std::vector<fv::app::SearchResult>& out) override {
+    if (cancel.load()) return;
+    py::gil_scoped_acquire gil;
+    py::function o = py::get_override(this, "search");
+    if (!o) return;
+    try {
+      py::object rows = o(q);
+      if (rows.is_none()) return;
+      for (py::handle h : rows) {
+        fv::app::SearchResult r = h.cast<fv::app::SearchResult>();
+        r.overlay = this;
+        out.push_back(std::move(r));
       }
     } catch (py::error_already_set&) {
       PyErr_Clear();
@@ -294,6 +332,7 @@ class PyOverlay : public fv::Overlay,
     kCapContextMenu,
     kCapRouting,
     kCapEditTarget,
+    kCapSearch,
     kCapCount,
   };
 
@@ -378,7 +417,7 @@ class PyOverlay : public fv::Overlay,
   }
 
   // -1 = not asked yet. Mutable-free: every accessor is non-const.
-  signed char cap_[kCapCount] = {-1, -1, -1, -1, -1, -1};
+  signed char cap_[kCapCount] = {-1, -1, -1, -1, -1, -1, -1};
 };
 
 PyObject* g_fv_error = nullptr;  // pyfvw.FvError type (owned by the module)
@@ -533,11 +572,13 @@ fv::routing::RouteOptions RouteOptionsFrom(bool driving, const std::string& metr
                                            double snap_meters, bool bidirectional,
                                            bool cycle_only, double private_penalty,
                                            py::object toll_penalty, py::object ferry_penalty,
-                                           const std::string& profile, const std::string& rules) {
+                                           const std::string& profile, const std::string& rules,
+                                           bool snap_to_arcs) {
   fv::routing::RouteOptions options;
   options.driving = driving;
   options.cycle_only = cycle_only;
   options.snap_meters = snap_meters;
+  options.snap_to_arcs = snap_to_arcs;
   options.private_penalty = private_penalty;
   options.bidirectional = bidirectional;
   if (metric == "time") {
@@ -558,6 +599,63 @@ fv::routing::RouteOptions RouteOptionsFrom(bool driving, const std::string& metr
 }
 
 }  // namespace
+
+
+// --- the property capability, as Python values ------------------------------
+//
+// One conversion pair for EVERY overlay's properties, because the schema says
+// what each value is. Colours cross as (r, g, b, a) tuples, matching the rest
+// of the bindings.
+const char* PropertyTypeName(fv::app::PropertyType t) {
+  switch (t) {
+    case fv::app::PropertyType::kBool: return "bool";
+    case fv::app::PropertyType::kInt: return "int";
+    case fv::app::PropertyType::kDouble: return "float";
+    case fv::app::PropertyType::kString: return "str";
+    case fv::app::PropertyType::kColor: return "color";
+    case fv::app::PropertyType::kChoice: return "choice";
+  }
+  return "unknown";
+}
+
+py::object PropertyToPy(const fv::app::PropertyValue& v) {
+  switch (v.type) {
+    case fv::app::PropertyType::kBool: return py::cast(v.b);
+    case fv::app::PropertyType::kInt:
+    case fv::app::PropertyType::kChoice: return py::cast(v.i);
+    case fv::app::PropertyType::kDouble: return py::cast(v.d);
+    case fv::app::PropertyType::kString: return py::cast(v.s);
+    case fv::app::PropertyType::kColor:
+      return py::make_tuple(v.color.r, v.color.g, v.color.b, v.color.a);
+  }
+  return py::none();
+}
+
+fv::app::PropertyValue PropertyFromPy(const fv::app::PropertySpec& spec,
+                                      const py::object& o) {
+  switch (spec.type) {
+    case fv::app::PropertyType::kBool:
+      return fv::app::PropertyValue::Bool(py::cast<bool>(o));
+    case fv::app::PropertyType::kInt:
+      return fv::app::PropertyValue::Int(py::cast<long long>(o));
+    case fv::app::PropertyType::kChoice:
+      return fv::app::PropertyValue::Choice(py::cast<long long>(o));
+    case fv::app::PropertyType::kDouble:
+      return fv::app::PropertyValue::Double(py::cast<double>(o));
+    case fv::app::PropertyType::kString:
+      return fv::app::PropertyValue::String(py::cast<std::string>(o));
+    case fv::app::PropertyType::kColor: {
+      py::sequence c = py::cast<py::sequence>(o);
+      fv::FvColor col;
+      col.r = (unsigned char)py::cast<int>(c[0]);
+      col.g = (unsigned char)py::cast<int>(c[1]);
+      col.b = (unsigned char)py::cast<int>(c[2]);
+      col.a = c.size() > 3 ? (unsigned char)py::cast<int>(c[3]) : 255;
+      return fv::app::PropertyValue::Color(col);
+    }
+  }
+  return spec.default_value;
+}
 
 PYBIND11_MODULE(pyfvw, m) {
   m.doc() =
@@ -1139,6 +1237,24 @@ PYBIND11_MODULE(pyfvw, m) {
                     "The registered type this instance came from. Stamped by "
                     "the session layer at creation; empty for an overlay made "
                     "outside the app layer, which is legal.")
+      // CALLABLE, not only overridable. `on_draw` has been in this class's
+      // docstring since A1 as something a Python SUBCLASS defines, and that
+      // left a C++ overlay -- a point set, a grid, a route -- drawable only
+      // through OverlayManager.draw_all. Asking one overlay for its ink is a
+      // reasonable question (it is what half the tests below want, and what a
+      // shell rendering a legend swatch would want), and a stack is a lot of
+      // apparatus to stand up in order to ask it.
+      //
+      // A Python override still wins on a Python subclass, because Python
+      // finds its own attribute first; this reaches the C++ virtual, which
+      // trampolines back to the override anyway.
+      .def("on_draw",
+           [](fv::Overlay& o, const fv::MapProjection& proj, fv::ICanvas& c) {
+             ThrowIfError(o.OnDraw(proj, c));
+           },
+           "proj"_a, "canvas"_a,
+           "Draw just this overlay. Visibility and declutter are the STACK's "
+           "rules, so they are not consulted here -- this draws.")
       // The Persistence state, readable on ANY overlay (empty/False when it
       // has none) and settable only on one that does -- a silent no-op here
       // would hide the commonest mistake, which is forgetting to define
@@ -1178,10 +1294,81 @@ PYBIND11_MODULE(pyfvw, m) {
                                auto* p = o.AsPersistence();
                                return p != nullptr && p->is_read_only();
                              })
-      .def_property_readonly("save_format_index", [](fv::Overlay& o) {
-        auto* p = o.AsPersistence();
-        return p ? p->save_format_index() : 0;
-      });
+      .def_property_readonly("save_format_index",
+                             [](fv::Overlay& o) {
+                               auto* p = o.AsPersistence();
+                               return p ? p->save_format_index() : 0;
+                             })
+      // --- the declared property page (fvkit/app/properties.h) -------------
+      //
+      // Bound on Overlay and NOT on any particular overlay class, which is the
+      // whole point of declaring properties instead of drawing a dialog: every
+      // overlay that implements the capability -- today the grid, tomorrow the
+      // scale bar and the contours -- is scriptable and settings-backed here
+      // with no new binding code. An overlay with no properties answers an
+      // empty schema rather than raising, so `describe_properties()` is always
+      // safe to call.
+      .def("describe_properties",
+           [](fv::Overlay& o) {
+             py::list rows;
+             auto* p = o.AsProperties();
+             if (p == nullptr) return rows;
+             for (const fv::app::PropertySpec& s : p->Describe()) {
+               py::dict d;
+               d["key"] = s.key;
+               d["label"] = s.label;
+               d["group"] = s.group;
+               d["type"] = PropertyTypeName(s.type);
+               d["default"] = PropertyToPy(s.default_value);
+               d["help"] = s.help;
+               if (s.min != s.max) {
+                 d["min"] = s.min;
+                 d["max"] = s.max;
+               }
+               if (!s.choices.empty()) d["choices"] = s.choices;
+               rows.append(d);
+             }
+             return rows;
+           },
+           "The overlay's settable properties, as a list of dicts (key, label, "
+           "group, type, default, help, and min/max or choices where they "
+           "apply). Empty for an overlay that declares none. This is what a UI "
+           "builds a property page from.")
+      .def("get_property",
+           [](fv::Overlay& o, const std::string& key) {
+             auto* p = o.AsProperties();
+             if (p == nullptr)
+               throw FvErrorCpp{fv::Status::Error(
+                   fv::kUnsupported,
+                   "overlay '" + o.Name() + "' declares no properties")};
+             fv::app::PropertyValue v;
+             ThrowIfError(p->GetProperty(key, &v));
+             return PropertyToPy(v);
+           },
+           "key"_a)
+      .def("set_property",
+           [](fv::Overlay& o, const std::string& key, py::object value) {
+             auto* p = o.AsProperties();
+             if (p == nullptr)
+               throw FvErrorCpp{fv::Status::Error(
+                   fv::kUnsupported,
+                   "overlay '" + o.Name() + "' declares no properties")};
+             const fv::app::PropertySpec* spec = p->FindSpec(key);
+             if (spec == nullptr)
+               throw FvErrorCpp{fv::Status::Error(
+                   fv::kNotFound, "no property '" + key + "'")};
+             ThrowIfError(p->SetProperty(key, PropertyFromPy(*spec, value)));
+           },
+           "key"_a, "value"_a,
+           "A colour takes an (r, g, b) or (r, g, b, a) sequence; everything "
+           "else takes its natural Python type. Out of range or the wrong type "
+           "raises rather than clamping.")
+      .def("reset_properties",
+           [](fv::Overlay& o) {
+             auto* p = o.AsProperties();
+             if (p != nullptr) ThrowIfError(p->ResetToDefaults());
+           },
+           "Every declared property back to its default.");
 
   // The first C++ file overlay (A6): points from a SQLite document, drawn as
   // geometric shapes, answering picks with the row's own id.
@@ -1394,6 +1581,67 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_property_readonly_static(
           "EXTENSION", [](py::object) { return fv::PointOverlay::kExtension; });
 
+  py::class_<fv::VectorMapOverlay, fv::Overlay,
+             std::shared_ptr<fv::VectorMapOverlay>>(
+      ovl, "VectorMapOverlay",
+      "A vector MAP source wearing an overlay's clothes, so that 'where is X' "
+      "has one discovery path (search-plan-COMPLETE.md S2/S3). It does not "
+      "DRAW yet — "
+      "a shell keeps drawing the base map its own way and holds one of these, "
+      "usually not visible, purely as the search provider. Two tiers, and the "
+      "SOURCE decides which answers: the pack's own name index when the query "
+      "has text and the pack has one, otherwise an area-constrained tile scan "
+      "under the source's own tile budget. A query with no area and no index "
+      "finds nothing, deliberately.")
+      .def(py::init<std::string, fv::VectorSourcePtr>(), "name"_a = "Vector map",
+           "source"_a = nullptr)
+      .def_property_readonly("source", &fv::VectorMapOverlay::source)
+      .def("set_source", &fv::VectorMapOverlay::SetSource, "source"_a.none(true),
+           "Replacing the source drops the minted ids: a number names a row in "
+           "the pack that minted it.")
+      .def_property(
+          "label_tags", &fv::VectorMapOverlay::label_tags,
+          &fv::VectorMapOverlay::SetLabelTags,
+          "The tags consulted for a title, in order — the ONE piece of product "
+          "knowledge this seam lets a provider keep. Default "
+          "['name', 'name:latin', 'name:en']; ENC would say ['OBJNAM'].")
+      .def_property("search_scale_denominator",
+                    &fv::VectorMapOverlay::search_scale_denominator,
+                    &fv::VectorMapOverlay::SetSearchScaleDenominator,
+                    "0 (the default) lets the source's own tile budget own how "
+                    "much pyramid a search reads.")
+      .def_property("max_features_per_search",
+                    &fv::VectorMapOverlay::max_features_per_search,
+                    &fv::VectorMapOverlay::SetMaxFeaturesPerSearch)
+      .def_property("merge_gap_meters", &fv::VectorMapOverlay::merge_gap_meters,
+                    &fv::VectorMapOverlay::SetMergeGapMeters,
+                    "How far apart two pieces of one named road may lie and "
+                    "still be one row. Default 100 m; negative disables.")
+      .def_property("use_name_index", &fv::VectorMapOverlay::use_name_index,
+                    &fv::VectorMapOverlay::SetUseNameIndex)
+      .def("feature_ref",
+           [](const fv::VectorMapOverlay& o, uint64_t id) -> py::object {
+             fv::FeatureRef ref;
+             if (!o.FeatureRefFor(id, &ref)) return py::none();
+             return py::cast(ref);
+           },
+           "feature"_a, "The 128-bit ref behind a result's id, or None.")
+      .def("describe_feature",
+           [](const fv::VectorMapOverlay& o, uint64_t id) {
+             fv::FeatureDescription d;
+             ThrowIfError(o.DescribeFeature(id, &d));
+             return d;
+           },
+           "feature"_a, "The identify path: the source's own Describe.")
+      .def_property_readonly("last_search_features",
+                             &fv::VectorMapOverlay::last_search_features)
+      .def_property_readonly("last_search_results",
+                             &fv::VectorMapOverlay::last_search_results)
+      .def_property_readonly("last_search_used_index",
+                             &fv::VectorMapOverlay::last_search_used_index,
+                             "True = the pack's name index answered, False = "
+                             "the tile scan did.");
+
   py::class_<fv::GridOverlay, fv::Overlay, std::shared_ptr<fv::GridOverlay>>(
       ovl, "GridOverlay", "Built-in lat/lon graticule.")
       .def(py::init<>())
@@ -1537,9 +1785,11 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_readonly("scale", &fv::SeriesRow::scale)
       .def_readonly("scale_units", &fv::SeriesRow::scale_units)
       .def_readonly("scale_denom", &fv::SeriesRow::scale_denom)
+      .def_readonly("display_name", &fv::SeriesRow::display_name,
+                    "FalconView's map-type label: 'GNC 1:5 M', 'Color 1 "
+                    "meter'. Unique within a format, unlike series_key.")
       .def("__repr__", [](const fv::SeriesRow& r) {
-        return "SeriesRow(" + r.format + ":" + r.series_key + ", 1:" +
-               std::to_string((long long)r.scale_denom) + ")";
+        return "SeriesRow(" + r.format + ":" + r.display_name + ")";
       });
 
   py::class_<fv::CoverageRow>(catalog, "CoverageRow")
@@ -1586,6 +1836,10 @@ PYBIND11_MODULE(pyfvw, m) {
             return added;
           },
           "data_source_id"_a, "Enumerate the source; returns frames added.")
+      .def_property_readonly(
+          "needs_rescan", &fv::Catalog::NeedsRescan,
+          "True when opening rebuilt a pre-schema-2 catalog: the data sources "
+          "are still there, their coverage is not -- scan() each one.")
       .def("series",
            [](const fv::Catalog& c) {
              std::vector<fv::SeriesRow> v;
@@ -2542,17 +2796,34 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_readonly("seconds", &fv::routing::Route::seconds)
       .def_readonly("legs", &fv::routing::Route::legs)
       .def_readonly("nodes", &fv::routing::Route::nodes)
-      .def_readonly("start_node", &fv::routing::Route::start_node)
+      .def_readonly("start_node", &fv::routing::Route::start_node,
+                    "The first JUNCTION the route reaches. Since the snap can "
+                    "land mid-road this is not where the line begins — "
+                    "`start_point` is.")
       .def_readonly("end_node", &fv::routing::Route::end_node)
+      .def_readonly("start_arc", &fv::routing::Route::start_arc,
+                    "The road the start snapped onto, or NO_ARC when it "
+                    "snapped to a junction.")
+      .def_readonly("end_arc", &fv::routing::Route::end_arc)
+      .def_readonly("start_point", &fv::routing::Route::start_point,
+                    "Where the route actually begins — geometry[0] when it "
+                    "was found, and still filled when it was not.")
+      .def_readonly("end_point", &fv::routing::Route::end_point)
       .def_readonly("start_offset_m", &fv::routing::Route::start_offset_m,
-                    "Metres from the requested start to the node it snapped to.")
+                    "Metres from the requested start to the point it snapped "
+                    "to.")
       .def_readonly("end_offset_m", &fv::routing::Route::end_offset_m)
       .def_readonly("nodes_expanded", &fv::routing::Route::nodes_expanded)
       .def_readonly("stop_nodes", &fv::routing::Route::stop_nodes,
-                    "One graph node per stop, in request order. Empty on a "
-                    "two-point route.")
+                    "One graph node per stop, in request order, or NO_ARC for "
+                    "a stop that snapped mid-road — there is no junction "
+                    "there. Empty on a two-point route.")
+      .def_readonly("stop_points", &fv::routing::Route::stop_points,
+                    "Where each stop actually snapped to. Always the truth, "
+                    "whether or not the stop landed on a junction.")
       .def_readonly("stop_offsets_m", &fv::routing::Route::stop_offsets_m,
-                    "Metres from each requested stop to the node it snapped to.")
+                    "Metres from each requested stop to the point it snapped "
+                    "to.")
       .def_readonly("stop_geometry_index", &fv::routing::Route::stop_geometry_index,
                     "Where each stop falls in `geometry` — for marking the "
                     "stops, or cutting the line into per-leg pieces.")
@@ -2565,6 +2836,9 @@ PYBIND11_MODULE(pyfvw, m) {
                     "route between them (leg i runs from stop i to stop i+1). "
                     "Route.NO_LEG when the failure was not a leg's.")
       .def_readonly_static("NO_LEG", &fv::routing::Route::kNoLeg)
+      .def_property_readonly_static(
+          "NO_ARC", [](py::object) { return fv::routing::kNoArc; },
+          "What start_arc / stop_nodes hold when there is no arc / no node.")
       .def_property_readonly(
           "geometry",
           [](const fv::routing::Route& r) { return r.geometry; },
@@ -2655,11 +2929,11 @@ PYBIND11_MODULE(pyfvw, m) {
              const fv::GeoPoint& to, bool driving, const std::string& metric,
              double snap_meters, bool bidirectional, bool cycle_only,
              double private_penalty, py::object toll_penalty, py::object ferry_penalty,
-             const std::string& profile, const std::string& rules) {
+             const std::string& profile, const std::string& rules, bool snap_to_arcs) {
             const fv::routing::RouteOptions options =
                 RouteOptionsFrom(driving, metric, snap_meters, bidirectional, cycle_only,
                                  private_penalty, toll_penalty, ferry_penalty, profile,
-                                 rules);
+                                 rules, snap_to_arcs);
             fv::routing::Route route;
             fv::Status s;
             {
@@ -2673,7 +2947,7 @@ PYBIND11_MODULE(pyfvw, m) {
           "snap_meters"_a = 500.0, "bidirectional"_a = true,
           "cycle_only"_a = false, "private_penalty"_a = 5.0,
           "toll_penalty"_a = py::none(), "ferry_penalty"_a = py::none(), "profile"_a = "",
-          "rules"_a = "",
+          "rules"_a = "", "snap_to_arcs"_a = true,
           "Snap both ends to the network and route between them. FvError "
           "(kOutOfCoverage) when an end is further than snap_meters from any "
           "road. cycle_only switches to the bicycle profile: it overrides "
@@ -2701,11 +2975,11 @@ PYBIND11_MODULE(pyfvw, m) {
              bool bidirectional, bool cycle_only, double private_penalty,
              py::object toll_penalty, py::object ferry_penalty,
              const std::string& profile, const std::string& rules,
-             bool allow_u_turn_at_stops) {
+             bool allow_u_turn_at_stops, bool snap_to_arcs) {
             fv::routing::RouteOptions options =
                 RouteOptionsFrom(driving, metric, snap_meters, bidirectional, cycle_only,
                                  private_penalty, toll_penalty, ferry_penalty, profile,
-                                 rules);
+                                 rules, snap_to_arcs);
             options.allow_u_turn_at_stops = allow_u_turn_at_stops;
             fv::routing::Route route;
             fv::Status s;
@@ -2720,6 +2994,7 @@ PYBIND11_MODULE(pyfvw, m) {
           "bidirectional"_a = true, "cycle_only"_a = false, "private_penalty"_a = 5.0,
           "toll_penalty"_a = py::none(), "ferry_penalty"_a = py::none(),
           "profile"_a = "", "rules"_a = "", "allow_u_turn_at_stops"_a = false,
+          "snap_to_arcs"_a = true,
           "One route THROUGH the given stops, in order — not a concatenation "
           "of independent pairs. What the route arrives at a stop along "
           "constrains what it leaves along, so a turn restriction AT a stop "
@@ -2773,5 +3048,10 @@ PYBIND11_MODULE(pyfvw, m) {
   pyfvw::BindNav(m);
 
   pyfvw::BindApp(m);
+
+  // ---- pyfvw.route -----------------------------------------------------
+  // RouteKit. AFTER pyfvw.app, because `register_route_overlay_type` names
+  // OverlayTypeRegistry, and after pyfvw.overlay/geo for Overlay and GeoPoint.
+  pyfvw::BindRoute(m);
 
 }

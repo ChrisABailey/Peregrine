@@ -19,6 +19,9 @@ Full strategy:
 | `port/fvkit-draw-plan-COMPLETE.md` | geographic lines, symbol libraries, GeoDraw, render state | **G1–G4 built**; G5 (SVG) optional and never started, dimming deferred (§2b) |
 | `port/fvkit-nav-plan.md` | moving map / navigation | **MM1–MM7 all built** (MM7 is the app side); MM5b (Viterbi) optional and never started |
 | `port/fvkit-contracts.md` | D1–D6: ownership, geo, Status, pixel, naming, adapters | standing contract, always binding |
+| *(no plan doc — see §1a-bis)* | the shared overlay toolkit + the real graticule | **BUILT 2026-08-29**: `ScaleTable`, `LabelPlacer` and `app::Properties` extracted from `grid_map`, then the lat/lon graticule ported over them. MGRS/UTM and GARS DROPPED on Chris's call, not deferred |
+| `port/search-plan-COMPLETE.md` | global search — the `AsSearch()` capability + `SearchSession`, `VectorMapOverlay`, the OSM name index | **S1–S4 ALL BUILT** (2026-08-27 the seam + point/route providers; 2026-08-28 `VectorMapOverlay` tier 1, the staged `search_names` index + `fvnames` tier 2, and the road provider + bindings + PythonView's Find box) |
+| `port/pippin-plan.md` | Pippin, the iOS app (SwiftUI + PippinKit ObjC++ facade over the core) | **P1–P6 built** (P1–P5 2026-08-18: data pack + iOS cross-build; Xcode project, PippinKit, Kiawah on screen; gestures and the render loop; the ownship, both feeds; and P5's `port/RouteKit/`, C++ and mac-tested rather than iOS. **P6 2026-08-19**: the route sheet, the crosshair, and `PPRouteStore` — RouteKit's first caller; **P7 2026-08-19**: GPS mode — the camera's answer on the frame, the zoom-out rule in `PPCameraFit.h`, and the snapper over the router's own graph; **P8 2026-08-19**: the trip computer — `fvkit/nav/trip.h`, the anchored odometer, and the ride bar showing the RIDE's numbers; **P13 2026-08-19**: five small changes off Chris's rides — two more zoom levels in (1:1,614), the route line doubled to 6 px over a 4 px casing (device pixels, so 3 was one point on a 3x phone), the ride bar at 26 pt in two corner clusters, the turnstone app icon in `port/apps/Pippin/art/` + `Assets.xcassets`, and Chris's new `style.json` committed); **P9's POINTS half 2026-08-20**: `.fvpoints` on the phone, drawn, tapped, edited, added and deleted — schema 3 (`phone`, `url`), `PPPointStore`, the points button beside Route, and the info/edit sheets (**same day, two changes off Chris's first use**: the `+` became the points button HELD DOWN, and the editor's Location row became the route sheet's own `LocationRow` — Current location | Pick on map — so P11's street-name change has two shared functions to land in, `LocationText.describe` and `PickOverlay.readout`); **P9's COMPASS half the SAME DAY**: the compass toggles north-up/course-up, course-up centres and orients CONTINUOUSLY (the apron off, and a `kLinear` follow slew one MEASURED fix interval long — `PPFollowCadence.h`, 12 mac tests), north-up keeps the apron Chris asked to keep, and two fingers turn the chart outside GPS mode behind a 12-degree dead zone; **P11 the SAME DAY**: the pick button and both Location rows name the nearest road the selected profile could actually use — "Use Treeduck Court" / "Use cycleway" / "No usable path" — where the difficulty is that the snap index is `kAll` and the nearest candidate is often a road the profile refuses (Kiawah Island Parkway carries `bicycle=no` for its whole length), so `Router::ArcUsable` became the free `fv::routing::ArcUsable` and `RoutePlanner::BuildOptions` went public: the label and the next replan are now one function over one rule file; **P10 2026-08-21**: record and share — `WriteGpx` beside the reader, `fvkit/nav/gpx_recorder.h` which APPENDS so the file is valid after every fix, one line into P8's `feedTrip:` (now `consumeRawFix:`), a red record button whose HELD press opens a Rides sheet, and a share button on a single point that sends a `.gpx` plus an Apple Maps link; **P14 2026-08-21**: a place shared IN — Apple Maps -> Share -> **Pippin** -> a point on the overlay with the address in its remarks, which needs a SECOND TARGET (`PippinShare`, an app extension) because a share sheet lists extensions and nothing else, plus `PlaceLink.swift` (Foundation-only, in both targets, 56 mac checks in ctest) and a `pippin://place?…` handoff rather than an App Group; **the coordinate is in the URL on iOS 18 and in the SIMULATOR, and an iOS 26 device share is often a bare `https://maps.apple/p/…` whose coordinate exists only in an intermediate REDIRECT** — the one network call in the app, and one constant (`PlaceLink.allowsNetworkLookup`) removes it; **P15 2026-08-25**: Auto-Lock — the phone locked mid-ride because nothing ever set `isIdleTimerDisabled`, and with WhenInUse and no `UIBackgroundModes` a lock SUSPENDS the app, so the moving map freezes and a recording in flight is silently gapped; the flag is now `gpsMode \|\| isRecording` off a `didSet` on both, and it suppresses only the IDLE timer — a side-button press still locks, and the flag binds only while Pippin is frontmost (so every backgrounded case draws nothing at all); **P16 IS BUILT (2026-08-25)**: every fix called `setContentDirty()` and with no raster cache under it that is a real decode-and-draw for a chevron nowhere near the screen, so the frame now stands still when nothing is following, nothing is recording and the ship is outside the viewport GROWN BY THE SYMBOL'S REACH — `RenderGate.swift` (CoreGraphics-only, 40 checks under `ctest -R render_gate`), `MapModel.renderIsWorthIt(for:)` and `PPMap.ownshipSymbolRadiusInPoints`; the FIX is never thinned (the trip computer, the recorder and the heading resolver are all below `renderer.push`), only the picture is, and the two things worth not re-deriving are that **the test must run on every fix even when the render does not** (it is the only thing that notices the ship coming back) and that **the departure needs a frame of its own** (`visible || wasVisible`, or the last drawn frame keeps a stale chevron half on the edge for as long as the rider rides away from it); the demo feed is deliberately NOT gated because its fixes never reach `receive(_ fix:)` and gating its timer would stop the replay advancing, which is the ship-that-never-returns bug with no way out; measured on the simulator through a real `CLLocationManager` (`simctl location start`, `-PPShowStats YES`): riding west off the edge the readout froze at −80.10738 and stayed there while the fixes ran on to −80.20000, and riding back in it resumed. **P17 IS BUILT (2026-08-25)**: `stopFeed()` has NO call sites, so `BestForNavigation` with no distance filter ran from launch to background whatever the mode — Pippin on a table cost about what following costs, minus the screen. `desiredAccuracy` is a hint and every tier down to `HundredMeters` keeps the GNSS chip powered, so idle now goes to a NAMED COARSE configuration (`ThreeKilometers`, a 100 m filter, the automatic pause on) rather than a notch off best: `LocationPolicy.swift` is the decision (44 checks under `ctest -R location_policy`), `PPLocationAccuracyMode` the two configurations, `MapModel.reconsiderLocationAccuracy(for:)` the plumbing. **Three things worth not re-deriving**: two thresholds and not one (restore inside viewport+25%, drop only outside viewport+100%, both fractions of the viewport so they mean the same at every zoom) or a ship parked at the edge restarts the receiver on every fix; the policy is re-taken from **`viewport`'s `didSet`** as well as from a fix, and that hook is the important one — a coarse receiver on a still phone delivers nothing, and the ship went off screen by being PANNED away from, so the camera is what notices it coming back; and the coarse `distanceFilter` is 100 m and NOT the size of the accuracy tier, which would step straight over the return threshold. `demandFullAccuracy()` runs first in `setGpsMode(true)` and `startRecording()` against a 30 s cold start, but what HOLDS the tier is `following || recording` — the demand only covers the gap to the flag, and a refused press correctly falls back on the next fix. A paused run is restarted by hand on the way back (iOS otherwise waits for motion). Measured on the simulator through a real `CLLocationManager`, including the pan-away case with **the phone never moving**; `-PPShowStats` appends `· coarse`, because a tier change moves no pixel. **P18 IS BUILT (2026-08-25)** — the raster cache, and it is neither of the two shapes the plan offered. A frame is now TWO LAYERS: the base map into a surface LARGER than the screen (the guard band) and KEPT, the overlay (route, points, ownship) into its own screen-sized TRANSPARENT surface every frame at the live camera, and `MapScreen` stacks them under one preview transform each. **There is no blitter**, which is the whole design: P3's preview transform has scaled, turned and offset the last frame on the GPU since the app's third session, so a band needed pixels rather than code — and because the COMPOSITOR turns the image, course-up (the mode the plan expected a band to fail in) is served like any other. `PPBaseCoverage.h` is the hit test (scale exactly equal, turn the short way within a quality cap, the live surface's four corners inside the band — affine, so four corners settle it exactly), 11 gtests; `CpuCanvas::BlendPixel` learned src-over onto a TRANSLUCENT destination with the opaque case kept as its own byte-identical branch, 5 tests, and that is the ONLY change outside Pippin. Measured on the simulator: a two-second drag went from **2 frames drawn to 23, 20 of them cache hits at 15 ms** (and the pan now renders live rather than previewed), and the demo ride following served **2115 of 2373 frames at 8 ms each**. **Four things worth not re-deriving.** (1) **P3's live-render budget had to be rewritten or the session cancels itself**: "the last frame took 70 ms" refused every frame of a gesture, so the band was never built and the cache was never asked — measured at 0 hits in 2 frames before the fix. It now asks whether the CACHE would serve the frame (then it is an overlay pass whatever the last one cost) and, if not, whether this is the gesture's FIRST base draw (the investment that builds the band); hence `PPViewport.covers(_:maxTurnDegrees:)`, so the shell can ask the cache's own question before starting a frame. (2) **The SETTLE is what makes the cache free rather than cheap** — a composited base is resampled whenever the transform is not the identity, so the moment the loop would pause it draws once more with the cache refused AND NO BAND (provably exact, and it hands the band's memory back); it fires only when what is on screen is really resampled, because **a fix under a camera that has not moved is served under the IDENTITY transform** and that is the cache's most valuable hit. (3) **The band is a PER-FRAME decision** — it is paid for on every miss and earns its keep only on hits, so it is not asked for where every frame is known to miss: a pinch (the scale is part of the key and has to be) and the first frame of a launch. (4) **Content never invalidates the base**, which is the editor's door: a dragged route point costs one overlay pass, 8–11 ms measured. The cost is memory (2.25x the screen's pixels plus a CGImage copy), given back by the settle and by a memory warning; both keys are `pippin.ini` `[display]`. **P19 IS BUILT (2026-08-25)** — the snap, and it is NOT the picker the plan described. Chris rejected that shape going in, with the reason that is the whole session: **a picker is a points feature; snapping is a property of the overlay INTERFACE**, and the requirement's own words are that a pick which *overlaps an overlay feature* takes that feature's exact position. He was also right that the interface was already ported — `Overlay::AsSnapTo()` has been on the base class since the app layer landed, `fv::app::SnapTo` folds `test_snap_to`/`do_snap_to` into one call, and `PickSession::SnapToPoint` already ran FalconView's `snptodlg` flow verbatim. **Nothing implemented it**, and `route_overlay_test.cpp` asserted `AsSnapTo() == nullptr` as a fact about the world. Three things were missing and no new architecture: (1) **two implementers** — `PointOverlay` and `RouteOverlay`, each written OVER its own `HitTestPoint` rather than beside it, so there is one reach rule and a snap and a hit can never disagree about what the finger is over (the dpi scale is what the test pins); the route one exists because an SPI with one implementer has not been shown to be an SPI, and it also buys starting a route where the last one ended. (2) **`SnapToItem::distance_px`** — every existing caller went through the chooser, and a chooser RANKS NOTHING: it shows rows and a human picks, so a shell with no dialog had nothing to rank by. (3) **`fv::app::SnapCandidates`** — the same walk, shell-free and const, nearest-first, stable so a tie keeps stack order; a free function because a phone should not implement eleven pure virtuals of `AppShell` to ask a question it will never ask, and `PickSession::SnapToPoint` is now that walk plus the dialog. On the phone `PPMap snapTarget(near:in:tolerance:)` asks the **stack**, not the point store — it did not change for the second implementer and will not for the third — and `MapModel.pickSnap` is answered in the SAME render-queue hop as the road name, because the two are one fact about one crosshair. Every call site reads `pickCoordinate` (`pickSnap?.coordinate ?? crosshairCoordinate`), extending P11's one-definition rule by one line. The snap is automatic and never silent: the button reads `Use Ruddy Turnstone` and the ring grows and takes the accent colour; dragging off it is the refusal. **Two things only the simulator could correct.** The tolerance was BACKWARDS — 30 points on the reasoning that a pick wants a wider catch than a tap, and on screen it caught a marker **28 points away, plainly beside the crosshair**. It is now 12 and is the margin BEYOND the marker's drawn ink (`HitTestPoint` adds the half-width first), so a 26-point marker is caught from ~25 points — about when the ring touches it; a tap affords more because the FINGERTIP is the blunt instrument, while here the map is steered under a crosshair the rider places exactly. And the first indicator, a white dot inside the ring, is invisible against a pale chart and against the marker behind it — hue and size survive being drawn over a map, one channel does not. **The acceptance criterion**: Start picked over the point `Bufflehead Dr` left `32.6095000000, -80.0655000000` in the route document, identical to ten decimals to that row in `points.fvpoints`, against End's `32.5956007934, -80.1096644372` — the un-projection of a pixel, which is the noise a snap removes. 11 new gtests (3 point, 2 route, 5 aggregation, 1 through a real `PointStore`, plus the flipped capability assertion); `pippin.ini` `[pick] snap_tolerance`, 0 to switch off. **PIPPIN P1–P19 ARE ALL BUILT.** What is left is not a session: the route-point drag gesture P18 made cheap, no way to get NEW artwork into a document from the app, P15 not yet ridden, and store licensing. Requirements in `port/apps/Pippin_requirements.md`, and `port/apps/Pippin/README.md` is the built half |
 
 Other docs: `port/bindings/pyfvw/README.md` (Python user guide),
 `port/bindings/pyfvw/ICD-MAPPING.md`, `port/peregrine.ini.sample` (every settings key with its
@@ -26,9 +29,10 @@ measured effect), `port/families/{dnc,enc,osm}-families.json` (the data-family s
 `port/Osm/styles/style-readme.md` (the supported GL-style subset).
 
 ```sh
-cmake -B build && cmake --build build -j && ctest --test-dir build   # 1369 as of 2026-08-18, ALL GREEN.
-# This is the number ctest RUNS. `ctest -N` says 1386 because it also lists the 17 disabled
-# GeoTrans tests — do not update this line from -N, the two counts are 17 apart forever.
+cmake -B build && cmake --build build -j && ctest --test-dir build   # 1799 as of 2026-08-29, ALL GREEN.
+# This is the number ctest RUNS. The per-test "n/1532" prefix is 17 higher because it counts
+# the 17 disabled GeoTrans tests too — do not update this line from that, the two counts are
+# 17 apart forever.
 # THIS LINE DRIFTS: trust the archive row of the LAST session if the two disagree.
 # The default CMake build type is NOT optimised — configure -DCMAKE_BUILD_TYPE=Release before
 # taking any performance measurement (R3c's real finding).
@@ -51,8 +55,31 @@ tested. GEOTRANS 3.3 is **frozen** (pinned bit-faithful results).
 ### 1a. FvKit core (`port/include/fvkit/`, impl `port/fvkit/`)
 
 `geo.h` (incl. `SurfacePoint`), `raster.h`, `engine.h` (MapEngine), `catalog/` (SQLite+R-tree),
-`canvas/` (ICanvas + CpuCanvas), `overlay/` (SPI + manager + grid + `KeyEvent`),
+`canvas/` (ICanvas + CpuCanvas — **and since P18 a CpuCanvas can be a LAYER**: `BlendPixel` does src-over onto a TRANSLUCENT destination, so a surface cleared to alpha 0 can be drawn on and composited over another; the opaque-destination case is its own branch and is byte-identical, which is why no golden moved; **and since 2026-08-29 CpuCanvas DECODES UTF-8** rather than walking bytes — every glyph loop used to take one byte as one code point, with a comment saying the ASCII subset was all GeoSym needed, and it was until the graticule wanted a degree sign and got `35Â°`. An ASCII string decodes to the code points it always did, so **no pinned golden moved**; the only strings whose rendering changed are the ones that were already wrong), `overlay/` (SPI + manager + the graticule + `KeyEvent`),
 `store/tile_pack.h` (GeoPackage), `settings.h` (`fv::Settings`, INI, the registry replacement).
+
+**The catalog is at SCHEMA 2 (2026-08-29): a map series is `(format, series_key, scale,
+scale_units)` and NOT the key alone.** Chris reported one GeoTIFF map type at 1:2,014 holding both
+`Atlanta SEC.tif` (a 1:500 K sectional) and 1 m orthoimagery, and the Windows code says why:
+FalconView keys `tblMapSeries` on **(Scale, ScaleUnits, SeriesName)** —
+`CCoverageCache::GetMapSeriesIdentity` looks a frame up with `SelectByScale(scale, units, series)`,
+and `GeoTiffMapFileFinder::IsFileValid` **rejects a file outright when no such row exists**. So a 1
+metre Color GeoTIFF and a 50 metre Color GeoTIFF have always been two map types over there. The
+extraction was never wrong — `TIF_determine_scale_and_series` returns a resolution in METRES for
+imagery and a denominator for maps, and `fv::GeoTiffFrame` reproduces both faithfully (TestData's
+sheets come out at 0.3, 0.6, 1, 10 and 50 m plus a 1:30 K DRG) — but the catalog filed them by
+`series_key`, so `INSERT OR IGNORE` kept whichever frame was scanned first and every other
+resolution inherited its scale. **Three places had to agree**, and the middle one is the trap: the
+`UNIQUE` constraint, `ResolveSeries`'s `SELECT`, **and `Scan`'s in-memory `series_cache`, which was
+keyed on `series_key` alone and would have re-collapsed the rows however the schema was written.**
+`SeriesRow` now also carries `display_name` — FalconView's own `FORMAT_SERIES_SCALE` label through
+the ported `MapSeriesStringConverter` ("GNC 1:5 M", "Color 1 meter"; the bare key when there is no
+scale to name) — because a `series_key` is no longer a unique handle: `fvrender`/`fvpack`/
+PythonView take either spelling and **name the candidates rather than silently picking the first**
+when a bare key is ambiguous. An older catalog on disk is **rebuilt, not converted** (the per-frame
+scales were never stored, so nothing can split the merged rows apart); `Catalog::NeedsRescan()`
+says so and PythonView rescans its data sources on open. TestData now yields 7 GeoTIFF map types
+where it used to show 3.
 
 **`proj.h` — the projection, and it ROTATES** (PR1–PR3, 2026-08-15). Equal-arc, plus
 `SetPhysicalScale` and `SetRotation` — a clockwise turn about the surface centre, carried by both
@@ -67,7 +94,10 @@ cache key** because R3a made its ink geographic, and the **only** angle in the d
 had to be taught the rotation is a point symbol's north-up `PointSymbolStyle::rotation_deg`
 (`SymbolAngleOnChart`, two call sites). `DrawSymbolAtPixel` deliberately does NOT apply it: a pixel
 anchor's angle is already a screen angle. Bound as `MapProjection.set_rotation`/`.rotation` and
-`MapEngine.set_rotation`.
+`MapEngine.set_rotation`. **The surface CENTRE is `((w-1)/2, (h-1)/2)`, not `(w/2, h/2)`** —
+FalconView's pixel-centre convention, and a shell that writes a pan by assuming the other one
+gets a constant half-pixel offset on every drag (Pippin P3 measured 0.24 pt of it before the
+pan was changed to ASK, via `GeoToSurface` of the current centre, instead of assuming).
 
 **The vector seam** — `vector/vector.h` (IVectorSource, VectorFeature, FeatureRef/Describe),
 `style.h` (IStyleEngine, path/area pattern styles), `rules.h` (predicate AST, ScaleBand,
@@ -214,6 +244,23 @@ growth under a highlight is **capped at 2x**.
     caller who wants it); and `<ele>` **is read as MSL**, the pragmatic reading every GPX consumer
     makes, said out loud rather than silently. A `<trkseg>` boundary is KEPT (a straight line across
     a lunch break is not a track) and `split_gap_s` makes one where a device forgot to.
+    **It WRITES as well since Pippin P10 (2026-08-21)**: `WriteGpx`/`WriteGpxFile`/`BuildGpxTrack`,
+    1.1 only, four rules that mirror the reader's — the one a round-trip test cannot catch is
+    **a field with no validity is not written** (`<ele>0</ele>` for an absent altitude reads back
+    as a valid sea-level fix), and **speed is not written at all** because base GPX has nowhere to
+    put it and a vendor extension would give a DERIVED quantity a second source of truth. Precision
+    is the FORMAT's (7 decimals = 11 mm), so round-trip equality is a tolerance and the tests pin
+    it there. `FormatIso8601UtcFractional` exists because a 1 Hz recorder whose stamps carry a
+    fraction would otherwise write two points with the SAME whole second, which the reader is then
+    right to drop. `waypoint_descriptions` is the reader's only change: a `<wpt><desc>` is kept
+    (a track point's is still dropped — it has nowhere to live on a `PositionFix`).
+  - **`gpx_recorder.h` (P10) APPENDS, and that is its whole reason.** A phone records for three
+    hours in a pocket and every bad ending is the same one — killed in the background, flat
+    battery, force-quit — so a recorder that saves on Stop loses everything to the one failure it
+    must not have. It remembers where the FOOTER starts, seeks back to it for the next point,
+    writes the point and writes the footer again; the footer's length never changes, so nothing is
+    truncated and **the file on disk is a complete, valid GPX after every fix**. One seek and one
+    flush per fix. A test reads the file back mid-ride, after each of six fixes, without closing.
   - **The whole of MM6 is bound as of MM7** (`pyfvw.nav`), under two module rules: Python never sees
     a `Status`, so `read_gpx_file` / `read_nmea_log` / `LineTransport.open` **raise**; and an
     out-parameter becomes a return or a `None` (`parse_nmea_sentence`, `add_line`, `flush`,
@@ -227,13 +274,71 @@ growth under a highlight is **capped at 2x**.
     has no thread for MM1's reasons; `max_lines_per_poll` (256) is what stops a file transport
     replaying three hours inside one frame.
 
+
+### 1a-bis. THE SHARED OVERLAY TOOLKIT — read this before porting any overlay
+
+Three pieces extracted from FalconView's `grid_map` on 2026-08-29, when the sample grid overlay was
+replaced by the real graticule. **They exist so the NEXT overlay does not re-derive them**, and each
+one had exactly one copy in the Windows tree per overlay that needed it. If you are porting
+`scalebar`, `Contour`, `TAMask`, `shp`, `nitf`, `localpnt` or anything else with a look that changes
+with zoom, text on the map, or a property page, start here.
+
+| Piece | Header | Use it for | Replaces |
+|---|---|---|---|
+| **`ScaleTable<T>`** | `fvkit/scale_table.h` | any value chosen per map scale — line spacings, contour intervals, declutter tiers | `GridSpacing::get_closest_scale` and its per-overlay twins |
+| **`LabelPlacer`** | `fvkit/canvas/label_placer.h` | text on the map that must not land on other text | `GridLabel::overlap` + `lat_label_bound_rect_array` |
+| **`app::Properties`** | `fvkit/app/properties.h` | everything a user can change about an overlay | the MFC `CPropertyPage` per overlay (`grid_pp.cpp` is 420 lines, and is the SMALLEST one) |
+
+**The things not to re-derive about each.**
+
+- **`ScaleTable` is keyed on a SCALE DENOMINATOR, and you get one with `ScaleDenominatorFor(proj)`
+  and never with `proj.Scale()`.** `Scale()` returns **0 in resolution mode**, which is the mode a
+  tile pyramid uses and therefore the mode Pippin runs in — an overlay keyed on it works on the
+  desktop and silently draws nothing on the phone. The conversion is exact, not approximate: both
+  branches of `GetNominalDegreesLatPerPixel` have the same slope (1.3471e-6 deg/px per unit of
+  denominator) and meet continuously at 1:5M, so `ResolutionToScale(dpp, MAP_SCALE_ARC_DEGREES)` is
+  its inverse over the whole range. `Nearest` clamps off both ends and never interpolates —
+  halfway between two authored looks there is no third look.
+- **In `LabelPlacer`, CALL ORDER IS PRIORITY.** First to ask keeps the spot; a later overlapping
+  label is REFUSED, not moved or shrunk (give it several anchors with `PlaceFirstFit` if you want a
+  fallback). Nothing evicts anything, which is what stops text flickering during a pan. A placer is
+  **per-frame** — it holds pixel boxes. The box it reserves is the box the draw inks because both go
+  through **`MeasureLabelInk`**, which `GeoDraw::DrawLabelAtPixel` now also calls; do not compute a
+  label box any other way. An **unmeasurable** label (a canvas with no font — pyfvw's Python
+  canvases) is accepted and drawn rather than dropped.
+- **`app::Properties` is a DECLARATION, and `LoadFrom`/`SaveTo`/`ResetToDefaults` are written once
+  over it.** An overlay implements `Describe`/`GetProperty`/`SetProperty` and gets, for free:
+  peregrine.ini persistence under its own prefix, a generic dialog any shell can build, and pyfvw's
+  `describe_properties()` / `get_property` / `set_property` — **which are bound on `Overlay`, not on
+  any overlay class, so a new overlay needs no new binding code at all**. Enforce the declared range
+  in your `SetProperty`: a settings file and a script both reach it and neither is a spinner. One
+  unparseable line in an .ini is warned and skipped, never fatal.
+  **Nothing in a shell has to load them.** `OverlaySession::Instantiate` — the one place an overlay
+  is created in the app layer — applies `LoadFrom(settings, SettingsPrefixForTypeId(type))` to every
+  overlay that declares properties, so `fv.grid` reads `[grid]`, `fv.points` reads `[points]` and a
+  new overlay reads its own section on the day it is written. **This was missed the first time and
+  Chris found it in an hour**: the `[grid]` section was parsed into `Settings` and read by nobody, so
+  the graticule drew its compiled-in BLACK casing while `peregrine.ini` asked for green. The
+  mechanism was complete; the call site did not exist. Guarded now by four tests in
+  `app_session_test.cpp`.
+  **The same day, the same bug's other half**: with the hook in, `label_color = "rgba(32, 37, 31,
+  0.97)"` was REJECTED (the colour parser took hex only) and the rejection went into
+  `session.warnings()`, which PythonView drained in `_ui_flow` and nowhere else — and neither
+  `_set_static` nor `restore_startup_overlays` goes through `_ui_flow`, so the message was as good
+  as absent. Both ends fixed: `ParseColor` now takes `#RGB`/`#RGBA`/`#RRGGBB`/`#RRGGBBAA`/`rgb()`/
+  `rgba()` (**CSS alpha, so `rgba(...,1)` is opaque**) and writes canonical hex back, and
+  PythonView's `_drain_session_warnings()` is called from every path that can create an overlay.
+  **The lesson for the next overlay: a property nobody can set is a bug, and a rejection nobody
+  sees is a worse one.**
+
 ### 1b. App layer (`fv::app`, `port/include/fvkit/app/` + `port/fvkit/app/`, A1–A6 — plan DONE)
 
 `type_registry.h` (`TypeId` is a STRING; `OverlayTypeDesc` carries the factory as a
 `std::function` and an **`std::optional<FileTypeDesc>` — that optional IS the static-vs-file
 distinction**; `RegisterBuiltinOverlayTypes`), `capabilities.h` (`Persistence`, `HitTest`, `SnapTo`,
 `ContextMenu`, `RoutingOverrides`, `EditTarget`), `shell.h`, `editor.h`, `session.h`, `pick.h`,
-`vector_hit_test.h`. The layer is `fv::app` and D5's "no nested namespace" does not apply to it.
+`vector_hit_test.h`, `search.h`. The layer is `fv::app` and D5's "no nested namespace" does not
+apply to it.
 
 - **Capabilities are found by ACCESSOR, never `dynamic_cast`** — `fv::Overlay` has six `As*()`
   returning nullptr by default over forward-declared types, so L4 keeps no app-layer dependency.
@@ -257,6 +362,111 @@ distinction**; `RegisterBuiltinOverlayTypes`), `capabilities.h` (`Persistence`, 
   `DrawAll` written over it. **The hit id is a HANDLE, not a packing** (a `FeatureRef` is 4×int32,
   `HitItem::feature` is one uint64_t); `VectorHitTest` mints it and `RefFor()` translates back.
   Hover notifies only on a CHANGE, and `kAskWhenAmbiguous` degrades to `kTopMost` on a hover.
+- **SEARCH (S1, 2026-08-27) is the SECOND aggregating capability and the seventh accessor.**
+  `search.h` is `SearchQuery`/`SearchResult`/`SearchProvider`/`SearchSession` + `Overlay::AsSearch()`
+  — geo-space, on-demand, **hidden overlays included** (`visible_only` defaults FALSE, the deliberate
+  opposite of pick; true narrows the walk to `DrawOrder()` reversed, pick's exact set). A provider
+  picks WHICH string it matches; `TextMatchQuality` in the header decides what matching MEANS, so
+  "rud tur" cannot mean two things in one stack. The session — not any provider — folds
+  `near`+`radius_m` into a box for the coarse filter, cuts the exact circle afterwards, and orders
+  (`kAuto` = `kBestMatch` with text, `kNearest` without; stack order is the stable tie-break).
+  Distances are `road_snap.h`'s metre, borrowed rather than re-derived. `PointOverlay` and
+  `RouteOverlay` are the two providers.
+- **S2 (2026-08-28) makes a MAP searchable, through the same one discovery path.**
+  `fvkit/overlay/vector_map_overlay.h` — `VectorMapOverlay` holds an `IVectorSource` and answers
+  `AsSearch()` and nothing else yet (it does not DRAW; that is the layering feature, and it needs
+  nothing from this seam). **It is generic over the source, not over OSM**: the label field is a
+  knob (`SetLabelTags`, default `{name, name:latin, name:en}`), so ENC's `OBJNAM` and DNC's `nam`
+  are the same class with a different list. **Tier 1 is area-constrained and a query with no area
+  finds NOTHING** — not the pack, not an error — because the global path is S3's FTS5 table; the
+  session has already folded `near`+`radius_m` into an area, so "near me" is an area query.
+  **The overlay passes NO SCALE**, which is how the source's own tile budget stays the ONE number
+  that owns how much pyramid a search reads (measured on the Kiawah cut: the island caps z14→z13,
+  a fifth of the features for three quarters of the names — the pyramid as a free relevance
+  function). **Two behaviours tier 1 does not work without, and neither was in the plan.**
+  (1) *Unnamed geometry is never a result*, spatial-only queries included: most of a vector tile
+  has no name, and a blank row is not a choice anyone can make. (2) *Pieces of one named thing
+  are merged into one row* (`SetMergeGapMeters`, default 100 m, negative disables) — a road is
+  cut at every tile seam and at every junction where a tag changed, so the un-merged answer to
+  "Ruddy Turnstone" is a dozen identical rows; a bridging piece folds two clusters together so
+  the answer cannot depend on tile read order, the merged bounds is the union, and **the anchor
+  is the biggest piece's own label point, never the union's centre** (which lands off the road).
+  The 128-bit→64-bit mint is a KEPT table (ids from 1, `FeatureRefFor` inverts, `DescribeFeature`
+  is the identify path), so the same query twice gives a row the same number. The one honest
+  limit: `IVectorSource::Query` has no cancel of its own, so ONE source query is the unit of work
+  and a flag raised inside it is honoured when it returns. 26 gtests — 21 in
+  `port/fvkit/test/vector_map_overlay_test.cpp` over a fake source (everything decided above the
+  source seam), 5 in `port/Osm/test/osm_search_test.cpp` over the real Kiawah pyramid.
+- **S3 (2026-08-28) is TIER 2: the pack carries its own gazetteer.** The seam grew
+  `IVectorSource::HasNameIndex()` + `SearchNames(VectorNameQuery, vector<VectorNameHit>*)`
+  (kUnsupported by default, so ENC and DNC can grow one later without the overlay changing), and
+  `VectorMapOverlay` asks it **when the query carries TEXT**; a spatial-only query still reads
+  tiles, and an index that is absent or fails falls back to the scan. The store is
+  `port/Osm/fv_osm_name_index.h` — `search_names` (name, layer, class, anchor, box, min_zoom,
+  z/x/y + feature), an external-content `search_names_fts` mirror and `search_names_meta` —
+  **written INSIDE the .mbtiles**, because extra SQLite tables are invisible to every other reader
+  and a pack cannot then be separated from its index by a copy. `osm::BuildNameIndex` (CLI:
+  `fvnames build|info|search|drop`) is the stage-time builder. **Six things worth not
+  re-deriving.** (1) *The builder does not read tiles* — it calls `VectorMapOverlay::ScanRows`
+  (tier 1, index off) window by window, so which tag is the label, "unnamed geometry is never a
+  row" and the merge are decided ONCE for both tiers; the merge therefore moved to
+  `fvkit/vector/feature_rows.h` (`FeatureRow` + `MergeFeatureRows`, with a latitude sweep so a
+  whole-pyramid merge is not quadratic — the surviving ref is still the first in INPUT order, which
+  is what the pinned tier-1 results say). (2) *`min_zoom` IS the relevance function*: every level
+  is scanned, shallowest first, a name keeps the shallowest it survived to, and `ORDER BY min_zoom`
+  before the cap is why a one-row "kiawah" is **Kiawah Island** and not a street named after it —
+  the same free ranking the tile budget gives tier 1, precomputed. (3) *The index NARROWS, the
+  port's rule DECIDES*: every returned row is re-tested with `app::TextMatchQuality`, because
+  FTS5's word boundaries and folding are not the port's, so a superset is the only safe direction.
+  (4) *FTS5 is an optimisation, not a requirement* — `search_names` is a plain table and a reader
+  without the module (or with a dropped mirror) scans it and matches in C++; same answers.
+  (5) *A `FeatureRef` is not durable* (`tile` is a per-open index), so the index stores z/x/y + the
+  layer NAME and the source interns them back into a live ref — an indexed hit is describable with
+  no tile read until identify asks. (6) **A pack being READ cannot be written to**: a stepped
+  SQLite statement holds a read transaction, and the write fails with `SQLITE_IOERR`
+  ("disk I/O error") rather than anything that looks like a lock — `MbtilesFile::ReadTile` now
+  resets once the blob is copied, and the builder resolves every ref and CLOSES the pack before
+  writing. Measured on the Kiawah cut: 2283 pieces → 1441 names in 0.3 s, and over the whole island
+  the index answers "kiawah island" with 9 rows where the budget-capped z13 scan finds 4 — the
+  POIs it could not afford to look for. 29 gtests (10 `feature_rows_test.cpp`, 11
+  `vector_map_overlay_test.cpp`, 8 `osm_search_test.cpp` over a real built index).
+- **S4 (2026-08-28) is the ROUTABLE answer, the bindings, and a shell that asks.** The road
+  provider is **`RoadGraphOverlay::AsSearch()`** and not a class of its own — the debug view
+  already holds the `.fvroad`, is already in the stack and already packs an arc index into a
+  `uint64` for its own picks, so it answers a search with the id a CLICK carries and
+  `ArcInfoFor` serves both. **The graph's NAME TABLE is what makes a global text search
+  affordable**: it holds each distinct name once, so the shared text rule runs over thousands of
+  strings and the arc pass behind it is an integer lookup; a spatial query has no such shortcut
+  and goes through the grid's `NodesInRect` (the box grown by the DRAW's own margin, since an arc
+  is found through its endpoints either way), and a query with neither text nor area finds
+  nothing, exactly as tier 1 does. **`RoadClass`'s declaration order IS the relevance function** —
+  the enum is declared in descending importance and that ordering is part of the file format — so
+  rows are ranked before the cap and a capped "main" is the primary road, not the service alley
+  behind it. One road is one row through S3's `MergeFeatureRows`, which matters MORE here than in
+  the tiles: OSM splits a way at every junction and the graph then stores every edge twice, once
+  from each end (the mirror is also de-duplicated directly, so switching merging off does not
+  double the answer). The class filter deliberately does NOT narrow a search: it is a rule about
+  what is DRAWN. 16 gtests in `port/RouteKit/test/road_graph_search_test.cpp`, the last over the
+  real `kiawah.fvroad`. **`kNearest` needed only BINDING** (S1 built it): `pyfvw.app` now has
+  `SearchOrder`, `SearchQuery`, `SearchResult`, `SearchSession`, `text_match_quality`,
+  `search_distance_meters` and a **`CancelFlag`** — a `std::atomic<bool>` with a Python face,
+  since the seam's one async behaviour is a flag another thread raises — and the session releases
+  the GIL for the walk. **`Overlay.search` joined the Python trampoline**, so A6's "a capability
+  is a method you DEFINED" now covers all seven, and `VectorMapOverlay` is bound as
+  `pyfvw.overlay.VectorMapOverlay`. **The shell lesson is that you can only search what is in the
+  stack**: PythonView's two searchable non-overlays — the chart it draws through the map engine
+  and the routing graph — are now wrapped and held NOT VISIBLE, which is decision 5 used exactly
+  as written; the road overlay is created on the first search and the Overlays menu's toggle
+  became a visibility flag for the instance a search made. **A search box wants THE VIEW as its
+  default scope**, because a pack without S3's index answers a global text query with nothing at
+  all and "Nothing found" is a bad way to learn that (the status line says so when it happens).
+  Ctrl-F, incremental with a 200 ms debounce and synchronous — every measured query here is
+  milliseconds, and the flag is bound and waiting for the shell that needs it. Two things the
+  headless drive found: `self.vproj` has no bounds until the first render, so an "in view" search
+  asked before one would hand every provider a zero-sized box; and framing a 40 m cul-de-sac is
+  arithmetically right and useless, so `frame_result` takes `zoom`'s own 1e3..5e8 clamp. 7 pytest
+  cases in `test_pyfvw_app.py`, and a `find_box` step in PythonView's `--selftest` (200 rows for
+  the Kiawah view, 4 for "ruddy" — the road from the CHART and from the GRAPH, both true).
 - **A6 is the ADOPTION**: `pyfvw.app` binds the layer, PythonView IS an `AppShell`, and
   `fv::PointOverlay` is the first C++ FILE overlay. **A capability is a method you DEFINED** (the
   Python trampoline inherits every capability and answers each accessor from what the subclass
@@ -285,7 +495,7 @@ distinction**; `RegisterBuiltinOverlayTypes`), `capabilities.h` (`Persistence`, 
   `icon-image` and `fill-pattern` are `{tag}` TOKEN TEMPLATES and a pattern's spacing and its stamp
   scale must carry the SAME factors).
 
-### 1d. Routing (`port/Routing/`, O4–O5e)
+### 1d. Routing (`port/Routing/`, O4–O5e) and RouteKit (`port/RouteKit/`, P5)
 
 A routable road graph built **OFFLINE from a raw `.osm`/`.osm.pbf` extract** — never from the MVT
 pyramid, which is simplified, tile-clipped and has no node identity. `fv_osm_reader.h` (expat XML +
@@ -295,6 +505,76 @@ Dijkstra, the unidirectional one kept as the tests' oracle). CLI `fvgraph build|
 
 - **Profiles** (O4b) — driving on the posted clock, walking, cycling — gated by **per-mode access
   bits carried ON the arc**, so one general graph answers all three.
+- **`RoadGraph::NodesInRect`** (2026-08-28) — every node in a box, over the grid `NearestNode`
+  already built, splitting a crossing rect at the antimeridian so nothing is visited twice. Added
+  for `fv::RoadGraphOverlay`, and it is four lines rather than a second index for that reason. It
+  uses `floor()` and not a cast: a box west or south of the graph gives a NEGATIVE cell index, and
+  truncation-towards-zero would turn -0.4 into cell 0 and silently widen the query to the graph's
+  own edge.
+- **Profile-aware snapping** (2026-08-27) — `RoadGraph::NearestNode` takes an optional
+  `NodeFilter`, and `Router::Route`/`RouteVia` pass one that accepts a node only when at least one
+  arc incident to it is `ArcUsable` under this query's profile. **Why it had to change**: graph
+  nodes are junctions and endpoints ONLY (shape points are edge geometry), so the nearest node can
+  be well away and was chosen on distance alone — on Kiawah that put a bicycle's start on a golf
+  cart path 138 m off tagged `bicycle=no` while the cycleway 26 m away went unseen, and the router
+  then reported "not connected", which was true of the nodes it picked and false of the map. The
+  filter is asked BEFORE the distance is kept, so a refused node neither wins nor tightens the
+  ring-stopping bound. It **falls back** to the unfiltered nearest when nothing usable is in range,
+  so the caller still gets a snap offset and a "not connected" answer rather than a coverage error
+  pointing at the wrong thing. The test that broke was pinning the OLD behaviour: RouteStore's
+  "waypoint in the river" point sat 392 m out, INSIDE the 500 m snap radius, and only failed
+  because the node it reached was barred — it now uses a point 2.6 km out, which is what its name
+  always claimed. 3 new gtests (`RouterSnap`), 162 routing tests green.
+- **Mid-road snapping** (2026-08-28) — **the route now begins where you stand.** Two halves, and the
+  second is the one with teeth.
+  - **`RoadGraph::NearestArcPoint`** — a point-to-segment search returning an **`ArcSnap`** (arc,
+    both ends, the projected point, `along_m`/`length_m` and so the fraction), over a **second grid
+    built in `Finalize`, over arc GEOMETRY**. It has its own bounds and not `bounds_`: that box is
+    the box of the VERTICES, and a road's shape can lie outside its own endpoints' box (a dogleg, a
+    bay, and in the degenerate case of one east-west road a node box with no height). One entry per
+    undirected road; `ProjectOntoSegment` does the projecting — there is one copy of that, on
+    purpose — but the segment LENGTHS are `GreatCircleMeters`, because the fraction is what prices a
+    partial arc and has to be taken in the same metre `RoadArc::length_m` was built in.
+    `at_node()` carries a **1 cm tolerance and it is load-bearing**: coordinates are stored as
+    degrees x 1e7 and read back as `e7 * 1e-7`, so a query that IS a junction projects a picometre
+    along the road leaving it, and without the tolerance every such call produced a mid-arc anchor
+    with a zero-length first step and a phantom road name in the leg list.
+  - **A router that begins and ends mid-arc.** `RouteAnchor` is either a node or a point on a road,
+    and every stop is one — the node API and the geographic one are now the same code with a
+    different snap. **Mid-arc routing is a SEEDING change, not a search change**: a mid-arc anchor
+    offers up to two `Terminal`s, one per end of the road it may set off toward, each carrying the
+    price of the part of that road it would use, and both frontiers are still plain Dijkstra started
+    from a set. A terminal's cost is a constant on one side's distances — exactly what a super-source
+    joined by weighted edges contributes — so the bidirectional stopping rule is the one it always
+    was. `Step` grew `t0`/`t1`, fractions in the arc's own direction, which is where `stored_order`
+    went: a partial traversal and a reversed one became the same kind of thing instead of two cases.
+    **The one answer no search can find is both ends on the SAME road** — the path never reaches a
+    junction, so no frontier ever settles anything — and it is taken directly, which is safe because
+    it is unconditionally optimal when legal: every alternative leaves the road at one end and comes
+    back, paying for more of that same road plus whatever lies between.
+  - **A U-turn at a mid-road stop is not a turn**, so it is barred by DROPPING a source (the end the
+    previous leg came from) rather than by banning a turn — simpler than the junction case and it
+    needs no state space of its own. The escape is the same one O5d already allows: refused on the
+    spot, the route drives to the next real junction — or to the end of the cul-de-sac — and turns
+    THERE.
+  - `Route` gained `start_arc`/`end_arc`, `start_point`/`end_point` and `stop_points`;
+    `stop_nodes[i]` is **kNoArc for a stop that landed mid-road**, because naming the nearest
+    junction would name a different place from where the route passes. `start_node`/`end_node` are
+    now the first and last JUNCTION the route reaches, and a route that never leaves one road
+    touches none. `RouteOptions::snap_to_arcs` (on) turns it off as a diagnostic, and `fvgraph route
+    --snap-nodes` is that flag: a route that changes when it is cleared is a route the snap was
+    moving.
+  - **Measured on Kiawah**, 1180 random bicycle queries: median snap distance **122 m -> 77 m**,
+    mean 136 -> 100, nearer in 821 of 1180; over 855 connected pairs the route's own length changed
+    in 848 of them, by a median of 17 m and by as much as 3.7 km where the nearer road is a
+    different road. 14 new gtests (`RoadGraphArcSnap`, `RouterArcSnap`, `RouterViaArcSnap`), 137 in
+    fv_routing_test, 1680 green.
+  - **`fv::NormalizeHeadingDeg` became inline** in `fvkit/nav/position.h` to pay for this.
+    `ProjectOntoSegment` is header-only precisely so `port/Routing` can project onto a road without
+    linking the map engine, and it ends by normalising a bearing — that ONE out-of-line symbol was
+    enough to fail the `fvgraph` link the moment `fv_road_graph.cpp` used the projection.
+  - **STILL OPEN**: the audit tool in §2a's **D1** row, which is what finds the rest of the cases
+    this kind of defect hides in.
 - **Turn restrictions** (O5a) — resolved onto `(via_node, from_arc, to_arc)`; the searches label
   **states**, so only the junctions a restriction names are split and an unrestricted graph costs
   what it did in O4.
@@ -311,6 +591,103 @@ Dijkstra, the unidirectional one kept as the tests' oracle). CLI `fvgraph build|
   opposite shape and is a bit. Both are avoided through `RouteOptions::{toll_penalty,ferry_penalty}`,
   the ONLY profile-backed settings the router reads from the options rather than the profile.
 
+**RouteKit** (`port/RouteKit/`, P5) — **the module that exists because of the invariant above it**:
+fvkit does not link `port/Routing`, a route overlay needs both, so it lives beside them and links
+each. Three pieces, all `fv::` (D5), all mac-tested, and none of them iOS-only.
+- **`fv::RouteDoc`** reads and writes `.fvrte`, **byte-compatible with route.py's `json.dump`**.
+  That is a stronger claim than "both emit valid JSON" and it is what makes a route saved in one
+  shell open in the other. Reading is nlohmann's; **the WRITER is hand-rolled**, because
+  `json.dump(indent=2)` is a specific serializer — insertion-ordered keys, `[]` on one line but a
+  non-empty list on many, `ensure_ascii` with **surrogate pairs** above the BMP, and floats as
+  CPython's `repr`: shortest round-trip digits, fixed notation when the decimal point falls in
+  (-4, 16] and scientific outside it. `PythonFloatRepr` is that rule, public and tested; it was
+  fuzzed against CPython over 120,000 doubles (random bit patterns included) with zero mismatches.
+  **The road geometry is NOT in the document** — it is derived from the graph and the rule file,
+  either of which can change, so a saved copy would be a stale answer wearing a document's clothes.
+- **`fv::RoutePlanner`** — the graph it loads is **SHARED, not owned outright** (P7): `graph()`
+  hands out a `shared_ptr<const RoadGraph>` so `RoadSnapper`'s network can index the same roads the
+  router routes over. One `.fvroad` per application, and no way for the two halves to disagree
+  about what a road is. It is route.py's `follow_roads` moved verbatim rather than improved, because
+  the two shells have to agree what a route IS: one `RouteVia` through the ordered stops, falling
+  back to **independent PAIRS** when the through route cannot be had at all, a pair that will not
+  route staying a **straight leg**, and `kOutOfCoverage` as the ONLY per-leg failure — anything else
+  (above all a profile the rule file does not define) is about the REQUEST and is reported once
+  rather than hidden as a screenful of straight lines. The graph loads **lazily and once**; the rule
+  file is polled per plan, so an edit lands on the next route with nothing restarted.
+- **`fv::RouteOverlay`** is the **second C++ file overlay** and the first that draws something
+  COMPUTED: `Persistence` + `HitTest` + `SnapTo` + `EditTarget`, route.py's look (blue over a white
+  casing and dashed for a bicycle route when calculated — but see §2d, the dash is NOT VISIBLE at
+  the shipped width; the overlay's own red legs when not, in whichever `LineKind` `SetLegKind`
+  says), G4 selection as a render state, and `SetWaypoints` as the wholesale surface a sheet-driven
+  UI produces, which is what Pippin drives. Replacing
+  the waypoints DROPS the plan, because a stale road under a moved marker reads as a bug in the
+  router — which is why **`FileOpen` drops it too, and why "reload at launch" is TWO steps**: P6's
+  `pippin::RouteStore` opens AND replans, since a shell that only reads the file shows the straight
+  red legs of a route nobody has computed. The hit test reads **what was drawn**, so an
+  overlay that has never drawn answers no pick. `RegisterRouteOverlayType` is separate from
+  `RegisterBuiltinOverlayTypes` and **cannot be part of it** — that function lives in fvkit — and it
+  carries the shell's ONE planner to every instance the factory makes.
+- **`fv::RouteEditSession`** (`fv_route_edit.h`, 2026-08-27) — **the editor, and the reason it is
+  here is that there were two of them.** P5's header said the editor was deliberately left in
+  route.py; the cost showed up the moment Pippin drew the same document, because the desktop had a
+  drag and the phone had wholesale replacement, and two shells were on their way to two answers for
+  "what does dragging a waypoint mean". This is route.py's editor TRANSCRIBED, not redesigned:
+  select; the press-move-release drag with its **3-pixel Manhattan threshold** (below it a press is
+  a CLICK, so selecting costs no undo entry and does not dirty the document); **one undo snapshot
+  per drag, taken at the first movement rather than at the press**, so a whole drag undoes as the
+  single thing the user did; a cancel that SPENDS that snapshot, so a cancelled drag leaves no
+  history at all; armed add-mode (the key arms, the click supplies the position — a click has to
+  keep meaning "select"); delete; undo/redo over whole waypoint lists; and route.py's Escape order,
+  which unwinds one thing at a time (drag → mode → computed road → selection) and DECLINES when
+  there is nothing left, so the app can quit on it.
+  **Two ways in, and both are the same edit**: `OnMouseDown/Move/Up` + `OnKeyDown` for a shell whose
+  stack routes events (PythonView), and `BeginDrag`/`DragTo`/`EndDrag` plus the named commands for a
+  shell with its own recognizers (Pippin — whose still-open route-point drag is now a wiring job
+  rather than a second editor). 23 gtests in `test/route_edit_test.cpp`.
+- **Every position the editor produces is SNAPPED first.** `ResolvePixel` asks
+  `fv::app::SnapCandidates` (P19) before falling back to un-projecting the pixel, so a waypoint
+  dropped over a `.fvpoints` marker takes that marker's SURVEYED coordinate rather than a pixel's
+  worth of precision — measured in PythonView against the sample document: a drag onto `Ruddy
+  Turnstone` gives `32.6044007, -80.1083007`, identical to the row in the file. **Two things worth
+  not re-deriving.** (1) **The overlay excludes ITSELF from its own snap walk, and without that one
+  line no drag can move**: `SnapToPoint` answers out of what was DRAWN, the dragged waypoint IS
+  drawn under the cursor at distance ~0, and it is therefore first in a nearest-first list on every
+  frame — so the marker snaps to itself and sits still. Excluding the whole overlay rather than only
+  the dragged label is also right on its own terms (two waypoints of one route collapsing onto each
+  other is not an edit anybody asked for), and snapping to ANOTHER overlay's answer — P19's stated
+  payoff of starting a route where the last one ended — is untouched. (2) **The overlay keeps a COPY
+  of the projection each frame was drawn with**: the input SPI carries no projection, and keeping
+  the borrowed reference is wrong because its lifetime is the caller's business (PythonView replaces
+  its whole engine, and its projection with it, on any catalog change). A shell sets
+  `snap_tolerance_px` — 0 switches snapping off — because the core reads no settings file.
+- **`fv::RoadGraphOverlay`** (`fv_road_graph_overlay.h`, 2026-08-28) — **the routing network drawn
+  as ITSELF**, and the first debug view of the graph rather than of a route over it. Every arc in
+  view as its own geometry (shape points, not a chord) coloured by `RoadClass`, a white dot at
+  every graph NODE, a legend of the classes actually on screen with per-class arc counts, and a
+  pick that answers what the ROUTER sees at a pixel — class, direction, length, speed, and each of
+  bicycle/foot/motor in the graph's own three-way terms (allowed / private / denied). It exists
+  because a wrong bicycle route is never a question about the chart: the chart and the graph are
+  different objects, and they disagree exactly where the bug is — a cycleway drawn and not in the
+  graph, two halves of a path that look joined and share no node, a `bicycle=no` service road
+  rendered identically to the one beside it. **Four things worth not re-deriving.**
+  (1) **Every edge is two arcs and drawing both paints every road twice**; the canonical one is
+  the lower source id, EXCEPT when the other endpoint is outside the query box — nobody else will
+  ever visit that edge, and without the exception every road leaving the viewport disappears.
+  (2) **The query margin is a FRACTION OF THE VIEW, floored at 500 m and capped at 40 km.** It was
+  2000 px first, which fetched 26 screens of Kiawah to draw one: a pixel margin reaches further
+  the more you zoom IN, which is backwards. A fixed metric margin is wrong at both ends for the
+  mirror reason. The longest arc worth catching is a fraction of what you are looking at.
+  (3) **`path` is PINK because it was blue**, and blue is what a chart paints water — on Kiawah a
+  light-blue path was invisible against the lagoon it runs beside. A colour is only distinct if it
+  is distinct from the MAP, not just from the other twenty-one entries in the table.
+  (4) **`HitItem::feature` is PACKED, not minted** — the one case A5's rule allows, because a node
+  id and an arc index already ARE the graph's identifiers; the top bit says which kind. A NODE
+  outranks an arc rather than winning on distance: every node sits on an arc, so nearest-wins would
+  make the dots unclickable. Registered as a STATIC type at display order **900 — under the route
+  (1000)**, or a debug view of the roads would hide the answer it was opened to explain.
+  `RoadClassColor`/`RoadClassWidth` are free functions so a shell's own list of classes cannot
+  drift from the picture. 19 gtests in `test/road_graph_overlay_test.cpp`.
+
 ### 1e. Apps and bindings
 
 `port/bindings/pyfvw` (`pyfvw.{vector,catalog,engine,overlay,canvas,routing,draw,symbol,geo,nav,app}`
@@ -319,21 +696,69 @@ moving-map feeds: File > Open Track for a `.gpx` or an NMEA log, Overlays > Movi
 Connect NMEA Feed for a live one, and Use The Demo Feed to come back. The feed is a TUPLE
 (`("demo",)`, `("track", path)`, `("tcp", host, port)`, `("udp", port)`) dispatched at one
 `set_source`; a track file wins over a live host at startup; **an empty host in the dialog is the
-UDP listener**, which is the one field the two shapes of phone app differ by),
-`port/apps/route.py` (the route overlay: a document, a pick target and an editor), plus the
-`fvrender`, `fvpack` and `fvgraph` CLIs. Overlay types: `app.crosshair` (static, top-most, restored
+UDP listener**, which is the one field the two shapes of phone app differ by.
+**Overlays > Road Graph (debug)** since 2026-08-28 — `pyfvw.route.register_road_graph_overlay_type`
+carrying the app's ONE planner, so the picture is of the graph this application actually routes on.
+**REGISTERING A TYPE PUTS NOTHING IN THIS APP'S MENU**, and the comment beside the crosshair saying
+"the Overlays menu is now the registry" is aspirational rather than true: the menu is hand-built
+`add_checkbutton`s over `tk.BooleanVar`s applied by `_ui_apply_overlays`, so a new toggle is four
+touches — the var, the entry, the apply line, and a `first_of_type` accessor. Worth knowing before
+the next type is added believing otherwise. The toggle is `_set_road_graph` and not a bare
+`_set_static` because **the planner loads its graph LAZILY, on the first route**: an overlay
+switched on before anybody has routed would draw a blank screen and look broken when in fact
+nothing had opened the `.fvroad` yet, so turning it on loads the graph and a graph that will not
+load is reported AND unticks the box. Hovering already put the overlay's own one-line summary on
+the status bar through the existing `PickSession`; a CLICK adds a full multi-line dump on stdout
+(`_dump_road_graph_hit`) — the status line is what you read while moving, the dump is what you
+paste into a bug report, and it prints BOTH the arc and the node rather than whichever won the
+pick, because the interesting cases are exactly the ones where they disagree),
+`port/apps/route.py` (**209 lines on 2026-08-27, down from 963**: the tk tool palette and the
+type descriptor, and nothing else — the overlay it used to BE is `pyfvw.route.RouteOverlay`.
+`pyfvw.route` is RouteKit bound, which nothing had done before because pyfvw did not link
+`fv_routekit`; that unbuilt bridge, and not a design choice, is why there were two route
+overlays. What is given up with it: nothing in Python implements `EditTarget` + the mouse SPI
+any more, though the Overlay SPI itself is still exercised from Python by `Crosshair`,
+`CoverageOverlay`, `TrackPointsOverlay` and the pytest subclasses),
+`port/apps/Pippin/` (the iOS shell — as of P7 an app with a ship on it, a route you can make and a
+map that follows the ride:
+`Pippin.xcodeproj` with a SwiftUI target over the `PippinKit` ObjC++ framework, where `PPMap` hands
+Swift a `CGImage`, `PPViewport` is the camera as an immutable value, `PPLocationSource` turns
+CoreLocation into `PositionFix`es for a `MovingMapOverlay` in the stack, and `PPRoute`/`PPWaypoint`
+carry a route out to a SwiftUI sheet; its README is the door. **The mac build now configures
+`port/apps/Pippin` too**, for gtests over the pure-C++ half of PippinKit — the CoreLocation
+sentinel table (P4), `pippin::RouteStore`, the route document's whole lifecycle (P6), and
+`PPCameraFit.h`, the GPS-mode zoom-out rule (P7) — and returns before any of the iOS targets), plus the `fvrender`, `fvpack` and `fvgraph` CLIs — all three are
+**host tools that MAKE the data a phone reads**, and the iOS build skips them for that reason. Overlay types: `app.crosshair` (static, top-most, restored
 at startup) and `app.coverage` from the app; `fv.grid`, `fv.points`, `fv.movingmap` and
 PythonView's `fv.route` from the port.
 
 ### 1f. Test data (`testdata/` on disk, git-ignored, all present — see §2d on the spelling)
 
-dted · geotiff DOQs · rpf CADRG · tiros3 · `vpf/dnc17` · `VPF 2/WVSPLUS` ·
+dted · geotiff DOQs · **`geotiff/Atlanta SEC.tif`** (a current FAA VFR sectional, dropped
+2026-08-06, first read 2026-08-27 — 17951x12354 LZW 8-bit palette on Lambert Conformal
+Conic 2SP, the only LZW and the only LCC sample in the tree; its bbox is the whole SHEET,
+legend panel and margins included, so it reaches ~1 degree past the charted neatline on
+every side) · rpf CADRG · tiros3 · `vpf/dnc17` · `VPF 2/WVSPLUS` ·
 `GeoSymbol/{SymAssign,Graphics}` (DataDir = `TestData`) and `GeoSymbol/makiPng` ·
 `OSM/map*.osm` (adjacent, OVERLAPPING Kiawah Island exports — **enumerate them, never name them**;
 refreshed 2026-08-17, the third cut) · `OSM/kiawah.fvroad` (a BUILD ARTIFACT, read by the app and by
 no test — and the 2026-08-17 one is `--ignore-access`, see §2d) ·
+`OSM/kiawah.mbtiles` (a BUILD ARTIFACT, 119 tiles z0..z14 over the Pippin bbox. **REBUILT
+2026-08-27 and NO LONGER A CUT**: it is now tilemaker run straight at
+`--bbox=-80.17,32.55,-79.97,32.67` over a newer `us-south` pbf — 2.49 MB, up from the 1.9 MB
+`mbtiles_cut.py` cut — which is a legitimate way to make it and leaves `us-south.mbtiles` in the
+tree a different vintage. `OsmRender.KiawahCutMatchesSource` pins the pack pixel-for-pixel against
+its source rather than against a hash, so it now ASKS FIRST whether the pack is a cut of this
+source (are the shared z14 tile blobs byte-identical? measured that day: 0 of 16) and SKIPS with
+that count when it is not, rather than failing as though the renderer had moved. **The open
+question is Chris's**: if the pipeline is now tilemaker-with-`--bbox` rather than tilemaker-then-cut,
+`mbtiles_cut.py` has no caller and the test has no subject — the repair is then either to re-cut
+the pack from this us-south, or to give the test a cut it makes itself at test time (sqlite3 is
+already on `fv_osm_test`'s link line, and DATA-1 wrote a four-tile MBTiles with it for exactly this
+kind of reason). Do not "fix" it by re-pinning a hash: P1 chose agreement-with-its-source
+precisely so the test would never need re-pinning when us-south is re-cut) ·
 `OSM/us-south-260728.osm.pbf` (4 GB raw extract) ·
-`kiawah_cycle.gpx` (MM6's GPX fixture — a real 28-minute ride on Kiawah, **1705 points at 1 Hz**,
+`kiawah_cycle.gpx` (MM6's GPX fixture, and since P4 also **staged into Pippin's pack** as its demo feed — a real 28-minute ride on Kiawah, **1705 points at 1 Hz**,
 1704 s, no gaps and no repeated stamps, exported from a Garmin FIT file; its elevation runs 9.4 m
 down to **−6.2 m**, which is what makes an unsigned or clamped `<ele>` show up) ·
 `OSM/mbtiles/us-south.mbtiles` (4.4 GB, 4,872,934 tiles, **re-cut 2026-08-17** — ocean merged and now
@@ -351,8 +776,11 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
 
 | # | Session | What it is |
 |---|---------|-----------|
-| **MM5b** | Moving map, the one optional slice left | **MM1–MM7 are ALL built** — the core reads three feeds and since MM7 the app opens all of them (§1a, §1e). What is left is optional and was optional when it was written down: **MM5b**, an HMM/Viterbi match over a sliding window with network-distance transition costs (OSRM's shape), which MM5 measured exactly the value of — the projection removes the across-track error and leaves the along-track error, 9.32 m in and 5.96 m out over 1295 fixes. The seam is ready (`RoadCandidate` carries `along_m` and the arc's ends) and nothing is shaped around its absence. Also still waiting, on things rather than on work: a **serial** transport (for a device to test against) and **CoreLocation** (for NMEA-over-TCP to prove insufficient). No breadcrumb trail — that is a later plan. |
+| **P9 (snap points)** | Pippin, the iOS app — everything left is OPTIONAL | **P1–P8, P12, P13 and P9's POINTS half are built**: the data pack, the iOS cross-build, the Xcode project, `PippinKit`, a styled Kiawah, a map that pans and pinches, an ownship riding it off either feed, `port/RouteKit/`, a route the user can make on the phone, a map that follows the ride, and (P8, 2026-08-19) **the trip computer** — `fvkit/nav/trip.h`, 27 tests, and the ride bar now showing the RIDE's numbers rather than the ROUTE's. **Pippin now meets every hard requirement in `port/apps/Pippin_requirements.md`**; P9 (compass + `.fvpoints` snap points), P10 (GPX record + share) and P11 (the pick button naming the nearest road/path) are all listed there as optional, so a Pippin sitting is a CHOICE rather than a queue — **P9, P10 and P11 are now built, and only P9's snap-points picker is left**. Read `port/pippin-plan.md` §P9–§P11 and `port/apps/Pippin/README.md`, in that order. **P9's POINTS half is built (2026-08-20)** and Chris asked for it by name, compass deferred: schema 3 puts `phone` and `url` on a `.fvpoints` row; `PointOverlay` gained `SetSymbolDpiScale` and `UpdatePoint`; `PPPointStore.{h,cpp}` is `PPRouteStore` for points (seed from the pack once, write on every edit, nearest-wins hit test) with 15 mac tests; and the shell gained a points button beside Route, a tap recognizer, an info sheet whose phone and URL are `Link`s, and an editor with a shape/colour picker, a Location row and Delete. **Two shell changes the same day, from Chris using it**: adding is now the points button HELD DOWN rather than a small `+` (a hard press is the same gesture; armed only while the points are shown; the tap that follows a hold is stepped over by a timestamp the gesture leaves), and the editor's Location row IS the route sheet's stop row (`LocationRow`) — so a point can be placed at the phone's own fix, and P11's "say the road, not the numbers" is a change to `LocationText.describe` + `PickOverlay.readout`, both shared by the route and the points. **The plan said the add/edit UI was OUT because "that is where A4's editor machinery would enter" — it did not**: A4's `OverlayEditor` is a desktop MODE object and a phone has a tap and a sheet instead, so nothing from A4 was built. **P9's COMPASS half went in the same day (2026-08-20), and with it THE LAG.** Chris asked for three things in one sentence and all three are built: the compass toggles north-up/course-up, course-up centres and orients continuously, and two fingers rotate the chart when the map is not following. **The lag was the APRON, not the slew**: MM2's track-up apron is a `W/5 x 2H/5` box with the ship anchored at its lower edge, and `MovingMapCamera::Update` returns early while the ship is inside it — so a rider heading up the screen crosses a third of a screen, about a minute of riding, before the map moves OR the chart turns. Course-up switches it off (`CameraModes::continuous`); north-up keeps it untouched, which is the half Chris asked to keep. Continuous centring then costs what MM3's header says it costs unless the animation is retuned with it, so the follow slew is `kLinear` and lasts **one MEASURED fix interval** — shorter stutters once a second, longer trails permanently, equal slides at the rider's own speed — and the measurement is `PPFollowCadence.h` (a running average over the ticks that SAW a fix, because `Tick` drains its queue in a loop; a gap resets rather than averages), 12 gtests, because a stutter and a trail are both invisible in a still. **The one line nobody will re-derive**: north-up follow has to PIN the chart at north, since MM2 preserves the current turn when `auto_rotate` is off — and `SetRotationSupported(false)` also does `slew_.Reset(center, 0)`, so the slew ALONE must then be told where the chart really is (`slew().Reset`, never `ResetMap`) or the chart SNAPS to north instead of unwinding (`PPMap.mm`, `applyRotationPin:`). Two-finger rotate is `PPViewport.rotated(by:about:)` plus a recognizer with a 12-degree dead zone (only what is PAST the wall is applied, so it neither turns on an accidental pinch-twist nor jumps when it arms), refused in GPS mode by `MapModel.rotate`, and the slew's re-base learned the ROTATION in the same session (compared the short way round) because a twist moves the chart behind its back exactly as a drag moves its centre. What P9 still owes is only the snap-points picker in the route sheet (the document is in the app and `MapModel.points` is published, so the picker is Swift with no C++ under it). **P10 IS BUILT (2026-08-21)** and it is three things. (1) **`gpx.h` writes as well as reads** and **`gpx_recorder.h` APPENDS** — both in §1a's nav bullets, and the recorder's footer trick is the only clever thing in it. (2) **It plugged into the app in ONE LINE because P8 had already built the socket**: `feedTrip:` is now `consumeRawFix:` and feeds the recorder beside the trip computer, since it was already the one method both feeds pass through, taking the RAW fix and gating a live fix's double arrival by timestamp. **Recording deliberately does NOT require GPS mode** — *follow me* and *keep this* are different questions — but it does require a feed. (3) **A single point shares too** (Chris asked in the same sentence): `PPMap.writePoint(_:toGpxURL:)` is a CLASS method, so it is the one thing on that class exempt from the render-queue rule; "Open in Maps" is a `maps:` URL and not a share at all, while "Share" carries TWO items — a `.gpx` for a recipient with a mapping app and an `https://maps.apple.com` link for one with only a phone. **Two things worth not re-deriving.** The DEMO feed records what the TICK saw (a scripted replay is polled inside `tickMovingMap`, and `Tick` drains its queue reporting only the last fix), so a recorded demo has gaps where the display link was parked; a LIVE receiver's fixes arrive through `pushFix:` one call each and none are lost. And **the one bug this session found was P9's**: `CircleButton`'s tap-versus-hold guard was a timestamp honoured for one second, so **a hold longer than a second fell through to the tap** — invisible while it merely toggled the points, and *stopping the ride* once the record button had it. The flag is now cleared when a press BEGINS (a zero-distance `DragGesture` is SwiftUI's only spelling of "touch down"), which closes that and the stale-flag leak the timestamp existed to avoid. **P12 (2026-08-19) is built and was not one of them**: the two findings from Chris's first real-device run, both of them the shell counting in the wrong unit — the map was drawn 5.09x heavy and 1.58 zoom levels in because an authored pixel was taken to be a surface pixel rather than a POINT, and the app opened fitting the pack rather than filling the screen. Shell-only, no core change, no golden moved (§2b). **P13 (2026-08-19) is the same shape**: five look-and-feel changes Chris asked for after riding it — the zoom-in limit two levels deeper (1:1,614), the route line doubled (`fv_route_overlay.cpp`, the only change outside `PippinKit` and the same device-pixel-vs-point error P12 found one layer down), the ride bar at 26 pt split into an upper-left "what has happened" and an upper-right "what is left", the app icon (`art/make_icon.py` squares the artwork's rounded corners because iOS masks the icon itself), and Chris's edited `style.json` committed so `stage_data.py` ships it. **P11 IS BUILT (2026-08-20), the same day as both halves of P9**, and it is one paragraph: the pick button and the two sheets' Location rows say WHERE instead of printing a lat/lon. **The whole difficulty is the word "usable".** The snap index is built at `RoadSnapFilter::kAll` — it must be, or the ship would never snap to the cycleway it is riding on — so the NEAREST candidate is very often a road the selected profile refuses, and Kiawah's own case is the proof: **the parkway carries `bicycle=no` for its whole length** and the island put a cycleway beside it, so standing ON the parkway the button must read "cycleway" for a rider and "Kiawah Island Parkway" for a car. Making that true rather than approximate is the one structural change this session made anywhere outside Pippin: **`Router::ArcUsable` became the free `fv::routing::ArcUsable`** (the member calls it; the search reads better as a member) and **`RoutePlanner::BuildOptions` became public**, so the label is priced by the same rule file, the same profile lookup and the same poll as the replan that follows it — not by a second copy of the router's rules that could drift. `private` still counts as usable (O5b prices a private road rather than deleting it; on a gated island they ARE the street network). The rest is `pippin::PlaceDescription` + `RouteStore::DescribePoint(p, max_m, profile, remember)` with 10 mac gtests, `PPPlace` across the bridge, and the English composed in `LocationText` — a STRUCT rather than the plan's `std::string` because the button says "Use Flyaway Drive" and the row says "Flyaway Drive" and neither should have to slice the other's sentence apart. **Three things worth not re-deriving.** (1) **"No usable path" is a LABEL AND NOT A BLOCK** — the button stays enabled and the pick lands, because a rider aiming at a beach means it; a pack with no `.fvroad` says the same thing and is right to. (2) **A ROW IS NOT A CROSSHAIR.** Only the crosshair remembers (`remember` false for a sheet), because only a moving crosshair can blink — at a junction the nearest of two roads metres apart flips as the map drifts a pixel, so the road named last is kept while a different one is within `routing.pick_stay_bonus_m` (10 m); a row looking up a stop a mile away would hand that memory a head start somewhere else. And a row with no road near it falls back to the NUMBERS, not to the button's label: "No usable path" is right about a place somebody is still choosing and says nothing about a place they have already chosen. (3) **`pippin.ini` carries the radius** (`routing.pick_radius_m`, 50 m), deliberately NOT the snapper's `max_radius_m` — 60 m there is a GPS error budget and this is a thumb. What P8 leaves on the desk, none of it blocking: **the odometer's anchor floor is one number (`min_movement_m`, 2 m) serving a walker and a parked bike alike**, measured at 2.85 m of loss over a 6.1 km ride — right for this fixture, unmeasured for a receiver worse than the one that recorded it; **the distance-to-go projection is stateless and takes the NEAREST segment**, which a route doubling back on itself can put on the wrong limb (the fix, if it is ever wanted, is a search window around the last projection and NOT a progress ratchet — `trip.cpp` says why); and **`build-xcode/` is a trap left by an earlier session** — `xcodebuild` with no `-derivedDataPath` writes to DerivedData, so installing from `build-xcode/` runs stale code after a build that said SUCCEEDED (P8 lost time to exactly that; the README now says so where the install command is). **P14 IS BUILT (2026-08-21)**, and it is the only Pippin session so far that added a TARGET: a share sheet lists app extensions and nothing else, so receiving a place from Apple Maps means `PippinShare.appex` embedded in the app, and the pbxproj grew a native target, an Embed App Extensions phase and a second bundle id by hand. **The wrinkle nobody should re-derive**: an Apple Maps share carries `coordinate=` on iOS 18 and in the iOS 26 SIMULATOR, but an iOS 26 DEVICE share is often `https://maps.apple/p/XXXX` with nothing in it, and the coordinate lives only in an intermediate hop of its redirect chain (the LAST hop is a page that says the link is unsupported) — same for every Google `maps.app.goo.gl` link. So `PlaceLink.resolve` sniffs redirects, it is the only network call in Pippin, and `PlaceLink.allowsNetworkLookup` is the one constant that turns it off. **The other thing worth keeping**: a Google `/maps/place/…` URL holds TWO coordinate pairs — `@lat,lng,z` is the camera and `!3d…!4d…` is the place — and reading them in the wrong order puts the marker a screenful from where the user pointed. The parser is Foundation-only on purpose (`Pippin/PlaceLink.swift`, compiled into both targets), so its table of real share URLs is 56 checks under `ctest -R place_link` rather than something to try in the simulator. **P15 IS BUILT (2026-08-25) and is one paragraph**: Chris rode it and the phone hit its lock screen, because no line in the tree had ever touched `isIdleTimerDisabled`. The reason it is a BUG and not a preference is the entitlements — WhenInUse plus no `UIBackgroundModes` means a lock backgrounds and then SUSPENDS the process, CoreLocation stops, and a ride being recorded gets a hole in it with nothing in the GPX saying so. `MapModel.updateIdleTimer()` sets the flag to `gpsMode \|\| isRecording` off a `didSet` on both, so a mode added later cannot forget it. **Two limits worth not re-deriving**: it suppresses the IDLE countdown ONLY (a deliberate side-button press locks the phone and no app overrides that, so a screen-off recording is still gapped — background location remains explicitly out of v1), and iOS consults the FOREGROUND app's flag, so Pippin's stops applying the instant it backgrounds and cannot hold another app's screen on. **P16, P17 AND P18 ARE ALL BUILT (2026-08-25), asked for in separate sessions and in that order** (`port/pippin-plan.md` §P16–§P18). **P16 is one paragraph**: every fix called `setContentDirty()`, so an ownship nobody could see cost a full rasterize; the gate is `RenderGate.swift` — a value with ONE BIT of state, tested off the phone because both of its failure modes are invisible in a still. The bit is the part nobody should re-derive: the test runs on EVERY fix even when the render does not (it is what notices the ship returning), and the DEPARTURE gets a frame of its own (`visible || wasVisible`) or the stale chevron stays pinned half on the edge of the last frame drawn. Everything that cannot be answered — no fix position, no surface, a non-finite projection — renders and assumes visible. The margin is `PPMap.ownshipSymbolRadiusInPoints`, which is the symbol's REACH and not its half-width, because `fv.north` draws at twice its shape box along its axis. Nothing a normal user sees freezes: the trip readout is gated on `gpsMode` and the stats on `PPShowStats`. **P17 IS BUILT (2026-08-25)** and is the same shape as P16 one layer out: `stopFeed()` is dead code, so the most expensive configuration CoreLocation offers ran from `onAppear` to background whatever the mode. `desiredAccuracy` is only a hint and the step change is at `ThreeKilometers` (where cell and wifi can answer), not at `Best`, so idle drops to a named COARSE configuration and `LocationPolicy` picks between the two. The bit nobody should re-derive is that the policy hangs off **`viewport`'s `didSet`** as much as off a fix: coarse means a still phone delivers almost nothing, and the ship is off screen because the user PANNED away from it, so the camera — not a fix — is what notices it come back. Two thresholds (viewport+25% to restore, viewport+100% to drop) answer the flap; a 100 m coarse filter answers the tier stepping over its own return threshold; `demandFullAccuracy()` in `setGpsMode(true)` and `startRecording()` answers the cold start, though what HOLDS the tier afterwards is `following || recording` and not the demand. **P18 IS BUILT (2026-08-25)** and the plan's own objection to a guard band turned out to be an objection to a BLITTER. There is no blitter in this app and never was: `MapScreen`'s preview transform has scaled, turned and offset the last frame on the GPU since P3, so the band needed pixels and not code, and rotation — the thing that was supposed to kill it — is done by the compositor. A frame is two layers (banded base map, kept; screen-sized transparent overlay, redrawn every frame at the live camera), each with its own transform. `PPBaseCoverage.h` decides a hit, `CpuCanvas::BlendPixel` learned to composite onto a translucent destination with the opaque case kept byte-identical, and the loop learned a SETTLE frame so a cache costs no sharpness. The bit that nearly buried it is P3's live-render budget: judged on the last frame's cost it refuses the very frame that would build the band, which measured as 0 hits in 2 frames over a drag. **The prize was not battery and it landed**: content never invalidates the base, so a dragged route point costs one overlay pass. |
+| **OVL-1..n** | The remaining FalconView overlays, over the §1a-bis toolkit | **The queue, ranked, and the ranking is the point.** `grid_map` is done (the graticule; MGRS/GARS dropped). Already ported or superseded: points (`fv.points` is a NATIVE `.fvpoints`, not a localpnt port), moving map, route, coverage. **Tier 1 — small, self-contained, and each one exercises a different corner of the toolkit**: `scalebar` (1.3k lines; pure map furniture over `DrawSymbolAtPixel`, and the cheapest proof that the property schema generalises to a second overlay), `Contour` (3.0k; DTED is ported and its interval ladder is a `ScaleTable` verbatim), `TAMask` (3.8k; terrain avoidance mask, DTED again). **Tier 2 — real documents, so they need `Persistence` + `EditTarget` as well**: `shp` (17.9k, but the vector seam and OGR work is done, so most of it is document lifecycle), `nitf` (19.3k; ImageLib is ported), `localpnt` (16.6k — the REAL local-points overlay, dbase-backed; decide first whether to port it or keep `.fvpoints` and write an importer), `ar_edit` (13.6k, niche). **Tier 3 — heavy shell coupling, last or never**: `PrintToolOverlay` (18.6k, page layout), `TacticalModel` (18.1k, COLLADA/3D), `SkyViewOverlay` (6.9k, 3D), `catalog/Cov_ovl` (16k, largely superseded by `app.coverage`). **The rule the grid session established**: read the Windows overlay for its DECISIONS (tables, thresholds, draw order, the shape of its labels) and throw away its machinery — the class hierarchies where a flag would do, the static CLists, the per-frame registry reads, the property page. Every one of those had a `grid_map` twin and none of them came across. |
+| **MM5b** | Moving map, the one optional slice left | **MM1–MM7 are ALL built** — the core reads three feeds and since MM7 the app opens all of them (§1a, §1e). What is left is optional and was optional when it was written down: **MM5b**, an HMM/Viterbi match over a sliding window with network-distance transition costs (OSRM's shape), which MM5 measured exactly the value of — the projection removes the across-track error and leaves the along-track error, 9.32 m in and 5.96 m out over 1295 fixes. The seam is ready (`RoadCandidate` carries `along_m` and the arc's ends) and nothing is shaped around its absence. Also still waiting, on things rather than on work: a **serial** transport (for a device to test against). **CoreLocation is no longer on this list** — Pippin P4 built it (`PPLocationSource`), and it never contradicted the desktop rule: "NMEA-over-TCP until it proves insufficient" was about a phone feeding a mac, and on the phone itself CoreLocation is the only feed there is. No breadcrumb trail — that is a later plan. |
 | **O5** | A route the user can steer — what is left | **Via-way restrictions**, which O5a recognises, counts and deliberately does not apply: a search state carries the arc it arrived on and nothing further back, so these need either a longer state or the via arcs edge-expanded at build time. Smaller, now that the bike profile makes it visible: **steps cost nothing extra** beyond being excluded outright, and there is **no elevation term at all**. A ferry's **timetable** is likewise unmodelled — the crossing costs its `duration`, never the wait for the next sailing. |
+| **D1 (route-data audit)** | A tool that finds the OSM defects a route trips over, and a Monte Carlo connectivity sweep — **asked for by Chris 2026-08-27** | **Unstarted. The motivating case is worked out in full, so start from it rather than from a blank page.** Chris's `wont_route.fvrte` (Ruddy Turnstone -> beach access 12) would not route on the phone or in PythonView, and the investigation found THREE independent causes, only one of which was code. **(1) The profile-aware snap — FIXED 2026-08-27, and the vertex-only snap under it FIXED 2026-08-28 (mid-road snapping); see §1d.** **(2) The file asked for `car` on a trip only a bicycle can make**, which no amount of data will fix and which the app should probably SAY rather than reporting "not connected". **(3) A GENUINELY MISSING CROSSWALK IN OSM, and this is what the tool is for.** Kiawah's Governors Drive is `access=private bicycle=no foot=no`; riding ALONG it is barred and CROSSING it is not, and the router already models that correctly for free — a crossing shares a NODE with the barred road and traverses none of its ARCS, which is exactly how Sweet Gum Lane reaches Snowy Egret Court (both hold node `2532617711`; no crossing tags involved, the shared node IS the crossing). Of the seven ways meeting Governors Drive, four are true crossings (two ways at one node) and three are T-junctions with nothing opposite — and one of those three, **Blue Heron Pond Road (node `2532445137`)**, is the only tie its whole enclave has to the island. Measured: injecting one 2-node crossing way from cycleway node `3216238623` to `2532445137` took Oyster Shell Road from **0/80 to 74/80** bicycle-reachable over a random sample, with car reachability **67/80 unchanged**. **THE INVARIANT TO TEST AGAINST IS CHRIS'S** (2026-08-27): *you can get anywhere on the island by bike, though you may have to walk the bike 25 yards along a dirt path or a wooden bridge.* That is a statement about the ISLAND and not about the data, which is what makes it a test oracle — every bike-unreachable pair is then either a data defect to survey or a stretch the router should be allowed to walk. **What the tool should do**, in the order the investigation wanted it: (a) a **Monte Carlo sweep** — sample node pairs per profile, route them, and report the unreachable fraction and the CLUSTERS it falls into (island-wide from one hub, 250 samples: bicycle 51 unreachable before the Blue Heron crossing, 46 after; car 65 — some of that is legitimately gated and some is ways clipped at the extract boundary, and telling those apart is most of the value); (b) **missing-crossing candidates** — a T-junction on a way this profile may not use, with a way it MAY use passing within N metres and no shared node (Sawgrass at 12.2 m and Spartina at 22.5 m are the two remaining candidates here, both unsurveyed); (c) **islands** — a sub-network this profile can reach only through a barred way, which is what Oyster Shell was; (d) **snap traps** — points whose nearest graph node has no arc this profile can use, now that §1d's filter makes them survivable rather than fatal. Output should be COORDINATES a person can open in an editor, because the deliverable is an upstream OSM fix and not a local workaround. **The "walk the bike" half is a real design question and is NOT settled**: it is either a mixed-mode profile (bicycle, with barred stretches admitted at walking speed and a hard length cap) or a post-pass that stitches two bike components through a short foot-legal path — the first is a rules change and the second is a router change, and the invariant above is what decides which by saying how long those stretches actually are. Nothing about this is on the critical path for Pippin; it exists because the app's REASON FOR BEING is handling data a commercial router silently gets wrong (Chris 2026-08-27), and a defect you cannot find is one you cannot fix upstream. Tool goes in `port/tools/`; the analysis scripts this session threw away did (a) and (c) in about 40 lines of `pyfvw.routing` each. |
 | **R3d** | Perf, fourth slice — *if anything still needs it* | R3c re-measured the whole profile at **-O2** (the default build type was the real finding): **cold 49 ms = query 29 + style 11 + draw 8; a retained pan 3.4 ms; a pan out of the retained area 11.6 ms = query 0.7 + style 6.9 + draw 3.5**. The cold 29 ms is the one-time parse of a whole DNC library and the 6.9 ms is **GeoSym styling** — so the next target, if a user still feels one, is `LookupTableStyleEngine`, not the query and not the rasterizer. **Do not start this without a fresh profile**: the plan on this line has been wrong about where the time was three times running. The columnar `FeatureBatch` is a **measured non-goal**. |
 
 ### 2b. Product gaps
@@ -369,16 +797,31 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
   broken differently by the two paths** (pinned to within 1 px rather than removed with an epsilon),
   and **the affine fit is now over a box up to √2 larger**, so PROJECTED imagery (the UTM DOQs)
   carries a slightly larger residual when turned. Equal-arc products are exact either way.
-- **The point overlay has no EDITOR, so a `.fvpoints` document is read-mostly in the app** (A6).
-  The C++ side has everything one would need — `AddPoint`/`RemovePoint`/`SetSelected`, a dirty flag,
-  a save that replaces the table in one transaction — and all of it is bound. What is missing is an
-  `OverlayEditor` for `fv.points` and the two gestures behind it (click-to-place, drag-to-move),
-  the same shape `RouteEditor` already has in `route.py`. Schema 2 sharpens what it would offer: a
-  symbol PICKER over the embedded palette. **What is NOT there is any way to get artwork into a
-  document from the app** — `add_symbol_from_png` is bound and only `WriteSampleFile` calls it.
-  Related and smaller: the sample document is written to `<catalog dir>/sample.fvpoints` by a
-  File-menu item, which is a demo rather than data management; the shapes ignore device DPI (below);
-  and point labels are off by default because there is no label collision (below).
+- **The point overlay has no editor ON THE DESKTOP** (A6). **Pippin now has one** (P9,
+  2026-08-20) and it needed nothing from A4: an `OverlayEditor` is a desktop MODE object — a tool
+  palette, a current tool, a `KeyEvent` stream, a mode that follows the current overlay — and a
+  phone has a TAP and a SHEET instead, which together are the whole editor. So what P9 built is
+  `PPPointStore` (seed, write-per-edit, nearest-wins hit test; mac-tested) plus two SwiftUI
+  sheets, and PythonView is still the shell that would want A4's shape: an `OverlayEditor` for
+  `fv.points` with click-to-place and drag-to-move, as `RouteEditor` has in `route.py`.
+  **`MapPoint` gained `phone` and `url` (schema 3)** and the reader now probes PER COLUMN and
+  SELECTs a literal default for a missing one, so schema 1, 2 and 3 open through one query —
+  including a document interrupted between two of the migration's `ALTER`s. Still open:
+  **Pippin's editor picks a SYMBOL too** (2026-08-20, the same day, at Chris's asking):
+  `stage_data.py` embeds 43 maki PNGs into the seed's `symbols` table and the editor offers
+  them, which works because a palette is NOT a projection of the points — a row nothing
+  references is kept, saved and handed back. `symbol_id` is a foreign key into that table and
+  never a path into an icon directory, which is the property schema 2 exists for. The claim that
+  a picker would be expensive ("a palette picker means rasterising a symbol through `CpuCanvas`
+  into a `UIImage` per cell") was WRONG and is retracted: a document stores PNG BYTES and
+  `UIImage(data:)` takes exactly those. What IS still open: **no way to get NEW artwork into a
+  document from an app** (`add_symbol_from_png` is bound and only `WriteSampleFile` and the
+  staging script call it), so the palette a document ships with is the palette it has. Also
+  still true: the sample document is written to
+  `<catalog dir>/sample.fvpoints` by a File-menu item, which is a demo rather than data
+  management, and point labels are off by DEFAULT because there is no label collision (below) —
+  Pippin turns them on in `pippin.ini` because a couple of dozen places on one island do not
+  collide.
 - **Snapping removes the ACROSS-track error and leaves the ALONG-track error alone** (MM5), which
   is what a projection can do and the whole of it: a fix 10 m up the road projects onto the road
   10 m up it. Measured over 1295 fixes of a routed Kiawah track with ±12 m of scatter — mean 9.32 m
@@ -398,16 +841,92 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
   feature-class list only from **FCA**, and WVS thematic coverages have none → empty. Fix =
   enumerate from **FCS or a directory scan**, then a simple stroke style engine (WVS has no GeoSym
   symbology). Data: `TestData/VPF 2/WVSPLUS/WVS{012,040,120}M`.
+- **LINE WEIGHT AND THE OPENING VIEW: both were the shell counting in the wrong unit, and both
+  are FIXED** (Pippin P12, 2026-08-19; raised by Chris off a real iPhone 14 Pro the same day).
+  Kept here rather than deleted, because the arithmetic is the part worth not re-deriving.
+  **Neither fix touches the core, so no OSM golden moved** — this was `PippinKit` all along.
+  * The crayon was NOT `display.mm_per_pixel` (0.0519 assumed against the 14 Pro's true 0.0552
+    is 6%). It was `VectorRenderer::SetDeviceDpi(25.4 / mmPerPixel)` = 489 dpi feeding
+    `OsmStyleEngine`'s `dpi / kStyleNominalDpi` — **5.09x** — compounded by the zoom relation
+    being derived over the same surface pixel, which styled the map **1.58 levels** further in
+    than the view being shown. Measured first, as this entry demanded: one road, one scale,
+    both shells — a minor road at 1:25,000 drew 36 px = **1.87 mm** on the phone against the
+    desktop's 3 px = **0.75 mm**. Now 11 px = 0.57 mm at z15.05.
+  * The fix is one sentence: **an authored pixel is one iOS POINT** — for a GL style's
+    `line-width` exactly as P4 already had it for a symbol's `SetSizePx`. `PPViewport.mmPerPoint`
+    is the single definition; the source and the style derive their zoom over it, the renderer
+    gets `96 * pixelsPerPoint`, and the projection keeps the surface pixel because it is the one
+    thing that really is placing geometry on a screen. `PPViewport`'s zoom limits had assumed
+    exactly this ("one tile pixel per POINT") since P3, so the shell now counts in one unit.
+  * **The consequence for `display.mm_per_pixel` as a bisect tool**: it no longer moves line
+    weight (the pixels-per-point ratio is the backing scale either way). It moves the PHYSICAL
+    size of the result and the zoom, which is what a pitch override should do.
+  * The opening view now COVERS the screen rather than containing the pack
+    (`-[PPViewport homeScaleFilling:]`, `min` where contain takes `max`, 2% overfill). The
+    zoom-OUT limit deliberately stays on the CONTAIN fit — how far out is a fact about the
+    pack, not about where the app opens. P3's probe check was asking the old question and
+    passing while the phone showed background bands; it asks the new one now, on both axes.
 - **Symbol size does not honour device DPI while line widths do.** A symbol is sized on its
   product's own nominal pixel — `himetric_per_symbol_pixel()`, 25.4 for GeoSym and 32 for S-52 —
   and a raster tile is blitted 1:1. **None of those three numbers is the device's**, so on a retina
   pitch every symbol is half its physical size while the text beside it is right. The fix is one
   more factor (`dpi/100` on display lists, `0.32 mm / device mm-per-px` on tiles); the reason it has
   not moved is the bit-faithful rule — it would move every GeoSym golden. **G3 built the way out and
-  nothing sets it**: `GeoDraw::symbol_dpi_scale` really multiplies the stamp but defaults to 1.0,
-  because an overlay does not know the device and no shell passes one down. Same shape as
-  `PickSession::tolerance_px` in §2c. G2's `SymbolPixmap::pixel_ratio` is the other half for RASTER
-  symbols: it does not fix this, but a high-DPI sprite set is now at least expressible.
+  SOMETHING NOW SETS IT** (Pippin P4, 2026-08-18): `GeoDraw::symbol_dpi_scale` still defaults to
+  1.0 for everything else, but Pippin passes `one iOS point / the viewport's mm-per-pixel` down to
+  the moving map, so on the phone an authored pixel is a POINT and a 24-px ownship is 24 points on
+  any screen. **P12 extended that sentence to the STYLE ENGINE** (the item above): the same
+  `pixelsPerPoint` now sets `SetDeviceDpi`, so on this shell a symbol pixel and a style pixel are
+  finally the same unit. **The reference is the argument, not the mechanism**: Pippin chose the app's own unit
+  because an ownship is furniture, while the 0.32 mm above is the right reference for CHART
+  symbology pinned against paper — the two want telling apart at their sites the first time one
+  product needs each. **P5 did that telling apart** (2026-08-18): `RouteOverlay::SetSymbolDpiScale`
+  is the second setter, its header carries the argument for each reference, and the overlay's HIT
+  TEST scales with it too — a marker drawn twice the size that did not also become twice the target
+  would be a thing a finger can see and cannot press. **P9 made `fv::PointOverlay` the THIRD**
+  (2026-08-20) and it is the first one in `fvkit` itself rather than in an app module: the comment
+  over `PointShape` had said since G2 that the decision was deferred because "the overlay does not
+  know the device and the shell that does has no way to tell it", and `SetSymbolDpiScale` is that
+  way. Everything measured against the drawn marker moves with it — the cull box, the LABEL's type
+  size (a 12-px name beside a marker drawn 3x is a caption a third the height of what it names) and
+  the hit test. So the mechanism is settled; what is still
+  open is unchanged, because every CHART product passes nothing and the 0.32 mm reference still has
+  no consumer. **P6 made the app's half of it routine**: `PPMap` computes the factor once per tick
+  and hands the SAME number to both overlays, so a shell setting it is now a line of code rather
+  than a decision. PythonView still sets nothing, which is the desktop half of this item and is
+  where `display.mm_per_pixel` already sits waiting. Same shape as `PickSession::tolerance_px` in
+  §2c. G2's `SymbolPixmap::pixel_ratio` is the other half for RASTER symbols: it does not fix this,
+  but a high-DPI sprite set is now at least expressible.
+  P4 also turned up a smaller thing at the same seam: **`MovingMapOverlay::SetSizePx` is the full
+  drawn width only for symbols that fit the shape box.** `fv.ownship` does; `fv.north` is map
+  furniture and `builtin.cpp` draws it at TWICE the box along its axis, so a chevron asking for 24
+  draws 48. Documented at both sites rather than changed, since the authoring is deliberate.
+- **The route now exists TWICE, and that was the deal** (P5). `port/RouteKit/` is route.py's
+  overlay in C++ and `route.py` is untouched, exactly as the Pippin plan asked — the Python one
+  keeps the editor (armed add-mode, drag, undo, the key bindings), the C++ one has `SetWaypoints`
+  and nothing else. Two things are duplicated rather than shared and will drift if nobody watches
+  them: the **document format** (pinned against each other by a byte-for-byte test over the fixture
+  route.py itself wrote, which is the whole reason that test exists) and the **status sentence and
+  fallback tree** in `follow_roads` / `RoutePlanner::Plan`, which are the same words and the same
+  branches typed twice with nothing comparing them. The stated way out is to rebase `route.py` onto
+  the C++ overlay through pyfvw — **and RouteKit is bound to nothing at all yet**, so that is the
+  first step and not a small one: the module would need a `pyfvw.route`, and route.py's editor
+  would need an `OverlayEditor` over a C++ document. Worth doing when a third shell appears, not
+  before.
+- **A route's LABELS are on by default, so a canvas with no default font fails its draw** (P5).
+  Deliberate on both halves — a waypoint's label IS its identity in the document, which is why they
+  default on here and off in `PointOverlay`, and `GeoDraw` reporting a missing font through Status
+  is what every other text-drawing overlay does. But the two together mean a shell that has not
+  called `CpuCanvas::SetDefaultFont` gets a route that draws NOTHING rather than a route without
+  names. Pippin's pack carries DejaVu and PythonView's canvas has a font, so nothing is broken
+  today; it is a trap for the next shell, and the honest fix is a canvas that draws the geometry and
+  reports the text failure rather than one that returns on the first bad Status.
+  **The other half of this item is CLOSED** (P6, 2026-08-19): the status line P5 left drawn on the
+  canvas at (10, 20) is turned OFF in Pippin (`SetShowStatus(false)`) and the words move to the
+  route sheet, where `RouteSnapshot::status` carries them. Two reasons, and the second is the one
+  worth keeping: (10, 20) is under the Dynamic Island, AND text drawn into the map bitmap rides
+  P3's preview transform, so it slides about with the chart under a finger. Anything that is not on
+  the earth belongs above the canvas, not in it.
 - **A session the user builds at RUN time cannot be persisted** (A3). `SaveConfiguration` /
   `RestoreConfiguration` round-trip through the live `fv::Settings` and are bound — but
   **`fv::Settings` has no `Save()` by rule S1** (the file is authored by a human and the application
@@ -431,7 +950,8 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
   index of the boxes the renderer is about to emit, rejecting a label that collides. **The boxes
   exist already** (the pick index takes one per label run). **E8 made this ENC's most visible
   defect** — a Charleston harbour view draws "Shutes Folly Island" three times, one per overlapping
-  cell. Note the second cause, which de-duplication alone will not fix: the 8 test cells span 4
+  cell; **Pippin P3 made it the most legible one**, a real pinch to z14 over the Kiawah marsh
+  drawing "Abbapoola Creek" FOUR times on one phone screen. Note the second cause, which de-duplication alone will not fix: the 8 test cells span 4
   usage bands over the same water and all are open at once, where an ECDIS shows one band, so the
   index has to key on more than the string.
 - **Text halos have no blur and only OSM sets one** (T2). `text-halo-blur` is ignored and counted —
@@ -477,7 +997,9 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
 
 - **A6's leftovers, none of them blocking**: no shell calls `OverlayManager::Reorder`, so the
   reorder DIALOG is unwritten and the stack order is whatever insertion-by-display-order produced;
-  `SnapToPoint` is bound and tested but **no overlay in the app answers it**, so nothing snaps;
+  ~~`SnapToPoint` is bound and tested but no overlay in the app answers it, so nothing snaps~~ —
+  **RESOLVED 2026-08-27**: `PointOverlay` and `RouteOverlay` both answer it (P19), and PythonView's
+  route editor snaps every waypoint it places, through `app.snap_candidates`;
   `EditorUiConstraints` is reported and greys nothing (the app has no rotation or projection
   controls to grey); `RoutingOverrides` is bound and unused; and **`route_double_click` is called by
   no shell**.
@@ -495,11 +1017,17 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
 - **`PickSession::tolerance_px` is 8 device pixels and the shell is supposed to scale it.** Same
   family as the symbol-DPI gap: the core has no business knowing a finger is wider than a mouse
   pointer. PythonView already knows its own `display.mm_per_pixel`, so this is one line whenever
-  somebody has a device where it is wrong.
-- **The route line's STYLE is derived, not chosen** (G3). `route.py` draws a calculated route dashed
-  when the request was a bicycle one and solid otherwise, decided by matching the profile NAME —
-  right for the two modes the app has keys for and silent about a third (a walking profile draws
-  exactly like a car). The honest fix is a per-profile line style in the rule file beside the
+  somebody has a device where it is wrong. **Pippin is the shell that does scale it** (P9): the
+  tolerance is `points.hit_tolerance` in the pack (22 points, about a thumb), `PPMap` multiplies
+  by the viewport's backing scale on the way down, and it is ADDED to the marker's own drawn
+  half-width — so a 22-pt marker is pressable 33 points from its centre, which is Apple's
+  44-point target arrived at honestly rather than by padding a rectangle.
+- **The route line's STYLE is derived, not chosen** (G3). It is derived in ONE place again as of
+  2026-08-27 (route.py's copy went with its overlay), and `fv::RoutePlanner`'s `IsBicycleRequest`
+  draws a calculated route dashed when the request was a bicycle one and solid otherwise, decided by
+  matching the profile NAME — right for the two modes the apps have keys for and silent about a
+  third (a walking profile draws exactly like a car). **And the dash it picks is currently invisible
+  — see §2d.** The honest fix is a per-profile line style in the rule file beside the
   weights, which is a rules-schema decision rather than a drawing one. Also unstyled:
   `pyfvw.draw.PRESETS` has ten entries and the app reaches two, and there is no UI for a route's
   colour or width.
@@ -536,16 +1064,31 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
 
 ### 2d. Known defects / hygiene
 
-- **`TestData/OSM/kiawah.fvroad` as delivered 2026-08-17 was built with `--ignore-access`** — the
-  stopgap O5b explicitly deleted. `fvgraph info` on it reports **0** barred and **0** private arcs
-  where the same four extracts built honouring access give **70 barred / 408 private** car arcs, and
-  the extracts do still carry the tags (156 `k="access"`, 137 `v="private"`). O5b's finding was that
-  this file IS the app's graph, so an app reading it drives through the gates. No test reads it (they
-  all build their own into a scratch dir), so nothing fails — which is exactly why it needs writing
-  down. Fix is one command:
-  `fvgraph build -o TestData/OSM/kiawah.fvroad TestData/OSM/map.osm TestData/OSM/map-2.osm TestData/OSM/map-3.osm TestData/OSM/map-4.osm`
-  — left for Chris, since a deliberately permissive graph for a nav demo is a plausible reason to
-  have made it this way.
+- **THE BICYCLE ROUTE'S DASH IS NOT DRAWN, and has not been since P13** (found 2026-08-27, writing
+  the pytest that used to assert it). The whole point of the dash is that the MODE is visible in the
+  line rather than only in a line of small text — and on screen a bicycle route is indistinguishable
+  from a car one. **The cause is an interaction nobody looked for**: `MakeLinePreset`'s `kDash` is
+  `dash(8) gap(6)` in pattern units and does **not scale with the pen**, while P13 doubled the route
+  line from 3 device pixels to 6 (3 was ONE point on a 3x phone, which is the correct fix for the
+  problem it solved). A 6-wide stroke has 3-pixel round caps at each end of every dash, so two
+  neighbouring dashes bridge a 6-unit gap **exactly** and the line closes up. Measured through
+  `pyfvw.draw` on identical geometry, counting exact-colour pixels: at width 3, solid 1506 vs dash
+  1188 — 21% removed; at width 6, solid 3030 vs dash 3024 — **0.2%**. It bites the phone hardest,
+  which is where the widening was done for. Three candidate fixes and the choice is a real one: a
+  square cap on a `kDash` run, a wider gap, or a pattern that scales with the pen (which would move
+  every dashed golden in the tree). `test_the_route_line_says_which_MODE_it_was_priced_as` carries
+  the measurement and deliberately does NOT assert the dash, because asserting it would pin a
+  picture nobody is being shown.
+
+- ~~**`TestData/OSM/kiawah.fvroad` was built with `--ignore-access`**~~ — **RESOLVED, and it was
+  already resolved when this row was written.** Checked in Pippin P1 (2026-08-18): the file on disk
+  reports 70 barred / 408 private car arcs, and rebuilding it with the row's own fix command gives
+  a **byte-identical** file. Chris had rerun it (mtime 16:49, after the 16:07 extracts) before the
+  row was ever read. One fact worth keeping from the check: **the build is INPUT-ORDER dependent** —
+  the same four extracts passed as a shell glob (`map*.osm`, which sorts `map-2` first) produce a
+  file that differs in 64,873 of 210,674 bytes while every number `fvgraph info` prints is
+  identical. It is the same graph with its nodes numbered differently, so a `cmp` against a
+  previously delivered `.fvroad` means nothing unless the input order matches.
 - **The test-data directory is `testdata/` and 14 CMakeLists say `TestData`.** The directory on disk
   has been lower case since the project started (Chris, 2026-08-17 — every fixture is in it);
   `FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData` resolves anyway because APFS is case-insensitive.
@@ -570,7 +1113,20 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
   2026-08-17 and **reproduced with the working tree stashed**, so it is not MM5's; it is a frame in
   the local catalog the decoder will not read, and it makes the scripted walk-through unusable
   until somebody finds which. The `--shot` path and every ctest test are unaffected.
-- **Some tests share one scratch `.gpkg`** and so cannot run in parallel. Fix = per-test filename.
+- **Some tests share one scratch file and so cannot run in parallel.** Fix = per-test filename.
+  Known cases: one `.gpkg`, and — measured in Pippin P1, 2026-08-18 —
+  `port/Routing/test/router_test.cpp:1475`, where `BuildBayFixture` writes
+  `<tmp>/fv_routing_test/router-bay.osm` under a FIXED name and every `RouterAvoid` test rewrites
+  it. `gtest_discover_tests` makes each of them its own ctest process, so under `-j4` one truncates
+  the file while another is parsing it: `RouterAvoid.APenaltyBuysADetourAndAHugeOneStillIsNotADeletion`
+  failed on one run of three and passes alone every time. **A SECOND instance, measured in Pippin P5
+  (2026-08-18)**: `port/Routing/test/route_rules_test.cpp:80` hangs its scratch on
+  `<tmp>/fv_route_rules_test/` and `BuildCycleGraph` rewrites `rules-cycle.osm` under a fixed name,
+  so `RouteRules.ClassWeightChangesTheRouteChosen` failed once under `-j4` and then passed alone and
+  on three further full runs. Same cause, same fix, same family — which is now large enough to be
+  worth one pass over every `fs::temp_directory_path()` in the tree rather than another row here.
+  **Intermittent and pre-existing — do not read it as a regression**, and do not chase it in
+  whatever session it surfaces in.
 - **`pyfvw_pytest` cannot run in the ASan build** — Python is not sanitizer-instrumented and
   `dlopen`s an instrumented `.so`, so ASan aborts with "Interceptors are not working". The C++ tests
   are unaffected. Either run it under `DYLD_INSERT_LIBRARIES=<libclang_rt.asan_osx_dynamic.dylib>`
@@ -579,6 +1135,22 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
   user cancels creation, the mode falls back to none" shares one branch with "if creation failed",
   and neither creation flow currently asks the user anything. The fallback is genuinely pinned; the
   word "cancel" in it is not. A creation flow that grows a prompt should add the cancel test.
+- **LZW is now accepted by both GeoTIFF readers, but only one decode path has a fixture.**
+  2026-08-27 wired `GEOTIFF_LZW` into every strip and tile arm of `CGeoTiff` (35 sites) and
+  `CGeoTiffFrameFile` (8), all through one new `decompress_strip` that picks the codec and then
+  undoes the predictor. Only the **8-bit palette strip** path has a real file behind it (the FAA
+  sectional, verified byte-identical against libtiff's own decode at five blocks including the
+  last row and both far edges); grayscale, 16-bit, 24-bit RGB and the four tiled readers are
+  wired but unexercised. Predictor 2 is implemented for 8- and 16-bit samples and verified for
+  8-bit against a `tiffcp -c lzw:2` re-encode; predictor 3 (floating point) is refused at load
+  with a message. **The trap this replaced**: `CGeoTiff::decompress_lzw` already existed and was
+  a copy of `decompress_packbits` with its error strings renamed — enabling LZW without reading
+  it would have produced confident garbage rather than a failure.
+- **The GeoTIFF frame bbox is CORNER-based, and a conic sheet bulges past its corners.**
+  `Atlanta SEC.tif` reports `ur_lat` 36.5631 from its NE corner while the top edge's midpoint is
+  at 36.6204 — 6.4 km of sheet north of the catalogued box. Harmless for a sheet with margins;
+  it would clip a conic frame trimmed to its neatline. Pre-existing, unchanged, noted because
+  the LCC path now has its first real caller.
 - **VPF reader UBSan alignment** — `vpfrcset`/`tables` do unaligned scalar loads. ASan-clean; this is
   the only UBSan noise in the tree, which is why every VPF session says "only the pre-existing ones".
 - **`VPFRecordset` reopen row-undercount** (original bug, preserved bit-faithfully).
@@ -589,9 +1161,6 @@ the sibling `TestData/enc-archive/` — see §2d — plus `chartsymbols.xml`, `s
 - **C++14 pins** still on `fv_jpeg`, `fv_jpeg12`, `fv_imagelib_gif` (`std::auto_ptr` in headers).
 - **`CDTEDInstance` stub** in ImageLib's `Util.cpp` — RPC height refinement returns "no DTED"
   headless; wire `fv::DtedCell`.
-- **Grid overlay draws wrong under map rotation** (`port/fvkit/overlay/grid_overlay.cpp`,
-  `port/include/fvkit/overlay/grid.h`). Reported by Chris 2026-08-18, not yet triaged. Parked here
-  so a future session picks it up instead of rediscovering it.
 
 ### 2e. Dependency modernization (three ⛔ rows left; full table in the archive)
 
@@ -670,6 +1239,17 @@ These are the archive decisions that still constrain new work.
   `fv_filemap.h`, `fv_win32_{filemap,finddata,path}.h`, `fv_sscanf_s.h`. **Prefer rewriting to standard
   C++ over growing them.**
 - New code under `port/` is C++17; shared `fvw_core/` edits stay ≤C++17 and modern-MSVC-clean.
+
+**Licensing (settled 2026-08-18 — was GPL-3.0, now LGPL)**
+- **Peregrine is `LGPL-3.0-or-later`.** Every new file under `port/` is *born* with
+  `// SPDX-License-Identifier: LGPL-3.0-or-later` + the Chris Bailey copyright + the
+  `See COPYING.LESSER and NOTICE.md` pointer. `sync_peregrine.py` copies bytes and will not
+  graft a header on for you.
+- **Never write GPL-3.0 into a header again**, and never relicense: `fvw_core/` and the five
+  extracted `port/` files are GTRC's LGPL and that is a floor, not a preference. LGPL is what
+  lets Pippin's Swift stay closed (LGPL-3.0 §4) — GPL would have forced it open.
+- The license texts live at `port/COPYING` (GPLv3, incorporated by reference) and
+  `port/COPYING.LESSER` (LGPLv3). Both ship; `port/NOTICE.md` §6 states the linking terms.
 
 **Tests and goldens**
 - A golden hash proves *nothing about orientation, colour or units* — F1 and F2 both survived a visual
@@ -771,6 +1351,15 @@ These are the archive decisions that still constrain new work.
   actually slower. Caught in review, and the test that pins it is deliberately one where the wrong
   cost changes the ROUTE CHOSEN — a test that only checked the reported seconds passed under the
   bug, because the bug was never in what was reported.
+- **And there is exactly ONE place an arc's USABILITY is decided — `fv::routing::ArcUsable` —
+  for the same reason** (Pippin P11, 2026-08-20). It was `Router::ArcUsable`, private, and the
+  member still calls it; it came out because something that is not routing needed the answer.
+  Pippin's pick button names the nearest road a rider could actually ride on, and the snap index
+  it queries is built at `RoadSnapFilter::kAll` — so the nearest candidate is very often a road
+  the profile refuses (Kiawah's parkway carries `bicycle=no` for its whole length). A second copy
+  of the rules would drift, and the drift is visible: a button naming a road the very next replan
+  routes around. The options come from `RoutePlanner::BuildOptions`, public for the same reason —
+  same rule file, same profile lookup, same poll.
 - **A ferry is not a `highway=*` way.** `route=ferry` with no highway tag at all is the normal
   tagging, which is why "avoid ferries" was a DATA gap and not a preference gap: there was nothing
   in the graph to avoid. `route=ferry` takes first refusal over any `highway` the way also carries
@@ -801,13 +1390,19 @@ commit and update this file before ending.
 ## 5. Where to look in the archive
 
 `port/PORTING-ARCHIVE.md` holds the completed module table (rows 1–14u, R1–R3c, E1–E8, F1–F3, S1,
-O1–O5e, K1, T1, T2, M1, A1–A6, G1–G4, MM1–MM5, PR1–PR3), the dated decision log, and — appended
+O1–O5e, K1, T1, T2, M1, A1–A6, G1–G4, MM1–MM5, PR1–PR3, S1–S4 search), the dated decision log,
+and — appended
 2026-08-16 — **"Condensed out of the working ledger"**, which is the long-form §1 this file used to
 carry plus every resolved §2 item, verbatim. Read that section when you want the build narrative
 for something §1 above only names.
 
 Useful entry points:
 
+- **Global search (`fvkit/app/search.h`)** — the S1 row (2026-08-27: the capability, the session,
+  the shared match rule, and the self-move-assign bug a filter that KEPT its row still emptied a
+  title with) and the S2–S4 row (2026-08-28: the map as an overlay, the gazetteer inside the pack,
+  and the road graph answering the routable half). The design is
+  `port/search-plan-COMPLETE.md`; the built detail is §1b above.
 - **Moving map (`fvkit/nav`)** — 2026-08-18 (**MM7** the app side: the session whose proof is that
   the shell's tick did not change, the binding rules that turn a Status into a raise and an
   out-parameter into a None, the transport seam deliberately left without a Python trampoline

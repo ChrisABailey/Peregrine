@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 # Routable road graph + shortest path (O4).
 #
@@ -34,9 +34,12 @@ target_compile_features(fv_routing PUBLIC cxx_std_17)
 set(FV_ROUTE_RULES_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rules/route-weights.json")
 
 # fvgraph — offline graph builder + route query CLI, the fvpack pattern.
-add_executable(fvgraph tools/fvgraph.cpp)
-target_link_libraries(fvgraph PRIVATE fv_routing)
-target_compile_definitions(fvgraph PRIVATE FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}")
+# A host tool like fvrender and fvpack: it BUILDS the .fvroad a phone reads.
+if(NOT FVW_IOS)
+  add_executable(fvgraph tools/fvgraph.cpp)
+  target_link_libraries(fvgraph PRIVATE fv_routing)
+  target_compile_definitions(fvgraph PRIVATE FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}")
+endif()
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_routing_test

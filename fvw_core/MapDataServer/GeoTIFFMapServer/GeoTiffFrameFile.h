@@ -460,6 +460,10 @@ protected:
    // compression scheme
    unsigned short m_compression_scheme;
 
+   // predictor (tag 317): 1 = none, 2 = horizontal differencing.  Only ever
+   // written alongside a lossless scheme (LZW here); 1 for everything else.
+   unsigned short m_predictor;
+
    // type of image (monochrome, color palette, rgb, etc.)
    unsigned short m_photometric_interpretation;
 
@@ -587,6 +591,23 @@ protected:
    int decompress_packbits( int compressed_size, unsigned char *compressed,
                             int decompressed_size,
                             unsigned char *decompressed );
+
+   // TIFF 6.0 LZW (compression tag 5), MSB-first codes with the "early
+   // change" code-width bump every encoder in the wild writes.  Same
+   // contract as decompress_packbits.
+   int decompress_lzw( int compressed_size, unsigned char *compressed,
+                       int decompressed_size,
+                       unsigned char *decompressed );
+
+   // decompress one strip or tile: dispatch on m_compression_scheme, then
+   // undo m_predictor.  Every reader below calls this rather than a codec.
+   int decompress_strip( int compressed_size, unsigned char *compressed,
+                         int decompressed_size,
+                         unsigned char *decompressed );
+
+   // undo horizontal differencing in place over rows of row_bytes bytes
+   int undo_horizontal_predictor( unsigned char *data, int size,
+                                  int row_bytes );
 
    int get_8bit_grayscale_as_rgb_subimage( int min_hpix, int min_vpix,
       int max_hpix, int max_vpix, unsigned char *red_array,

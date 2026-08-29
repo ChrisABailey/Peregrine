@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fvkit/nav/gpx.h"
 
 #include <expat.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -82,6 +83,7 @@ struct ParseState {
   PointKind point_kind = PointKind::kNone;
   PositionFix point;
   std::string point_name;
+  std::string point_desc;
   bool point_has_position = false;
 
   bool in_metadata = false;
@@ -99,6 +101,7 @@ void StartPoint(ParseState* state, PointKind kind, const char** attributes) {
   state->point_kind = kind;
   state->point = PositionFix{};
   state->point_name.clear();
+  state->point_desc.clear();
   state->point_has_position = false;
 
   const char* lat = FindAttribute(attributes, "lat");
@@ -122,6 +125,7 @@ void FinishPoint(ParseState* state) {
       case PointKind::kWaypoint:
         state->document->waypoints.push_back(state->point);
         state->document->waypoint_names.push_back(state->point_name);
+        state->document->waypoint_descriptions.push_back(state->point_desc);
         break;
       case PointKind::kTrackPoint:
       case PointKind::kRoutePoint:
@@ -235,9 +239,13 @@ void XMLCALL OnEndElement(void* user_data, const XML_Char* name) {
       }
     } else if (local == "name") {
       state->point_name = text;
+    } else if (local == "desc") {
+      // Kept for a WAYPOINT only (see `GpxDocument::waypoint_descriptions`);
+      // FinishPoint ignores it for a track or route point.
+      state->point_desc = text;
     }
-    // Anything else inside a point — <gpxtpx:hr>, <sym>, <cmt>, <desc> — has
-    // nowhere to live on a PositionFix and is deliberately dropped.
+    // Anything else inside a point — <gpxtpx:hr>, <sym>, <cmt> — has nowhere
+    // to live on a PositionFix and is deliberately dropped.
 
     if (local == "wpt" || local == "trkpt" || local == "rtept") FinishPoint(state);
   } else if (local == "name") {
@@ -472,6 +480,33 @@ std::string FormatIso8601Utc(double epoch_seconds) {
   return buffer;
 }
 
+std::string FormatIso8601UtcFractional(double epoch_seconds, int fractional_digits) {
+  if (fractional_digits <= 0) return FormatIso8601Utc(epoch_seconds);
+  if (fractional_digits > 3) fractional_digits = 3;
+
+  // Round to the requested precision FIRST, then split. Splitting first and
+  // rounding the fraction can carry into a whole second that the date part no
+  // longer agrees with — 23:59:59.9996 becoming "…T23:59:60.000Z" on the wrong
+  // day, which is the classic form of this bug.
+  const double quantum = (fractional_digits == 1) ? 0.1 : (fractional_digits == 2 ? 0.01 : 0.001);
+  const double rounded = std::floor(epoch_seconds / quantum + 0.5) * quantum;
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  double seconds_of_day = 0.0;
+  EpochSecondsToUtc(rounded, &year, &month, &day, &seconds_of_day);
+  const int whole = static_cast<int>(seconds_of_day);
+  double fraction = seconds_of_day - whole;
+  if (fraction < 0.0) fraction = 0.0;
+
+  char buffer[48];
+  std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d.%0*dZ", year, month, day,
+                whole / 3600, (whole / 60) % 60, whole % 60, fractional_digits,
+                static_cast<int>(fraction / quantum + 0.5));
+  return buffer;
+}
+
 // ---------------------------------------------------------------------------
 // ParseGpx / ReadGpxFile
 // ---------------------------------------------------------------------------
@@ -545,6 +580,248 @@ std::vector<GeoPoint> GpxSegmentPath(const GpxTrackSegment& segment) {
     path.push_back(point.position());
   }
   return path;
+}
+
+
+// ---------------------------------------------------------------------------
+// Writing (P10)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The five XML predefined entities. An element's text and an attribute's value
+// need different subsets in principle; one escaper doing all five is correct
+// for both and is one function to be right about.
+void AppendEscaped(const std::string& text, std::string* out) {
+  for (const char c : text) {
+    switch (c) {
+      case '&': out->append("&amp;"); break;
+      case '<': out->append("&lt;"); break;
+      case '>': out->append("&gt;"); break;
+      case '"': out->append("&quot;"); break;
+      case '\'': out->append("&apos;"); break;
+      default: out->push_back(c); break;
+    }
+  }
+}
+
+std::string FormatFixed(double value, int decimals) {
+  if (decimals < 0) decimals = 0;
+  if (decimals > 12) decimals = 12;
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%.*f", decimals, value);
+  return buffer;
+}
+
+// -1 (auto) writes three digits only for a stamp that actually carries a
+// fraction. The 0.5 ms window is the format's own precision, not a guess: a
+// stamp inside it prints the same either way.
+std::string FormatPointTime(double epoch_seconds, int time_decimals) {
+  if (time_decimals >= 0) return FormatIso8601UtcFractional(epoch_seconds, time_decimals);
+  const double fraction = epoch_seconds - std::floor(epoch_seconds);
+  const bool whole = fraction < 0.0005 || fraction > 0.9995;
+  return whole ? FormatIso8601Utc(epoch_seconds) : FormatIso8601UtcFractional(epoch_seconds, 3);
+}
+
+void AppendIndent(int level, bool pretty, std::string* out) {
+  if (!pretty) return;
+  out->append(static_cast<std::size_t>(level) * 2, ' ');
+}
+
+void AppendTextElement(const std::string& tag, const std::string& text, int level,
+                       const GpxWriteOptions& options, std::string* out) {
+  if (text.empty()) return;
+  AppendIndent(level, options.pretty, out);
+  out->push_back('<');
+  out->append(tag);
+  out->push_back('>');
+  AppendEscaped(text, out);
+  out->append("</");
+  out->append(tag);
+  out->append(">\n");
+}
+
+// One <trkpt>/<rtept>/<wpt>, children and all. `name` is the waypoint case;
+// a track point has none.
+void AppendPoint(const char* tag, const PositionFix& fix, const std::string& name,
+                 const std::string& description, int level, const GpxWriteOptions& options,
+                 std::string* out) {
+  AppendIndent(level, options.pretty, out);
+  out->push_back('<');
+  out->append(tag);
+  out->append(" lat=\"");
+  out->append(FormatFixed(fix.lat, options.coordinate_decimals));
+  out->append("\" lon=\"");
+  out->append(FormatFixed(fix.lon, options.coordinate_decimals));
+  out->push_back('"');
+
+  const bool has_children =
+      fix.has_altitude || fix.has_time || !name.empty() || !description.empty();
+  if (!has_children) {
+    out->append("/>\n");
+    return;
+  }
+  out->append(">\n");
+
+  // GPX 1.1's sequence is fixed: <ele>, <time>, then the rest. A file with
+  // them out of order fails schema validation in the tools that check.
+  if (fix.has_altitude) {
+    AppendTextElement("ele", FormatFixed(fix.altitude_msl_m, options.elevation_decimals), level + 1,
+                      options, out);
+  }
+  if (fix.has_time) {
+    AppendTextElement("time", FormatPointTime(fix.time_s, options.time_decimals), level + 1, options,
+                      out);
+  }
+  AppendTextElement("name", name, level + 1, options, out);
+  AppendTextElement("desc", description, level + 1, options, out);
+
+  AppendIndent(level, options.pretty, out);
+  out->append("</");
+  out->append(tag);
+  out->append(">\n");
+}
+
+void AppendTrack(const GpxTrack& track, const char* track_tag, const char* point_tag,
+                 bool with_segments, const GpxWriteOptions& options, std::string* out) {
+  AppendIndent(1, options.pretty, out);
+  out->push_back('<');
+  out->append(track_tag);
+  out->append(">\n");
+  AppendTextElement("name", track.name, 2, options, out);
+  AppendTextElement("type", track.type, 2, options, out);
+  for (const GpxTrackSegment& segment : track.segments) {
+    if (with_segments) {
+      AppendIndent(2, options.pretty, out);
+      out->append("<trkseg>\n");
+    }
+    for (const PositionFix& point : segment.points) {
+      AppendPoint(point_tag, point, /*name=*/std::string(), /*description=*/std::string(),
+                  with_segments ? 3 : 2, options, out);
+    }
+    if (with_segments) {
+      AppendIndent(2, options.pretty, out);
+      out->append("</trkseg>\n");
+    }
+  }
+  AppendIndent(1, options.pretty, out);
+  out->append("</");
+  out->append(track_tag);
+  out->append(">\n");
+}
+
+}  // namespace
+
+std::string FormatGpxTrackPoint(const PositionFix& fix, const GpxWriteOptions& options,
+                                int indent_level) {
+  std::string out;
+  AppendPoint("trkpt", fix, /*name=*/std::string(), /*description=*/std::string(),
+              indent_level, options, &out);
+  return out;
+}
+
+std::string WriteGpx(const GpxDocument& document, const GpxWriteOptions& options) {
+  std::string out;
+  out.reserve(64 * (document.track_point_count() + 16));
+
+  out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+  out.append("<gpx version=\"1.1\" creator=\"");
+  AppendEscaped(options.creator.empty() ? document.creator : options.creator, &out);
+  out.append(
+      "\"\n     xmlns=\"http://www.topografix.com/GPX/1/1\""
+      "\n     xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+      "\n     xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1"
+      " http://www.topografix.com/GPX/1/1/gpx.xsd\">\n");
+
+  const bool want_metadata =
+      !document.name.empty() || (options.write_metadata_time && document.has_time);
+  if (want_metadata) {
+    AppendIndent(1, options.pretty, &out);
+    out.append("<metadata>\n");
+    AppendTextElement("name", document.name, 2, options, &out);
+    if (options.write_metadata_time && document.has_time) {
+      AppendTextElement("time", FormatPointTime(document.time_s, options.time_decimals), 2, options,
+                        &out);
+    }
+    AppendIndent(1, options.pretty, &out);
+    out.append("</metadata>\n");
+  }
+
+  for (std::size_t i = 0; i < document.waypoints.size(); ++i) {
+    const std::string name =
+        i < document.waypoint_names.size() ? document.waypoint_names[i] : std::string();
+    const std::string description = i < document.waypoint_descriptions.size()
+                                        ? document.waypoint_descriptions[i]
+                                        : std::string();
+    AppendPoint("wpt", document.waypoints[i], name, description, 1, options, &out);
+  }
+  for (const GpxTrack& track : document.tracks) {
+    AppendTrack(track, "trk", "trkpt", /*with_segments=*/true, options, &out);
+  }
+  // A <rte> has no segments in the schema, so a multi-segment route is written
+  // as one run of <rtept>. The reader made a route a single-segment track, so
+  // anything it produced round-trips exactly; only a caller who built a
+  // many-segment route by hand loses the boundaries, and GPX has nowhere to
+  // put them.
+  for (const GpxTrack& route : document.routes) {
+    AppendTrack(route, "rte", "rtept", /*with_segments=*/false, options, &out);
+  }
+
+  out.append("</gpx>\n");
+  return out;
+}
+
+Status WriteGpxFile(const std::string& path, const GpxDocument& document,
+                    const GpxWriteOptions& options) {
+  const std::string text = WriteGpx(document, options);
+  const std::string temp = path + ".tmp";
+  {
+    std::ofstream stream(temp, std::ios::binary | std::ios::trunc);
+    if (!stream.is_open()) return Status::Error(kIoError, "WriteGpxFile: cannot open " + temp);
+    stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+    stream.flush();
+    if (!stream.good()) {
+      stream.close();
+      std::remove(temp.c_str());
+      return Status::Error(kIoError, "WriteGpxFile: write failed for " + temp);
+    }
+  }
+  std::remove(path.c_str());
+  if (std::rename(temp.c_str(), path.c_str()) != 0) {
+    std::remove(temp.c_str());
+    return Status::Error(kIoError, "WriteGpxFile: cannot rename onto " + path);
+  }
+  return Status::Ok();
+}
+
+GpxDocument BuildGpxTrack(const std::vector<PositionFix>& fixes, const std::string& track_name,
+                          const std::string& track_type, double split_gap_s) {
+  GpxDocument document;
+  document.version = "1.1";
+  document.creator = "Peregrine";
+  document.name = track_name;
+
+  GpxTrack track;
+  track.name = track_name;
+  track.type = track_type;
+
+  GpxTrackSegment current;
+  for (const PositionFix& fix : fixes) {
+    if (!fix.has_position) continue;
+    if (split_gap_s > 0.0 && !current.points.empty() && current.points.back().has_time &&
+        fix.has_time && fix.time_s - current.points.back().time_s > split_gap_s) {
+      track.segments.push_back(std::move(current));
+      current = GpxTrackSegment{};
+    }
+    if (fix.has_time && !document.has_time) {
+      document.has_time = true;
+      document.time_s = fix.time_s;
+    }
+    current.points.push_back(fix);
+  }
+  if (!current.points.empty()) track.segments.push_back(std::move(current));
+  if (!track.segments.empty()) document.tracks.push_back(std::move(track));
+  return document;
 }
 
 }  // namespace fv

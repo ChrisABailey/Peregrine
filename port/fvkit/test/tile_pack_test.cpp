@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // L5 TilePack tests: GeoPackage write, level metadata, stitched read-back,
 // and the full circle — the engine rendering FROM a pack the engine WROTE,

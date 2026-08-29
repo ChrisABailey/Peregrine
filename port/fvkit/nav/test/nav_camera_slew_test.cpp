@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // The slew layer (nav plan MM3). There is no Windows original to pin against
 // — FalconView jumps — so every expectation here is either arithmetic written

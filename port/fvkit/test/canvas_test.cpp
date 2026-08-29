@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // CpuCanvas tests. The rasterizer is deterministic (non-AA, no float
 // text in the pinned scenes), so scenes pin an FNV-1a hash of the buffer;
@@ -482,6 +482,86 @@ TEST(CpuCanvas, ADefaultCanvasDrawsRotatedTextUpright) {
   EXPECT_EQ(plain.text, "A");
   EXPECT_EQ(plain.px, 10);
   EXPECT_EQ(plain.py, -3);
+}
+
+// --- A CANVAS AS A LAYER (P18) ------------------------------------------
+//
+// The overlay pass draws onto a cleared-to-transparent surface and is
+// composited over the cached base map by the display, so `BlendPixel` has to
+// be right about a destination that is not opaque. Both halves are asserted:
+// the opaque case is byte-for-byte what it always was (every pinned golden in
+// the tree depends on that), and the translucent case keeps STRAIGHT colour
+// instead of dragging it toward the cleared value.
+
+TEST(CpuCanvasLayer, OpaqueDestinationBlendsExactlyAsItAlwaysHas) {
+  fv::CpuCanvas c(1, 1);
+  c.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::PixelBuffer src(1, 1);
+  src.Row(0)[0] = 255; src.Row(0)[1] = 0; src.Row(0)[2] = 0; src.Row(0)[3] = 128;
+  ASSERT_TRUE(c.DrawPixmap(src, 0, 0).ok());
+  const unsigned char* p = c.Buffer().Row(0);
+  // (255*128 + 0*127)/255 = 128, and the destination stays opaque.
+  EXPECT_EQ(p[0], 128);
+  EXPECT_EQ(p[1], 0);
+  EXPECT_EQ(p[2], 0);
+  EXPECT_EQ(p[3], 255);
+}
+
+TEST(CpuCanvasLayer, TransparentDestinationKeepsTheSourceColour) {
+  fv::CpuCanvas c(1, 1);
+  c.Clear(fv::FvColor{0, 0, 0, 0});
+  fv::PixelBuffer src(1, 1);
+  src.Row(0)[0] = 255; src.Row(0)[1] = 0; src.Row(0)[2] = 0; src.Row(0)[3] = 128;
+  ASSERT_TRUE(c.DrawPixmap(src, 0, 0).ok());
+  const unsigned char* p = c.Buffer().Row(0);
+  // Nothing is underneath, so a half-covered red pixel is RED at half alpha —
+  // not the half-black the opaque formula would produce.
+  EXPECT_EQ(p[0], 255);
+  EXPECT_EQ(p[1], 0);
+  EXPECT_EQ(p[2], 0);
+  EXPECT_EQ(p[3], 128);
+}
+
+TEST(CpuCanvasLayer, TwoHalvesOverTransparentAccumulateAlphaAndMix) {
+  fv::CpuCanvas c(1, 1);
+  c.Clear(fv::FvColor{0, 0, 0, 0});
+  fv::PixelBuffer red(1, 1);
+  red.Row(0)[0] = 255; red.Row(0)[1] = 0; red.Row(0)[2] = 0; red.Row(0)[3] = 128;
+  fv::PixelBuffer blue(1, 1);
+  blue.Row(0)[0] = 0; blue.Row(0)[1] = 0; blue.Row(0)[2] = 255; blue.Row(0)[3] = 128;
+  ASSERT_TRUE(c.DrawPixmap(red, 0, 0).ok());
+  ASSERT_TRUE(c.DrawPixmap(blue, 0, 0).ok());
+  const unsigned char* p = c.Buffer().Row(0);
+  // alpha: 128 + 128*127/255 = 191. Colour is the blue weighted by its own
+  // alpha against the red weighted by what is left of it — both still
+  // straight, so neither is darkened toward the cleared black.
+  EXPECT_EQ(p[3], 191);
+  EXPECT_GT(p[2], p[0]) << "the later draw dominates";
+  EXPECT_GT(p[0], 60) << "the red underneath is mixed in, not blacked out";
+  EXPECT_EQ(p[1], 0);
+}
+
+TEST(CpuCanvasLayer, FullyTransparentSourceLeavesTheLayerAlone) {
+  fv::CpuCanvas c(1, 1);
+  c.Clear(fv::FvColor{0, 0, 0, 0});
+  fv::PixelBuffer src(1, 1);
+  src.Row(0)[0] = 9; src.Row(0)[1] = 9; src.Row(0)[2] = 9; src.Row(0)[3] = 0;
+  ASSERT_TRUE(c.DrawPixmap(src, 0, 0).ok());
+  const unsigned char* p = c.Buffer().Row(0);
+  EXPECT_EQ(p[3], 0);
+}
+
+TEST(CpuCanvasLayer, AnOpaqueSourceOverwritesWhateverTheLayerHeld) {
+  fv::CpuCanvas c(1, 1);
+  c.Clear(fv::FvColor{0, 0, 0, 0});
+  fv::PixelBuffer src(1, 1);
+  src.Row(0)[0] = 12; src.Row(0)[1] = 34; src.Row(0)[2] = 56; src.Row(0)[3] = 255;
+  ASSERT_TRUE(c.DrawPixmap(src, 0, 0).ok());
+  const unsigned char* p = c.Buffer().Row(0);
+  EXPECT_EQ(p[0], 12);
+  EXPECT_EQ(p[1], 34);
+  EXPECT_EQ(p[2], 56);
+  EXPECT_EQ(p[3], 255);
 }
 
 }  // namespace

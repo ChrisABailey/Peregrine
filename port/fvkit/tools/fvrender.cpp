@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvrender — the plan's L3b milestone: a headless map renderer.
 //
@@ -105,8 +105,23 @@ int main(int argc, char** argv) {
   if (!series.empty()) {
     std::vector<fv::SeriesRow> rows;
     catalog->Series(&rows);
-    for (const auto& r : rows)
-      if (r.series_key == series) series_id = r.id;
+    // A series_key is no longer unique within a format (schema 2: "Color" at
+    // 1 m and at 50 m are two series), so an exact display_name -- "Color 1
+    // meter" -- wins, and a bare key that matches more than one row is named
+    // as ambiguous rather than silently resolved to whichever came first.
+    std::vector<const fv::SeriesRow*> hits;
+    for (const auto& r : rows) {
+      if (r.display_name == series) { hits.assign(1, &r); break; }
+      if (r.series_key == series) hits.push_back(&r);
+    }
+    if (hits.size() == 1) series_id = hits[0]->id;
+    if (hits.size() > 1) {
+      std::fprintf(stderr, "%s: '%s' names %d series; use one of:\n",
+                   "fvrender", series.c_str(), (int)hits.size());
+      for (const auto* r : hits)
+        std::fprintf(stderr, "    %s\n", r->display_name.c_str());
+      return 1;
+    }
     if (series_id == 0) {
       std::fprintf(stderr, "fvrender: unknown --series '%s'\n", series.c_str());
       return 1;

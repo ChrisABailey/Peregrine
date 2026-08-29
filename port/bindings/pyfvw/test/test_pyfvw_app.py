@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 """pyfvw.app — the app layer through the Python surface (A6).
 
@@ -128,6 +128,21 @@ class Notes(pyfvw.overlay.Overlay):
             return []
         return [app.MenuNode(label="Add a line",
                              action=lambda: self.lines.append("added"))]
+
+    # SearchProvider (S4). Defining `search` is what makes the overlay
+    # searchable, exactly as defining `hit_test_point` makes it pickable — and
+    # the label field is this overlay's own business, which is the whole point
+    # of the seam: the caller never learns that a note's title is its text.
+    def search(self, query):
+        rows = []
+        for i, line in enumerate(self.lines):
+            q = app.text_match_quality(query.text, line)
+            if q < 0:
+                continue
+            rows.append(app.SearchResult(
+                title=line, detail="note", match_quality=q, feature=i,
+                position=pyfvw.geo.GeoPoint(32.6 + i * 0.001, -80.11)))
+        return rows
 
     # EditTarget
     def enter_edit_focus(self):
@@ -616,3 +631,115 @@ def test_a_stack_observer_hears_what_the_flows_do(tmp_path):
     assert ("add", "Notes") in seen
     assert ("remove", "Notes") in seen
     assert seen.count(("dirty", True)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Search (S4) — the second aggregating capability, from Python
+# ---------------------------------------------------------------------------
+
+
+def _searchable_notes():
+    notes = Notes()
+    notes.lines = ["Ruddy Turnstone", "Beach Walk", "Governors Drive"]
+    return notes
+
+
+def test_defining_search_is_what_makes_an_overlay_searchable():
+    fx = Fixture()
+    notes = _searchable_notes()
+    fx.manager.add(notes)
+
+    r = app.SearchSession(fx.manager).search(app.SearchQuery(text="rud tur"))
+    assert len(r) == 1
+    assert r[0].title == "Ruddy Turnstone"
+    assert r[0].detail == "note"
+    assert r[0].feature == 0
+    # Stamped by the binding, for the reason a hit is: an overlay must not be
+    # able to attribute a result to somebody else's overlay.
+    assert r[0].overlay.name == "Notes"
+    # The shared rule decided the quality, not the provider.
+    assert r[0].match_quality == 2
+
+
+def test_an_overlay_without_a_search_method_is_simply_not_asked():
+    fx = Fixture()
+    fx.manager.add(pyfvw.overlay.Overlay("Plain"))
+    assert app.SearchSession(fx.manager).search(app.SearchQuery(text="x")) == []
+
+
+def test_search_finds_things_in_a_hidden_overlay_and_visible_only_does_not():
+    """The deliberate opposite of picking. 'Where is X' is a fair question
+    about a layer the user switched off an hour ago, and the answer names the
+    overlay so a shell can say where it was."""
+    fx = Fixture()
+    notes = _searchable_notes()
+    fx.manager.add(notes)
+    notes.visible = False
+
+    assert len(app.SearchSession(fx.manager).search(
+        app.SearchQuery(text="beach"))) == 1
+    assert app.SearchSession(fx.manager).search(
+        app.SearchQuery(text="beach", visible_only=True)) == []
+
+
+def test_a_search_crosses_the_stack_and_the_caller_names_no_field(tmp_path):
+    """The plan's acceptance criterion, in Python: one query, two overlay
+    types that have never heard of each other, and a caller that knows neither
+    the column a point document stores a name in nor what a note calls its
+    text."""
+    fx = Fixture()
+    doc = tmp_path / "points.fvpoints"
+    points = pyfvw.overlay.PointOverlay("Points")
+    points.file_new()
+    points.add_point(pyfvw.overlay.MapPoint("Ruddy Turnstone", 32.6044,
+                                            -80.1083))
+    points.file_save_as(str(doc), 0)
+    fx.manager.add(points)
+    fx.manager.add(_searchable_notes())
+
+    r = app.SearchSession(fx.manager).search(
+        app.SearchQuery(text="Ruddy Turnstone"))
+    # BOTH answers, and both are true. Cross-provider dedup is deferred on
+    # purpose (search-plan-COMPLETE.md): the caller tells them apart by
+    # `detail`.
+    assert len(r) == 2
+    assert {x.detail for x in r} == {"note", "point"}
+    assert {x.overlay.name for x in r} == {"Notes", "Points"}
+
+
+def test_ordering_by_distance_is_an_enum_value_and_not_a_grammar():
+    fx = Fixture()
+    fx.manager.add(_searchable_notes())
+    q = app.SearchQuery(text="", area=pyfvw.geo.GeoRect(
+        pyfvw.geo.GeoPoint(32.59, -80.12), pyfvw.geo.GeoPoint(32.61, -80.10)))
+    # The third note is the northernmost; asking from the north puts it first.
+    q.near = pyfvw.geo.GeoPoint(32.61, -80.11)
+    q.order = app.SearchOrder.NEAREST
+    r = app.SearchSession(fx.manager).search(q)
+    assert [x.title for x in r] == ["Governors Drive", "Beach Walk",
+                                    "Ruddy Turnstone"]
+    q.near = pyfvw.geo.GeoPoint(32.59, -80.11)
+    assert app.SearchSession(fx.manager).search(q)[0].title == "Ruddy Turnstone"
+    assert app.search_order_name(app.SearchOrder.NEAREST) == "nearest"
+
+
+def test_a_radius_is_a_cut_the_session_makes_and_no_provider_implements():
+    fx = Fixture()
+    fx.manager.add(_searchable_notes())
+    q = app.SearchQuery(near=pyfvw.geo.GeoPoint(32.6, -80.11), radius_m=150.0)
+    r = app.SearchSession(fx.manager).search(q)
+    # The notes are 111 m apart in latitude, so 150 m reaches exactly two.
+    assert [x.title for x in r] == ["Ruddy Turnstone", "Beach Walk"]
+
+
+def test_a_cancelled_search_returns_what_it_had():
+    fx = Fixture()
+    fx.manager.add(_searchable_notes())
+    flag = app.CancelFlag()
+    flag.set()
+    assert flag.cancelled
+    assert app.SearchSession(fx.manager).search(
+        app.SearchQuery(text="beach"), flag) == []
+    flag.clear()
+    assert len(app.SearchSession(fx.manager).search(
+        app.SearchQuery(text="beach"), flag)) == 1

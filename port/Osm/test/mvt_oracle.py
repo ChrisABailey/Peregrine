@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 """The oracle MvtRealData's pins come from, kept so a re-cut can be re-pinned.
 
 Walks the MVT protobuf wire format by hand and deliberately shares no code with

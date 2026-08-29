@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // OSM end-to-end render (phase O3) — the Atlanta golden, the OSM twin of
 // V5b's Nantucket harbour and E3a's Charleston.
@@ -308,4 +308,131 @@ TEST(OsmRender, RenderIsDeterministic) {
     hashes[i] = Fnv1a(canvas.Buffer());
   }
   EXPECT_EQ(hashes[0], hashes[1]);
+}
+
+// ---------------------------------------------------------------------------
+// The Kiawah cut (Pippin P1). `port/tools/mbtiles_cut.py` copies tile blobs
+// byte for byte out of us-south into a phone-sized pyramid, so the ONLY thing
+// that can go wrong is which tiles it took — a dropped row, an off-by-one in
+// the box, or the TMS/XYZ y-flip inverted. Every one of those shows up as a
+// frame that differs from the same frame drawn over the source, which is what
+// this pins: not a hash (that would need re-pinning with every re-cut of
+// us-south) but the CUT AGAINST ITS OWN SOURCE, rendered through the same
+// path Pippin will use.
+//
+// Two viewports deliberately: one at street scale (z14, the deepest level,
+// where a missing column is a blank stripe) and one zoomed out past the
+// island (z10-ish, where the tiles are so large that a naive "clamp the box
+// to the deepest zoom" cut loses them entirely and the map goes empty).
+constexpr double kKiawahLat = 32.6045;
+constexpr double kKiawahLon = -80.0870;
+
+std::string KiawahCutPath() {
+  const char* d = getenv("FVW_TESTDATA_DIR");
+  if (d == nullptr) return {};
+  const std::string p = std::string(d) + "/OSM/kiawah.mbtiles";
+  return fs::is_regular_file(p) ? p : std::string();
+}
+
+TEST(OsmRender, KiawahCutMatchesSource) {
+  SKIP_WITHOUT_DATA();
+  const std::string cut_path = KiawahCutPath();
+  if (cut_path.empty()) GTEST_SKIP() << "no OSM/kiawah.mbtiles cut";
+
+  // Every zoom the source has, the cut has, counted over the TILES and not
+  // over the metadata the cut tool wrote itself: a phone that can zoom out
+  // to the whole coast is the reason the cut is not clamped to the deepest
+  // levels, and a cut that dropped z0-z9 would still declare z0..14.
+  fv::OsmVectorSource src_probe, cut_probe;
+  ASSERT_TRUE(src_probe.Open(mb_path).ok());
+  ASSERT_TRUE(cut_probe.Open(cut_path).ok());
+  std::vector<int> src_zooms, cut_zooms;
+  ASSERT_TRUE(src_probe.file().ZoomLevels(&src_zooms).ok());
+  ASSERT_TRUE(cut_probe.file().ZoomLevels(&cut_zooms).ok());
+  EXPECT_EQ(src_zooms, cut_zooms) << "the cut lost a zoom level";
+
+  // IS THE PACK STILL A CUT OF THIS SOURCE? Everything below compares two
+  // renders pixel for pixel, and that is only a statement about
+  // `mbtiles_cut.py` while the pack's tiles ARE the source's tiles — the cut
+  // copies blobs byte for byte, which is what makes "no hash, just agreement"
+  // a contract that never needs re-pinning (P1).
+  //
+  // A pack built independently — tilemaker run straight at the Kiawah bbox,
+  // which is what 2026-08-27 did, or a cut taken from a DIFFERENT vintage of
+  // us-south — is not wrong, it simply is not a cut of THIS file, and holding
+  // the two renders to pixel equality would then be pinning that two separate
+  // builds of OSM agree, which they never will. Measured that day: of 70
+  // shared z14 tiles, 9 were byte-identical. So the test asks first, and says
+  // which of the two situations it is in rather than failing as though the
+  // renderer had changed.
+  {
+    fv::MbtilesFile::ZoomExtent cut_z14;
+    ASSERT_TRUE(cut_probe.file().ZoomExtentOf(14, &cut_z14).ok());
+    ASSERT_FALSE(cut_z14.empty()) << "the pack has no z14 tiles";
+    int shared = 0, identical = 0;
+    for (int x = cut_z14.min_x; x <= cut_z14.max_x && shared < 16; ++x) {
+      for (int y = cut_z14.min_y; y <= cut_z14.max_y && shared < 16; ++y) {
+        const fv::webmerc::TileId t{14, x, y};
+        if (!cut_probe.file().HasTile(t) || !src_probe.file().HasTile(t)) continue;
+        std::string a, b;
+        if (!cut_probe.file().ReadTile(t, &a).ok()) continue;
+        if (!src_probe.file().ReadTile(t, &b).ok()) continue;
+        ++shared;
+        if (a == b) ++identical;
+      }
+    }
+    ASSERT_GT(shared, 0) << "the pack and the source share no z14 tile at all";
+    if (identical != shared) {
+      GTEST_SKIP() << "OSM/kiawah.mbtiles is not a cut of this us-south.mbtiles ("
+                   << identical << " of " << shared
+                   << " shared z14 tiles are byte-identical). Either it was built "
+                      "independently by tilemaker, or the two files are different "
+                      "vintages of OSM. Re-cut it with port/tools/mbtiles_cut.py "
+                      "from this source to exercise the cut again.";
+    }
+  }
+
+  // Both viewports stay INSIDE the cut box (0.20 deg by 0.12 deg, ~19 km by
+  // 13 km): outside it the cut is legitimately empty, so a wider frame would
+  // pin the box's edge rather than the copy. 512 px at 0.25 mm/px is 128 mm
+  // of paper, so 1:75,000 is 9.6 km across — the island end to end.
+  struct Case { const char* name; double scale; } cases[] = {
+      {"osm_kiawah_z14", 25000.0},    // street scale, the deepest tiles
+      {"osm_kiawah_wide", 75000.0},   // the whole island, a shallower level
+  };
+  for (const auto& c : cases) {
+    uint64_t hashes[2] = {0, 0};
+    size_t draws[2] = {0, 0};
+    const std::string* paths[2] = {&mb_path, &cut_path};
+    fv::CpuCanvas frames[2] = {fv::CpuCanvas(512, 512), fv::CpuCanvas(512, 512)};
+    for (int i = 0; i < 2; ++i) {
+      Scene s;
+      s.source = std::make_shared<fv::OsmVectorSource>();
+      ASSERT_TRUE(s.source->Open(*paths[i]).ok());
+      s.style = std::make_shared<fv::OsmStyleEngine>();
+      ASSERT_TRUE(s.style->LoadFile(style_path).ok());
+      s.style->SetReferenceLatitude(kKiawahLat);
+      s.style->SetDisplayMmPerPixel(s.source->display_mm_per_pixel());
+
+      fv::MapProjection proj;
+      ASSERT_TRUE(proj.SetSurfaceSize(512, 512).ok());
+      ASSERT_TRUE(proj.SetCenter(fv::GeoPoint{kKiawahLat, kKiawahLon}).ok());
+      ASSERT_TRUE(proj.SetPhysicalScale(c.scale, 0.25).ok());
+
+      fv::FvColor bg{255, 255, 255, 255};
+      s.style->background(proj.Scale(), &bg);
+      frames[i].Clear(bg);
+      fv::VectorRenderer r(s.source, s.style);
+      ASSERT_TRUE(r.Render(proj, &frames[i]).ok());
+      hashes[i] = Fnv1a(frames[i].Buffer());
+      draws[i] = r.draws_emitted();
+    }
+    // Two identically BLANK frames would agree, so make the frame prove it
+    // has a map in it before the agreement means anything.
+    EXPECT_GT(draws[0], 100u) << c.name << ": source frame is nearly empty";
+    EXPECT_GT(DistinctColors(frames[1].Buffer()), 4u) << c.name;
+    EXPECT_EQ(draws[0], draws[1]) << c.name << ": the cut drew a different map";
+    EXPECT_EQ(hashes[0], hashes[1]) << c.name << ": the cut is not pixel-identical";
+    WritePng(frames[1].Buffer(), c.name);
+  }
 }

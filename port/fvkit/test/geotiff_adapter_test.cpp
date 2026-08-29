@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // GeoTIFF FvKit adapter + format registry tests. All real-data (the USGS
 // DOQ quarter-quads in TestData/geotiff, via FVW_TESTDATA_DIR — skipped if
@@ -68,6 +68,14 @@ const Block* BlockFor(const std::string& base) {
   static const Block kPanhandle{"Florida panhandle",
                                 {{30.3, -86.7}, {30.6, -86.3}}};
 
+  // "Atlanta SEC.tif", added 2026-08-27: a current FAA VFR sectional, the
+  // first LZW + Lambert Conformal Conic sample in the tree. The box is the
+  // whole SHEET, margins and legend panels included, which reaches about a
+  // degree past the charted neatline on every side.
+  static const Block kAtlantaSectional{"Atlanta sectional",
+                                       {{31.7, -89.3}, {36.7, -80.6}}};
+
+  if (base.compare(0, 7, "Atlanta") == 0) return &kAtlantaSectional;
   if (base[0] == '3' || base[0] == 'f') return &kChesapeake;
   if (base[0] == '2' || base[0] == 'C') return &kCharleston;
   if (base.compare(0, 5, "choct") == 0) return &kPanhandle;

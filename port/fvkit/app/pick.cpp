@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fvkit/app/pick.h"
 
@@ -167,19 +167,36 @@ std::optional<HitItem> PickSession::ResolveClick(const MapProjection& proj,
 // Snap-to
 // ---------------------------------------------------------------------------
 
-std::optional<SnapToItem> PickSession::SnapToPoint(const MapProjection& proj,
-                                                   PixelPoint p) {
+std::vector<SnapToItem> SnapCandidates(const OverlayManager& manager,
+                                       const MapProjection& proj, PixelPoint p,
+                                       double tolerance_px) {
   std::vector<SnapToItem> items;
-  const std::vector<Overlay*> order = manager_.DrawOrder();
+  const std::vector<Overlay*> order = manager.DrawOrder();
   for (auto it = order.rbegin(); it != order.rend(); ++it) {
     SnapTo* snap = (*it)->AsSnapTo();
     if (snap == nullptr) continue;
     const size_t before = items.size();
     snap->SnapToPoint(proj, p, tolerance_px, items);
+    // The overlay does not have to stamp itself, and most will not bother --
+    // it is answering about its own features. Only fill what it left blank, so
+    // an overlay that DOES attribute a candidate elsewhere keeps its answer.
     for (size_t i = before; i < items.size(); ++i) {
       if (items[i].overlay == nullptr) items[i].overlay = *it;
     }
   }
+
+  // Stable, so equal distances keep the topmost-first order the walk produced.
+  std::stable_sort(items.begin(), items.end(),
+                   [](const SnapToItem& a, const SnapToItem& b) {
+                     return a.distance_px < b.distance_px;
+                   });
+  return items;
+}
+
+std::optional<SnapToItem> PickSession::SnapToPoint(const MapProjection& proj,
+                                                   PixelPoint p) {
+  std::vector<SnapToItem> items =
+      SnapCandidates(manager_, proj, p, tolerance_px);
 
   if (items.empty()) return std::nullopt;
   if (items.size() == 1) return std::move(items.front());

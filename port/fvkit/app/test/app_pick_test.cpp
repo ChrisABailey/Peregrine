@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // App layer A5: hover, click deconfliction, snap-to and context-menu
 // composition (fvkit-app-plan-COMPLETE.md §3e).
@@ -102,9 +102,11 @@ class Snappable : public Overlay, public fv::app::SnapTo {
 
   fv::app::SnapTo* AsSnapTo() override { return this; }
 
-  void SnapToPoint(const fv::MapProjection&, PixelPoint, double,
+  void SnapToPoint(const fv::MapProjection&, PixelPoint p, double tolerance_px,
                    std::vector<SnapToItem>& out) override {
     ++calls;
+    last_tolerance = tolerance_px;
+    last_point = p;
     for (const SnapToItem& s : items) {
       SnapToItem copy = s;
       copy.overlay = this;
@@ -114,6 +116,8 @@ class Snappable : public Overlay, public fv::app::SnapTo {
 
   std::vector<SnapToItem> items;
   int calls = 0;
+  double last_tolerance = 0.0;
+  PixelPoint last_point;
 };
 
 class Menued : public Overlay, public fv::app::ContextMenu {
@@ -471,6 +475,94 @@ TEST(AppPickSnapTo, AHiddenOverlayIsNotSnappedTo) {
   EXPECT_EQ(snap->description, "turn point 3");
   EXPECT_EQ(shell.list_calls, 0);  // one answer, not two
   EXPECT_EQ(hidden->calls, 0);
+}
+
+// ---------------------------------------------------------------------------
+// SnapCandidates — the same walk with no shell and no question (Pippin P19)
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<Snappable> AddRanked(
+    OverlayManager& m, const std::string& name,
+    std::vector<std::pair<std::string, double>> rows) {
+  auto o = std::make_shared<Snappable>(name);
+  for (const auto& r : rows) {
+    SnapToItem item;
+    item.description = r.first;
+    item.distance_px = r.second;
+    o->items.push_back(item);
+  }
+  EXPECT_TRUE(m.Add(o).ok());
+  return o;
+}
+
+TEST(AppSnapCandidates, RanksNearestFirstAcrossEveryOverlayThatAnswered) {
+  // The phone's rule, and the reason the field was added: with no dialog to
+  // show, "which one did you mean" has to be answered by the geometry. The
+  // route is BELOW the chart in the stack and still wins, because its
+  // candidate is nearer the finger.
+  OverlayManager m;
+  AddRanked(m, "route", {{"turn point 3", 2.0}});
+  AddRanked(m, "chart", {{"buoy 12", 9.0}, {"light 4", 5.0}});
+
+  const std::vector<SnapToItem> got =
+      fv::app::SnapCandidates(m, Proj(), PixelPoint{3, 3}, 12.0);
+  ASSERT_EQ(3u, got.size());
+  EXPECT_EQ("turn point 3", got[0].description);
+  EXPECT_EQ("light 4", got[1].description);
+  EXPECT_EQ("buoy 12", got[2].description);
+}
+
+TEST(AppSnapCandidates, ATieKeepsStackOrderSoTheTopmostWins) {
+  // Two markers stacked exactly -- which is what a route waypoint dropped ON a
+  // named point looks like -- must not reorder run to run. The sort is stable
+  // and the walk is topmost-first, so the overlay the user sees on top wins.
+  OverlayManager m;
+  AddRanked(m, "under", {{"below", 4.0}});
+  AddRanked(m, "over", {{"above", 4.0}});
+
+  const std::vector<SnapToItem> got =
+      fv::app::SnapCandidates(m, Proj(), PixelPoint{3, 3}, 12.0);
+  ASSERT_EQ(2u, got.size());
+  EXPECT_EQ("above", got[0].description);
+}
+
+TEST(AppSnapCandidates, AnOverlayThatReportsNoDistanceSortsAsIfUnderTheCursor) {
+  // Leaving distance_px at 0 is not an error -- it is an overlay written
+  // before the field existed. It must still be offered, and 0 is the honest
+  // reading of "did not say".
+  OverlayManager m;
+  AddRanked(m, "silent", {{"unranked", 0.0}});
+  AddRanked(m, "chart", {{"buoy 12", 3.0}});
+
+  const std::vector<SnapToItem> got =
+      fv::app::SnapCandidates(m, Proj(), PixelPoint{3, 3}, 12.0);
+  ASSERT_EQ(2u, got.size());
+  EXPECT_EQ("unranked", got[0].description);
+}
+
+TEST(AppSnapCandidates, StampsTheAnsweringOverlayAndSkipsHiddenOnes) {
+  OverlayManager m;
+  auto hidden = AddRanked(m, "hidden", {{"buoy 12", 1.0}});
+  hidden->SetVisible(false);
+  auto route = AddRanked(m, "route", {{"turn point 3", 6.0}});
+
+  const std::vector<SnapToItem> got =
+      fv::app::SnapCandidates(m, Proj(), PixelPoint{3, 3}, 12.0);
+  ASSERT_EQ(1u, got.size());
+  EXPECT_EQ("turn point 3", got[0].description);
+  EXPECT_EQ(route.get(), got[0].overlay);
+  EXPECT_EQ(0, hidden->calls) << "an invisible overlay is not even asked";
+}
+
+TEST(AppSnapCandidates, TheToleranceReachesTheOverlayUnchanged) {
+  // The one knob, and the shell is the only layer that knows a finger is
+  // wider than a mouse pointer -- so it must arrive as sent.
+  OverlayManager m;
+  auto chart = AddRanked(m, "chart", {{"buoy 12", 3.0}});
+  fv::app::SnapCandidates(m, Proj(), PixelPoint{7, 9}, 44.0);
+  EXPECT_DOUBLE_EQ(44.0, chart->last_tolerance);
+  EXPECT_EQ(7, chart->last_point.x);
+  EXPECT_EQ(9, chart->last_point.y);
 }
 
 // ---------------------------------------------------------------------------

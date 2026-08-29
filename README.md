@@ -48,6 +48,9 @@ which is not distributed here (`ctest` reports a skipped test as passing; the
 | Identify | Click-to-identify over a pick index built from the primitives actually drawn, with VPF value dictionaries decoding codes to text |
 | Catalog | SQLite + R-tree coverage catalog, scale-aware series selection, antimeridian-correct queries |
 | Routing | A routable road graph built offline from raw `.osm`/`.osm.pbf` extracts: bidirectional Dijkstra, driving/walking/cycling profiles, turn restrictions, gated and tolled ways, ferries, and ordered via-stops; costs live in an editable JSON rule file that is reread while the app runs |
+| Route documents | A route as an editable document over that graph — waypoints, drag-to-reshape, undo/redo, and an overlay that draws the planned line and the road network behind it |
+| Search | "Where is X", asked of every source at once: a geographic box or radius, a text match on each source's own primary label, and a name index over OSM tiles — geo-space and on-demand, so it finds what is off screen |
+| Navigation | Moving-map camera (heading, slew, road snap), GPX and NMEA readers, a GPX recorder, and a trip computer — elapsed, speed, distance, distance remaining, ETA |
 | Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), equal-arc projection at true physical scale, a map engine that resamples frames into a viewport, and geographic drawing (great-circle lines, symbol libraries) |
 | App layer | Overlay stack with a type registry, session save/restore, editors and click-to-pick — the shell an interactive map application needs, headless and testable |
 | File overlays | `.fvpoints` — a SQLite point document that carries its own PNG symbol artwork, so a file opens with its symbology anywhere |
@@ -67,7 +70,7 @@ export FVW_TESTDATA_DIR=/path/to/TestData
 ## Layout
 
 ```
-port/                  all new Peregrine code (GPL-3.0-or-later)
+port/                  all new Peregrine code (LGPL-3.0-or-later)
   include/             portability layer: CString, MFC containers, Win32 idioms
   fvkit/               the portable map library (formats, catalog, canvas, engine, overlays)
   bindings/pyfvw/      Python bindings
@@ -162,13 +165,19 @@ exists.
 
 ## License
 
-Peregrine as a whole is **GPL-3.0-or-later** (`LICENSE`). It incorporates
-FalconView, which is LGPL-3.0-or-later (`COPYING.LESSER`), plus third-party
-components under their own terms.
+Peregrine as a whole is **LGPL-3.0-or-later** (`COPYING.LESSER`, with the
+GPLv3 text in `COPYING` alongside it, because LGPL-3.0 is written as a set of
+additional permissions on top of it). That is the same license FalconView
+itself carries, so no layer of this tree relicenses another: the port's own
+code, the FalconView sources it compiles, and the files extracted from
+FalconView all name LGPL-3.0-or-later. Third-party components keep their own
+terms.
+
+The practical consequence of LGPL rather than GPL is §4, *Combined Works*: an
+application may link this library without being made a derivative of it.
 
 See **[NOTICE.md](NOTICE.md)** for the full breakdown of what is licensed how,
-including which files were extracted from FalconView and the basis for the
-combined GPL license.
+including which files were extracted from FalconView and the linking terms.
 
 FalconView is a trademark of Georgia Tech Research Corporation. This project is
 not affiliated with or endorsed by GTRC.

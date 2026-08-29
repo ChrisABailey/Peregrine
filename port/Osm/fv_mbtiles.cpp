@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fv_mbtiles.h"
 
@@ -339,6 +339,14 @@ Status MbtilesFile::ReadTile(const webmerc::TileId& t,
   const int bytes = st.ColBytes(0);
   if (blob != nullptr && bytes > 0)
     out->assign(static_cast<const char*>(blob), static_cast<size_t>(bytes));
+  // RESET ONCE THE BLOB IS COPIED, and not merely on the next call. A stepped
+  // statement holds a READ TRANSACTION open for the life of the handle, and a
+  // pack that has ever served one tile then refuses to be written to by
+  // anything else — which is how fvnames (S3) discovered this, since building
+  // an index means writing to the pack the scan is reading. The error a write
+  // gets in that state is SQLITE_IOERR ("disk I/O error"), not SQLITE_BUSY,
+  // so it does not look like a lock at all.
+  st.Reset();
   return Status::Ok();
 }
 

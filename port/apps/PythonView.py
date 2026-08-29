@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 """PythonView — desktop map viewer over the pyfvw FalconView port.
 
@@ -58,7 +58,7 @@ import numpy as np  # noqa: E402
 import pyfvw        # noqa: E402
 import tk_keys      # noqa: E402  (sibling module, see its header)
 import route as route_mod  # noqa: E402  (sibling module)
-from route import RouteOverlay, RouteEditor
+from route import RouteEditor  # the tool palette; the overlay is C++
 
 # ----------------------------------------------------------------------------
 # App-wide constants
@@ -69,6 +69,18 @@ DEFAULT_DB = os.path.join(REPO, "build", "pythonview.sqlite")
 # static: at most one instance, toggled rather than opened.
 CROSSHAIR_TYPE_ID = "app.crosshair"
 COVERAGE_TYPE_ID = "app.coverage"
+# A DEBUG VIEW, and it says so. The recorded track the moving map is flying,
+# drawn as the points it actually is rather than the ship it becomes -- which
+# is what you look at when the question is about the OSM road under it and not
+# about the camera over it.
+TRACKPOINTS_TYPE_ID = "app.trackpoints"
+# THE OTHER DEBUG VIEW, and the one this app was missing. `fv.roadgraph` is
+# RouteKit's — C++, registered by `register_road_graph_overlay_type` — so like
+# the moving map the app does not describe it, it only turns it on. It draws
+# the ROUTING GRAPH: every arc coloured by road class, a dot at every node.
+# The chart under it and the graph over it are different objects, and a
+# bicycle route that goes somewhere absurd is always about the second one.
+ROADGRAPH_TYPE_ID = pyfvw.route.RoadGraphOverlay.TYPE_ID
 # MM4. A BUILT-IN type (fvkit registers it), so unlike the two above the app
 # does not describe it — it only configures the instance the toggle creates.
 MOVING_MAP_TYPE_ID = "fv.movingmap"
@@ -338,6 +350,59 @@ class CoverageOverlay(pyfvw.overlay.Overlay):
             y += 18
 
 
+class TrackPointsOverlay(pyfvw.overlay.Overlay):
+    """The recorded track as POINTS -- one small square per fix, no line.
+
+    A DEBUG VIEW OF THE DATA, deliberately separate from the moving map. The
+    ship shows you the fix that is due right now; this shows you the whole
+    file at once, standing still, while you pan around it. That is the thing
+    you want when the question is "is the OSM way where the GPS says the road
+    is?" -- and it is a question you answer with the feed stopped, which the
+    moving map cannot be and still be the moving map.
+
+    The points come from the app (`mm_track_points`) rather than from a file
+    of its own, so opening a track fills this in and toggling the overlay is
+    free. It draws EVERY point with no thinning and answers no pick: this is a
+    debugging aid, and both of those would be features.
+    """
+
+    SIZE_PX = 5                     # a fix is a 5 px square
+    COLOR = (255, 0, 200, 255)      # magenta: nothing on a chart is this
+    MARGIN_PX = 32                  # cull slack, so a point half off-screen still draws
+
+    def __init__(self, app):
+        super().__init__("track points")
+        self.app = app
+
+    def on_draw(self, proj, canvas):
+        points = self.app.mm_track_points
+        if not points:
+            return
+        try:
+            w, h = proj.surface_size
+        except pyfvw.FvError:
+            return
+        m = self.MARGIN_PX
+        half = self.SIZE_PX // 2
+        rings = []
+        for g in points:
+            try:
+                x, y = proj.geo_to_surface(g)
+            except pyfvw.FvError:
+                continue        # off the projection entirely, not an error here
+            if x < -m or y < -m or x > w + m or y > h + m:
+                continue
+            x, y = int(x), int(y)
+            rings.append([(x - half, y - half), (x + half, y - half),
+                          (x + half, y + half), (x - half, y + half)])
+        if not rings:
+            return
+        # ONE CALL FOR THE WHOLE TRACK. fill_polygon takes a LIST of rings and
+        # fills them even-odd; disjoint squares never overlap, so a 1705-point
+        # ride is one crossing into C++ rather than 1705 of them.
+        canvas.fill_polygon(rings, fill=self.COLOR)
+
+
 # ----------------------------------------------------------------------------
 # The application
 # ----------------------------------------------------------------------------
@@ -446,6 +511,14 @@ class PythonView(pyfvw.app.AppShell):
         # written out where it can be edited.
         self.route_rules_path = cfg.get("routing.rules", "")
         self.route_profile = cfg.get("routing.profile", "")
+        # ONE planner for the whole application, handed to every route the
+        # factory makes. The graph is the expensive thing here — minutes and
+        # gigabytes to build, and the biggest file this app opens — so a
+        # per-overlay planner would load Kiawah once per open route, and the
+        # moving map's snapper would load it a further time. It loads LAZILY:
+        # nothing is read until something asks for a route or for the graph.
+        self.route_planner = pyfvw.route.RoutePlanner(self.road_graph_path,
+                                                      self.route_rules_path)
         # MM4: the moving map. FalconView kept AUTO_CENTER/AUTO_ROTATE in the
         # registry; these are the same three toggles plus the two numbers MM3
         # added, and they are STARTUP state — the menu and the keys move them
@@ -498,8 +571,18 @@ class PythonView(pyfvw.app.AppShell):
         self.mm_track_time_scale = cfg.get_float("movingmap.track_time_scale", 1.0)
         self.mm_feed = self._startup_feed()
         self._mm_track = None         # (path, script), so a re-open is free
+        # The same ride as GEOMETRY, for the debug overlay. Filled by
+        # open_track and by a startup track_file; empty is the normal state.
+        self.mm_track_points = []
         self._mm_job = None
         self._mm_network = None       # nav.RoadGraphNetwork, built on demand
+        # S4. The chart the user is looking at, wearing an overlay so that the
+        # ONE search walk can find it -- never visible, because PythonView
+        # draws its base map its own way and this exists only to be asked.
+        self._search_map = None
+        self._search_roads_failed = False
+        self._roads_for_search = False
+        self._find_win = None
         self.osm = None               # shared OsmStyleEngine
         self._osm_ref_lat = None      # latitude that engine is currently set to
         # R3a knobs, applied to every vector renderer as it is created.
@@ -586,7 +669,23 @@ class PythonView(pyfvw.app.AppShell):
             id=COVERAGE_TYPE_ID, display_name="Coverage", icon="coverage",
             factory=lambda: CoverageOverlay(self),
             default_display_order=800))
+        # Above the coverage boxes and below the ship: the points are what the
+        # ship is flying, so the ship belongs on top of them.
+        self.registry.register(pyfvw.app.OverlayTypeDesc(
+            id=TRACKPOINTS_TYPE_ID, display_name="Track Points",
+            icon="trackpoints", factory=lambda: TrackPointsOverlay(self),
+            default_display_order=850))
+        # The routing network drawn as itself. REGISTERED FROM C++ — the
+        # descriptor, the factory and the drawing are all RouteKit's, and this
+        # line is the whole of the app's involvement. It carries the planner,
+        # so the picture is of the graph this application actually routes on
+        # rather than a second copy of the same roads.
+        pyfvw.route.register_road_graph_overlay_type(self.registry,
+                                                     self.route_planner)
         self.session.restore_startup_overlays()
+        # The startup overlays are created here, so this is where their
+        # settings sections are read and where a bad key first speaks up.
+        self._drain_session_warnings()
 
         # The demo route, and the app's one EDITABLE overlay: click selects a
         # waypoint, "a" arms add-point (the next click inserts after it), "d"
@@ -606,8 +705,8 @@ class PythonView(pyfvw.app.AppShell):
             # save a route the user never touched.
             self.route.name = "Ruddy Turnstone to the beach"
             self.route.waypoints = [
-                ("RTURN", 32.6044007, -80.1083007),
-                ("BA12",  32.5957369, -80.1097501),
+                pyfvw.route.RouteWaypoint("RTURN", 32.6044007, -80.1083007),
+                pyfvw.route.RouteWaypoint("BA12",  32.5957369, -80.1097501),
             ]
             self.route.dirty = False
 
@@ -620,14 +719,26 @@ class PythonView(pyfvw.app.AppShell):
     # --- the app layer -----------------------------------------------------
 
     def _make_route(self):
-        """The route type's factory. It exists to bind the SETTINGS to the
-        overlay — the graph, the rule file and the profile are the
-        application's, not the type's — which is exactly why an
-        OverlayTypeDesc takes a callable and not a class."""
-        return RouteOverlay("Route", [], graph_path=self.road_graph_path,
-                            rules_path=self.route_rules_path,
-                            profile=self.route_profile,
-                            manager=self.mgr)
+        """The route type's factory. It exists to bind the APPLICATION to the
+        overlay — the planner and the stack are the shell's, not the type's —
+        which is exactly why an OverlayTypeDesc takes a callable and not a
+        class.
+
+        The manager is handed over for two things and nothing else: mouse
+        CAPTURE, so a drag that wanders off the waypoint keeps feeding this
+        overlay, and the SNAP walk, which is a question about the whole stack
+        that only the stack can answer."""
+        ov = pyfvw.route.RouteOverlay("Route")
+        ov.set_planner(self.route_planner)
+        ov.set_manager(self.mgr)
+        ov.profile = self.route_profile
+        # The pick tolerance the rest of this shell uses. §2c's standing note
+        # applies — the core has no business knowing a finger is wider than a
+        # mouse pointer, so the shell says so — and the snap takes the same
+        # reach, because a snap the user cannot predict is worse than no snap.
+        ov.edit.pick_tolerance_px = self.pick.tolerance_px
+        ov.edit.snap_tolerance_px = self.pick.tolerance_px
+        return ov
 
     @property
     def cross(self):
@@ -638,6 +749,16 @@ class PythonView(pyfvw.app.AppShell):
     @property
     def coverage(self):
         return self.mgr.first_of_type(COVERAGE_TYPE_ID)
+
+    @property
+    def track_points(self):
+        return self.mgr.first_of_type(TRACKPOINTS_TYPE_ID)
+
+    @property
+    def road_graph(self):
+        """The road-graph debug overlay, or None when it is off. Static, like
+        the crosshair: 'off' and 'not open' are the same state."""
+        return self.mgr.first_of_type(ROADGRAPH_TYPE_ID)
 
     @property
     def grid(self):
@@ -733,9 +854,11 @@ class PythonView(pyfvw.app.AppShell):
     def _road_network(self):
         """The road network the moving map snaps to (MM5), or None.
 
-        THE GRAPH IS SHARED WITH THE ROUTE OVERLAY when it has one open, and
-        loaded here only when it has not. Both want the same file and the file
-        is the big one in this application.
+        THE GRAPH IS SHARED WITH THE ROUTE PLANNER, always — not "when a route
+        happens to be open", which is what this said while the graph belonged
+        to an overlay. One planner owns the file for the whole application and
+        hands out a shared pointer, so the snapper indexes the very roads the
+        router routes over and the two cannot disagree about what a road is.
 
         A failure to load is reported once and then answered as None: snapping
         is a refinement, and an application that refused to show the ship
@@ -745,16 +868,14 @@ class PythonView(pyfvw.app.AppShell):
             return None
         if self._mm_network is not None:
             return self._mm_network
-        graph = None
-        route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
-        if route is not None:
-            graph = route.graph()
+        try:
+            self.route_planner.ensure_graph()
+        except pyfvw.FvError as e:
+            self.report_error(e.code, str(e.message))
+            return None
+        graph = self.route_planner.graph()
         if graph is None:
-            try:
-                graph = pyfvw.routing.RoadGraph.load(self.road_graph_path)
-            except pyfvw.FvError as e:
-                self.report_error(e.code, str(e.message))
-                return None
+            return None
         self._mm_network = pyfvw.nav.RoadGraphNetwork(graph)
         return self._mm_network
 
@@ -801,7 +922,10 @@ class PythonView(pyfvw.app.AppShell):
         second kind of track, so this method is a dispatch on an extension and
         then one shared path. The result is cached by the caller, because a
         1705-point ride re-parsed on every feed change is a stutter nobody
-        needs to pay for."""
+        needs to pay for.
+
+        It also fills in `mm_track_points` for the debug overlay, because the
+        fixes it wants are ones this method has already read."""
         nav = pyfvw.nav
         try:
             if os.path.splitext(path)[1].lower() == ".gpx":
@@ -811,6 +935,10 @@ class PythonView(pyfvw.app.AppShell):
         except pyfvw.FvError as e:
             self.report_error(e.code, str(e.message))
             return None
+        # THE FILE'S OWN FIXES, not the schedule built below: the schedule
+        # drops duplicate stamps and caps long gaps, and an overlay whose job
+        # is to show what is IN the file must not inherit either edit.
+        self.mm_track_points = [f.position for f in fixes if f.has_position]
         options = nav.FixScriptOptions()
         options.max_gap_s = self.mm_track_max_gap_s
         script = nav.build_scripted_track_from_fixes(fixes, options)
@@ -942,12 +1070,11 @@ class PythonView(pyfvw.app.AppShell):
         nothing."""
         path = []
         route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
-        if route is not None and route.road_legs:
-            for leg in route.road_legs:
+        if route is not None and route.has_plan:
+            for leg in route.plan.legs:
                 path.extend(leg)
         elif route is not None and len(route.waypoints) >= 2:
-            path = [pyfvw.geo.GeoPoint(lat, lon)
-                    for _label, lat, lon in route.waypoints]
+            path = [w.position for w in route.waypoints]
         if len(path) < 2:
             c, d = self.center, 0.02
             path = [pyfvw.geo.GeoPoint(c.lat - d, c.lon - d),
@@ -1033,6 +1160,46 @@ class PythonView(pyfvw.app.AppShell):
         open' are the same state."""
         if on != (self.mgr.first_of_type(type_id) is not None):
             self.session.toggle_static(type_id)
+            # Not a _ui_flow call, so it must drain for itself: switching a
+            # static overlay on is exactly when its settings are applied.
+            self._drain_session_warnings()
+
+    def _set_road_graph(self, on):
+        """The road-graph overlay, toggled AND fed.
+
+        `_set_static` is not enough on its own here. The planner loads its
+        graph LAZILY -- on the first route -- so an overlay switched on before
+        anybody has routed draws a blank screen and looks broken, when in fact
+        nothing has opened the .fvroad yet. So turning it on loads the graph,
+        and a graph that will not load is REPORTED rather than left as an
+        empty map: this overlay has exactly one job, and silently doing
+        nothing is the one failure it must not have.
+        """
+        # THE OVERLAY MAY ALREADY BE THERE AND HIDDEN. Since S4 a search puts
+        # one in the stack purely to be asked about roads, so for this one
+        # type "off" and "not open" stopped being the same state -- but only
+        # once a search has asked. An overlay this menu created is still
+        # removed when this menu turns it off; one the SEARCH created is
+        # hidden, because the thing that wants it has not stopped wanting it.
+        ov = self.road_graph
+        if ov is None:
+            self._set_static(ROADGRAPH_TYPE_ID, on)
+            ov = self.road_graph
+        elif not on and not self._roads_for_search:
+            self._set_static(ROADGRAPH_TYPE_ID, False)
+            return
+        if ov is None:
+            return
+        ov.visible = on
+        try:
+            ov.ensure_graph()
+        except pyfvw.FvError as e:
+            self.report_error(e.code, str(e.message))
+            # Off again, and the tick with it: a toggle left ON over an
+            # overlay that cannot draw says the graph is showing when it is
+            # not, which is worse than the error alone.
+            self.var_rg.set(False)
+            ov.visible = False
 
     def _overlay_display_name(self, overlay):
         """What the user calls it: the file name when it has one, else the
@@ -1206,10 +1373,21 @@ class PythonView(pyfvw.app.AppShell):
         return self.vproj if self.mode == "vector" else (
             self.engine.proj if self.engine else None)
 
-    def open_catalog(self, db_path):
+    def open_catalog(self, db_path, log=print):
         pyfvw.catalog.register_builtin_formats()
         self.catalog = pyfvw.catalog.Catalog(db_path)
         self.db_path = db_path
+        if self.catalog.needs_rescan:
+            # The catalog was rebuilt to schema 2 (see catalog.h): the data
+            # sources are still listed and their coverage is gone, so rescan
+            # here rather than opening onto an empty map.
+            log(f"catalog {db_path}: schema updated, rescanning data sources")
+            for sid, fmt, path, _n in list_data_sources(db_path):
+                try:
+                    n = self.catalog.scan(sid)
+                    log(f"  {fmt:12s} {path} -> {n} frames")
+                except pyfvw.FvError as e:
+                    log(f"  {fmt:12s} {path}: {e}")
         self._on_catalog_changed()
 
     def new_catalog_from_scan(self, db_path, scan_root, log=print):
@@ -1243,7 +1421,7 @@ class PythonView(pyfvw.app.AppShell):
             # Re-resolve the active series in the new catalog (ids may move).
             match = [s for s in self.series_by_id.values()
                      if s.format == self.series.format
-                     and s.series_key == self.series.series_key]
+                     and s.display_name == self.series.display_name]
             self.series = match[0] if match else None
             if self.series is not None and self.series.format in VECTOR_FORMATS:
                 try:
@@ -1842,6 +2020,8 @@ class PythonView(pyfvw.app.AppShell):
         m_view.add_command(label="Smaller Features (vector)", accelerator="[",
                            command=lambda: self._ui_feature(1.0 / FEATURE_STEP))
         m_view.add_separator()
+        m_view.add_command(label="Find...", accelerator="Ctrl-F",
+                           command=self._ui_find)
         m_view.add_command(label="Go To Location...", command=self._ui_goto)
         m_view.add_command(label="Recenter on Data", command=self._ui_recenter)
         self.menubar.add_cascade(label="View", menu=m_view)
@@ -1850,6 +2030,9 @@ class PythonView(pyfvw.app.AppShell):
         self.var_grid = tk.BooleanVar(value=self.grid is not None)
         self.var_cross = tk.BooleanVar(value=self.cross is not None)
         self.var_cov = tk.BooleanVar(value=self.coverage is not None)
+        self.var_tp = tk.BooleanVar(value=self.track_points is not None)
+        self.var_rg = tk.BooleanVar(
+            value=self.road_graph is not None and self.road_graph.visible)
         m_ovl.add_checkbutton(label="Lat/Lon Grid", accelerator="g",
                               variable=self.var_grid, command=self._ui_apply_overlays)
         m_ovl.add_checkbutton(label="Crosshair", variable=self.var_cross,
@@ -1900,6 +2083,18 @@ class PythonView(pyfvw.app.AppShell):
         m_ovl.add_separator()
         m_ovl.add_checkbutton(label="Coverage Overlay", accelerator="c",
                               variable=self.var_cov, command=self._ui_apply_overlays)
+        m_ovl.add_checkbutton(label="Track Points (debug)",
+                              variable=self.var_tp,
+                              command=self._ui_apply_overlays)
+        # The OTHER debug view, and the one that answers "why did the bike go
+        # that way": the routing graph itself, coloured by road class with a
+        # dot at every node. Beside Track Points because they are the same
+        # KIND of thing -- both show you the data under a decision rather than
+        # the decision -- and you often want both at once, which is why they
+        # are two toggles and not a radio pair.
+        m_ovl.add_checkbutton(label="Road Graph (debug)",
+                              variable=self.var_rg,
+                              command=self._ui_apply_overlays)
         self.var_cov_fmt = {}
         m_cov = tk.Menu(m_ovl, tearoff=0)
         for fam, fmts in FAMILIES:
@@ -1975,7 +2170,11 @@ class PythonView(pyfvw.app.AppShell):
                       command=self._ui_fvpack_help)
 
     def _series_menu_key(self, s):
-        return f"{s.format}/{s.series_key}"
+        # display_name, not series_key: since catalog schema 2 a key can name
+        # several series (GeoTIFF "Color" at 0.3 m, 1 m, 10 m and 50 m are
+        # four map types, as they are in FalconView), and a radiobutton
+        # variable that cannot tell them apart selects the wrong one.
+        return f"{s.format}/{s.display_name}"
 
     def _rebuild_map_menu(self):
         """Repopulate the Map menu from the catalog: one section per family,
@@ -1997,14 +2196,19 @@ class PythonView(pyfvw.app.AppShell):
             m.add_command(label=f"--- {fam} ---", state="disabled")
             for s in rows:
                 if s.scale_denom > 0:
-                    detail = f"1:{s.scale_denom:,.0f}"
+                    # display_name already carries the product's OWN units
+                    # ("1 meter" for imagery, "1:5 M" for a chart); the
+                    # normalized denominator is what the list is sorted by,
+                    # and it is shown too only when it says something else.
+                    detail = (f"1:{s.scale_denom:,.0f}"
+                              if s.scale_units != 0 else "")
                 else:
                     detail = {"vpf": "DNC library",
                               "enc": "ENC usage band",
                               "osm": "OSM tile pyramid",
                               "dted-shaded": "shaded relief"}.get(s.format, "")
                 n = counts.get(s.id)
-                label = f"{s.series_key}   {detail}" + (f"   ({n} frames)" if n else "")
+                label = f"{s.display_name}   {detail}" + (f"   ({n} frames)" if n else "")
                 m.add_radiobutton(label=label, variable=self.series_var,
                                   value=self._series_menu_key(s),
                                   command=lambda s=s: self._ui_set_series(s))
@@ -2053,6 +2257,7 @@ class PythonView(pyfvw.app.AppShell):
                 ord("N"): lambda: self._ui_flow(
                     lambda: self.session.new_file_overlay(route_mod.ROUTE_TYPE_ID)),
                 ord("W"): self._ui_close,
+                ord("F"): self._ui_find,
             }
             if ev.key in by_ctrl:
                 return by_ctrl[ev.key]
@@ -2202,6 +2407,13 @@ class PythonView(pyfvw.app.AppShell):
                 # the overlay's own business and this shell stays generic.
                 if isinstance(hit.overlay, pyfvw.overlay.PointOverlay):
                     hit.overlay.selected = hit.feature
+                # A road-graph hit gets a FULL dump on the console as well as
+                # the one line on the status bar. The status line is what you
+                # read while moving; the dump is what you paste into a bug
+                # report, and a debugging tool whose answer you cannot copy
+                # makes you retype the graph's own numbers by hand.
+                if isinstance(hit.overlay, pyfvw.route.RoadGraphOverlay):
+                    self._dump_road_graph_hit(hit.overlay, e.x, e.y)
                 self._hover_hint = hit.hint.status or hit.hint.tool_tip
                 self.refresh()
                 return
@@ -2277,6 +2489,58 @@ class PythonView(pyfvw.app.AppShell):
         self.mouse_readout = txt
         self._update_status()
 
+    def _dump_road_graph_hit(self, overlay, x, y):
+        """Everything the graph knows at this pixel, on stdout.
+
+        BOTH the arc and the node, not whichever won the pick: the interesting
+        cases are exactly the ones where they disagree — a dot that is a dead
+        end sitting on a road that visibly carries on, or a cycleway you can
+        see under a node that belongs only to the service road beside it.
+        Printing one and hiding the other would hide the bug.
+        """
+        proj = self.proj
+        if proj is None:
+            return
+        print("--- road graph at (%d, %d) ---" % (x, y))
+        node = overlay.node_at(proj, x, y, 10.0)
+        if node.valid:
+            print("  node %d  osm %d  degree %d%s" % (
+                node.node, node.osm_id, node.degree,
+                "  TURN-RESTRICTED" if node.restricted else ""))
+            print("    %.7f %.7f  (%.1f px away)" % (
+                node.position.lat, node.position.lon, node.distance_px))
+            if node.degree == 1:
+                print("    DEAD END - if the map shows a through road here, "
+                      "the two halves were never noded together")
+        else:
+            print("  no node within 10 px")
+        arc = overlay.arc_at(proj, x, y, 8.0)
+        if arc.valid:
+            print("  arc %d  %s -> %s" % (
+                arc.arc, arc.from_node, arc.to_node))
+            print("    %s  [%s]  %.1f m  %d km/h" % (
+                arc.name or "(unnamed)", arc.road_class, arc.length_m,
+                arc.speed_kph))
+            print("    forward=%s backward=%s  flags=0x%03x" % (
+                arc.forward, arc.backward, arc.flags))
+            # The three modes, each said in the graph's own three-way terms —
+            # allowed, private (passable and priced), denied — because
+            # collapsing private into denied is exactly the bug that deleted
+            # most of Kiawah's streets (O5b).
+            for mode, ok, priv in (
+                    ("bicycle", arc.bicycle_allowed, arc.bicycle_private),
+                    ("foot", arc.foot_allowed, arc.foot_private),
+                    ("motor", arc.motor_vehicle_allowed,
+                     arc.motor_vehicle_private)):
+                print("    %-8s %s" % (
+                    mode, "NO" if not ok else ("private" if priv else "yes")))
+            if arc.tolled:
+                print("    toll")
+            if arc.ferry:
+                print("    ferry")
+        else:
+            print("  no arc within 8 px")
+
     # --- UI actions --------------------------------------------------------
 
     def _ui_set_series(self, s):
@@ -2285,7 +2549,7 @@ class PythonView(pyfvw.app.AppShell):
         except Exception as exc:
             from tkinter import messagebox
             messagebox.showerror(
-                "PythonView", f"Could not open {s.format}/{s.series_key}:\n{exc}")
+                "PythonView", f"Could not open {s.format}/{s.display_name}:\n{exc}")
             if self.series is not None:
                 self.series_var.set(self._series_menu_key(self.series))
             return
@@ -2327,11 +2591,25 @@ class PythonView(pyfvw.app.AppShell):
             self.route = self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
             self._sync_overlay_menus()
             self.refresh()
+        self._drain_session_warnings()
+        self._update_status()
+        return result
+
+    def _drain_session_warnings(self):
+        """Say what the session complained about, and forget it.
+
+        These are non-fatal notes -- a settings key that would not parse, a
+        restored overlay whose file has gone -- and the ONLY place they surface.
+        Every path that can create an overlay has to call this, because
+        `OverlaySession::Instantiate` applies each overlay's `[section]` of
+        peregrine.ini and a value it rejects is reported here and nowhere else.
+        A grid whose label_color would not parse drew its default and said so;
+        nothing printed it, so the message was as good as absent (Chris,
+        2026-08-29 -- the second half of that bug, and the worse half).
+        """
         for note in self.session.warnings:
             print(f"pythonview: {note}", file=sys.stderr)
         self.session.clear_warnings()
-        self._update_status()
-        return result
 
     def _sync_overlay_menus(self):
         """Keep the menus agreeing with the stack after a flow changed it."""
@@ -2423,6 +2701,8 @@ class PythonView(pyfvw.app.AppShell):
         self._set_moving_map(self.var_mm.get())
         self._apply_moving_map_modes()
         self._set_static(COVERAGE_TYPE_ID, self.var_cov.get())
+        self._set_static(TRACKPOINTS_TYPE_ID, self.var_tp.get())
+        self._set_road_graph(self.var_rg.get())
         if self.coverage is not None:
             self.coverage.enabled_formats = {
                 fmt for fmt, v in self.var_cov_fmt.items() if v.get()}
@@ -2450,6 +2730,237 @@ class PythonView(pyfvw.app.AppShell):
             messagebox.showerror("PythonView", f"Could not parse location:\n{e}")
             return
         self.refresh()
+
+    # --- finding things (S4) -----------------------------------------------
+    #
+    # ONE query, every data source. The search seam's whole claim is that a
+    # shell asks "where is X" once and the stack answers -- the point document,
+    # the route, the chart under it and the routing graph beside it, none of
+    # which has heard of any other. What this shell has to do is small and it
+    # is all here: make sure the two sources that are NOT already overlays are
+    # in the stack, ask, and frame what the user picks.
+
+    def _ensure_search_providers(self):
+        """The chart and the road graph, as searchable overlays.
+
+        Both are held NOT VISIBLE and that is the design rather than a dodge
+        (search.h's `visible_only` note): PythonView draws its base map through
+        the map engine and its road debug view only when asked, so these two
+        overlays exist purely to be asked a question. A search that ignored
+        what is switched off is exactly what "where is X" means.
+
+        The road graph is LOADED here and not at startup, because loading a
+        continent takes seconds and nothing else in this application has
+        needed it yet. A failure is reported once and then remembered: a
+        missing `.fvroad` is a configuration, not an error to repeat on every
+        keystroke.
+        """
+        # The chart. The source changes with the series, so it is re-pointed
+        # on every search rather than watched -- one assignment against a
+        # subscription that would have to be unwound on every catalog change.
+        if self.mode == "vector" and self.vsource is not None:
+            if self._search_map is None:
+                self._search_map = pyfvw.overlay.VectorMapOverlay("Chart")
+                self._search_map.visible = False
+                self.mgr.add(self._search_map)
+            if self._search_map.source is not self.vsource:
+                self._search_map.set_source(self.vsource)
+        elif self._search_map is not None:
+            # A raster series has no vector source to ask. Emptying it rather
+            # than removing it keeps the stack quiet and the object reusable.
+            self._search_map.set_source(None)
+
+        if not self.road_graph_path or self._search_roads_failed:
+            return
+        ov = self.road_graph
+        if ov is None:
+            self.session.toggle_static(ROADGRAPH_TYPE_ID)
+            ov = self.road_graph
+            if ov is None:
+                return
+            # Created for the SEARCH, so it starts hidden; the Overlays dialog
+            # turns the picture on, which is now a visibility flag rather than
+            # an add.
+            ov.visible = False
+            self._roads_for_search = True
+            self._sync_overlay_menus()
+        try:
+            ov.ensure_graph()
+        except pyfvw.FvError as e:
+            self._search_roads_failed = True
+            self.report_error(e.code, str(e.message))
+
+    def _run_search(self, text, in_view, limit=200):
+        """The query, and the two decisions a search box makes.
+
+        `near` is always the centre of the view even when the search is not
+        confined to it: with text the session ranks by match quality FIRST and
+        uses distance only to break the tie, which is what makes "beach" find
+        the beach road you are looking at before the one two counties over.
+        """
+        self._ensure_search_providers()
+        q = pyfvw.app.SearchQuery(text=text.strip(), max_results=limit)
+        proj = self.proj
+        if proj is not None:
+            q.near = proj.center
+            b = proj.bounds
+            # A PROJECTION NOBODY HAS DRAWN WITH HAS NO BOUNDS. The vector
+            # projection is configured by the render, so a search asked before
+            # the first frame would otherwise hand every provider a zero-sized
+            # box and be told, correctly, that nothing is in it.
+            if in_view and (b.ur.lat > b.ll.lat or b.ur.lon != b.ll.lon):
+                q.area = b
+        if not q.text and q.area is None:
+            return []
+        return pyfvw.app.SearchSession(self.mgr).search(q)
+
+    def frame_result(self, r):
+        """Put a result on the screen: centred, and framed when it has extent.
+
+        A degenerate box is the honest answer for a point (search.h says so),
+        and the right thing to do with one is to centre it and leave the scale
+        alone -- the user chose that scale. A road has a real box and gets
+        fitted, in vector mode where this application owns the scale
+        continuously; a raster series steps between the scales its own frames
+        were cut at, and jumping between them to frame a search hit would move
+        the map somewhere the data is not.
+        """
+        self.center = r.position
+        b = r.bounds
+        if self.mode == "vector" and (b.ur.lat > b.ll.lat or b.ur.lon > b.ll.lon):
+            self.center = pyfvw.geo.GeoPoint((b.ll.lat + b.ur.lat) / 2.0,
+                                             (b.ll.lon + b.ur.lon) / 2.0)
+            # THE SAME CLAMP `zoom` USES, and it is the reason a short road
+            # does not put the chart at 1:300: fitting a 40 m cul-de-sac to
+            # the window is arithmetically right and useless to look at.
+            self.vscale = max(1e3, min(5e8, self._fit_scale_rect(b)))
+        self.refresh()
+
+    def _ui_find(self):
+        """The search box. Incremental, and synchronous on purpose.
+
+        The core seam is cancellable (pyfvw.app.CancelFlag) and this does not
+        use it, because a search that has to be cancelled is one running on
+        another thread and every measured query here -- the Kiawah pack with
+        its name index, a road graph of 30,000 arcs -- comes back in
+        milliseconds. The debounce is what keeps a fast search from running on
+        every keystroke; a shell over a continent is where the flag earns its
+        place, and it is bound and waiting.
+        """
+        import tkinter as tk
+        if self._find_win is not None and self._find_win.winfo_exists():
+            self._find_win.lift()
+            self._find_entry.focus_set()
+            return
+
+        win = tk.Toplevel(self.tk)
+        win.title("Find")
+        win.transient(self.tk)
+        self._find_win = win
+        rows = []
+        job = [None]
+
+        top = tk.Frame(win)
+        top.pack(fill="x", padx=8, pady=(8, 4))
+        tk.Label(top, text="Find:").pack(side="left")
+        entry = tk.Entry(top, width=32)
+        entry.pack(side="left", fill="x", expand=True, padx=(4, 8))
+        self._find_entry = entry
+        # THE DEFAULT IS THIS VIEW, and it is not timidity. A chart answers a
+        # text query with no area only when its pack carries S3's name index,
+        # and most do not yet; the view is an area, so the default is the
+        # scope where every provider in the stack has something to say.
+        var_view = tk.BooleanVar(value=True)
+        tk.Checkbutton(top, text="This view only", variable=var_view).pack(
+            side="left")
+
+        listbox = tk.Listbox(win, width=64, height=14, activestyle="dotbox")
+        listbox.pack(fill="both", expand=True, padx=8)
+        status = tk.Label(win, text="", anchor="w")
+        status.pack(fill="x", padx=8, pady=(2, 0))
+
+        def go(_ev=None, index=None):
+            if index is None:
+                sel = listbox.curselection()
+                if not sel:
+                    return
+                index = sel[0]
+            if 0 <= index < len(rows):
+                self.frame_result(rows[index])
+
+        def search(_ev=None):
+            job[0] = None
+            listbox.delete(0, "end")
+            del rows[:]
+            try:
+                found = self._run_search(entry.get(), var_view.get())
+            except pyfvw.FvError as e:
+                status.config(text=str(e.message))
+                return
+            rows.extend(found)
+            for r in rows:
+                # The overlay's own name is what makes two true answers about
+                # one road readable -- "Chart" and "Road graph" are different
+                # facts about it, and the plan deliberately shows both.
+                where = r.overlay.name if r.overlay is not None else ""
+                listbox.insert("end", f"{r.title}   -  {r.detail}   [{where}]")
+            if not entry.get().strip() and not var_view.get():
+                status.config(text="Type something, or search this view.")
+                return
+            note = f"{len(rows)} found" if rows else "Nothing found"
+            # The one degradation worth SAYING rather than leaving as a
+            # mystery: a global text search reaches the chart only through the
+            # pack's own name index, and a pack without one answers nothing at
+            # all rather than answering badly (search-plan-COMPLETE.md, tier 2).
+            if (not var_view.get() and self._search_map is not None
+                    and self._search_map.source is not None
+                    and not self._search_map.last_search_used_index):
+                note += "  -  the chart has no name index (fvnames build); " \
+                        "try 'this view only'"
+            status.config(text=note)
+
+        def schedule(_ev=None):
+            if job[0] is not None:
+                self.tk.after_cancel(job[0])
+            job[0] = self.tk.after(200, search)
+
+        def close():
+            if job[0] is not None:
+                self.tk.after_cancel(job[0])
+            self._find_win = None
+            win.destroy()
+
+        entry.bind("<KeyRelease>", schedule)
+        # Return searches NOW rather than waiting out the debounce, and goes
+        # straight there when there is exactly one answer -- which is what
+        # typing a full street name and pressing enter means.
+        def enter(_ev=None):
+            search()
+            if len(rows) == 1:
+                listbox.selection_set(0)
+                go()
+        entry.bind("<Return>", enter)
+        var_view.trace_add("write", lambda *a: search())
+        listbox.bind("<Double-Button-1>", go)
+        listbox.bind("<Return>", go)
+
+        btns = tk.Frame(win)
+        btns.pack(fill="x", padx=8, pady=8)
+        tk.Button(btns, text="Go To", command=go).pack(side="left")
+        tk.Button(btns, text="Close", command=close).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", close)
+        entry.focus_set()
+        # WHAT THE SELFTEST DRIVES. The dialog's behaviour is three closures
+        # over one Toplevel, and synthesising key events at a Listbox is a
+        # test of Tk rather than of this code -- so the three are named here
+        # and `find_box` in run_selftest calls them. It is also the whole of
+        # the dialog's API: type, look, go.
+        self._find_text = entry
+        self._find_scope = var_view
+        self._find_run = search
+        self._find_rows = rows
+        self._find_go = go
+        self._find_close = close
 
     def _ui_recenter(self):
         if self.series is None:
@@ -2817,10 +3328,16 @@ class PythonView(pyfvw.app.AppShell):
             profile = "" if v_rp.get() == self._NO_PROFILE else v_rp.get()
             rerun = (v_rr.get() != self.route_rules_path or
                      profile != self.route_profile)
-            self.route_rules_path = self.route.rules_path = v_rr.get()
-            self.route_profile = self.route.profile = profile
-            if rerun and self.route.road_legs is not None:
-                self.route.follow_roads()
+            self.route_rules_path = v_rr.get()
+            self.route_profile = profile
+            # The path goes on the PLANNER (it owns the rule file and polls it
+            # per plan) and the profile on the DOCUMENT, because a route is
+            # saved with the profile it was priced under.
+            self.route_planner.set_rules_path(self.route_rules_path)
+            if self.route is not None:
+                self.route.profile = profile
+                if rerun and self.route.has_plan:
+                    self.route.follow_roads()
 
             win.destroy()
             self.refresh()
@@ -2863,6 +3380,7 @@ class PythonView(pyfvw.app.AppShell):
             "q / Esc           quit (offers to save a changed overlay)\n"
             "\n"
             "Overlay documents:\n"
+            "ctrl-F            find (points, routes, the chart, the roads)\n"
             "ctrl-N            new route\n"
             "ctrl-O            open an overlay file\n"
             "ctrl-S            save the current overlay\n"
@@ -2870,7 +3388,10 @@ class PythonView(pyfvw.app.AppShell):
             "\n"
             "Route overlay (only while its editor is active - Tools menu):\n"
             "click             select a waypoint\n"
-            "drag              move a waypoint (Esc mid-drag cancels)\n"
+            "drag              move a waypoint (Esc mid-drag cancels);\n"
+            "                  it SNAPS to any exact position under the\n"
+            "                  cursor - a point in an open .fvpoints set, or\n"
+            "                  another route's waypoint\n"
             "a                 arm add-point; next click inserts after it\n"
             "d / Delete        delete the selected waypoint\n"
             "g                 leg geometry: great circle / rhumb / straight\n"
@@ -2937,7 +3458,7 @@ class PythonView(pyfvw.app.AppShell):
                 if self.vsource.last_query_overzoom >= 1.0:
                     product += f"+{self.vsource.last_query_overzoom:.1f}"
             txt = (f" {self.center.lat:+.5f} {self.center.lon:+.5f}   "
-                   f"{product}/{s.series_key}  1:{self.vscale:,.0f}   "
+                   f"{product}/{s.display_name}  1:{self.vscale:,.0f}   "
                    f"features x{self.feature_scale:.2f}  labels:{lbl}   "
                    f"{self._frames} feat/{self._ms:.0f}ms  {self.mouse_readout}")
         else:
@@ -2947,7 +3468,7 @@ class PythonView(pyfvw.app.AppShell):
                 eff = 0
             zoom = NATIVE_MM_PER_PIXEL / self.mm_per_pixel
             txt = (f" {self.center.lat:+.5f} {self.center.lon:+.5f}   "
-                   f"{s.format}/{s.series_key}  1:{eff:,.0f}   "
+                   f"{s.format}/{s.display_name}  1:{eff:,.0f}   "
                    f"{zoom:.2f}x @ {self.mm_per_pixel:.3f}mm/px   "
                    f"{self._frames}files/{self._ms:.0f}ms  {self.mouse_readout}")
         if self.render_error:
@@ -3049,7 +3570,7 @@ def run_selftest(app, outdir):
         for fmt in fmts:
             if by_format.get(fmt):
                 picks.append(sorted(by_format[fmt],
-                                    key=lambda s: s.series_key)[0])
+                                    key=lambda s: s.display_name)[0])
 
     for s in picks:
         steps.append(step(lambda s=s: app.set_series(s, recenter=True),
@@ -3059,6 +3580,36 @@ def run_selftest(app, outdir):
         app.var_cov.set(True)
         app._ui_apply_overlays()
     steps.append(step(coverage_on, "coverage_on"))
+
+    # S4. The search box, over whatever series the walk above left showing:
+    # open it, ask the stack for everything in view, and go to the first
+    # answer. It asserts a ROW rather than a picture, because what can break
+    # here is the wiring -- a provider nobody added to the stack, a result
+    # nobody framed -- and none of that shows up in a snapshot.
+    def find_box():
+        app._ui_find()
+        app._find_scope.set(True)
+        app._find_text.delete(0, "end")
+        app._find_run()
+        found = len(app._find_rows)
+        # And the text path, which is a different tier in every provider: the
+        # chart's name index or its tile scan, the graph's name table. The
+        # word is one this port's own fixture has; a catalog without it gives
+        # zero rows and that is still a pass, because what is under test is
+        # the wiring and not the data.
+        app._find_text.insert(0, "ruddy")
+        app._find_run()
+        by_text = len(app._find_rows)
+        if by_text:
+            app._find_go(index=0)
+        elif found:
+            app._find_text.delete(0, "end")
+            app._find_run()
+            app._find_go(index=0)
+        app._find_close()
+        print(f"  selftest: find box saw {found} in view, "
+              f"{by_text} for 'ruddy'", flush=True)
+    steps.append(step(find_box, "find_box"))
     # Resize needs a window-manager round-trip plus the 120 ms debounce.
     steps.append(step(lambda: app.tk.geometry("1200x820"), "resize_req",
                       settle_ms=900))
@@ -3125,12 +3676,22 @@ def main():
         app.mm_per_pixel = args.mm
     if args.series:
         fmt, _, key = args.series.partition("/")
+        # Either spelling: the bare series_key when it names one series, or
+        # the full display_name ("geotiff/Color 1 meter") when it does not.
         match = [s for s in app.series_by_id.values()
-                 if s.format == fmt and s.series_key == key]
+                 if s.format == fmt and s.display_name == key]
+        if not match:
+            match = [s for s in app.series_by_id.values()
+                     if s.format == fmt and s.series_key == key]
+        if len(match) > 1:
+            raise SystemExit(f"--series: {args.series} names {len(match)} "
+                             "series; use one of: "
+                             + ", ".join(f"{s.format}/{s.display_name}"
+                                         for s in match))
         if not match:
             raise SystemExit(f"--series: no {args.series} in the catalog; have: "
                              + ", ".join(sorted(
-                                 f"{s.format}/{s.series_key}"
+                                 f"{s.format}/{s.display_name}"
                                  for s in app.series_by_id.values())))
         app.set_series(match[0], recenter=args.at is None)
     if args.at:
@@ -3140,7 +3701,7 @@ def main():
         arr = app.render_array()
         _save_png(args.shot, arr)
         s = app.series
-        print(f"wrote {args.shot}: {s.format}/{s.series_key}, "
+        print(f"wrote {args.shot}: {s.format}/{s.display_name}, "
               f"{app._frames} frames, {app._ms:.0f} ms")
         return
 

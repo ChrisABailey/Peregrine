@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // Road graph build/format tests (O4).
 //
@@ -13,6 +13,8 @@
 
 #include "fv_road_graph.h"
 
+#include "fvkit/nav/road_snap.h"  // ProjectOntoSegment, for the brute-force oracle
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -20,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -400,6 +403,173 @@ TEST(RoadGraphIndex, NearestNodeHonoursTheRadius) {
   ASSERT_TRUE(g.NearestNode(fv::GeoPoint{32.7000, -80.0000}, 50.0, &node, &meters));
   EXPECT_EQ(g.node(node).osm_id, 1);
   EXPECT_LT(meters, 1.0);
+}
+
+// --- point-to-segment snapping (§1d) ---------------------------------------
+
+TEST(RoadGraphArcSnap, SnapsToTheRoadBesideYouAndNotToItsFarEndpoints) {
+  RoadGraph g;
+  ASSERT_TRUE(fv::routing::BuildRoadGraph({WriteLoopOsm()}, {}, &g).ok());
+
+  // Twenty metres north of way 103's midpoint, which runs due west along
+  // 32.705 from n5 to n4. Both of its endpoints are most of a kilometre away,
+  // which is exactly the case §1d is about: standing ON a road and being
+  // attached to a junction nowhere near it.
+  const fv::GeoPoint p{32.7052, -80.0050};
+
+  uint32_t node = 0;
+  double node_m = 0.0;
+  ASSERT_TRUE(g.NearestNode(p, 2000.0, &node, &node_m));
+  EXPECT_GT(node_m, 400.0);
+
+  RoadGraph::ArcSnap snap;
+  ASSERT_TRUE(g.NearestArcPoint(p, 2000.0, &snap));
+  EXPECT_LT(snap.distance_m, 30.0);
+  EXPECT_FALSE(snap.at_node());
+  // Halfway along, whichever end the arc happens to be stored at.
+  EXPECT_NEAR(snap.t(), 0.5, 0.02);
+  EXPECT_NEAR(snap.point.lat, 32.7050, 1e-4);
+  EXPECT_NEAR(snap.point.lon, -80.0050, 1e-4);
+
+  const uint32_t n4 = NodeForOsmId(g, 4), n5 = NodeForOsmId(g, 5);
+  EXPECT_TRUE((snap.from == n4 && snap.to == n5) || (snap.from == n5 && snap.to == n4));
+  EXPECT_EQ(g.ArcSource(snap.arc), snap.from);
+  EXPECT_EQ(g.arc(snap.arc).target, snap.to);
+}
+
+TEST(RoadGraphArcSnap, AgreesWithBruteForceOverTheWholeShape) {
+  SKIP_WITHOUT_KIAWAH();
+  RoadGraph g;
+  ASSERT_TRUE(fv::routing::BuildRoadGraph(kiawah_inputs, {}, &g).ok());
+  ASSERT_GT(g.arc_count(), 0u);
+
+  // Every arc's shape, walked the slow way. The graph indexes one arc per
+  // undirected road; the twin is the same tarmac, so a brute force over ALL
+  // arcs can legitimately name the other one — the DISTANCE is what has to
+  // agree, and it is compared to a millimetre.
+  auto brute = [&g](const fv::GeoPoint& p) {
+    double best = std::numeric_limits<double>::infinity();
+    std::vector<fv::GeoPoint> shape;
+    for (uint32_t a = 0; a < g.arc_count(); ++a) {
+      shape.clear();
+      g.ArcShape(a, &shape);
+      for (size_t i = 0; i + 1 < shape.size(); ++i) {
+        fv::SegmentProjection sp;
+        fv::ProjectOntoSegment(p, shape[i], shape[i + 1], &sp);
+        best = std::min(best, sp.distance_m);
+      }
+    }
+    return best;
+  };
+
+  const fv::GeoRect b = g.bounds();
+  uint32_t seed = 987654321u;
+  auto rnd = [&seed]() {
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) / 16777216.0;
+  };
+  int checked = 0;
+  for (int i = 0; i < 60; ++i) {
+    const fv::GeoPoint p{b.ll.lat + rnd() * (b.ur.lat - b.ll.lat),
+                         b.ll.lon + rnd() * (b.ur.lon - b.ll.lon)};
+    const double want = brute(p);
+    RoadGraph::ArcSnap snap;
+    const bool got = g.NearestArcPoint(p, 1500.0, &snap);
+    if (want > 1500.0) {
+      EXPECT_FALSE(got) << "point " << i << " has no road within 1500 m";
+      continue;
+    }
+    ASSERT_TRUE(got) << "point " << i << " should have found a road at " << want;
+    EXPECT_NEAR(snap.distance_m, want, 1e-3) << "point " << i;
+    // The projected point really is `along_m` along the arc it names.
+    std::vector<fv::GeoPoint> shape;
+    g.ArcShape(snap.arc, &shape);
+    ASSERT_GE(shape.size(), 2u);
+    EXPECT_NEAR(fv::routing::GreatCircleMeters(shape.front().lat, shape.front().lon,
+                                               snap.point.lat, snap.point.lon),
+                snap.along_m, snap.along_m + 1.0);
+    EXPECT_GE(snap.along_m, -1e-6);
+    EXPECT_LE(snap.along_m, snap.length_m + 1e-6);
+    ++checked;
+  }
+  EXPECT_GT(checked, 0);
+}
+
+TEST(RoadGraphArcSnap, TheFilterWidensPastARoadItRefuses) {
+  RoadGraph g;
+  ASSERT_TRUE(fv::routing::BuildRoadGraph({WriteLoopOsm()}, {}, &g).ok());
+  const fv::GeoPoint p{32.7052, -80.0050};
+
+  RoadGraph::ArcSnap open;
+  ASSERT_TRUE(g.NearestArcPoint(p, 2000.0, &open));
+
+  // Refuse the road it would have picked. The answer must be a DIFFERENT road
+  // that is further away, not nothing and not the refused one clamped.
+  const uint32_t refused = open.arc;
+  const uint32_t twin = g.ArcBetween(open.to, open.from);
+  RoadGraph::ArcSnap other;
+  ASSERT_TRUE(g.NearestArcPoint(p, 2000.0, &other,
+                                [&](const fv::routing::RoadArc& a) {
+                                  const uint32_t idx =
+                                      static_cast<uint32_t>(&a - &g.arc(0));
+                                  return idx != refused && idx != twin;
+                                }));
+  EXPECT_NE(other.arc, refused);
+  EXPECT_GT(other.distance_m, open.distance_m);
+
+  // And a filter that refuses everything says so rather than falling back.
+  EXPECT_FALSE(g.NearestArcPoint(p, 2000.0, &other,
+                                 [](const fv::routing::RoadArc&) { return false; }));
+}
+
+TEST(RoadGraphArcSnap, APointOffTheEndOfARoadLandsOnItsEndpoint) {
+  RoadGraph g;
+  ASSERT_TRUE(fv::routing::BuildRoadGraph({WriteLoopOsm()}, {}, &g).ok());
+
+  // Due south of n1, which is a corner of the loop: every road runs away from
+  // it, so the projection clamps to the node and says so.
+  const uint32_t n1 = NodeForOsmId(g, 1);
+  const fv::GeoPoint here = g.location(n1);
+  const fv::GeoPoint p{here.lat - 0.0002, here.lon};
+
+  RoadGraph::ArcSnap snap;
+  ASSERT_TRUE(g.NearestArcPoint(p, 500.0, &snap));
+  EXPECT_TRUE(snap.at_node());
+  EXPECT_TRUE(snap.from == n1 || snap.to == n1);
+  EXPECT_NEAR(snap.point.lat, here.lat, 1e-7);
+  EXPECT_NEAR(snap.point.lon, here.lon, 1e-7);
+}
+
+TEST(RoadGraphArcSnap, TheRadiusIsHonouredAndAnEmptyGraphAnswersNothing) {
+  RoadGraph g;
+  ASSERT_TRUE(fv::routing::BuildRoadGraph({WriteLoopOsm()}, {}, &g).ok());
+  const fv::GeoPoint far{32.9000, -80.0050};  // ~21 km north of the loop
+  RoadGraph::ArcSnap snap;
+  EXPECT_FALSE(g.NearestArcPoint(far, 500.0, &snap));
+  EXPECT_TRUE(g.NearestArcPoint(far, 30000.0, &snap));
+
+  RoadGraph empty;
+  empty.Finalize();
+  EXPECT_FALSE(empty.NearestArcPoint(fv::GeoPoint{0.0, 0.0}, 1000.0, &snap));
+}
+
+TEST(RoadGraphArcSnap, SurvivesTheSaveLoadRoundTrip) {
+  RoadGraph built;
+  ASSERT_TRUE(fv::routing::BuildRoadGraph({WriteLoopOsm()}, {}, &built).ok());
+  const fs::path path = ScratchDir() / "arcsnap.fvroad";
+  ASSERT_TRUE(built.Save(path.string()).ok());
+  RoadGraph loaded;
+  ASSERT_TRUE(RoadGraph::Load(path.string(), &loaded).ok());
+
+  // The index is derived in Finalize, so a loaded graph has to have it —
+  // nothing about it is in the file.
+  const fv::GeoPoint p{32.7052, -80.0050};
+  RoadGraph::ArcSnap a, b;
+  ASSERT_TRUE(built.NearestArcPoint(p, 2000.0, &a));
+  ASSERT_TRUE(loaded.NearestArcPoint(p, 2000.0, &b));
+  EXPECT_EQ(a.arc, b.arc);
+  EXPECT_NEAR(a.distance_m, b.distance_m, 1e-9);
+  EXPECT_NEAR(a.along_m, b.along_m, 1e-9);
 }
 
 TEST(RoadGraphBuild, MergesInputsOnSharedNodeIds) {

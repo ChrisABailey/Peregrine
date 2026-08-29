@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // L4 overlay SPI tests: manager stack/draw-order/routing semantics
 // (synthetic recording overlays) and the built-in grid overlay's golden.
@@ -212,28 +212,51 @@ TEST_F(ManagerTest, DrawErrorNamesOverlay) {
   EXPECT_NE(s.message.find("'bad'"), std::string::npos);
 }
 
-// Pinned 2026-07-17 after visually verifying overlay_grid.png (graticule
-// over Atlanta at 1:2M: 1-deg lines, correct spacing). 0 = probe.
-constexpr uint64_t kHashGrid = 0xef46a5e78c021e47ull;
+// Repinned 2026-08-29 with the real graticule (the 2026-07-17 pin was the
+// 30-line sample). 0 = probe: set it to 0, run, and the test prints the hash
+// and writes overlay_grid.png for a human to look at.
+//
+// The VIEWPORT moved with it, and that is the substantive change. The old one
+// was 240x180 at 1:2M, which spans about half a degree — and the table's minor
+// spacing at 1:2M is a whole degree, so the honest graticule there is one
+// meridian and no parallels at all. The sample drew a full grid because it
+// derived its interval from pixels; a cartographic table does not, and a
+// golden over an empty picture proves nothing. 1:5M over 640x480 is a few
+// degrees each way: major lines, minor lines, ticks and labels all present.
+constexpr uint64_t kHashGrid = 0x8ff2e4e5ade27e84ull;
 
 TEST(GridOverlayGolden, GraticuleAtlanta) {
   fv::MapProjection proj;
-  ASSERT_TRUE(proj.SetSurfaceSize(240, 180).ok());
+  ASSERT_TRUE(proj.SetSurfaceSize(640, 480).ok());
   ASSERT_TRUE(proj.SetCenter({33.7488, -84.3882}).ok());
-  ASSERT_TRUE(proj.SetScale(2000000.0).ok());
+  ASSERT_TRUE(proj.SetScale(5000000.0).ok());
 
-  fv::CpuCanvas canvas(240, 180);
+  fv::CpuCanvas canvas(640, 480);
   canvas.Clear(fv::FvColor{0, 0, 32, 255});
+  // Labels need a font; without one the grid still draws its lines, so the
+  // golden would silently stop covering half the overlay.
+  const char* fonts[] = {"/System/Library/Fonts/Supplemental/Arial.ttf",
+                         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+  bool have_font = false;
+  for (const char* f : fonts)
+    if (canvas.SetDefaultFont(f).ok()) {
+      have_font = true;
+      break;
+    }
+  if (!have_font) GTEST_SKIP() << "no system font; the golden would not match";
+
   fv::GridOverlay grid;
   ASSERT_TRUE(grid.OnDraw(proj, canvas).ok());
+  ASSERT_GT(grid.last_draw().parallels, 0);
+  ASSERT_GT(grid.last_draw().labels_placed, 0);
 
   // some ink, mostly background
   long inked = 0;
-  for (int y = 0; y < 180; ++y)
-    for (int x = 0; x < 240; ++x)
+  for (int y = 0; y < 480; ++y)
+    for (int x = 0; x < 640; ++x)
       if (canvas.Buffer().Row(y)[4 * x + 0] > 32) ++inked;
   EXPECT_GT(inked, 200);
-  EXPECT_LT(inked, 240 * 180 / 4);
+  EXPECT_LT(inked, 640 * 480 / 4);
 
   uint64_t h = Fnv1a(canvas.Buffer());
   if (kHashGrid == 0) {

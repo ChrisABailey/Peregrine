@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/app/capabilities.h — the optional interfaces an overlay may implement
 // (fvkit-app-plan-COMPLETE.md §3b).
@@ -157,6 +157,16 @@ struct SnapToItem {
   GeoPoint point;
   std::string description;   // the chooser's row text
   Overlay* overlay = nullptr;
+  // Screen distance from the asked-about pixel to `point`, for nearest-wins
+  // policies -- the same field, in the same units, as HitItem::distance_px.
+  //
+  // ADDED WITH THE FIRST IMPLEMENTER (Pippin P19). Until then every caller of
+  // this capability went through the chooser, which ranks nothing: it shows
+  // rows and a human picks. A shell with no dialog to show -- a phone, and a
+  // thumb -- has to rank instead, and there was nothing on the candidate to
+  // rank BY. An overlay that leaves it 0 is not wrong, just unrankable, and
+  // sorts as if it were exactly under the cursor.
+  double distance_px = 0.0;
 };
 
 class SnapTo {

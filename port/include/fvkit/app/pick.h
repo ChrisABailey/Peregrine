@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/app/pick.h — hover, click deconfliction, snap-to and context-menu
 // composition (fvkit-app-plan-COMPLETE.md §3e).
@@ -153,6 +153,33 @@ class PickSession {
 // the other is empty. Exposed because the ambiguity dialog is the one place a
 // shell may want to render the rows itself.
 std::string PickRowText(const HitItem& item);
+
+// Every snap candidate under `p`, from every overlay that answers, ranked
+// NEAREST FIRST -- and nothing else. No shell, no dialog, no session.
+//
+// WHY THIS IS A FREE FUNCTION AND NOT A METHOD (Pippin P19). PickSession::
+// SnapToPoint is the desktop flow: it asks the user when more than one overlay
+// answers, so it needs an AppShell, so a caller needs one to construct the
+// session at all. A phone has no chooser to show -- the same decision
+// PPPointStore::HitTest already wrote down for hits, that a rider with one
+// thumb gets the nearest one and taps again if it was wrong -- and eleven
+// pure virtuals of AppShell is a steep price for a question you are never
+// going to ask. So the WALK is here, shell-free and const, and SnapToPoint is
+// that walk plus the dialog.
+//
+// Asked of the same set as everything else in this header:
+// OverlayManager::DrawOrder() reversed, which is on-screen overlays only. An
+// overlay that is invisible or decluttered is not a snap target, because a
+// coordinate that jumped to something the user cannot see is indistinguishable
+// from a bug.
+//
+// Ties -- two candidates at the same distance, which two points stacked
+// exactly is -- keep stack order, topmost first: the sort is stable and the
+// walk is already topmost-first. An overlay that reported no distance sorts
+// first, as if it were exactly under the cursor.
+std::vector<SnapToItem> SnapCandidates(const OverlayManager& manager,
+                                       const MapProjection& proj, PixelPoint p,
+                                       double tolerance_px);
 
 }  // namespace app
 }  // namespace fv

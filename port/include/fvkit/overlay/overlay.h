@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/overlay/overlay.h — FvKit L4 overlay SPI (contracts D1: shared_ptr
 // ownership, chosen day-one for pybind trampoline lifetime).
@@ -40,6 +40,8 @@ class SnapTo;
 class ContextMenu;
 class RoutingOverrides;
 class EditTarget;
+class SearchProvider;
+class Properties;
 }  // namespace app
 
 struct MouseEvent {
@@ -136,6 +138,18 @@ class Overlay {
   virtual app::ContextMenu* AsContextMenu() { return nullptr; }
   virtual app::RoutingOverrides* AsRoutingOverrides() { return nullptr; }
   virtual app::EditTarget* AsEditTarget() { return nullptr; }
+  // "Where is X" (fvkit/app/search.h, S1). The SEVENTH accessor, and the one
+  // that is not about the cursor: every other capability here answers a
+  // question about a pixel, and this one answers a question about the world.
+  // An overlay implements it to be findable by name or by area whether or not
+  // it is on screen, or even visible.
+  virtual app::SearchProvider* AsSearch() { return nullptr; }
+  // "What can the user change about this overlay" (fvkit/app/properties.h).
+  // The EIGHTH accessor, and the one that replaces a whole class of Windows
+  // code rather than a call site: an overlay that implements it declares its
+  // settable properties, and every shell builds its property page from that
+  // declaration instead of porting an MFC CPropertyPage per overlay.
+  virtual app::Properties* AsProperties() { return nullptr; }
 
   // Draw in surface space for the given projection. Default: nothing.
   virtual Status OnDraw(const MapProjection& proj, ICanvas& canvas) {

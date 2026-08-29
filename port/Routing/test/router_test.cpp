@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // Router tests (O4).
 //
@@ -131,6 +131,52 @@ const char* kCycleOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
 // `access=private`, the dogleg through n2 is public and about 40% longer. n5
 // hangs off n3 behind a private service road — the only way in — and n6 is
 // behind a gate that also says bicycle=no.
+// THE KIAWAH SNAP (2026-08-27). A golf cart path and a cycleway run parallel,
+// about 90 m apart. The cart path's JUNCTION (node 13) is the nearer of the
+// two to the traveller, and EVERY arc at it is `bicycle=no` — which is what a
+// cart path on Kiawah really carries, and what makes the node one a bicycle
+// cannot leave. The cycleway's junction (node 22) is further off and is the
+// one a rider can use; it reaches Marsh Cove Road, so a route exists from it.
+//
+// Snapping on distance alone puts the rider on node 13, and the router then
+// reports "not connected" although the cycleway 90 m away goes exactly where
+// they asked. Node 13's arcs must ALL be barred for the fixture to mean what
+// it says: a node with one usable arc is a node the search can leave, and the
+// filter is right to keep it.
+const char* kSnapOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="10" lat="32.6000000" lon="-80.0000000"/>
+ <node id="13" lat="32.6015000" lon="-80.0000000"/>
+ <node id="14" lat="32.6030000" lon="-80.0000000"/>
+ <node id="20" lat="32.6000000" lon="-80.0010000"/>
+ <node id="22" lat="32.6015000" lon="-80.0010000"/>
+ <node id="23" lat="32.6030000" lon="-80.0010000"/>
+ <node id="30" lat="32.6040000" lon="-80.0020000"/>
+ <way id="501">
+  <nd ref="10"/><nd ref="13"/>
+  <tag k="highway" v="path"/><tag k="golf" v="cartpath"/>
+  <tag k="bicycle" v="no"/>
+ </way>
+ <way id="504">
+  <nd ref="13"/><nd ref="14"/>
+  <tag k="highway" v="path"/><tag k="golf" v="cartpath"/>
+  <tag k="bicycle" v="no"/>
+ </way>
+ <way id="502">
+  <nd ref="20"/><nd ref="22"/>
+  <tag k="highway" v="cycleway"/>
+ </way>
+ <way id="506">
+  <nd ref="22"/><nd ref="23"/>
+  <tag k="highway" v="cycleway"/>
+ </way>
+ <way id="503">
+  <nd ref="23"/><nd ref="30"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Marsh Cove Road"/>
+ </way>
+</osm>
+)";
+
 const char* kPrivateOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
 <osm version="0.6">
  <node id="1" lat="32.7000000" lon="-80.0000000"/>
@@ -274,6 +320,18 @@ RoadGraph BuildPrivateFixture() {
   {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out << kPrivateOsm;
+  }
+  RoadGraph g;
+  const fv::Status s = fv::routing::BuildRoadGraph({path.string()}, {}, &g, nullptr);
+  EXPECT_EQ(s.code, fv::kOk) << s.message;
+  return g;
+}
+
+RoadGraph BuildSnapFixture() {
+  const fs::path path = ScratchDir() / "router-snap.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << kSnapOsm;
   }
   RoadGraph g;
   const fv::Status s = fv::routing::BuildRoadGraph({path.string()}, {}, &g, nullptr);
@@ -428,11 +486,45 @@ TEST(Router, GeographicEndpointsSnapAndReportTheirOffset) {
                 .code,
             fv::kOk);
   ASSERT_TRUE(route.found);
-  EXPECT_EQ(g.node(route.start_node).osm_id, 1);
-  EXPECT_EQ(g.node(route.end_node).osm_id, 4);
   EXPECT_GT(route.start_offset_m, 0.0);
   EXPECT_LT(route.start_offset_m, 50.0);
   EXPECT_LT(route.end_offset_m, 50.0);
+
+  // Since §1d both ends snap onto the ROAD, so `end_node` is the last JUNCTION
+  // the route reached and not where it stopped: the end point is 11 m short of
+  // n4 along the one-way n3 -> n4, so the route ends there having last passed
+  // n3. It ends at the point that was asked for, which is the whole change.
+  EXPECT_EQ(g.node(route.start_node).osm_id, 1);
+  EXPECT_EQ(g.node(route.end_node).osm_id, 3);
+  EXPECT_NE(route.end_arc, fv::routing::kNoArc);
+  ASSERT_FALSE(route.geometry.empty());
+  EXPECT_NEAR(route.geometry.back().lat, 32.7049, 1e-6);
+  EXPECT_NEAR(route.geometry.back().lon, -80.0100, 1e-6);
+  EXPECT_NEAR(route.geometry.back().lat, route.end_point.lat, 1e-12);
+
+  // And with the arc snap off it is the O4 answer exactly: both ends are
+  // junctions, and the route runs all the way to n4.
+  options.snap_to_arcs = false;
+  Route by_node;
+  ASSERT_EQ(router.Route(fv::GeoPoint{32.7001, -80.0001}, fv::GeoPoint{32.7049, -80.0101},
+                         options, &by_node)
+                .code,
+            fv::kOk);
+  ASSERT_TRUE(by_node.found);
+  EXPECT_EQ(g.node(by_node.start_node).osm_id, 1);
+  EXPECT_EQ(g.node(by_node.end_node).osm_id, 4);
+  EXPECT_EQ(by_node.start_arc, fv::routing::kNoArc);
+  EXPECT_EQ(by_node.end_arc, fv::routing::kNoArc);
+
+  // AND THE TWO TAKE DIFFERENT ROADS, which is the point. n4 as a JUNCTION can
+  // be reached the short way round the loop, through n5. The point actually
+  // asked for is 11 m short of n4 on a one-way running n3 -> n4, so reaching
+  // IT means coming up that one-way — longer, and the legal answer rather than
+  // the cheap one the node snap was quietly giving.
+  ASSERT_GE(by_node.nodes.size(), 3u);
+  EXPECT_EQ(g.node(by_node.nodes[1]).osm_id, 5);
+  EXPECT_EQ(route.nodes, (std::vector<uint32_t>{NodeForOsmId(g, 1), NodeForOsmId(g, 3)}));
+  EXPECT_LT(by_node.length_m, route.length_m);
 }
 
 TEST(Router, DisconnectedIsAnAnswerNotAnError) {
@@ -1402,9 +1494,28 @@ TEST(RouterVia, GeographicStopsSnapAndReportEveryOffset) {
   EXPECT_EQ(route.start_offset_m, route.stop_offsets_m.front());
   EXPECT_EQ(route.end_offset_m, route.stop_offsets_m.back());
 
+  // A stop that landed mid-road has no junction to name, and says so rather
+  // than naming the nearest one — which is a different place from where the
+  // route actually passes. `stop_points` is the truth either way.
+  ASSERT_EQ(route.stop_points.size(), 3u);
+  ASSERT_EQ(route.stop_nodes.size(), 3u);
+  for (size_t i = 0; i < 3; ++i) {
+    if (route.stop_nodes[i] == fv::routing::kNoArc) continue;
+    EXPECT_NEAR(route.stop_points[i].lat, g.location(route.stop_nodes[i]).lat, 1e-9);
+  }
+
+  // With the arc snap off every stop IS a junction, and the geographic call is
+  // then the node call over the nodes those points snapped to — which is the
+  // invariant this test was written for.
+  RouteOptions by_vertex;
+  by_vertex.snap_to_arcs = false;
+  Route vertex_route;
+  ASSERT_EQ(router.RouteVia(stops, by_vertex, &vertex_route).code, fv::kOk);
+  ASSERT_TRUE(vertex_route.found);
+  for (uint32_t n : vertex_route.stop_nodes) EXPECT_NE(n, fv::routing::kNoArc);
   Route by_node;
-  ASSERT_EQ(router.RouteNodesVia(route.stop_nodes, {}, &by_node).code, fv::kOk);
-  EXPECT_EQ(by_node.nodes, route.nodes);
+  ASSERT_EQ(router.RouteNodesVia(vertex_route.stop_nodes, {}, &by_node).code, fv::kOk);
+  EXPECT_EQ(by_node.nodes, vertex_route.nodes);
 }
 
 // The oracle rule, applied to the new code path over a real network: the two
@@ -1685,3 +1796,380 @@ TEST(RouterAvoid, AProfileCostsAFerryByTheBoatsClockToo) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Profile-aware snapping (2026-08-27)
+
+
+TEST(RouterSnap, ABicycleIsNotSnappedToAWayItMayNotUse) {
+  const RoadGraph g = BuildSnapFixture();
+  const Router router(g);
+  const fv::GeoPoint query{32.6015000, -80.0002000};  // beside the cart path
+  const fv::GeoPoint dest{32.6040000, -80.0020000};   // out on Marsh Cove Road
+
+  // The cart path junction really is the nearest node, so what follows is a
+  // test of a CHOICE and not of an accident.
+  uint32_t nearest = 0;
+  double nearest_m = 0.0;
+  ASSERT_TRUE(g.NearestNode(query, 500.0, &nearest, &nearest_m));
+  ASSERT_EQ(g.node(nearest).osm_id, 13) << "fixture no longer puts the cart path nearest";
+
+  RouteOptions bike;
+  ASSERT_EQ(fv::routing::SelectProfile(fv::routing::RouteRules::Builtin(), "bicycle", &bike).code,
+            fv::kOk);
+
+  Route route;
+  const fv::Status s = router.Route(query, dest, bike, &route);
+  ASSERT_EQ(s.code, fv::kOk) << s.message;
+
+  // It gave up the nearer node for one it can leave, and paid for it in snap
+  // distance — which is the whole trade, and is why the offset is reported to
+  // the caller rather than hidden.
+  EXPECT_GT(route.start_offset_m, nearest_m);
+}
+
+TEST(RouterSnap, ARefusedNodeCannotTightenTheSearchBound) {
+  // Stated on the graph directly, so the reason the test above passes cannot
+  // be mistaken for something the router did: a refused node must not win AND
+  // must not stop the rings widening past it.
+  const RoadGraph g = BuildSnapFixture();
+  const fv::GeoPoint query{32.6015000, -80.0002000};
+  uint32_t plain = 0, filtered = 0;
+  double plain_m = 0.0, filtered_m = 0.0;
+  ASSERT_TRUE(g.NearestNode(query, 500.0, &plain, &plain_m));
+  ASSERT_TRUE(g.NearestNode(query, 500.0, &filtered, &filtered_m,
+                            [&g](uint32_t n) { return g.node(n).osm_id != 13; }));
+  EXPECT_EQ(g.node(plain).osm_id, 13);
+  EXPECT_NE(g.node(filtered).osm_id, 13);
+  EXPECT_GT(filtered_m, plain_m);
+}
+
+TEST(RouterSnap, TheNearestNodeStillWinsWhenTheProfileCanUseIt) {
+  const RoadGraph g = BuildSnapFixture();
+  const Router router(g);
+  // Beside Marsh Cove Road, which bars nobody: the filter must not cost a
+  // traveller the nearest node merely for existing.
+  const fv::GeoPoint query{32.6039000, -80.0020000};
+  const fv::GeoPoint dest{32.6000000, -80.0010000};
+
+  uint32_t nearest = 0;
+  double nearest_m = 0.0;
+  ASSERT_TRUE(g.NearestNode(query, 500.0, &nearest, &nearest_m));
+
+  RouteOptions bike;
+  ASSERT_EQ(fv::routing::SelectProfile(fv::routing::RouteRules::Builtin(), "bicycle", &bike).code,
+            fv::kOk);
+  // With the arc snap off, the invariant is the one 2026-08-27 stated: the
+  // filter must not cost a traveller the nearest NODE merely for existing.
+  RouteOptions bike_by_vertex = bike;
+  bike_by_vertex.snap_to_arcs = false;
+  Route by_vertex;
+  ASSERT_EQ(router.Route(query, dest, bike_by_vertex, &by_vertex).code, fv::kOk);
+  EXPECT_NEAR(by_vertex.start_offset_m, nearest_m, 0.01);
+
+  // And with it on the rider starts nearer still, on the road itself — which
+  // is what §1d is about. It is Marsh Cove Road, which a bicycle may ride, so
+  // the arc filter has not traded the near road for a far one either.
+  Route route;
+  ASSERT_EQ(router.Route(query, dest, bike, &route).code, fv::kOk);
+  EXPECT_LT(route.start_offset_m, nearest_m);
+  ASSERT_NE(route.start_arc, fv::routing::kNoArc);
+  EXPECT_TRUE(fv::routing::ArcUsable(g.arc(route.start_arc), bike));
+  EXPECT_EQ(g.name(g.arc(route.start_arc).name), "Marsh Cove Road");
+}
+
+// ---------------------------------------------------------------------------
+// Mid-road snapping (§1d) — the route begins where you stand
+// ---------------------------------------------------------------------------
+//
+// The three tests above pin the NODE snap: which junction a traveller is
+// attached to, and that a profile it cannot leave is refused. This block is
+// about the defect that survived all of that — that a junction was still the
+// only place a route could begin. `RoadGraphArcSnap.*` in road_graph_test.cpp
+// covers the point-to-segment search itself; these are about what the router
+// does with it.
+
+TEST(RouterArcSnap, TheRouteBeginsWhereYouStandNotAtTheJunction) {
+  const RoadGraph g = BuildLoop();
+  const Router router(g);
+  // Twenty metres off the middle of the n4 -- n5 road, whose two ends are both
+  // most of half a kilometre away. This is the shape of the Kiawah case: the
+  // road is right there and every junction is not.
+  const fv::GeoPoint standing{32.7052, -80.0050};
+  const fv::GeoPoint dest = g.location(NodeForOsmId(g, 1));
+
+  RouteOptions options;
+  options.snap_meters = 1000.0;
+  Route route;
+  ASSERT_EQ(router.Route(standing, dest, options, &route).code, fv::kOk);
+  ASSERT_TRUE(route.found);
+  EXPECT_LT(route.start_offset_m, 30.0);
+  ASSERT_NE(route.start_arc, fv::routing::kNoArc);
+  ASSERT_FALSE(route.geometry.empty());
+  EXPECT_NEAR(route.geometry.front().lat, 32.7050, 1e-4);
+  EXPECT_NEAR(route.geometry.front().lon, -80.0050, 1e-4);
+
+  options.snap_to_arcs = false;
+  Route by_node;
+  ASSERT_EQ(router.Route(standing, dest, options, &by_node).code, fv::kOk);
+  ASSERT_TRUE(by_node.found);
+  // The old snap teleports the traveller to a junction 450 m away and then
+  // reports a route that is SHORTER for it — which is the whole complaint:
+  // the distance it did not drive is real, and it is not in the answer.
+  EXPECT_GT(by_node.start_offset_m, 400.0);
+  EXPECT_LT(route.start_offset_m, by_node.start_offset_m);
+  EXPECT_EQ(by_node.geometry.front().lat, g.location(by_node.start_node).lat);
+}
+
+TEST(RouterArcSnap, BothEndsOnOneRoadNeverTouchAJunction) {
+  const RoadGraph g = BuildLoop();
+  const Router router(g);
+  // Two points on the n4 -- n5 road, a quarter and three quarters along it.
+  RouteOptions options;
+  Route route;
+  ASSERT_EQ(router.Route(fv::GeoPoint{32.7051, -80.0075}, fv::GeoPoint{32.7051, -80.0025},
+                         options, &route)
+                .code,
+            fv::kOk);
+  ASSERT_TRUE(route.found);
+  // No junction is reached, so there is no node to report and the line is the
+  // one piece of road between the two points. A search cannot find this: no
+  // frontier ever settles anything.
+  EXPECT_TRUE(route.nodes.empty());
+  ASSERT_EQ(route.legs.size(), 1u);
+  EXPECT_EQ(route.geometry.size(), 2u);
+  EXPECT_NEAR(route.length_m, fv::routing::GreatCircleMeters(32.7050, -80.0075, 32.7050,
+                                                             -80.0025),
+              1.0);
+  EXPECT_NEAR(route.geometry.front().lon, -80.0075, 1e-5);
+  EXPECT_NEAR(route.geometry.back().lon, -80.0025, 1e-5);
+
+  // The unidirectional oracle has to agree, including about the case it also
+  // cannot search for.
+  options.bidirectional = false;
+  Route oracle;
+  ASSERT_EQ(router.Route(fv::GeoPoint{32.7051, -80.0075}, fv::GeoPoint{32.7051, -80.0025},
+                         options, &oracle)
+                .code,
+            fv::kOk);
+  ASSERT_TRUE(oracle.found);
+  EXPECT_NEAR(oracle.length_m, route.length_m, 1e-6);
+}
+
+TEST(RouterArcSnap, AOneWayIsStillOneWayMidBlock) {
+  const RoadGraph g = BuildLoop();
+  const Router router(g);
+  // Two points on the one-way n3 -> n4, a fifth and four fifths along.
+  const fv::GeoPoint low{32.7011, -80.0101};
+  const fv::GeoPoint high{32.7039, -80.0101};
+
+  RouteOptions options;
+  options.snap_meters = 1000.0;
+  Route downstream, upstream;
+  ASSERT_EQ(router.Route(low, high, options, &downstream).code, fv::kOk);
+  ASSERT_EQ(router.Route(high, low, options, &upstream).code, fv::kOk);
+  ASSERT_TRUE(downstream.found);
+  ASSERT_TRUE(upstream.found);
+
+  // With the arrow: straight up the road, touching nothing.
+  EXPECT_TRUE(downstream.nodes.empty());
+  EXPECT_LT(downstream.length_m, 400.0);
+
+  // Against it: all the way round the loop, and it must actually reach the
+  // point rather than stopping at n3.
+  EXPECT_GT(upstream.length_m, 2000.0);
+  EXPECT_NEAR(upstream.geometry.back().lat, 32.7011, 1e-4);
+  ASSERT_FALSE(upstream.nodes.empty());
+  EXPECT_EQ(g.node(upstream.nodes.back()).osm_id, 3) << "it comes back up the one-way from n3";
+}
+
+TEST(RouterArcSnap, TheSnapTakesTheCyclewayOverTheCartPathBesideIt) {
+  const RoadGraph g = BuildSnapFixture();
+  const Router router(g);
+  // Two metres off the golf cart path, ninety off the cycleway that parallels
+  // it. On distance alone the rider starts on the cart path, which is tagged
+  // bicycle=no — and mid-block, so no node filter can see it either: 2026-08-27
+  // filtered NODES, and the nearest node here is not the problem.
+  const fv::GeoPoint riding{32.6020000, -80.0000200};
+  const fv::GeoPoint dest = g.location(NodeForOsmId(g, 30));
+
+  RouteOptions bike;
+  ASSERT_EQ(fv::routing::SelectProfile(fv::routing::RouteRules::Builtin(), "bicycle", &bike).code,
+            fv::kOk);
+  Route route;
+  ASSERT_EQ(router.Route(riding, dest, bike, &route).code, fv::kOk);
+  ASSERT_TRUE(route.found);
+  ASSERT_NE(route.start_arc, fv::routing::kNoArc);
+  EXPECT_EQ(g.arc(route.start_arc).klass, fv::routing::RoadClass::kCycleway);
+  EXPECT_TRUE(fv::routing::ArcUsable(g.arc(route.start_arc), bike));
+  EXPECT_NEAR(route.geometry.front().lon, -80.0010, 1e-6);
+  EXPECT_GT(route.start_offset_m, 50.0) << "it paid ninety metres to be on a road it may ride";
+
+  // A walking profile may use the cart path, and then the near road wins.
+  // Asked of the snap DIRECTLY rather than through a route: the fixture's two
+  // paths are separate components, so a walker who starts on the cart path
+  // genuinely cannot reach Marsh Cove Road — which is the right answer, and
+  // not the one this test is about.
+  RouteOptions walk;
+  ASSERT_EQ(fv::routing::SelectProfile(fv::routing::RouteRules::Builtin(), "foot", &walk).code,
+            fv::kOk);
+  fv::routing::RouteAnchor on_foot;
+  ASSERT_TRUE(router.Snap(riding, walk, &on_foot));
+  ASSERT_TRUE(on_foot.mid_arc());
+  EXPECT_EQ(g.arc(on_foot.arc).klass, fv::routing::RoadClass::kPath);
+  EXPECT_NEAR(on_foot.point.lon, -80.0000, 1e-6);
+}
+
+TEST(RouterArcSnap, BothSearchesAgreeOnKiawahWithMidRoadEnds) {
+  SKIP_WITHOUT_KIAWAH();
+  const RoadGraph g = BuildKiawah();
+  const Router router(g);
+  const fv::GeoRect b = g.bounds();
+  uint32_t seed = 24681357u;
+  auto rnd = [&seed]() {
+    seed = seed * 1664525u + 1013904223u;
+    return (seed >> 8) / 16777216.0;
+  };
+
+  RouteOptions bi;
+  bi.snap_meters = 400.0;
+  RouteOptions uni = bi;
+  uni.bidirectional = false;
+
+  int routed = 0;
+  for (int i = 0; i < 250; ++i) {
+    const fv::GeoPoint from{b.ll.lat + rnd() * (b.ur.lat - b.ll.lat),
+                            b.ll.lon + rnd() * (b.ur.lon - b.ll.lon)};
+    const fv::GeoPoint to{b.ll.lat + rnd() * (b.ur.lat - b.ll.lat),
+                          b.ll.lon + rnd() * (b.ur.lon - b.ll.lon)};
+    Route a, c;
+    if (router.Route(from, to, bi, &a).code != fv::kOk) continue;
+    ASSERT_EQ(router.Route(from, to, uni, &c).code, fv::kOk);
+    ASSERT_EQ(a.found, c.found) << "pair " << i;
+    if (!a.found) continue;
+    // The two searches cost the same route differently only if one of them is
+    // wrong; the metre is the reported quantity and is what is compared.
+    EXPECT_NEAR(a.length_m, c.length_m, 1.0) << "pair " << i;
+    EXPECT_NEAR(a.seconds, c.seconds, 0.1) << "pair " << i;
+    // And both begin and end where the request was, not at a junction.
+    ASSERT_FALSE(a.geometry.empty());
+    EXPECT_NEAR(a.geometry.front().lat, a.start_point.lat, 1e-12);
+    EXPECT_NEAR(a.geometry.back().lat, a.end_point.lat, 1e-12);
+    ++routed;
+  }
+  EXPECT_GT(routed, 5) << "the sample found nothing to compare";
+}
+
+TEST(RouterViaArcSnap, AMidRoadStopIsNotAJunctionAndSaysSo) {
+  const RoadGraph g = BuildViaFixture();
+  const Router router(g);
+  // W, a point halfway along Main Street's eastern half, then N.
+  const std::vector<fv::GeoPoint> stops = {
+      {32.7000000, -80.0200000}, {32.7001000, -80.0050000}, {32.7100000, -80.0100000}};
+
+  RouteOptions options;
+  Route route;
+  ASSERT_EQ(router.RouteVia(stops, options, &route).code, fv::kOk);
+  ASSERT_TRUE(route.found);
+  ASSERT_EQ(route.stop_nodes.size(), 3u);
+  EXPECT_NE(route.stop_nodes[0], fv::routing::kNoArc);
+  EXPECT_EQ(route.stop_nodes[1], fv::routing::kNoArc) << "there is no junction there";
+  EXPECT_NE(route.stop_nodes[2], fv::routing::kNoArc);
+
+  // The stop is ON the drawn line, at the index reported for it.
+  ASSERT_EQ(route.stop_geometry_index.size(), 3u);
+  ASSERT_LT(route.stop_geometry_index[1], route.geometry.size());
+  const fv::GeoPoint at = route.geometry[route.stop_geometry_index[1]];
+  EXPECT_NEAR(at.lat, route.stop_points[1].lat, 1e-9);
+  EXPECT_NEAR(at.lon, route.stop_points[1].lon, 1e-9);
+  EXPECT_NEAR(at.lon, -80.0050, 1e-5);
+  EXPECT_EQ(route.stop_geometry_index.front(), 0u);
+  EXPECT_EQ(route.stop_geometry_index.back(), route.geometry.size() - 1);
+}
+
+TEST(RouterViaArcSnap, TheRouteWillNotTurnRoundAtAMidRoadStop) {
+  const RoadGraph g = BuildViaFixture();
+  const Router router(g);
+  // The stop sits on Main Street between J and E, reached from J. Reversing on
+  // the spot and going back up North Lane is the cheapest way on to N — which
+  // is exactly what "go via here" does not mean.
+  const std::vector<fv::GeoPoint> stops = {
+      {32.7000000, -80.0200000}, {32.7001000, -80.0050000}, {32.7100000, -80.0100000}};
+
+  RouteOptions options;  // allow_u_turn_at_stops is off
+  Route kept, turned;
+  ASSERT_EQ(router.RouteVia(stops, options, &kept).code, fv::kOk);
+  ASSERT_TRUE(kept.found);
+  options.allow_u_turn_at_stops = true;
+  ASSERT_EQ(router.RouteVia(stops, options, &turned).code, fv::kOk);
+  ASSERT_TRUE(turned.found);
+
+  // WHICH WAY IT LEAVES THE STOP is the whole of it, and on a mid-road stop
+  // that is a direction rather than a turn: there is no junction there to
+  // forbid a turn at. Refused, it carries on east and turns at the next real
+  // junction (which is legal, and the same reading the junction case already
+  // has — see kViaOsm's note about the spur). Allowed, it reverses on the spot.
+  ASSERT_EQ(kept.stop_geometry_index.size(), 3u);
+  ASSERT_LT(kept.stop_geometry_index[1] + 1, kept.geometry.size());
+  ASSERT_LT(turned.stop_geometry_index[1] + 1, turned.geometry.size());
+  EXPECT_GT(kept.geometry[kept.stop_geometry_index[1] + 1].lon, -80.0050);
+  EXPECT_LT(turned.geometry[turned.stop_geometry_index[1] + 1].lon, -80.0050);
+
+  EXPECT_TRUE(kept.u_turn_stops.empty()) << "there was another way on, so it took it";
+  EXPECT_TRUE(turned.u_turn_stops.empty()) << "allowed outright, so no stop HAD to";
+  EXPECT_LT(turned.length_m, kept.length_m)
+      << "the U-turn is the cheap way, which is why it has to be refused";
+}
+
+TEST(RouterViaArcSnap, AMidRoadStopUpASpurDrivesToTheEndRatherThanReversing) {
+  const RoadGraph g = BuildViaFixture();
+  const Router router(g);
+  // Halfway up Dead End, which is a cul-de-sac. Refusing to reverse AT the
+  // stop still leaves a way on — drive to the tip and turn round THERE, which
+  // is a turn at a real place — so the route does that and no stop is reported
+  // as having had to U-turn. Exactly what a junction stop on the same spur
+  // does, and the reason the two cases share one preference.
+  const std::vector<fv::GeoPoint> stops = {
+      {32.7000000, -80.0200000}, {32.7025000, -80.0115000}, {32.7100000, -80.0100000}};
+
+  RouteOptions options;
+  Route kept, turned;
+  ASSERT_EQ(router.RouteVia(stops, options, &kept).code, fv::kOk);
+  options.allow_u_turn_at_stops = true;
+  ASSERT_EQ(router.RouteVia(stops, options, &turned).code, fv::kOk);
+  ASSERT_TRUE(kept.found && turned.found);
+  ASSERT_EQ(kept.stop_nodes.size(), 3u);
+  EXPECT_EQ(kept.stop_nodes[1], fv::routing::kNoArc) << "the stop is up the spur, not on a node";
+
+  const uint32_t tip = NodeForOsmId(g, 7);
+  EXPECT_NE(std::find(kept.nodes.begin(), kept.nodes.end(), tip), kept.nodes.end())
+      << "it drove to the end of the cul-de-sac to turn";
+  EXPECT_EQ(std::find(turned.nodes.begin(), turned.nodes.end(), tip), turned.nodes.end());
+  EXPECT_LT(turned.length_m, kept.length_m);
+  EXPECT_TRUE(kept.u_turn_stops.empty());
+}
+
+TEST(RouterViaArcSnap, AZeroLengthLegHandsOnTheArcTheLegBeforeItArrivedAlong) {
+  const RoadGraph g = BuildViaFixture();
+  const Router router(g);
+  const uint32_t w = NodeForOsmId(g, 1), e = NodeForOsmId(g, 3), n = NodeForOsmId(g, 4);
+
+  // W, via E, to N — and the same with E asked for TWICE. A stop repeated is a
+  // legal request that travels nothing, and it must not wipe what the leg
+  // before it arrived along: the U-turn out of E is barred either way.
+  Route once, twice;
+  ASSERT_EQ(router.RouteNodesVia({w, e, n}, {}, &once).code, fv::kOk);
+  ASSERT_EQ(router.RouteNodesVia({w, e, e, n}, {}, &twice).code, fv::kOk);
+  ASSERT_TRUE(once.found && twice.found);
+  EXPECT_EQ(twice.nodes, once.nodes);
+  EXPECT_NEAR(twice.length_m, once.length_m, 1e-6);
+  EXPECT_EQ(twice.u_turn_stops, once.u_turn_stops);
+
+  // A route with nowhere to go at all still draws as one point rather than as
+  // nothing, so `geometry.front()` is always where the route is.
+  Route nowhere;
+  ASSERT_EQ(router.RouteNodesVia({e, e}, {}, &nowhere).code, fv::kOk);
+  ASSERT_TRUE(nowhere.found);
+  ASSERT_EQ(nowhere.geometry.size(), 1u);
+  EXPECT_EQ(nowhere.geometry.front().lat, g.location(e).lat);
+}

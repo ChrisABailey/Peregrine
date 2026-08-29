@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // pyfvw.app — the app layer (fv::app, port/fvkit-app-plan-COMPLETE.md) in Python (A6).
 //
@@ -37,6 +37,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <string>
@@ -48,6 +49,7 @@
 #include "fvkit/app/capabilities.h"
 #include "fvkit/app/editor.h"
 #include "fvkit/app/pick.h"
+#include "fvkit/app/search.h"
 #include "fvkit/app/session.h"
 #include "fvkit/app/shell.h"
 #include "fvkit/app/type_registry.h"
@@ -75,6 +77,11 @@ using fv::app::OverlayTypeDesc;
 using fv::app::OverlayTypeRegistry;
 using fv::app::PickPolicy;
 using fv::app::PickSession;
+using fv::app::SearchOrder;
+using fv::app::SearchProvider;
+using fv::app::SearchQuery;
+using fv::app::SearchResult;
+using fv::app::SearchSession;
 using fv::app::SnapToItem;
 
 // ---------------------------------------------------------------------------
@@ -449,6 +456,9 @@ void BindApp(py::module_& m) {
            "point"_a, "description"_a = "")
       .def_readwrite("point", &SnapToItem::point)
       .def_readwrite("description", &SnapToItem::description)
+      .def_readwrite("distance_px", &SnapToItem::distance_px,
+                     "Screen distance to the asked-about pixel, for "
+                     "nearest-wins ranking. 0 = the overlay did not say.")
       .def_property_readonly(
           "overlay", [](const SnapToItem& s) { return s.overlay; },
           py::return_value_policy::reference);
@@ -780,6 +790,17 @@ void BindApp(py::module_& m) {
            },
            "proj"_a, "x"_a, "y"_a,
            "0 answers => None, 1 => it with no dialog, n => the chooser.")
+      .def_static(
+          "snap_candidates",
+          [](const fv::OverlayManager& m, const fv::MapProjection& proj, int x,
+             int y, double tolerance_px) {
+            return fv::app::SnapCandidates(m, proj, fv::PixelPoint{x, y},
+                                           tolerance_px);
+          },
+          "manager"_a, "proj"_a, "x"_a, "y"_a, "tolerance_px"_a = 8.0,
+          "The same walk with no shell and no question: every candidate from "
+          "every visible overlay that answers, ranked nearest first. What a "
+          "shell with no chooser dialog uses.")
       .def("build_context_menu",
            [](const PickSession& s, const fv::MapProjection& proj, int x,
               int y) { return s.BuildContextMenu(proj, fv::PixelPoint{x, y}); },
@@ -793,6 +814,163 @@ void BindApp(py::module_& m) {
       .def_readwrite("tolerance_px", &PickSession::tolerance_px,
                      "Device pixels, and the SHELL scales it: the core has no "
                      "business knowing a finger is wider than a pointer.");
+
+  // --- searching ----------------------------------------------------------
+  //
+  // The second aggregating capability (S1-S4). Everything a caller needs is
+  // three types and one call: what you are looking for, what came back, and a
+  // session over the stack. There is no provider registry to bind because
+  // there is no provider registry — an overlay that answers `as_search` is
+  // discovered by the same walk that draws it.
+
+  py::enum_<SearchOrder>(
+      app, "SearchOrder",
+      "How merged answers are ranked. NOT a query grammar: 'order by X' later "
+      "is one more value here, which every UI already knows how to render.")
+      .value("AUTO", SearchOrder::kAuto,
+             "BEST_MATCH when the query has text, NEAREST when it does not.")
+      .value("BEST_MATCH", SearchOrder::kBestMatch,
+             "Match quality, then distance from `near`, then stack order.")
+      .value("NEAREST", SearchOrder::kNearest,
+             "Distance from `near` (or the centre of `area`), then stack "
+             "order. With neither there is nothing to measure from and this "
+             "degrades to stack order alone.");
+  app.def("search_order_name",
+          static_cast<const char* (*)(SearchOrder)>(&fv::app::ToString),
+          "order"_a);
+
+  py::class_<SearchQuery>(
+      app, "SearchQuery",
+      "Two independently optional filters — an area and some text — plus how "
+      "to rank what comes back. `near` + `radius_m` is a circle: the SESSION "
+      "folds it into a box before any provider sees it and cuts the exact "
+      "circle afterwards, so a provider never implements one.")
+      .def(py::init([](std::optional<fv::GeoRect> area,
+                       std::optional<fv::GeoPoint> near, double radius_m,
+                       std::string text, bool visible_only, size_t max_results,
+                       SearchOrder order) {
+             SearchQuery q;
+             q.area = area;
+             q.near = near;
+             q.radius_m = radius_m;
+             q.text = std::move(text);
+             q.visible_only = visible_only;
+             q.max_results = max_results;
+             q.order = order;
+             return q;
+           }),
+           "area"_a = py::none(), "near"_a = py::none(), "radius_m"_a = 0.0,
+           "text"_a = std::string(), "visible_only"_a = false,
+           "max_results"_a = 50, "order"_a = SearchOrder::kAuto)
+      .def_readwrite("area", &SearchQuery::area, "The box, or None.")
+      .def_readwrite("near", &SearchQuery::near,
+                     "Distance origin. With radius_m it is also a cut; alone "
+                     "it only orders.")
+      .def_readwrite("radius_m", &SearchQuery::radius_m)
+      .def_readwrite("text", &SearchQuery::text,
+                     "Empty = spatial only. Case-insensitive token prefix: "
+                     "'rud tur' finds Ruddy Turnstone.")
+      .def_readwrite("visible_only", &SearchQuery::visible_only,
+                     "False — the deliberate opposite of picking. 'Where is X' "
+                     "is a fair question about a layer that is switched off.")
+      .def_readwrite("max_results", &SearchQuery::max_results,
+                     "The cap at BOTH ends: no provider appends more, and the "
+                     "session returns at most this many after ranking. "
+                     "0 = uncapped.")
+      .def_readwrite("order", &SearchQuery::order)
+      .def("__repr__", [](const SearchQuery& q) {
+        return "<SearchQuery '" + q.text + "'" +
+               (q.area ? " in area" : "") + (q.near ? " near" : "") + ">";
+      });
+
+  py::class_<SearchResult>(
+      app, "SearchResult",
+      "One answer. `title` is the provider's own label field — the caller "
+      "never learns whether that was `name`, `OBJNAM` or a waypoint's own "
+      "text — and `detail` is the one line that tells two rows of the same "
+      "name apart. Provenance is flat, exactly like a HitItem's.")
+      .def(py::init([](std::string title, std::string detail,
+                       fv::GeoPoint position, std::optional<fv::GeoRect> bounds,
+                       int match_quality, uint64_t feature) {
+             SearchResult r;
+             r.title = std::move(title);
+             r.detail = std::move(detail);
+             r.position = position;
+             r.bounds = bounds ? *bounds : fv::GeoRect{position, position};
+             r.match_quality = match_quality;
+             r.feature = feature;
+             return r;
+           }),
+           "title"_a = std::string(), "detail"_a = std::string(),
+           "position"_a = fv::GeoPoint{}, "bounds"_a = py::none(),
+           "match_quality"_a = 0, "feature"_a = 0,
+           "bounds defaults to the degenerate box at `position`, which is the "
+           "honest answer for a point.")
+      .def_readwrite("title", &SearchResult::title)
+      .def_readwrite("detail", &SearchResult::detail)
+      .def_readwrite("position", &SearchResult::position,
+                     "Where a label would sit — what distance ordering and "
+                     "the radius cut measure to.")
+      .def_readwrite("bounds", &SearchResult::bounds,
+                     "What 'go there' frames. Degenerate for a point.")
+      .def_readwrite("match_quality", &SearchResult::match_quality,
+                     "0 exact, 1 whole-string prefix, 2 token match.")
+      .def_readwrite("feature", &SearchResult::feature)
+      // Borrowed: the stack owns the overlay.
+      .def_property_readonly(
+          "overlay", [](const SearchResult& r) { return r.overlay; },
+          py::return_value_policy::reference)
+      .def("__repr__", [](const SearchResult& r) {
+        return "<SearchResult '" + r.title + "' (" + r.detail + ")>";
+      });
+
+  app.def("text_match_quality", &fv::app::TextMatchQuality, "query"_a,
+          "candidate"_a,
+          "-1 for no match, else 0 exact / 1 prefix / 2 token prefix. THE "
+          "shared rule: a provider decides which string it matches, never "
+          "what matching means.");
+  app.def("search_distance_meters", &fv::app::SearchDistanceMeters, "a"_a,
+          "b"_a,
+          "The metre the session orders by, and the same one road snapping "
+          "measures in — so a 500 m search and a 500 m snap agree.");
+
+  // A cancel flag a Python thread can raise, because std::atomic<bool> is not
+  // a thing Python has. It exists for the one async behaviour an incremental
+  // search box needs: the next keystroke cancels the search in flight.
+  py::class_<std::atomic<bool>, std::shared_ptr<std::atomic<bool>>>(
+      app, "CancelFlag",
+      "Pass one to SearchSession.search and set() it from another thread to "
+      "cut a long search short. A cancelled search returns what it had, "
+      "ranked — a caller that shows a partial answer gets a sensible one.")
+      .def(py::init([] { return std::make_shared<std::atomic<bool>>(false); }))
+      .def("set", [](std::atomic<bool>& f) { f.store(true); })
+      .def("clear", [](std::atomic<bool>& f) { f.store(false); })
+      .def_property_readonly("cancelled",
+                             [](const std::atomic<bool>& f) { return f.load(); });
+
+  py::class_<SearchSession>(
+      app, "SearchSession",
+      "The ONLY discovery path: walks the stack, asks everything that answers "
+      "`as_search`, ranks the union. It holds no state about the stack — the "
+      "walk is re-done per call — and unlike a PickSession it needs no shell, "
+      "because a search asks the user nothing.")
+      .def(py::init<const fv::OverlayManager&>(), "manager"_a,
+           py::keep_alive<1, 2>())
+      .def("search",
+           [](const SearchSession& s, const SearchQuery& q,
+              std::shared_ptr<std::atomic<bool>> cancel) {
+             if (!cancel) {
+               py::gil_scoped_release unlock;
+               return s.Search(q);
+             }
+             py::gil_scoped_release unlock;
+             return s.Search(q, *cancel);
+           },
+           "query"_a, "cancel"_a = nullptr,
+           "Ranked results, best first. The GIL is released for the walk, so "
+           "a search running on a worker thread does not freeze the UI — and "
+           "a Python overlay's own `search` re-acquires it when its turn "
+           "comes.");
 
   // --- stack observers ----------------------------------------------------
 

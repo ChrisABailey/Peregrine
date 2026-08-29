@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // PointOverlay — see fvkit/overlay/point_overlay.h.
 
@@ -25,13 +25,14 @@ namespace {
 // One file, one schema. `meta` carries the document's own name so an overlay
 // can rename itself to what the author called the set rather than to a path.
 //
-// SCHEMA 2 adds `symbols` and `points.symbol_id`. The version is REPLACEd
-// rather than IGNOREd on write because a save rewrites the whole document —
-// a schema-1 file saved by this build IS a schema-2 file, and leaving the row
-// saying 1 would make the number a lie the next reader believes.
+// SCHEMA 2 adds `symbols` and `points.symbol_id`; SCHEMA 3 adds
+// `points.phone` and `points.url`. The version is REPLACEd rather than
+// IGNOREd on write because a save rewrites the whole document — a schema-1
+// file saved by this build IS a schema-3 file, and leaving the row saying 1
+// would make the number a lie the next reader believes.
 const char kSchema[] =
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);"
-    "INSERT OR REPLACE INTO meta VALUES('schema_version','2');"
+    "INSERT OR REPLACE INTO meta VALUES('schema_version','3');"
     "CREATE TABLE IF NOT EXISTS points("
     "  id INTEGER PRIMARY KEY,"
     "  name TEXT NOT NULL DEFAULT '',"
@@ -42,7 +43,9 @@ const char kSchema[] =
     "  category TEXT NOT NULL DEFAULT '',"
     "  elevation_ft REAL NOT NULL DEFAULT 0,"
     "  remarks TEXT NOT NULL DEFAULT '',"
-    "  symbol_id INTEGER NOT NULL DEFAULT 0);"
+    "  symbol_id INTEGER NOT NULL DEFAULT 0,"
+    "  phone TEXT NOT NULL DEFAULT '',"
+    "  url TEXT NOT NULL DEFAULT '');"
     // The artwork, once per symbol however many points wear it. `name` is
     // UNIQUE so a palette assembled twice from the same icon set converges
     // rather than doubling, and it is the handle a human writes INSERTs
@@ -55,16 +58,36 @@ const char kSchema[] =
     "  pivot_x REAL, pivot_y REAL,"  // NULL = the tile's centre
     "  image BLOB NOT NULL);";
 
-// Brings a schema-1 `points` table up to 2. `CREATE TABLE IF NOT EXISTS` does
-// nothing to a table that is already there, so an old document reopened for
-// saving would otherwise still have no `symbol_id` and the INSERT below would
-// fail on a column that the schema string claims exists.
-Status AddSymbolIdColumnIfMissing(detail::SqliteDb& db) {
+// Brings an older `points` table up to the current schema.
+// `CREATE TABLE IF NOT EXISTS` does nothing to a table that is already there,
+// so an old document reopened for saving would otherwise still be missing the
+// column and the INSERT below would fail on one that the schema string claims
+// exists.
+//
+// The probe is a PREPARE rather than a `PRAGMA table_info` walk, for
+// `ReadFile`'s reason: sqlite has already parsed the table, and a failed
+// prepare is the cheapest question there is.
+Status AddColumnIfMissing(detail::SqliteDb& db, const char* column,
+                          const char* declaration) {
   detail::SqliteStmt q;
-  Status s = q.Prepare(db, "SELECT symbol_id FROM points LIMIT 1");
+  const std::string probe =
+      std::string("SELECT ") + column + " FROM points LIMIT 1";
+  Status s = q.Prepare(db, probe.c_str());
   if (s.ok()) return Status::Ok();
-  return db.Exec("ALTER TABLE points ADD COLUMN symbol_id INTEGER NOT NULL"
-                 " DEFAULT 0;");
+  const std::string alter = std::string("ALTER TABLE points ADD COLUMN ") +
+                            column + " " + declaration + ";";
+  return db.Exec(alter.c_str());
+}
+
+// Schema 1 -> 2 -> 3, in one pass. Each step is independent: a schema-2
+// document needs only the last two, and asking for a column it already has
+// costs one prepare.
+Status MigrateColumns(detail::SqliteDb& db) {
+  Status s = AddColumnIfMissing(db, "symbol_id", "INTEGER NOT NULL DEFAULT 0");
+  if (!s.ok()) return s;
+  s = AddColumnIfMissing(db, "phone", "TEXT NOT NULL DEFAULT ''");
+  if (!s.ok()) return s;
+  return AddColumnIfMissing(db, "url", "TEXT NOT NULL DEFAULT ''");
 }
 
 // How much of the badge the icon is allowed to cover. A square tile inscribed
@@ -252,6 +275,16 @@ int64_t PointOverlay::AddPoint(MapPoint point) {
   return points_.back().id;
 }
 
+bool PointOverlay::UpdatePoint(const MapPoint& point) {
+  auto it = std::find_if(
+      points_.begin(), points_.end(),
+      [&point](const MapPoint& p) { return p.id == point.id; });
+  if (point.id <= 0 || it == points_.end()) return false;
+  *it = point;
+  set_dirty(true);
+  return true;
+}
+
 bool PointOverlay::RemovePoint(int64_t id) {
   auto it = std::find_if(points_.begin(), points_.end(),
                          [id](const MapPoint& p) { return p.id == id; });
@@ -411,19 +444,29 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   // scale and rotate, and the labels get T2's halo and E8's alignment because
   // they are the seam's own LabelStyle.
   //
-  // symbol_dpi_scale is left at 1.0: the overlay does not know the device, and
-  // the shell that does has no way to tell it yet (the ledger's symbol-DPI
-  // item). Setting it here would be guessing.
+  // symbol_dpi_scale is whatever a shell told this overlay the device is, and
+  // 1.0 — the identity, and every pinned golden's value — when none has. The
+  // ledger's symbol-DPI item said the overlay "does not know the device and
+  // the shell that does has no way to tell it"; `SetSymbolDpiScale` is that
+  // way, and Pippin is the shell that uses it.
   GeoDraw draw(proj, &canvas);
+  draw.SetSymbolDpiScale(dpi_scale_);
 
   for (const MapPoint& p : points_) {
     double sx = 0, sy = 0;
     if (!proj.GeoToSurface(p.position, &sx, &sy).ok()) continue;
-    const double r = p.size_px / 2.0;
+    // What the marker actually occupies on the SURFACE. `size_px` is an
+    // authored pixel and `dpi_scale_` is how many surface pixels one of those
+    // is, so everything measured against the drawn marker — the cull box, the
+    // label's offset, the label's own type size — is in `drawn_px` and not in
+    // `size_px`. At the default 1.0 the two are the same number, which is why
+    // no golden moved.
+    const double drawn_px = p.size_px * dpi_scale_;
+    const double r = drawn_px / 2.0;
     // Cull generously: a shape whose centre is off-screen may still have ink
     // on it, and the canvas clips anyway — this is only to skip the work.
-    if (sx < -p.size_px || sy < -p.size_px || sx > surf.width + p.size_px ||
-        sy > surf.height + p.size_px)
+    if (sx < -drawn_px || sy < -drawn_px || sx > surf.width + drawn_px ||
+        sy > surf.height + drawn_px)
       continue;
 
     const bool sel = (p.id != 0 && p.id == selected_);
@@ -513,7 +556,10 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
       draw.SetState(RenderState::kNormal);
       LabelStyle ls;
       ls.valid = true;
-      ls.style.size = 12.0;
+      // The type scales with the device too, and it has to: a 12-px name
+      // beside a marker drawn three times its authored size is a caption a
+      // third the height of the thing it names.
+      ls.style.size = 12.0 * dpi_scale_;
       ls.style.color = FvColor{0, 0, 0, 255};
       ls.dx = (int)std::lround(r) + 3;
       ls.dy = -(int)std::lround(r);
@@ -556,24 +602,38 @@ Status PointOverlay::ReadFile(const std::string& spec,
   Status s = db.OpenReadOnly(spec);
   if (!s.ok()) return s;
 
-  // Schema 2 first, then schema 1. Two prepares rather than a
-  // `PRAGMA table_info` walk: sqlite has already parsed the table to answer
-  // the first one, and a failed prepare is the cheapest possible probe.
-  // A schema-1 document must keep opening — the port has written them, and a
-  // reader that rejected one would make the version number a wall instead of
-  // a record.
-  bool has_symbols = true;
+  // WHICH SCHEMA THIS IS, ASKED ONE COLUMN AT A TIME. An older document must
+  // keep opening — the port has written schema 1 and schema 2, and a reader
+  // that rejected one would make the version number a wall instead of a
+  // record — so every column added after schema 1 is probed for and a missing
+  // one is SELECTED AS ITS DEFAULT.
+  //
+  // A literal in the select list rather than a second query per shape: the
+  // column indices below then stand whatever the file turned out to be, which
+  // is what keeps a three-version reader from being three readers. The probe
+  // is a prepare rather than a `PRAGMA table_info` walk because sqlite has
+  // already parsed the table and a failed prepare is the cheapest question
+  // there is.
+  //
+  // It is per-COLUMN and not per-VERSION deliberately: `MigrateColumns` adds
+  // them one ALTER at a time, so a document interrupted between two of them is
+  // a real file on somebody's disk, and it opens.
+  auto has_column = [&db](const char* column) {
+    detail::SqliteStmt probe;
+    const std::string sql =
+        std::string("SELECT ") + column + " FROM points LIMIT 1";
+    return probe.Prepare(db, sql.c_str()).ok();
+  };
+  const bool has_symbols = has_column("symbol_id");
+  const std::string select =
+      std::string("SELECT id, name, lat, lon, shape, size_px, color, category,"
+                  " elevation_ft, remarks, ") +
+      (has_symbols ? "symbol_id" : "0") + ", " +
+      (has_column("phone") ? "phone" : "''") + ", " +
+      (has_column("url") ? "url" : "''") + " FROM points ORDER BY id";
+
   detail::SqliteStmt q;
-  s = q.Prepare(db,
-                "SELECT id, name, lat, lon, shape, size_px, color, category,"
-                "       elevation_ft, remarks, symbol_id FROM points"
-                " ORDER BY id");
-  if (!s.ok()) {
-    has_symbols = false;
-    s = q.Prepare(db,
-                  "SELECT id, name, lat, lon, shape, size_px, color, category,"
-                  "       elevation_ft, remarks FROM points ORDER BY id");
-  }
+  s = q.Prepare(db, select.c_str());
   if (!s.ok())
     return Status::Error(kIoError, "not a point document (" + spec + "): " +
                                        s.message);
@@ -590,7 +650,9 @@ Status PointOverlay::ReadFile(const std::string& spec,
     p.category = q.ColText(7);
     p.elevation_ft = q.ColDouble(8);
     p.remarks = q.ColText(9);
-    if (has_symbols) p.symbol_id = q.ColInt64(10);
+    p.symbol_id = q.ColInt64(10);  // the literal 0 on a schema-1 document
+    p.phone = q.ColText(11);
+    p.url = q.ColText(12);
     out->push_back(std::move(p));
   }
   if (!step.ok()) return step;
@@ -669,9 +731,9 @@ Status PointOverlay::FileSaveAs(const std::string& spec, int format_index) {
   if (!s.ok()) return s;
   s = db.Exec(kSchema);
   if (!s.ok()) return s;
-  // Saving OVER a schema-1 document: the CREATEs above left its `points`
-  // table alone, so the column the INSERT below binds has to be added.
-  s = AddSymbolIdColumnIfMissing(db);
+  // Saving OVER an older document: the CREATEs above left its `points`
+  // table alone, so the columns the INSERT below binds have to be added.
+  s = MigrateColumns(db);
   if (!s.ok()) return s;
   // One transaction, so a failed write leaves the previous document intact
   // rather than half of it.
@@ -710,8 +772,9 @@ Status PointOverlay::FileSaveAs(const std::string& spec, int format_index) {
   detail::SqliteStmt ins;
   s = ins.Prepare(db,
                   "INSERT INTO points(id, name, lat, lon, shape, size_px,"
-                  " color, category, elevation_ft, remarks, symbol_id)"
-                  " VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+                  " color, category, elevation_ft, remarks, symbol_id,"
+                  " phone, url)"
+                  " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
   if (!s.ok()) {
     db.Exec("ROLLBACK;");
     return s;
@@ -729,6 +792,8 @@ Status PointOverlay::FileSaveAs(const std::string& spec, int format_index) {
     ins.BindDouble(9, p.elevation_ft);
     ins.BindText(10, p.remarks);
     ins.BindInt64(11, p.symbol_id);
+    ins.BindText(12, p.phone);
+    ins.BindText(13, p.url);
     Status step;
     ins.Step(&step);
     if (!step.ok()) {
@@ -771,7 +836,10 @@ void PointOverlay::HitTestPoint(const MapProjection& proj, PixelPoint p,
     const double d = std::sqrt(dx * dx + dy * dy);
     // The shape's own half-width counts as ink: a click INSIDE a big symbol is
     // on it however far that is from its centre, which is what the user sees.
-    if (d > tolerance_px + mp.size_px / 2.0) continue;
+    // The DRAWN half-width, which since the dpi scale is not `size_px / 2`:
+    // a target is as big as it looks, and on a phone it looks three times
+    // bigger than it is authored.
+    if (d > tolerance_px + mp.size_px * dpi_scale_ / 2.0) continue;
 
     app::HitItem item;
     item.overlay = this;
@@ -790,6 +858,82 @@ void PointOverlay::HitTestPoint(const MapProjection& proj, PixelPoint p,
     item.hint.status = std::move(status);
     item.cursor = app::CursorId::kHand;
     out.push_back(std::move(item));
+  }
+}
+
+void PointOverlay::SnapToPoint(const MapProjection& proj, PixelPoint p,
+                               double tolerance_px,
+                               std::vector<app::SnapToItem>& out) {
+  // OVER HitTestPoint RATHER THAN BESIDE IT, and that is the whole point of
+  // writing it this way: the header promises the two never disagree about what
+  // the finger is over, and the only way to keep that promise through a later
+  // edit to the reach rule is to have ONE reach rule. The extra work is a hint
+  // string per candidate within tolerance, which is a handful of points.
+  std::vector<app::HitItem> hits;
+  HitTestPoint(proj, p, tolerance_px, hits);
+
+  for (const app::HitItem& h : hits) {
+    const MapPoint* mp = Find((int64_t)h.feature);
+    if (mp == nullptr) continue;  // cannot happen; not worth a crash if it does
+
+    app::SnapToItem item;
+    item.overlay = this;
+    // THE DOCUMENT'S COORDINATE, NOT THE PIXEL'S. This is the entire value of
+    // a snap and the one line that delivers it: what goes back is the surveyed
+    // position, at full precision, and not the un-projection of whatever pixel
+    // the user managed to hit.
+    item.point = mp->position;
+    item.distance_px = h.distance_px;
+    item.description = mp->name;
+    if (item.description.empty()) item.description = mp->category;
+    if (item.description.empty()) {
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "Point %lld", (long long)mp->id);
+      item.description = buf;
+    }
+    out.push_back(std::move(item));
+  }
+}
+
+void PointOverlay::Search(const app::SearchQuery& q,
+                          const std::atomic<bool>& cancel,
+                          std::vector<app::SearchResult>& out) {
+  const size_t before = out.size();
+  for (const MapPoint& mp : points_) {
+    // Between points rather than between blocks of them: a document scan is
+    // cheap enough that the poll costs nothing measurable, and a provider that
+    // only checked at the end would not be cancellable at all.
+    if (cancel.load()) return;
+    if (q.max_results > 0 && out.size() - before >= q.max_results) return;
+
+    if (!app::SearchAreaAccepts(q, mp.position)) continue;
+
+    // THE LABEL CHAIN, and it is this provider's whole opinion: the name, or
+    // the category when there is no name. Identical to SnapToPoint's, so the
+    // words a search shows and the words a snap offers are the same words.
+    const std::string& label = !mp.name.empty() ? mp.name : mp.category;
+    int quality = 0;
+    if (!app::SearchTextAccepts(q, label, &quality)) continue;
+
+    app::SearchResult r;
+    r.overlay = this;
+    r.feature = (uint64_t)mp.id;
+    r.match_quality = quality;
+    r.position = mp.position;
+    // A point has no extent. The degenerate box is the honest answer and the
+    // documented one -- "go there" frames it at the caller's own scale.
+    r.bounds = GeoRect{mp.position, mp.position};
+    r.title = label;
+    if (r.title.empty()) {
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "Point %lld", (long long)mp.id);
+      r.title = buf;
+    }
+    r.detail = "point";
+    if (!mp.category.empty() && mp.category != r.title) {
+      r.detail += " \xc2\xb7 " + mp.category;  // a middle dot
+    }
+    out.push_back(std::move(r));
   }
 }
 

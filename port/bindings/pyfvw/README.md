@@ -69,24 +69,37 @@ ds = cat.add_data_source("TestData/rpf", "cadrg")
 print(cat.scan(ds), "frames")                 # 524 frames
 
 ds2 = cat.add_data_source("TestData/geotiff", "geotiff")
-print(cat.scan(ds2), "frames")                # 31 frames
+print(cat.scan(ds2), "frames")                # 32 frames
 ```
 
-Scanning groups frames into **series** — one row per (format, series key), with
-the scale normalized to a 1:N denominator:
+Scanning groups frames into **series** — one row per
+**(format, series key, scale, scale units)**, with the scale also normalized to
+a 1:N denominator so series of different products can be compared. `series_key`
+says what the pixels are ("Color") and the scale says how big they are, so a key
+alone does NOT identify a series: use `display_name`, which is FalconView's own
+map-type label:
 
 ```python
 for s in sorted(cat.series(), key=lambda s: s.scale_denom):
-    print(f"id={s.id:<3} {s.format:<8} {s.series_key:<8} 1:{int(s.scale_denom):,}")
+    print(f"id={s.id:<3} {s.format:<8} {s.display_name:<18} 1:{int(s.scale_denom):,}")
 
-# id=5   geotiff  Color    1:2,014
-# id=6   geotiff  B&W      1:6,714
-# id=7   geotiff  GeoTIFF  1:30,000
-# id=4   cadrg    TLM      1:50,000
-# id=3   cadrg    LFC      1:500,000
-# id=2   cadrg    JNC      1:2,000,000
-# id=1   cadrg    GNC      1:5,000,000
+# id=5   geotiff  Color 0.300 meter  1:2,014
+# id=10  geotiff  Color 0.600 meter  1:4,028
+# id=6   geotiff  B&W 1 meter        1:6,714
+# id=8   geotiff  Color 1 meter      1:6,714
+# id=9   geotiff  GeoTIFF 1:30 K     1:30,000
+# id=4   cadrg    TLM 1:50 K         1:50,000
+# id=11  geotiff  Color 10 meter     1:67,141
+# id=7   geotiff  Color 50 meter     1:335,707
+# id=3   cadrg    LFC 1:500 K        1:500,000
+# id=2   cadrg    JNC 1:2 M          1:2,000,000
+# id=1   cadrg    GNC 1:5 M          1:5,000,000
 ```
+
+A catalog written before this (schema 1) keyed a series on the format and key
+alone, so every GeoTIFF resolution merged into one row. Opening such a file
+REBUILDS it — the data sources survive, their coverage does not — and
+`cat.needs_rescan` is then `True`, meaning `cat.scan(...)` each source again.
 
 Two queries do most of the work — *what covers this box* and *which series suits
 this scale*:
@@ -182,8 +195,14 @@ An overlay is your own drawing on top of the map. Subclass
 **canvas**: converting geography to pixels with `proj.geo_to_surface` is the
 whole job.
 
+> There is a **real** route overlay — `pyfvw.route.RouteOverlay`, with a
+> document, a road planner, a pick, a snap and an editor. What follows is not
+> it. It is the smallest overlay that shows the three things an overlay does
+> (draw, remember what it drew, answer a click), written from scratch so you
+> can see all of it at once; see §5 and `pyfvw.route` for the real one.
+
 ```python
-class RouteOverlay(pyfvw.overlay.Overlay):
+class LegOverlay(pyfvw.overlay.Overlay):
     """A named route: leg lines, waypoint diamonds, labels."""
 
     def __init__(self, name, waypoints, color=(220, 30, 30)):
@@ -225,7 +244,7 @@ Stack it under the built-in graticule and draw. Overlays draw **bottom-up** and
 receive events **top-down until one returns `True`**:
 
 ```python
-route = RouteOverlay("KATL departure", [
+route = LegOverlay("KATL departure", [
     ("KATL",  33.6407, -84.4277),
     ("VULCN", 33.75,   -84.30),
     ("ROME",  34.35,   -85.16),
@@ -500,6 +519,96 @@ that will not decode) falls back to the shape rather than costing a point.
 Passing `symbol_dir` to `write_sample_file` embeds the ~20 maki icons the
 sample's points name — the three forts share one `castle` between them.
 
+### Changing an overlay's settings: the declared property page
+
+Every overlay can *declare* what a user may change about it, and the four calls below are bound on
+**`Overlay`** rather than on any particular overlay class. So they work the same for the graticule
+today and for the scale bar or the contours tomorrow, with no new binding code — which is the whole
+reason the schema exists instead of a per-overlay property dialog.
+
+```python
+g = pyfvw.overlay.GridOverlay()
+
+for row in g.describe_properties():
+    print(row["group"], row["key"], row["type"], row["default"])
+# Lines line_color   color (255, 255, 255, 96)
+# Lines line_width   int   1                     (also row["min"], row["max"])
+# Lines show_casing  bool  True
+# ...
+
+g.get_property("show_ticks")            # True
+g.set_property("show_ticks", False)
+g.set_property("line_color", (255, 0, 0))     # (r, g, b) or (r, g, b, a)
+g.reset_properties()                    # everything back to its declared default
+```
+
+A row carries what a UI needs to build a control: `key`, `label`, `group`, `type`
+(`bool`/`int`/`float`/`str`/`color`/`choice`), `default`, `help`, plus `min`/`max` or `choices`
+where they apply. `set_property` **raises** on the wrong type or a value outside the declared
+range — it does not clamp, because a script and a settings file both reach it and neither is a
+spinner. An overlay that declares nothing answers `[]` rather than raising, so iterating a stack is
+always safe.
+
+The same declaration is what backs the `[grid]` section of `peregrine.ini`; see
+`port/peregrine.ini.sample`.
+
+### Finding things: one question, every source
+
+Picking asks *what is under this pixel*; **searching asks *where is X*, of the whole stack at
+once**. It is a different capability on purpose — geo-space rather than pixel-space, on demand
+rather than per frame, and it deliberately looks in overlays that are switched off, because "in
+Points, which is hidden" is a useful answer.
+
+```python
+q = app.SearchQuery(text="rud tur")          # case-insensitive token prefix
+q.near = proj.center                          # ranks by distance after quality
+q.area = proj.bounds                          # optional: confine it to the view
+for r in app.SearchSession(manager).search(q):
+    print(r.title, "|", r.detail, "|", r.overlay.name, "|", r.bounds)
+```
+
+`SearchQuery` is two independently optional filters plus an ordering: an `area` (or `near` +
+`radius_m`, which the session turns into a box and then cuts exactly), and `text`.
+`SearchOrder.NEAREST` is "order by distance"; `AUTO`, the default, is best-match when there is
+text and nearest when there is not. `max_results` caps at both ends — no provider builds a longer
+list, and the merged list is cut after ranking.
+
+**An overlay becomes searchable by DEFINING `search`** — the same rule that makes `hit_test_point`
+a pickable overlay:
+
+```python
+class Notes(pyfvw.overlay.Overlay):
+    def search(self, query):
+        return [app.SearchResult(title=line, detail="note", feature=i,
+                                 position=pyfvw.geo.GeoPoint(lat, lon))
+                for i, line in enumerate(self.lines)
+                if app.text_match_quality(query.text, line) >= 0]
+```
+
+Your provider decides WHICH string it matches; `app.text_match_quality` decides what matching
+means, so "rud tur" cannot mean two things in one stack. The binding stamps `overlay` for you.
+
+**Two things that are not overlays can be put in the stack to be asked.**
+`pyfvw.overlay.VectorMapOverlay` wraps any `pyfvw.vector` source so the chart itself answers
+(globally when the pack carries a name index — `fvnames build` — and inside an area otherwise),
+and `pyfvw.route.RoadGraphOverlay` answers with the ROUTABLE road. Both can be held
+`visible = False`: they exist to be asked, not to be drawn.
+
+```python
+chart = pyfvw.overlay.VectorMapOverlay("Chart", source)
+chart.visible = False
+manager.add(chart)
+```
+
+A long search can run on a worker thread — `search()` releases the GIL — and be cut short by the
+next keystroke with `app.CancelFlag`:
+
+```python
+flag = app.CancelFlag()
+...                                  # another thread: flag.set()
+rows = app.SearchSession(manager).search(q, flag)   # returns what it had, ranked
+```
+
 ---
 
 ## 6. Where to find more
@@ -524,8 +633,14 @@ The bindings are documented in the module itself; nothing here is the only copy.
   desktop viewer over this API: catalog management, every data family,
   pan/zoom, overlays, click-to-identify, headless `--shot` rendering, and (A6)
   an `AppShell` implementation in tk. The best source of realistic usage.
-  **[`../../apps/route.py`](../../apps/route.py)** is the smaller read: one
-  overlay that is a document, a pick target and an editor.
+  **[`../../apps/route.py`](../../apps/route.py)** is the smaller read, and as
+  of 2026-08-27 it is small indeed: a tool palette and a type descriptor, which
+  is all a shell owns once the overlay behind it is `pyfvw.route`.
+- **`pyfvw.route`** — RouteKit: the `.fvrte` document, `RoutePlanner` over the
+  road graph, `RouteOverlay`, and `RouteEditSession` (`overlay.edit`) — select,
+  drag, add, delete, undo, and a snap on every position it places. Its own
+  submodule with its own `register_route_overlay_type`, because it links the
+  router and `pyfvw.app.register_builtin_types()` may not; a shell calls both.
 - **[`pyfvw_module.cpp`](pyfvw_module.cpp)** — where the docstrings live. If a
   method's behavior is unclear, its binding is a few lines long and says which
   C++ call it forwards to.

@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 # ImageLib codec sub-libraries, compiled in place from fvw_core/ImageLib/*.
 # These are 2010-era vendored forks (zlib 1.2.5, libpng, IJG jpeg 8/12-bit,

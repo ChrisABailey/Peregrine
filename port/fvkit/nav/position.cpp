@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fvkit/nav/position.h"
 
@@ -44,15 +44,6 @@ void PositionFix::Merge(const PositionFix& other) {
     satellite_count = other.satellite_count;
     has_satellite_count = true;
   }
-}
-
-double NormalizeHeadingDeg(double degrees) {
-  if (!std::isfinite(degrees)) return 0.0;
-  double d = std::fmod(degrees, 360.0);
-  if (d < 0.0) d += 360.0;
-  // fmod of a tiny negative can round to exactly 360.0 on the way back.
-  if (d >= 360.0) d = 0.0;
-  return d;
 }
 
 // ---------------------------------------------------------------------------

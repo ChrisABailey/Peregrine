@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fv_road_graph.h"
+
+// ProjectOntoSegment — header-only, and the ONE copy of "what a metre is"
+// that the snap and the graph's own arc lengths have to agree on.
+#include "fvkit/nav/road_snap.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +17,7 @@
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "fv_osm_reader.h"
 
@@ -607,6 +612,11 @@ void RoadGraph::Finalize() {
   grid_cols_ = grid_rows_ = 0;
   grid_begin_.clear();
   grid_items_.clear();
+  arc_ids_.clear();
+  arc_bounds_ = GeoRect{};
+  arc_cols_ = arc_rows_ = 0;
+  arc_grid_begin_.clear();
+  arc_grid_items_.clear();
   if (nodes_.empty()) return;
 
   int32_t min_lat = nodes_[0].lat_e7, max_lat = nodes_[0].lat_e7;
@@ -654,6 +664,8 @@ void RoadGraph::Finalize() {
   for (size_t i = 0; i < nodes_.size(); ++i) {
     grid_items_[fill[cell_of[i]]++] = static_cast<uint32_t>(i);
   }
+
+  BuildArcIndex();
 }
 
 void RoadGraph::BuildRestrictionIndex() {
@@ -732,7 +744,7 @@ uint32_t RoadGraph::ArcBetween(uint32_t from_node, uint32_t to_node) const {
 }
 
 bool RoadGraph::NearestNode(const GeoPoint& p, double max_meters, uint32_t* out_node,
-                            double* out_meters) const {
+                            double* out_meters, const NodeFilter& accept) const {
   if (nodes_.empty() || grid_cols_ == 0) return false;
 
   int col = static_cast<int>((p.lon - bounds_.ll.lon) / grid_lon_step_);
@@ -765,6 +777,11 @@ bool RoadGraph::NearestNode(const GeoPoint& p, double max_meters, uint32_t* out_
         uint32_t c = static_cast<uint32_t>(rr) * grid_cols_ + cc;
         for (uint32_t k = grid_begin_[c]; k < grid_begin_[c + 1]; ++k) {
           const uint32_t n = grid_items_[k];
+          // The filter is asked BEFORE the distance is kept, so a refused
+          // node cannot win and cannot tighten the ring-stopping bound
+          // either — the search has to keep widening past it to find the
+          // nearest node this traveller can actually use.
+          if (accept && !accept(n)) continue;
           const GeoPoint q = location(n);
           const double d = GreatCircleMeters(p.lat, p.lon, q.lat, q.lon);
           if (d < best) { best = d; best_node = n; }
@@ -777,6 +794,273 @@ bool RoadGraph::NearestNode(const GeoPoint& p, double max_meters, uint32_t* out_
   if (!std::isfinite(best) || best > max_meters) return false;
   if (out_node != nullptr) *out_node = best_node;
   if (out_meters != nullptr) *out_meters = best;
+  return true;
+}
+
+void RoadGraph::NodesInRect(const GeoRect& rect,
+                            const std::function<void(uint32_t)>& visit) const {
+  if (nodes_.empty() || grid_cols_ == 0 || !visit) return;
+
+  // A crossing rect becomes two boxes, so a node near +/-180 is visited once
+  // and by exactly one of them. Everywhere else this is a one-element loop.
+  for (const GeoRect& box : rect.SplitAtAntimeridian()) {
+    // The cell range the box covers, clamped to the grid. floor() rather than
+    // a cast because a box west or south of the graph gives a NEGATIVE index,
+    // and truncation-towards-zero would turn -0.4 into cell 0 and quietly
+    // widen the query to the graph's own edge.
+    const double c0 = std::floor((box.ll.lon - bounds_.ll.lon) / grid_lon_step_);
+    const double c1 = std::floor((box.ur.lon - bounds_.ll.lon) / grid_lon_step_);
+    const double r0 = std::floor((box.ll.lat - bounds_.ll.lat) / grid_lat_step_);
+    const double r1 = std::floor((box.ur.lat - bounds_.ll.lat) / grid_lat_step_);
+    if (c1 < 0.0 || r1 < 0.0) continue;
+    if (c0 > grid_cols_ - 1 || r0 > grid_rows_ - 1) continue;
+
+    const int col_lo = std::max(0, static_cast<int>(c0));
+    const int col_hi = std::min(grid_cols_ - 1, static_cast<int>(c1));
+    const int row_lo = std::max(0, static_cast<int>(r0));
+    const int row_hi = std::min(grid_rows_ - 1, static_cast<int>(r1));
+
+    for (int rr = row_lo; rr <= row_hi; ++rr) {
+      for (int cc = col_lo; cc <= col_hi; ++cc) {
+        const uint32_t c = static_cast<uint32_t>(rr) * grid_cols_ + cc;
+        for (uint32_t k = grid_begin_[c]; k < grid_begin_[c + 1]; ++k) {
+          const uint32_t n = grid_items_[k];
+          // The cells are a COARSE filter — a cell straddles the box edge —
+          // so the box itself has the last word. `box` and not `rect`: the
+          // split halves are the non-crossing ones, and Contains() on the
+          // crossing original would accept a node the other half owns.
+          if (box.Contains(location(n))) visit(n);
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Point-to-segment snapping (§1d)
+// ---------------------------------------------------------------------------
+
+uint32_t RoadGraph::ArcSource(uint32_t arc_index) const {
+  if (arc_index >= arcs_.size() || arc_begin_.size() < 2) return 0;
+  // The last node whose range starts at or before this arc. arc_begin_ is
+  // nondecreasing with repeats for degree-zero nodes, and upper_bound lands
+  // past every repeat of the same value — which is the node that owns the arc,
+  // since a node with no arcs owns none.
+  auto it = std::upper_bound(arc_begin_.begin(), arc_begin_.end(), arc_index);
+  return static_cast<uint32_t>((it - arc_begin_.begin()) - 1);
+}
+
+void RoadGraph::ArcShape(uint32_t arc_index, std::vector<GeoPoint>* out) const {
+  if (out == nullptr || arc_index >= arcs_.size()) return;
+  const RoadArc& a = arcs_[arc_index];
+  out->reserve(out->size() + a.geom_count + 2);
+  out->push_back(location(ArcSource(arc_index)));
+  for (uint32_t k = 0; k < a.geom_count; ++k) out->push_back(arc_point(a, k));
+  out->push_back(location(a.target));
+}
+
+void RoadGraph::BuildArcIndex() {
+  arc_ids_.clear();
+  arc_bounds_ = GeoRect{};
+  arc_cols_ = arc_rows_ = 0;
+  arc_grid_begin_.clear();
+  arc_grid_items_.clear();
+  if (arcs_.empty()) return;
+
+  // --- which arcs -----------------------------------------------------------
+  // One per undirected road. The mirrored arc stored at the other end is the
+  // same tarmac and carries the same (mirrored) flags, so indexing both would
+  // make every two-way street a pair of identical answers.
+  for (uint32_t u = 0; u + 1 < arc_begin_.size(); ++u) {
+    for (uint32_t ai = arc_begin_[u]; ai < arc_begin_[u + 1]; ++ai) {
+      const RoadArc& a = arcs_[ai];
+      if (a.target < u) continue;
+      if (a.target == u) {
+        // A closed way with no junction on it: both its arcs sit in this same
+        // node's range, so keep the first and skip the twin.
+        bool first = true;
+        for (uint32_t bi = arc_begin_[u]; bi < ai; ++bi)
+          if (arcs_[bi].target == u) first = false;
+        if (!first) continue;
+      }
+      arc_ids_.push_back(ai);
+    }
+  }
+  if (arc_ids_.empty()) return;
+
+  // --- the box, over the SHAPE ---------------------------------------------
+  int64_t segments = 0;
+  bool first_point = true;
+  std::vector<GeoPoint> shape;
+  for (uint32_t k = 0; k < arc_ids_.size(); ++k) {
+    shape.clear();
+    ArcShape(arc_ids_[k], &shape);
+    segments += static_cast<int64_t>(shape.size()) - 1;
+    for (const GeoPoint& p : shape) {
+      if (first_point) {
+        arc_bounds_.ll = arc_bounds_.ur = p;
+        first_point = false;
+        continue;
+      }
+      arc_bounds_.ll.lat = std::min(arc_bounds_.ll.lat, p.lat);
+      arc_bounds_.ll.lon = std::min(arc_bounds_.ll.lon, p.lon);
+      arc_bounds_.ur.lat = std::max(arc_bounds_.ur.lat, p.lat);
+      arc_bounds_.ur.lon = std::max(arc_bounds_.ur.lon, p.lon);
+    }
+  }
+  if (segments <= 0) return;
+
+  const double target_per_cell = 64.0;
+  int side = static_cast<int>(std::ceil(std::sqrt(segments / target_per_cell)));
+  if (side < 1) side = 1;
+  if (side > 1024) side = 1024;
+  arc_cols_ = arc_rows_ = side;
+  arc_lat_step_ = (arc_bounds_.ur.lat - arc_bounds_.ll.lat) / arc_rows_;
+  arc_lon_step_ = (arc_bounds_.ur.lon - arc_bounds_.ll.lon) / arc_cols_;
+  if (arc_lat_step_ <= 0.0) arc_lat_step_ = 1e-9;
+  if (arc_lon_step_ <= 0.0) arc_lon_step_ = 1e-9;
+
+  auto col_of = [this](double lon) {
+    int c = static_cast<int>(std::floor((lon - arc_bounds_.ll.lon) / arc_lon_step_));
+    return std::min(std::max(c, 0), arc_cols_ - 1);
+  };
+  auto row_of = [this](double lat) {
+    int r = static_cast<int>(std::floor((lat - arc_bounds_.ll.lat) / arc_lat_step_));
+    return std::min(std::max(r, 0), arc_rows_ - 1);
+  };
+
+  // Each SEGMENT is registered in every cell its bounding box touches, and the
+  // arc index goes in. A long diagonal therefore over-registers into cells it
+  // only passes near, which costs a projection that comes out too far away and
+  // is dropped — cheaper than a line rasteriser, and never wrong in the other
+  // direction. That "never wrong" is what makes the ring sweep below sound: a
+  // segment passing within d of the query has its closest point in a cell
+  // within d, and its bounding box touches that cell.
+  std::vector<std::pair<uint32_t, uint32_t>> pairs;
+  pairs.reserve(static_cast<size_t>(segments));
+  for (uint32_t k = 0; k < arc_ids_.size(); ++k) {
+    shape.clear();
+    ArcShape(arc_ids_[k], &shape);
+    for (size_t g = 0; g + 1 < shape.size(); ++g) {
+      const GeoPoint& a = shape[g];
+      const GeoPoint& b = shape[g + 1];
+      const int r0 = row_of(std::min(a.lat, b.lat));
+      const int r1 = row_of(std::max(a.lat, b.lat));
+      const int c0 = col_of(std::min(a.lon, b.lon));
+      const int c1 = col_of(std::max(a.lon, b.lon));
+      for (int r = r0; r <= r1; ++r)
+        for (int c = c0; c <= c1; ++c)
+          pairs.emplace_back(static_cast<uint32_t>(r) * arc_cols_ + c, k);
+    }
+  }
+  std::sort(pairs.begin(), pairs.end());
+  pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+
+  const size_t cells = static_cast<size_t>(arc_cols_) * arc_rows_;
+  arc_grid_begin_.assign(cells + 1, 0);
+  for (const std::pair<uint32_t, uint32_t>& p : pairs) ++arc_grid_begin_[p.first + 1];
+  for (size_t c = 0; c < cells; ++c) arc_grid_begin_[c + 1] += arc_grid_begin_[c];
+  arc_grid_items_.resize(pairs.size());
+  for (size_t i = 0; i < pairs.size(); ++i) arc_grid_items_[i] = pairs[i].second;
+}
+
+bool RoadGraph::NearestArcPoint(const GeoPoint& p, double max_meters, ArcSnap* out,
+                                const ArcFilter& accept) const {
+  if (arc_ids_.empty() || arc_cols_ == 0) return false;
+
+  int col = static_cast<int>(std::floor((p.lon - arc_bounds_.ll.lon) / arc_lon_step_));
+  int row = static_cast<int>(std::floor((p.lat - arc_bounds_.ll.lat) / arc_lat_step_));
+  col = std::min(std::max(col, 0), arc_cols_ - 1);
+  row = std::min(std::max(row, 0), arc_rows_ - 1);
+
+  const double lat_cell_m = arc_lat_step_ * kDegToRad * kEarthRadiusMeters;
+  const double lon_cell_m =
+      arc_lon_step_ * kDegToRad * kEarthRadiusMeters * std::cos(p.lat * kDegToRad);
+  double cell_m = std::min(lat_cell_m, std::fabs(lon_cell_m));
+  if (cell_m < 1e-6) cell_m = 1e-6;
+
+  ArcSnap best;
+  double best_d = std::numeric_limits<double>::infinity();
+  std::vector<GeoPoint> shape;
+  std::vector<uint8_t> seen(arc_ids_.size(), 0);
+
+  const int max_ring = arc_cols_ + arc_rows_;
+  for (int r = 0; r <= max_ring; ++r) {
+    if (std::isfinite(best_d) && static_cast<double>(r - 1) * cell_m > best_d) break;
+    if (static_cast<double>(r - 1) * cell_m > max_meters) break;
+
+    bool any_cell = false;
+    for (int dr = -r; dr <= r; ++dr) {
+      for (int dc = -r; dc <= r; ++dc) {
+        if (r > 0 && std::abs(dr) != r && std::abs(dc) != r) continue;  // ring only
+        const int rr = row + dr, cc = col + dc;
+        if (rr < 0 || rr >= arc_rows_ || cc < 0 || cc >= arc_cols_) continue;
+        any_cell = true;
+        const uint32_t cell = static_cast<uint32_t>(rr) * arc_cols_ + cc;
+        for (uint32_t i = arc_grid_begin_[cell]; i < arc_grid_begin_[cell + 1]; ++i) {
+          const uint32_t k = arc_grid_items_[i];
+          if (seen[k]) continue;  // a road spans cells; project it once
+          seen[k] = 1;
+          const uint32_t arc_index = arc_ids_[k];
+          const RoadArc& a = arcs_[arc_index];
+          // Asked BEFORE the distance is kept, so a refused road neither wins
+          // nor tightens the ring bound — NearestNode's rule, same reason.
+          if (accept && !accept(a)) continue;
+
+          shape.clear();
+          ArcShape(arc_index, &shape);
+          if (shape.size() < 2) continue;
+
+          double walked = 0.0;
+          double this_d = std::numeric_limits<double>::infinity();
+          double this_along = 0.0;
+          GeoPoint this_point;
+          for (size_t g = 0; g + 1 < shape.size(); ++g) {
+            // The segment's length in the GRAPH's OWN metre. The projection
+            // measures on a tangent plane through the QUERY, which is exact
+            // where it matters (the perpendicular distance) and drifts over a
+            // segment kilometres away — and `along_m / length_m` is the
+            // fraction a router prices a partial arc by, so it has to be taken
+            // against the same metre `RoadArc::length_m` was built in. Hence:
+            // ProjectOntoSegment for the parameter, GreatCircleMeters for the
+            // scale it is measured on.
+            const double seg_m = GreatCircleMeters(shape[g].lat, shape[g].lon,
+                                                  shape[g + 1].lat, shape[g + 1].lon);
+            fv::SegmentProjection sp;
+            if (fv::ProjectOntoSegment(p, shape[g], shape[g + 1], &sp)) {
+              if (sp.distance_m < this_d) {
+                const double t = sp.length_m > 0.0 ? sp.along_m / sp.length_m : 0.0;
+                this_d = sp.distance_m;
+                this_along = walked + t * seg_m;
+                this_point = sp.point;
+              }
+            } else if (sp.distance_m < this_d) {
+              // A degenerate segment (two identical shape points) has no
+              // bearing, which is all ProjectOntoSegment refuses over; the
+              // distance to the coincident point is still an answer.
+              this_d = sp.distance_m;
+              this_along = walked;
+              this_point = shape[g];
+            }
+            walked += seg_m;
+          }
+          if (this_d >= best_d) continue;
+          best_d = this_d;
+          best.arc = arc_index;
+          best.from = ArcSource(arc_index);
+          best.to = a.target;
+          best.point = this_point;
+          best.distance_m = this_d;
+          best.along_m = this_along;
+          best.length_m = walked;
+        }
+      }
+    }
+    if (!any_cell && r > 0 && std::isfinite(best_d)) break;
+  }
+
+  if (!std::isfinite(best_d) || best_d > max_meters) return false;
+  if (out != nullptr) *out = best;
   return true;
 }
 

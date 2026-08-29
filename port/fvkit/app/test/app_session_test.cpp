@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // App layer A3: the shell seam and the session flows
 // (fvkit-app-plan-COMPLETE.md §3f/§3g).
@@ -14,6 +14,8 @@
 // dialog -- FakeShell is the whole reason it cannot.
 
 #include "fvkit/app/session.h"
+
+#include "fvkit/app/properties.h"
 
 #include <gtest/gtest.h>
 
@@ -111,6 +113,70 @@ constexpr const char kNoteType[] = "test.note";
 constexpr const char kStaticType[] = "test.static";
 constexpr const char kFixedType[] = "test.fixed";  // not user-controllable
 
+
+// An overlay with a declared property page (fvkit/app/properties.h), so the
+// settings hook in Instantiate has a subject. Deliberately a STATIC type: the
+// bug this guards against was found on the graticule, which is static, and
+// reached through ToggleStatic.
+constexpr const char* kTunableType = "test.tunable";
+
+class TunableOverlay : public fv::Overlay, public fv::app::Properties {
+ public:
+  TunableOverlay() : Overlay("Tunable") {
+    for (const fv::app::PropertySpec& sp : Describe())
+      values_.push_back(sp.default_value);
+  }
+  fv::app::Properties* AsProperties() override { return this; }
+  const std::vector<fv::app::PropertySpec>& Describe() const override {
+    static const std::vector<fv::app::PropertySpec> specs = [] {
+      std::vector<fv::app::PropertySpec> v;
+      fv::app::PropertySpec c;
+      c.key = "casing_color";
+      c.type = fv::app::PropertyType::kColor;
+      c.default_value =
+          fv::app::PropertyValue::Color(fv::FvColor{0, 0, 0, 128});
+      v.push_back(c);
+      fv::app::PropertySpec w;
+      w.key = "width";
+      w.type = fv::app::PropertyType::kInt;
+      w.default_value = fv::app::PropertyValue::Int(1);
+      w.min = 1;
+      w.max = 8;
+      v.push_back(w);
+      return v;
+    }();
+    return specs;
+  }
+  fv::Status GetProperty(const std::string& key,
+                         fv::app::PropertyValue* out) const override {
+    const int i = Index(key);
+    if (i < 0) return fv::Status::Error(fv::kNotFound, "no such property");
+    if (out) *out = values_[i];
+    return fv::Status::Ok();
+  }
+  fv::Status SetProperty(const std::string& key,
+                         const fv::app::PropertyValue& v) override {
+    const int i = Index(key);
+    if (i < 0) return fv::Status::Error(fv::kNotFound, "no such property");
+    const fv::app::PropertySpec& sp = Describe()[i];
+    if (v.type != sp.type)
+      return fv::Status::Error(fv::kInvalidArg, "wrong type");
+    if (sp.min != sp.max && (v.i < sp.min || v.i > sp.max))
+      return fv::Status::Error(fv::kInvalidArg, "out of range");
+    values_[i] = v;
+    return fv::Status::Ok();
+  }
+
+ private:
+  int Index(const std::string& key) const {
+    const std::vector<fv::app::PropertySpec>& sp = Describe();
+    for (size_t i = 0; i < sp.size(); ++i)
+      if (sp[i].key == key) return static_cast<int>(i);
+    return -1;
+  }
+  std::vector<fv::app::PropertyValue> values_;
+};
+
 class SessionTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -153,6 +219,12 @@ class SessionTest : public ::testing::Test {
     fixed.user_controllable = false;
     fixed.factory = [] { return std::make_shared<StaticOverlay>("Fixed"); };
     ASSERT_TRUE(registry_.Register(fixed).ok());
+
+    OverlayTypeDesc tunable;
+    tunable.id = kTunableType;
+    tunable.display_name = "Test Tunable";
+    tunable.factory = [] { return std::make_shared<TunableOverlay>(); };
+    ASSERT_TRUE(registry_.Register(tunable).ok());
 
     manager_.SetTypeRegistry(&registry_);
   }
@@ -877,6 +949,60 @@ TEST_F(SessionTest, TheGuardDoesNotFireOnAFlowCallingAnotherInternally) {
   EXPECT_EQ(session_.Close(*d), FlowResult::kDone);
   EXPECT_EQ(d->saved.size(), 1u);
   EXPECT_TRUE(shell_.errors.empty());
+}
+
+
+// ---------------------------------------------------------------------------
+// Settings reach a new overlay (Instantiate)
+// ---------------------------------------------------------------------------
+//
+// THE BUG THIS EXISTS FOR, found by Chris running PythonView on 2026-08-29:
+// the graticule's [grid] section was parsed into Settings and read by nobody,
+// so the grid drew its compiled-in black casing while the user's file asked
+// for green. The mechanism was all there; nothing called it. It is called from
+// OverlaySession::Instantiate now, which is the ONE place an overlay is made,
+// so no shell has to remember and no future overlay has to be wired up.
+
+TEST_F(SessionTest, ANewOverlayWearsItsSettingsSection) {
+  // The prefix is the type's short name, so test.tunable reads [tunable].
+  settings_.Set("tunable.casing_color", "#40C00040");
+  settings_.Set("tunable.width", "3");
+
+  ASSERT_EQ(session_.ToggleStatic(kTunableType), FlowResult::kDone);
+  ASSERT_EQ(manager_.Overlays().size(), 1u);
+  fv::app::Properties* p = manager_.Overlays()[0]->AsProperties();
+  ASSERT_NE(p, nullptr);
+  EXPECT_EQ(p->GetColor("casing_color", fv::FvColor{}).g, 192);
+  EXPECT_EQ(p->GetColor("casing_color", fv::FvColor{}).a, 64);
+  EXPECT_EQ(p->GetInt("width", -1), 3);
+}
+
+TEST_F(SessionTest, NoSettingsSectionLeavesTheDeclaredDefaults) {
+  ASSERT_EQ(session_.ToggleStatic(kTunableType), FlowResult::kDone);
+  fv::app::Properties* p = manager_.Overlays()[0]->AsProperties();
+  ASSERT_NE(p, nullptr);
+  EXPECT_EQ(p->GetColor("casing_color", fv::FvColor{255, 255, 255, 255}).a, 128);
+  EXPECT_EQ(p->GetInt("width", -1), 1);
+  EXPECT_TRUE(session_.warnings().empty());
+}
+
+TEST_F(SessionTest, ABadSettingsLineIsAWarningAndNotARefusedOverlay) {
+  settings_.Set("tunable.casing_color", "chartreuse");
+  settings_.Set("tunable.width", "99");  // outside the declared range
+  ASSERT_EQ(session_.ToggleStatic(kTunableType), FlowResult::kDone);
+  ASSERT_EQ(manager_.Overlays().size(), 1u) << "the overlay must still exist";
+  fv::app::Properties* p = manager_.Overlays()[0]->AsProperties();
+  EXPECT_EQ(p->GetInt("width", -1), 1);  // kept the default
+  EXPECT_EQ(session_.warnings().size(), 2u);
+}
+
+TEST_F(SessionTest, SettingsPrefixIsTheTypesShortName) {
+  EXPECT_EQ(fv::app::SettingsPrefixForTypeId("fv.grid"), "grid.");
+  EXPECT_EQ(fv::app::SettingsPrefixForTypeId("fv.points"), "points.");
+  EXPECT_EQ(fv::app::SettingsPrefixForTypeId("app.coverage"), "coverage.");
+  // No dot at all is still a section name.
+  EXPECT_EQ(fv::app::SettingsPrefixForTypeId("grid"), "grid.");
+  EXPECT_EQ(fv::app::SettingsPrefixForTypeId(""), "");
 }
 
 }  // namespace

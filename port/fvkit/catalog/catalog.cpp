@@ -1,18 +1,21 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // FvKit L2 catalog implementation — see fvkit/catalog/catalog.h.
 
 #include "fvkit/catalog/catalog.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <set>
+#include <tuple>
 
 #include "fv_map_enums.h"                 // MapScaleUnitsEnum (COM ABI)
 #include "fv_map_scale_util.h"            // fv::MapScaleUtil (denominator calc)
+#include "fv_map_series_string_converter.h"  // the map-type label, FalconView's
 #include "fvkit/formats/registry.h"
 
 namespace fv {
@@ -21,14 +24,17 @@ namespace {
 
 const char kSchema[] =
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);"
-    "INSERT OR IGNORE INTO meta VALUES('schema_version','1');"
+    "INSERT OR IGNORE INTO meta VALUES('schema_version','2');"
     "CREATE TABLE IF NOT EXISTS data_sources("
     "  id INTEGER PRIMARY KEY, path TEXT NOT NULL, format TEXT NOT NULL,"
     "  priority INTEGER DEFAULT 0, UNIQUE(path, format));"
     "CREATE TABLE IF NOT EXISTS map_series("
     "  id INTEGER PRIMARY KEY, format TEXT NOT NULL, series_key TEXT NOT NULL,"
     "  scale REAL, scale_units INTEGER, scale_denom REAL,"
-    "  UNIQUE(format, series_key));"
+    // Schema 2: the scale is PART of the identity, as it is in FalconView's
+    // tblMapSeries (see catalog.h). Two GeoTIFF sheets both called "Color"
+    // at 1 m and at 50 m are two map series, not one.
+    "  UNIQUE(format, series_key, scale, scale_units));"
     "CREATE TABLE IF NOT EXISTS coverage("
     "  id INTEGER PRIMARY KEY, data_source_id INTEGER NOT NULL,"
     "  series_id INTEGER NOT NULL, path TEXT NOT NULL,"
@@ -56,15 +62,62 @@ double NormalizedScaleDenom(double scale, int units) {
   return denom;
 }
 
+// The map-type label FalconView shows for a (scale, series) pair, through the
+// ported CMapSeriesStringConverter: FORMAT_SERIES_SCALE is its "GNC 1:5 M"
+// spelling, which keeps the series_key at the front of a menu. Products whose
+// scale is not a number (DTED, VPF, OSM) name themselves and nothing else --
+// asking the converter would get "Invalid Scale" back.
+std::string SeriesDisplayName(const std::string& series_key, double scale,
+                              int units) {
+  if (scale <= 0) return series_key;
+  std::wstring scale_str = MapSeriesStringConverter::ToString(
+      scale, static_cast<MapScaleUnitsEnum>(units));
+  std::string narrow;
+  narrow.reserve(scale_str.size());
+  for (wchar_t c : scale_str)
+    narrow += (c >= 0 && c < 128) ? static_cast<char>(c) : '?';
+  if (series_key.empty()) return narrow;
+  return series_key + " " + narrow;
+}
+
 }  // namespace
 
 Catalog::Catalog() = default;
 Catalog::~Catalog() = default;
 
 Status Catalog::Open(const std::string& db_path) {
+  needs_rescan_ = false;
   Status s = db_.Open(db_path);
   if (!s.ok()) return s;
-  return db_.Exec(kSchema);
+
+  // Migration. The catalog is a cache, so an older schema is REBUILT rather
+  // than converted: schema 1 keyed a series on (format, series_key) alone and
+  // the rows it produced cannot be split apart after the fact -- the frames'
+  // own scales were never stored. Data sources survive; their coverage does
+  // not, and NeedsRescan() tells the caller to run Scan() again.
+  int version = 0;
+  {
+    detail::SqliteStmt q;
+    Status qs = q.Prepare(
+        db_, "SELECT value FROM meta WHERE key='schema_version'");
+    // A brand-new file has no meta table at all: that is version 0, not an
+    // error, so a failed prepare here is not reported.
+    if (qs.ok() && q.Step(&qs)) version = atoi(q.ColText(0).c_str());
+  }
+  if (version > 0 && version < 2) {
+    s = db_.Exec(
+        "DROP TABLE IF EXISTS coverage_rtree;"
+        "DROP TABLE IF EXISTS coverage;"
+        "DROP TABLE IF EXISTS map_series;");
+    if (!s.ok()) return s;
+    needs_rescan_ = true;
+  }
+
+  s = db_.Exec(kSchema);
+  if (!s.ok()) return s;
+  if (needs_rescan_)
+    s = db_.Exec("UPDATE meta SET value='2' WHERE key='schema_version'");
+  return s;
 }
 
 Status Catalog::AddDataSource(const std::string& path,
@@ -114,10 +167,13 @@ Status Catalog::ResolveSeries(const std::string& format, const FrameInfo& f,
 
   detail::SqliteStmt sel;
   s = sel.Prepare(db_,
-                  "SELECT id FROM map_series WHERE format=? AND series_key=?");
+                  "SELECT id FROM map_series WHERE format=? AND series_key=? "
+                  "AND scale=? AND scale_units=?");
   if (!s.ok()) return s;
   sel.BindText(1, format);
   sel.BindText(2, f.series_key);
+  sel.BindDouble(3, f.scale);
+  sel.BindInt64(4, f.scale_units);
   if (!sel.Step(&s))
     return s.ok() ? Status::Error(kInternal, "series not inserted") : s;
   *series_id = sel.ColInt64(0);
@@ -206,18 +262,22 @@ Status Catalog::Scan(int64_t data_source_id, int* frames_added) {
     }
   }
 
-  std::map<std::string, int64_t> series_cache;
+  // Keyed on the SERIES IDENTITY and not on the key alone -- a cache keyed
+  // more loosely than the table it fronts would put the second scale's frames
+  // in the first scale's series however the schema is written.
+  std::map<std::tuple<std::string, double, int>, int64_t> series_cache;
   FrameInfo f;
   int added = 0;
   while (s.ok() && e->Next(&f)) {
-    auto it = series_cache.find(f.series_key);
+    auto key = std::make_tuple(f.series_key, f.scale, f.scale_units);
+    auto it = series_cache.find(key);
     int64_t series_id;
     if (it != series_cache.end()) {
       series_id = it->second;
     } else {
       s = ResolveSeries(format, f, &series_id);
       if (!s.ok()) break;
-      series_cache[f.series_key] = series_id;
+      series_cache[key] = series_id;
     }
     s = InsertCoverage(data_source_id, series_id, f);
     if (s.ok()) ++added;
@@ -248,6 +308,7 @@ Status Catalog::Series(std::vector<SeriesRow>* out) const {
     r.scale = sel.ColDouble(3);
     r.scale_units = (int)sel.ColInt64(4);
     r.scale_denom = sel.ColDouble(5);
+    r.display_name = SeriesDisplayName(r.series_key, r.scale, r.scale_units);
     out->push_back(std::move(r));
   }
   return s;

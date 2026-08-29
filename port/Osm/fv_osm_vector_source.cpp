@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fv_osm_vector_source.h"
 
@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "fv_mvt.h"
+#include "fv_osm_name_index.h"
 
 namespace fv {
 namespace {
@@ -112,6 +113,10 @@ struct OsmVectorSource::Impl {
   // aliased two tiles would mis-identify features.
   std::vector<webmerc::TileId> tile_ids;
   std::map<webmerc::TileId, int> tile_index;
+
+  // The pack's own gazetteer, opened once with the pack (S3). Absent for
+  // every pyramid cut before fvnames existed, which is not an error.
+  osm::NameIndexReader names;
 
   // LRU of decoded tiles.
   std::list<webmerc::TileId> lru;
@@ -232,6 +237,11 @@ Status OsmVectorSource::Open(const std::string& path) {
     fresh->layer_index[l.id] = static_cast<int>(fresh->layer_names.size());
     fresh->layer_names.push_back(l.id);
   }
+
+  // The name index, if the pack has one. A second read-only handle on the
+  // same file: MbtilesFile owns the tiles and this owns the gazetteer, and
+  // neither has to learn the other's schema. kNotFound is the ordinary answer.
+  fresh->names.Open(path);
 
   impl_ = std::move(fresh);
   return Status::Ok();
@@ -774,6 +784,61 @@ Status OsmVectorSource::Describe(const FeatureRef& ref,
     // like an oversight.
     a.display = kv.second;
     out->attributes.push_back(std::move(a));
+  }
+  return Status::Ok();
+}
+
+// ---------------------------------------------------------------------------
+// The name index (search-plan-COMPLETE.md, S3)
+// ---------------------------------------------------------------------------
+
+bool OsmVectorSource::HasNameIndex() const { return impl_->names.IsOpen(); }
+
+bool OsmVectorSource::ResolveRef(const FeatureRef& ref, webmerc::TileId* tile,
+                                 std::string* layer) const {
+  const Impl& im = *impl_;
+  if (ref.tile < 0 || ref.tile >= static_cast<int32_t>(im.tile_ids.size())) {
+    return false;
+  }
+  if (ref.layer < 0 || ref.layer >= static_cast<int32_t>(im.layer_names.size())) {
+    return false;
+  }
+  if (tile != nullptr) *tile = im.tile_ids[ref.tile];
+  if (layer != nullptr) *layer = im.layer_names[ref.layer];
+  return true;
+}
+
+Status OsmVectorSource::SearchNames(const VectorNameQuery& q,
+                                    std::vector<VectorNameHit>* out) {
+  if (out == nullptr) return Status::Error(kInvalidArg, "SearchNames: null out");
+  if (!IsOpen()) return Status::Error(kIoError, "SearchNames: source not open");
+  if (!impl_->names.IsOpen()) {
+    return Status::Error(kUnsupported, "pack has no name index");
+  }
+
+  std::vector<osm::NameRow> rows;
+  const GeoRect* area = q.area ? &*q.area : nullptr;
+  const Status s = impl_->names.Query(q.text, area, q.max_results, &rows);
+  if (!s.ok()) return s;
+
+  out->reserve(out->size() + rows.size());
+  for (const osm::NameRow& row : rows) {
+    VectorNameHit hit;
+    hit.name = row.name;
+    hit.layer = row.layer;
+    hit.style_key = row.style_key;
+    hit.position = row.position;
+    hit.bounds = row.bounds;
+    // PROMINENCE IS THE ZOOM the cutter still drew the name at, which is the
+    // same relevance rule the tile budget gives tier 1 for free.
+    hit.rank = row.min_zoom;
+    // The durable (tile, layer) turned back into a ref this process can use.
+    // Interning here is what makes an indexed hit describable: nothing was
+    // read, and Describe() will read exactly the one tile it needs.
+    hit.ref.layer = impl_->LayerIndex(row.layer);
+    hit.ref.tile = impl_->TileIndex(row.tile);
+    hit.ref.feature = row.feature;
+    out->push_back(std::move(hit));
   }
   return Status::Ok();
 }

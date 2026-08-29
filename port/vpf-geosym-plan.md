@@ -346,9 +346,13 @@ Deliberately does not build the shared abstraction until two real tables exist:
 
 **OpenCPN's `chartsymbols.xml`**, per Chris. Notes:
 
-- **Licensing works here**: it is GPL-3.0, and Peregrine is GPL-3.0, so it is
-  compatible *as data*. OpenCPN's C++ remains reference-for-behaviour only,
-  never copied — the existing rule is unchanged.
+- **Licensing works here**: it is GPL-3.0 and Peregrine is LGPL-3.0-or-later
+  (relicensed 2026-08-18), which does not change the answer — the file is
+  *data* that Peregrine reads at run time, not code it links, so nothing
+  propagates either way, and it is git-ignored rather than redistributed (see
+  the next bullet), so Peregrine never conveys a GPL-3.0 file at all. OpenCPN's
+  C++ remains reference-for-behaviour only, never copied — the existing rule is
+  unchanged.
 - Treat it like the GeoSym assets: **git-ignored under `TestData/`, supplied at
   runtime via a data-dir argument**, not vendored into the repo.
 - It is a derived encoding rather than IHO's original `.dai`, and it is
@@ -639,7 +643,7 @@ TestData/enc/                      (git-ignored, like every other sample set)
   `01582 3 LE1 09002 01 !` (ISO 8211 DDR) with field tags `DSID DSSI DSPM
   VRID ATTV VRPT SG2D` — S-57 dataset-identification then vector records.
 - **Symbology: S-52 PresLib** — source decided 2026-07-25: **OpenCPN's
-  `chartsymbols.xml`** (GPL-3.0, compatible with Peregrine as data; see §5.6
+  `chartsymbols.xml`** (GPL-3.0, used as run-time data and not redistributed; see §5.6
   for licensing, sourcing and the vendored-XML-parser consequence). Lookup
   tables (object class + attributes → symbology instructions) map 1:1 onto
   GeoSym's fullsym.txt role; the symbol library's vector definitions parse to

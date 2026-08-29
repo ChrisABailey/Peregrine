@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fv_s52_preslib.h — the IHO S-52 Presentation Library as data (ENC phase E2,
 // plan sections 5.1 and 7). GeoSym's `fullsym.txt` + `COLOR.TXT` + `Graphics/

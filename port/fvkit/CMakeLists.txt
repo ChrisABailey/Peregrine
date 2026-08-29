@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 # FvKit — the new cross-platform API layers (L0 primitives, L1 format
 # adapters, ...) over the ported readers. Interface contracts:
@@ -16,6 +16,14 @@
 # adapters no longer need a separate C++14 sub-library (folded back in here).
 # System SQLite (macOS ships it with R-tree enabled) for the L2 catalog.
 find_package(SQLite3 REQUIRED)
+# CMake 4.4 renamed FindSQLite3's imported target to SQLite3::SQLite3 and
+# deprecated SQLite::SQLite3; CMake 4.2 and older define only the old name.
+# Ask for whichever this CMake actually provides.
+if(TARGET SQLite3::SQLite3)
+  set(FV_SQLITE3 SQLite3::SQLite3)
+else()
+  set(FV_SQLITE3 SQLite::SQLite3)
+endif()
 
 add_library(fv_fvkit STATIC
   formats/dted.cpp
@@ -31,9 +39,11 @@ add_library(fv_fvkit STATIC
   catalog/catalog.cpp
   canvas/cpu_canvas.cpp
   canvas/geo_draw.cpp
+  canvas/label_placer.cpp
   geo/contour.cpp
   proj/map_projection.cpp
   settings.cpp
+  scale_table.cpp
   engine/map_engine.cpp
   nav/position.cpp
   nav/heading.cpp
@@ -44,14 +54,20 @@ add_library(fv_fvkit STATIC
   nav/line_transport.cpp
   nav/nmea.cpp
   nav/gpx.cpp
+  nav/gpx_recorder.cpp
+  nav/trip.cpp
   overlay/manager.cpp
   overlay/grid_overlay.cpp
+  overlay/grid_spacing.cpp
   overlay/point_overlay.cpp
+  overlay/vector_map_overlay.cpp
   overlay/moving_map_overlay.cpp
   app/type_registry.cpp
+  app/properties.cpp
   app/session.cpp
   app/editor.cpp
   app/pick.cpp
+  app/search.cpp
   app/vector_hit_test.cpp
   store/tile_pack.cpp
   vector/renderer.cpp
@@ -61,6 +77,7 @@ add_library(fv_fvkit STATIC
   symbol/builtin.cpp
   symbol/png_library.cpp
   vector/pick.cpp
+  vector/feature_rows.cpp
   vector/rules.cpp
   vector/families.cpp
   vector/scene.cpp
@@ -81,15 +98,20 @@ target_link_libraries(fv_fvkit
   PUBLIC fv_dted fv_dted_shaded fv_imagelib_geotiff fv_geotiff_frame
          fv_cadrg fv_cadrg_frame
          fv_imagelib_jpeg_wrapper fv_tiros_frame fv_vpf fv_map_scale_util
-         fv_png fv_geo_tool SQLite::SQLite3)
+         fv_map_series_string_converter
+         fv_png fv_geo_tool ${FV_SQLITE3})
 target_compile_features(fv_fvkit PUBLIC cxx_std_17)
 
-# fvrender — headless map renderer CLI (the L3b milestone demo)
-add_executable(fvrender tools/fvrender.cpp)
-target_link_libraries(fvrender PRIVATE fv_fvkit fv_png fv_geo_tool)
-# fvpack — offline GeoPackage tile-pyramid builder (L5 milestone)
-add_executable(fvpack tools/fvpack.cpp)
-target_link_libraries(fvpack PRIVATE fv_fvkit)
+# The CLI tools are HOST tools: they make the data a phone reads (fvrender
+# proves a cut, fvpack builds a pyramid), so an iOS cross-build skips them.
+if(NOT FVW_IOS)
+  # fvrender — headless map renderer CLI (the L3b milestone demo)
+  add_executable(fvrender tools/fvrender.cpp)
+  target_link_libraries(fvrender PRIVATE fv_fvkit fv_png fv_geo_tool)
+  # fvpack — offline GeoPackage tile-pyramid builder (L5 milestone)
+  add_executable(fvpack tools/fvpack.cpp)
+  target_link_libraries(fvpack PRIVATE fv_fvkit)
+endif()
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_fvkit_test
@@ -105,6 +127,8 @@ if(FVW_BUILD_TESTS)
     test/canvas_test.cpp
     test/proj_engine_test.cpp
     test/overlay_test.cpp
+    test/overlay_toolkit_test.cpp
+    test/grid_overlay_test.cpp
     nav/test/nav_position_test.cpp
     nav/test/nav_heading_test.cpp
     nav/test/nav_scripted_source_test.cpp
@@ -114,12 +138,17 @@ if(FVW_BUILD_TESTS)
     nav/test/nav_line_transport_test.cpp
     nav/test/nav_nmea_test.cpp
     nav/test/nav_gpx_test.cpp
+    nav/test/nav_gpx_writer_test.cpp
+    nav/test/nav_trip_test.cpp
     app/test/app_type_registry_test.cpp
     app/test/app_stack_test.cpp
     app/test/app_session_test.cpp
     app/test/app_editor_test.cpp
     app/test/app_pick_test.cpp
+    app/test/app_search_test.cpp
     test/point_overlay_test.cpp
+    test/vector_map_overlay_test.cpp
+    test/feature_rows_test.cpp
     test/moving_map_overlay_test.cpp
     test/tile_pack_test.cpp
     test/vpf_adapter_test.cpp

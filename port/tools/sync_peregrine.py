@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-3.0-or-later
 # Copyright (C) 2026 Chris Bailey
 # Part of Peregrine, a cross-platform port of FalconView(tm).
-# See LICENSE and NOTICE.md for the full licensing picture.
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 """Sync the Peregrine publishable subset from this working tree.
 
@@ -10,7 +10,8 @@ Peregrine (<https://github.com/ChrisABailey/Peregrine>) is a curated subset,
 not a mirror: it ships all of `port/` plus exactly the `fvw_core/` and
 `third_party/` files the CMake build compiles or includes. That file set is
 re-derived here from the build's own dependency output, so it stays honest as
-modules are added — nothing is maintained by hand.
+modules are added — nothing is maintained by hand. The one hand-maintained
+thing is HELD_BACK below: subtrees deliberately not published yet.
 
 Usage (from the repo root, after a full `cmake --build build`):
 
@@ -26,7 +27,7 @@ Keep it that way — a new file under `port/` should be born with the SPDX heade
 (see port/NOTICE.md), not acquire one here.
 
 Destination-owned files are never touched: Peregrine's root README.md and
-CMakeLists.txt describe the published repo and are edited there. LICENSE,
+CMakeLists.txt describe the published repo and are edited there. COPYING,
 COPYING.LESSER and NOTICE.md are authored here under `port/` and are copied to
 the destination root, which is where the file headers point.
 """
@@ -39,7 +40,7 @@ import subprocess
 import sys
 
 # Authored under port/, published at the destination root.
-ROOT_DOCS = {"port/LICENSE": "LICENSE",
+ROOT_DOCS = {"port/COPYING": "COPYING",
              "port/COPYING.LESSER": "COPYING.LESSER",
              "port/NOTICE.md": "NOTICE.md"}
 
@@ -50,6 +51,37 @@ DEST_OWNED = {"README.md", "CMakeLists.txt", ".gitignore"}
 # have no upstream original, so a strict closure diff would propose deleting
 # them on every sync.
 DEST_OWNED_DIRS = ("Screenshots/",)
+
+# Held back from publication on purpose — subtrees that exist upstream and are
+# deliberately not part of the published subset. This is a policy list, not a
+# derivation: everything here would otherwise be shipped, so removing an entry
+# publishes it. Applied to BOTH sources of truth (the build closure and the
+# git-tracked port/ files), because a held-back subtree can be reached either
+# way — Pippin is compiled by the mac build as `fv_pippin_test`, so excluding
+# it from the tracked list alone would still publish its sources via the .o.d
+# closure.
+#
+#   port/apps/Pippin/         the iOS app and PippinKit (Chris, 2026-08-29: not
+#                             ready to publish; App Store distribution is also
+#                             still blocked — see NOTICE.md §6 and the LGPL §10
+#                             problem, so there is nothing to gain by shipping
+#                             it early)
+#   port/pippin-plan.md       its plan and requirements documents
+#   port/apps/Pippin_requirements.md
+#
+# Note this hides only the app. Core `port/` files that MENTION Pippin in a
+# comment (RouteKit, fvkit headers, PORTING.md) still ship — they are the
+# port's own code describing its consumer, not the app.
+HELD_BACK = (
+    "port/apps/Pippin/",
+    "port/pippin-plan.md",
+    "port/apps/Pippin_requirements.md",
+)
+
+
+def held_back(rel):
+    return rel.startswith(HELD_BACK)
+
 
 # Loaded at run time, so they never appear in a compile-time dependency
 # closure — but the geo tests do not pass without them.
@@ -106,7 +138,9 @@ def build_closure(repo, build_dir):
             if p.startswith(repo + os.sep) and os.path.isfile(p):
                 deps.add(os.path.relpath(p, repo))
     # Generated/fetched output is not source.
-    return {d for d in deps if not d.startswith(("build/", "port/third_party/_"))}
+    return {d for d in deps
+            if not d.startswith(("build/", "port/third_party/_"))
+            and not held_back(d)}
 
 
 def port_extras(repo):
@@ -125,7 +159,7 @@ def port_extras(repo):
     out = subprocess.run(["git", "-C", repo, "ls-files", "-z", "port/"],
                          capture_output=True, text=True, check=True)
     return [p for p in out.stdout.split("\0")
-            if p and not p.endswith((".pyc", ".DS_Store"))]
+            if p and not p.endswith((".pyc", ".DS_Store")) and not held_back(p)]
 
 
 def main():
@@ -158,8 +192,15 @@ def main():
             continue
         mapping[real] = ROOT_DOCS.get(real, real)
 
-    have = subprocess.run(["git", "ls-files"], cwd=dest, capture_output=True,
-                          text=True).stdout.split()
+    # -z, not a plain split(): the destination tracks
+    # `port/Routing/rules/Ruddy Turnstone to the beachclub.fvrte`, and
+    # whitespace-splitting shredded it into five tokens that were then reported
+    # as five stale files to delete. `git rm` on the fragments failed silently
+    # (check=False), so nothing was lost — but every sync printed five phantom
+    # removals, which is exactly the kind of noise that hides a real one.
+    have = subprocess.run(["git", "ls-files", "-z"], cwd=dest,
+                          capture_output=True, text=True).stdout.split("\0")
+    have = [f for f in have if f]
     stale = sorted(f for f in set(have) - set(mapping.values()) - DEST_OWNED
                    if not f.startswith(DEST_OWNED_DIRS))
 

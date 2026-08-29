@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // FvKit vector seam (vpf-geosym plan phase V5).
 //
@@ -29,6 +29,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -147,6 +148,45 @@ struct VectorQuery {
   size_t max_features = 0;
 };
 
+// ---------------------------------------------------------------------------
+// The name index (search-plan-COMPLETE.md, S3)
+// ---------------------------------------------------------------------------
+
+// What a global text lookup asks of a source that has an index. There is no
+// scale and no zoom here on purpose: an index is not a level of the pyramid,
+// it is what the whole pyramid had to say about names, collapsed once.
+struct VectorNameQuery {
+  // Token-prefix text, as fvkit/app/search.h defines matching. EMPTY means
+  // every indexed row, which is what an export or an "info" listing wants.
+  std::string text;
+  // Optional cut. A source may answer with a superset (a box that crosses the
+  // antimeridian is commonly handed straight back); the caller cuts exactly.
+  std::optional<GeoRect> area;
+  // 0 = no cap. A capped answer keeps the MOST PROMINENT rows (see rank
+  // below), never an arbitrary page of them.
+  size_t max_results = 0;
+};
+
+// One row of that index: a named thing, already merged out of the pieces the
+// tiles hold it in (fvkit/vector/feature_rows.h is the merge, and the index
+// builder runs the same one the live scan does).
+struct VectorNameHit {
+  std::string name;
+  std::string layer;
+  std::string style_key;
+  GeoPoint position{};  // the label anchor
+  GeoRect bounds{};     // what "go there" frames; degenerate for a point
+  // The source's own prominence, smaller = more prominent. A pyramid puts the
+  // shallowest zoom the name survives to here; 0 when the source has no
+  // opinion. See FeatureRow::rank.
+  int rank = 0;
+  // LIVE for this open source — a FeatureRef is only meaningful inside the
+  // process that minted it (OSM's `tile` is a per-open index), so an index
+  // stores something durable and the source turns it back into a ref on the
+  // way out. Describe() works on it like any other.
+  FeatureRef ref{};
+};
+
 // A product-specific reader of drawable features.
 //
 // Implementations are NOT required to be thread-safe; the renderer owns one
@@ -182,6 +222,32 @@ class IVectorSource {
     (void)ref;
     (void)out;
     return Status::Error(kUnsupported, "source does not implement Describe");
+  }
+
+  // --- the name index (search-plan-COMPLETE.md, S3) ------------------------
+  //
+  // "Where is X" over the WHOLE source, with no area to narrow it. A tile
+  // pyramid cannot answer that by reading tiles — the honest cost of a
+  // pack-wide scan is a walk nobody would wait for — so the answer comes from
+  // an index built once, at staging time, and stored beside the data (for
+  // MBTiles, extra SQLite tables inside the pack itself; port/Osm/tools).
+  //
+  // A source WITHOUT one returns kUnsupported, which is not a failure: it is
+  // what "degrades to area-only search" means in code, and the caller
+  // (VectorMapOverlay) then falls back to the tier-1 tile scan.
+  //
+  // NARROWING IS BEST EFFORT, MATCHING IS THE CALLER'S. An implementation may
+  // return more rows than the text strictly matches — an index tokenises the
+  // way its own engine does, and FTS5's notion of a word boundary is not
+  // fvkit/app/search.h's. The caller runs the shared rule over what comes
+  // back, so an index can only ever be a candidate generator: it may not
+  // decide that something matches when the port's rule says it does not.
+  virtual bool HasNameIndex() const { return false; }
+  virtual Status SearchNames(const VectorNameQuery& q,
+                             std::vector<VectorNameHit>* out) {
+    (void)q;
+    (void)out;
+    return Status::Error(kUnsupported, "source has no name index");
   }
 };
 

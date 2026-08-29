@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fvkit/app/session.h"
+
+#include "fvkit/app/properties.h"
 
 #include <algorithm>
 #include <string>
@@ -105,9 +107,30 @@ FlowResult OverlaySession::Fail(const Status& s) {
 std::shared_ptr<Overlay> OverlaySession::Instantiate(
     const OverlayTypeDesc& desc) {
   std::shared_ptr<Overlay> overlay = desc.factory ? desc.factory() : nullptr;
+  if (!overlay) return overlay;
   // Stamped at creation, the way InternalInitialize(guid) did it -- this is
   // what makes FirstOfType/OfType/FindByFileSpec answerable.
-  if (overlay) overlay->set_type_id(desc.id);
+  overlay->set_type_id(desc.id);
+
+  // AND ITS SETTINGS, HERE, FOR EVERY OVERLAY THAT DECLARES ANY.
+  //
+  // This is the single place an overlay comes into existence in the app layer,
+  // which is why the hook belongs here and not in a factory or a shell. An
+  // overlay that implements app::Properties gets its peregrine.ini section
+  // applied the moment it is made -- no shell writes a line of code for it,
+  // and a shell that forgot would otherwise silently show an overlay wearing
+  // its compiled-in defaults while the user's file said otherwise. (That is
+  // exactly what happened to the graticule the first time it was run from
+  // PythonView: the [grid] section was read into Settings and nothing ever
+  // asked for it.)
+  //
+  // Failures are WARNINGS, never a refused overlay: a typo in an .ini costs
+  // the user that one key, not the map.
+  if (app::Properties* props = overlay->AsProperties()) {
+    std::vector<std::string> w;
+    props->LoadFrom(settings_, SettingsPrefixForTypeId(desc.id), &w);
+    for (const std::string& line : w) Warn(line);
+  }
   return overlay;
 }
 

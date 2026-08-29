@@ -341,3 +341,70 @@ simplify_pixels = 0.5
 # phone under trees — which is what makes the snapping visible. Seeded, so a
 # demonstration runs the same way twice. 0 = the clean track.
 # noise_m = 0.0
+
+[grid]
+# The lat/lon graticule (`fv.grid`, a STATIC overlay type). FalconView kept
+# these under HKCU\...\Lat-Long Grid Options and RE-READ SIX OF THEM ON EVERY
+# FRAME; they are read once here.
+#
+# Every key below is DECLARED by the overlay rather than hard-coded in this
+# file — `fvkit/app/properties.h`, the shared `Properties` capability. That is
+# what makes them all appear in a property dialog, in pyfvw
+# (`overlay.describe_properties()` / `get_property` / `set_property`) and here,
+# from one table in `port/fvkit/overlay/grid_overlay.cpp`. An overlay that
+# grows a new property gets all three for free, and any other overlay that
+# implements the capability gets the same treatment under its own prefix.
+#
+# Colours may be written any of these ways, whichever suits you:
+#   #RGB  #RGBA            shorthand, each digit doubled
+#   #RRGGBB  #RRGGBBAA     a missing alpha is opaque
+#   rgb(r, g, b)           components 0-255
+#   rgba(r, g, b, a)       ALPHA IS A CSS FRACTION, 0.0-1.0 — so
+#                          rgba(0,0,0,1) is OPAQUE, not nearly transparent.
+#                          Write hex if you would rather count in bytes.
+#
+# A value that will not parse keeps the current one and SAYS SO on stderr
+# ("pythonview: grid.label_color = ... is not a valid value"). One bad line
+# never costs you the others, and never costs you the overlay.
+#
+# WHAT THE SPACING IS: not a key. How far apart the lines go is a
+# CARTOGRAPHER'S TABLE indexed by map scale (`fvkit/overlay/grid_spacing.h`,
+# transcribed from FalconView's grid_map/spacing.cpp) — 5-degree majors and
+# 1-degree minors at 1:5M, 5 arc-seconds at 1:1K, and longitude deliberately
+# wider than latitude at 1:2M. It is not derived from pixels and is not
+# tunable, because the numbers are the product.
+
+# --- lines ------------------------------------------------------------------
+# line_color = "#FFFFFF60"
+# line_width = 1
+# Outline (FalconView's "background line"): a wider line drawn underneath, so
+# the grid stays visible over pale and dark chart alike.
+# show_casing = true
+# casing_color = "#00000080"
+# Minor lines are the ones BETWEEN the majors. Off leaves only the majors,
+# which at 1:5M means every fifth degree instead of every degree.
+# show_minor_lines = true
+
+# --- ticks ------------------------------------------------------------------
+# Unlabelled marks along the MAJOR lines, subdividing them further without
+# adding lines to the picture. The table zeroes them from 1:100K in, where the
+# minor spacing has already reached 5 minutes; this switch cannot bring them
+# back there, and should not.
+# show_ticks = true
+# tick_length_px = 12
+
+# --- labels -----------------------------------------------------------------
+# Only MAJOR lines are labelled unless label_minor_lines is on — FalconView's
+# default, and what keeps a dense graticule readable. Longitude labels that
+# would land on a latitude label are dropped rather than moved
+# (`fvkit/canvas/label_placer.h`: whoever asks first keeps the spot).
+# show_labels = true
+# label_minor_lines = false
+# label_size_px = 12.0
+# label_color = "#FFFFFFFF"
+# label_halo_color = "#000000C8"
+# label_halo_width_px = 1.0
+# A TTF/TTC path. Empty = the canvas's own default font, which is what a shell
+# that has already chosen one wants. With no font anywhere the grid still
+# draws its LINES: a label that cannot be drawn is not an error.
+# label_font = ""

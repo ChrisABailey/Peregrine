@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 #include "fvkit/canvas/geo_draw.h"
+
+#include "fvkit/canvas/label_placer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -492,29 +494,24 @@ Status GeoDraw::DrawLabelAtPixel(double x, double y, const std::string& text,
   TextStyle hs = ts;
   hs.color = style.halo_color;
 
-  int lx = static_cast<int>(std::lround(x)) + style.dx;
-  int ly = static_cast<int>(std::lround(y)) + style.dy;
-
-  const bool aligned = style.halign != LabelHAlign::kLeft ||
-                       style.valign != LabelVAlign::kBaseline;
-  PixelSize ext{0, 0};
+  // Where the ink lands is MeasureLabelInk's answer, not a second copy of the
+  // same arithmetic — LabelPlacer tests a label with that function and this
+  // draws it, so a placer can never disagree with the ink it reserved room
+  // for. Measuring is only worth its cost when alignment or picking needs it;
+  // otherwise the origin is the anchor plus the offset, as it always was.
+  int lx, ly;
+  PixelRect ink_box;
   bool have_ext = false;
-  if (aligned || pick_enabled_) {
-    have_ext = canvas_->GetTextExtent(text, ts, &ext).ok() && ext.width > 0 &&
-               ext.height > 0;
-  }
-  if (aligned && have_ext) {
-    switch (style.halign) {
-      case LabelHAlign::kLeft: break;
-      case LabelHAlign::kCenter: lx -= ext.width / 2; break;
-      case LabelHAlign::kRight: lx -= ext.width; break;
-    }
-    switch (style.valign) {
-      case LabelVAlign::kBaseline:
-      case LabelVAlign::kBottom: break;
-      case LabelVAlign::kCenter: ly += ext.height / 2; break;
-      case LabelVAlign::kTop: ly += ext.height; break;
-    }
+  if (style.halign != LabelHAlign::kLeft ||
+      style.valign != LabelVAlign::kBaseline || pick_enabled_) {
+    const LabelInk ink = MeasureLabelInk(*canvas_, x, y, text, ts, style);
+    lx = ink.origin.x;
+    ly = ink.origin.y;
+    ink_box = ink.box;
+    have_ext = ink.measured;
+  } else {
+    lx = static_cast<int>(std::lround(x)) + style.dx;
+    ly = static_cast<int>(std::lround(y)) + style.dy;
   }
 
   const PixelSize size = canvas_->Size();
@@ -545,15 +542,7 @@ Status GeoDraw::DrawLabelAtPixel(double x, double y, const std::string& text,
   Status s = canvas_->DrawTextString(text, lx, ly, ts);
   if (!s.ok()) return s;
   ++draws_emitted_;
-  if (pick_enabled_ && have_ext) {
-    // Text draws from its BASELINE-left, so the box runs upward.
-    PixelRect box;
-    box.x = lx;
-    box.y = ly - ext.height;
-    box.width = ext.width;
-    box.height = ext.height;
-    pick_.AddBox(feature_, priority_, box);
-  }
+  if (pick_enabled_ && have_ext) pick_.AddBox(feature_, priority_, ink_box);
   return Status::Ok();
 }
 

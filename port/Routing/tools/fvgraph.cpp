@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvgraph — build a routable road graph from a raw OSM extract, and query it.
 //
@@ -45,6 +45,7 @@ int Usage() {
                "                [--via LAT LON ...] [--u-turns]\n"
                "                [--distance] [--walk] [--cycle] [--dijkstra]\n"
                "                [--ignore-turns] [--private-penalty X] [--snap M]\n"
+               "                [--snap-nodes]\n"
                "                [--avoid-toll] [--avoid-ferry]\n"
                "                [--toll-penalty X] [--ferry-penalty X]\n"
                "                [--rules FILE] [--profile NAME] [--geojson OUT.json]\n"
@@ -61,7 +62,10 @@ int Usage() {
                "  can leave a destination unreachable; --toll-penalty X and\n"
                "  --ferry-penalty X merely price them up (1.0 = no preference).\n"
                "  Any of the four overrides what --profile asked for, whatever\n"
-               "  order they are written in.\n");
+               "  order they are written in.\n"
+               "  An end is snapped onto the ROAD, so a route begins where it was\n"
+               "  asked to rather than at the nearest junction; --snap-nodes is\n"
+               "  the old behaviour, for seeing what the snap was moving.\n");
   return 2;
 }
 
@@ -310,6 +314,10 @@ int Route(int argc, char** argv) {
       have_ferry = true;
     } else if (a == "--snap" && i + 1 < argc) {
       options.snap_meters = std::atof(argv[++i]);
+    } else if (a == "--snap-nodes") {
+      // The pre-1d snap, kept as a diagnostic: a route that changes when the
+      // ends are pinned to junctions is a route the snap was moving.
+      options.snap_to_arcs = false;
     } else if (a == "--geojson" && i + 1 < argc) {
       geojson = argv[++i];
     } else {
@@ -364,8 +372,9 @@ int Route(int argc, char** argv) {
 
   std::printf("%.2f km, %.1f min (%lld nodes expanded)\n", route.length_m / 1000.0,
               route.seconds / 60.0, static_cast<long long>(route.nodes_expanded));
-  std::printf("snapped %.0f m from the start, %.0f m from the end\n", route.start_offset_m,
-              route.end_offset_m);
+  std::printf("snapped %.0f m from the start, %.0f m from the end%s\n", route.start_offset_m,
+              route.end_offset_m,
+              options.snap_to_arcs ? " (onto the road, not the junction)" : " (onto junctions)");
   if (!vias.empty()) {
     std::printf("through %zu stops", route.stop_nodes.size());
     // Worth saying out loud: the route doubled back at a stop because the

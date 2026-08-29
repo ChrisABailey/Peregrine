@@ -75,4 +75,7 @@ add_subdirectory(port/Enc)
 add_subdirectory(port/Osm)
 add_subdirectory(port/Routing)
 add_subdirectory(port/fvkit)
+# RouteKit links BOTH fvkit and Routing, which is the one thing fvkit may not
+# do — hence a module of its own, and hence after both of them.
+add_subdirectory(port/RouteKit)
 add_subdirectory(port/bindings/pyfvw)

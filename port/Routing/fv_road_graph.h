@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fv_road_graph.h — the routable road graph (O4).
 //
@@ -28,6 +28,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -232,6 +233,12 @@ class RoadGraph {
   }
 
   const std::string& name(uint32_t idx) const { return names_[idx]; }
+  // How many entries the name table has, index 0 (the empty name) included.
+  // Public because the table is the cheap way to answer "which roads are
+  // called X": it holds each distinct name ONCE, where the arcs hold it as
+  // many times as the way was split, so a text search matches the table
+  // first and then looks up an integer per arc.
+  uint32_t name_count() const { return static_cast<uint32_t>(names_.size()); }
 
   GeoRect bounds() const { return bounds_; }
 
@@ -281,10 +288,120 @@ class RoadGraph {
   }
 
   // --- lookup -----------------------------------------------------------
-  // Nearest graph node to `p` within `max_meters`. Uses a uniform grid built
-  // at load; returns false when nothing is in range.
+  // A node the caller is willing to snap to. The graph knows nothing about
+  // profiles — that is the router's business — so the question "may this
+  // traveller actually leave from here" arrives as a predicate rather than as
+  // a mode this class would have to learn. Empty means "any node".
+  using NodeFilter = std::function<bool(uint32_t)>;
+
+  // Nearest graph node to `p` within `max_meters`, skipping any node `accept`
+  // refuses. Uses a uniform grid built at load; returns false when nothing in
+  // range is acceptable.
+  //
+  // WHY THE FILTER EXISTS. Graph nodes are junctions and endpoints only —
+  // shape points are edge geometry — so the nearest node to a point can be
+  // some way off, and it is chosen on distance alone. On Kiawah that put the
+  // start of a bicycle route on a golf cart path 138 m away tagged
+  // `bicycle=no`, while the cycleway 26 m away went unseen because its nearby
+  // points are shape points; the router then reported the two ends as "not
+  // connected", which is true of the nodes it picked and false of the map.
+  // Distance is the wrong sole criterion when the nearest thing is one this
+  // traveller may not use.
   bool NearestNode(const GeoPoint& p, double max_meters, uint32_t* out_node,
-                   double* out_meters = nullptr) const;
+                   double* out_meters = nullptr,
+                   const NodeFilter& accept = NodeFilter()) const;
+
+  // --- point-to-segment snapping (§1d) ---------------------------------
+  //
+  // WHY THERE IS A SECOND ANSWER TO "WHERE IS THE NEAREST ROAD".
+  // `NearestNode` indexes VERTICES, and a vertex exists only where ways meet
+  // or a way ends — everything between is edge geometry. So the nearest node
+  // to somebody standing in the middle of a long block is a junction that may
+  // be hundreds of metres away, and a profile-aware filter (2026-08-27) only
+  // makes it the nearest *usable* junction, not the nearest road. That is the
+  // defect §1d names: a rider standing ON a cycleway was still attached to a
+  // junction a hundred metres off it. This projects onto the SEGMENTS instead,
+  // over a second grid built at Finalize time.
+
+  // Where a point lands on the road shape.
+  struct ArcSnap {
+    uint32_t arc = kNoArc;    // index into the arc table
+    uint32_t from = 0;        // the node whose adjacency holds `arc`
+    uint32_t to = 0;          // arc(arc).target
+    GeoPoint point;           // the query projected onto the road
+    double distance_m = 0.0;  // query -> point
+    // Both measured along the arc's OWN direction of travel (`from` -> `to`)
+    // and in the graph's own metre, so `along_m / length_m` is the fraction of
+    // the arc a router may price a partial traversal by. `length_m` is the
+    // SHAPE length walked here, which is what that fraction has to be taken
+    // against; `RoadArc::length_m` is the same number stored as a float.
+    double along_m = 0.0;
+    double length_m = 0.0;
+
+    // The fraction of the arc at `point`, 0 at `from` and 1 at `to`.
+    double t() const { return length_m > 0.0 ? along_m / length_m : 0.0; }
+
+    // True when the projection landed on one of the arc's own endpoints, i.e.
+    // when this snap says nothing a NearestNode snap would not have said.
+    //
+    // WITH A TOLERANCE, and it is load-bearing rather than defensive. The
+    // graph stores degrees x 1e7 and reads them back as `e7 * 1e-7`, which
+    // lands an ulp or so off the decimal literal a caller typed — so a query
+    // that IS a junction projects a picometre along the road leaving it, and
+    // without this every such call would produce a mid-arc anchor with a
+    // zero-length first step. 1 cm is the precision the coordinates are stored
+    // at, so anything inside it is the same place by the file's own account.
+    static constexpr double kEndEpsilonMeters = 0.01;
+    bool at_node() const {
+      return along_m <= kEndEpsilonMeters || along_m >= length_m - kEndEpsilonMeters;
+    }
+
+    // The endpoint `point` is nearer to. Only meaningful when at_node().
+    uint32_t nearest_end() const { return along_m <= length_m - along_m ? from : to; }
+  };
+
+  // An arc the caller is willing to snap to. Same shape and same reason as
+  // NodeFilter: the graph knows nothing about profiles, so "may this traveller
+  // use this road" arrives as a predicate. Empty means "any arc".
+  using ArcFilter = std::function<bool(const RoadArc&)>;
+
+  // The closest point on any acceptable road within `max_meters`. Returns
+  // false when nothing in range is acceptable — like NearestNode, the filter
+  // is asked BEFORE the distance is kept, so a refused road neither wins nor
+  // tightens the ring-stopping bound.
+  //
+  // ONE CANDIDATE PER ROAD, not per arc: an undirected edge is two mirrored
+  // arcs and only the one stored at the lower-numbered end is indexed. The
+  // arc reported therefore may be either direction's; its flags carry both, so
+  // a caller asking "may I drive from here toward `to`" reads `forward()` and
+  // "toward `from`" reads `backward()`, exactly as it would anywhere else.
+  bool NearestArcPoint(const GeoPoint& p, double max_meters, ArcSnap* out,
+                       const ArcFilter& accept = ArcFilter()) const;
+
+  // The node whose adjacency range contains `arc_index`. Binary search over
+  // arc_begin_, because an arc index alone does not say where it is stored and
+  // anything holding one (a snap, a route step) needs the other end.
+  uint32_t ArcSource(uint32_t arc_index) const;
+
+  // The arc's full shape, `from` and `to` included, in its own direction of
+  // travel. Appends nothing when the arc index is out of range.
+  void ArcShape(uint32_t arc_index, std::vector<GeoPoint>* out) const;
+
+  // Every node inside `rect`, handed to `visit` one at a time.
+  //
+  // WHY IT IS HERE rather than a caller iterating node_count(). A debug view
+  // of the network draws what is ON SCREEN, and on a continent-sized extract
+  // the nodes on screen are a millionth of the nodes there are — so the
+  // question "which nodes are in this box" has to be answered by the index
+  // and not by a scan, or panning costs a full pass per frame. The grid
+  // NearestNode already built answers it exactly, which is the whole reason
+  // this is four lines rather than a second index.
+  //
+  // A crossing rect is split at the antimeridian and visited as two boxes, so
+  // a node is never reported twice. Order is grid order — cell by cell, not
+  // sorted, and not stable across a rebuild.
+  void NodesInRect(const GeoRect& rect,
+                   const std::function<void(uint32_t)>& visit) const;
 
   // --- persistence ------------------------------------------------------
   Status Save(const std::string& path) const;
@@ -306,6 +423,9 @@ class RoadGraph {
   // Drops restrictions that name an arc this graph does not have, sorts what
   // is left and derives the lookup index and the split-state numbering.
   void BuildRestrictionIndex();
+
+  // The arc-geometry grid NearestArcPoint sweeps.
+  void BuildArcIndex();
 
   std::vector<RoadNode> nodes_;
   std::vector<uint32_t> arc_begin_;  // node_count + 1 entries
@@ -333,6 +453,26 @@ class RoadGraph {
   double grid_lon_step_ = 0.0;
   std::vector<uint32_t> grid_begin_;
   std::vector<uint32_t> grid_items_;
+
+  // The second grid, over arc GEOMETRY (see NearestArcPoint). It has its own
+  // bounds and not `bounds_`: that box is the box of the VERTICES, and a
+  // road's shape points can lie well outside their own endpoints' box — a
+  // dogleg, a bay, a hairpin, and in the degenerate case of one east-west road
+  // a node box with no height at all. Sizing the index off it would put the
+  // shape in a cell the query for the same point never sweeps.
+  //
+  // COST: one entry per (segment bounding box cell), for one arc of each
+  // undirected road, built at Finalize. That is the same limit the router's
+  // per-query scratch already has (ledger 2b) — right for an island, a county
+  // or a state, and a continent would want a windowed index instead.
+  std::vector<uint32_t> arc_ids_;      // one arc index per undirected road
+  GeoRect arc_bounds_;
+  int arc_cols_ = 0;
+  int arc_rows_ = 0;
+  double arc_lat_step_ = 0.0;
+  double arc_lon_step_ = 0.0;
+  std::vector<uint32_t> arc_grid_begin_;
+  std::vector<uint32_t> arc_grid_items_;  // indices into arc_ids_
 };
 
 // Great-circle distance in metres on a sphere of the WGS-84 mean radius.

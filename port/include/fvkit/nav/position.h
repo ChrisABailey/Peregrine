@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/nav/position.h — the fix and the feed seam (nav plan MM1).
 //
@@ -34,6 +34,7 @@
 #ifndef FVKIT_NAV_POSITION_H_
 #define FVKIT_NAV_POSITION_H_
 
+#include <cmath>
 #include <cstddef>
 #include <deque>
 #include <functional>
@@ -113,7 +114,20 @@ struct PositionFix {
 
 // Wraps a heading into [0, 360). Every heading this layer produces has been
 // through it; a heading a source REPORTS is left exactly as reported.
-double NormalizeHeadingDeg(double degrees);
+//
+// INLINE for the same linkage reason ProjectOntoSegment is (see
+// nav/road_snap.h): that function is header-only so port/Routing can project
+// onto a road without linking the map engine, and it ends by normalising a
+// bearing — one out-of-line symbol was enough to drag libfvkit into a
+// graph-building CLI that wants none of it.
+inline double NormalizeHeadingDeg(double degrees) {
+  if (!std::isfinite(degrees)) return 0.0;
+  double d = std::fmod(degrees, 360.0);
+  if (d < 0.0) d += 360.0;
+  // fmod of a tiny negative can round to exactly 360.0 on the way back.
+  if (d >= 360.0) d = 0.0;
+  return d;
+}
 
 // ---------------------------------------------------------------------------
 // The feed seam

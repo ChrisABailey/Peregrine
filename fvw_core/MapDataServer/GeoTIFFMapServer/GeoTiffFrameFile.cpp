@@ -2499,6 +2499,7 @@ void CGeoTiffFrameFile::clear( )
    m_image_length = 0;
    m_num_pixels = 0;
    m_compression_scheme = 0;
+   m_predictor = 1;
    m_photometric_interpretation = 0;
    m_rows_per_strip = 0;
    m_num_strips = 0;
@@ -3630,7 +3631,12 @@ void CGeoTiffFrameFile::check_geodata(  )
             switch( m_geodata.m_proj_coord_trans )
             {
                case GEOTIFF_CT_LAMBERT_CONF_CONIC_2SP:
-                  // check for necessary data
+                  // check for necessary data.  The origin of a 2SP Lambert is
+                  // ProjFalseOrigin{Lat,Long} (3084/3085) per the GeoTIFF
+                  // spec - ProjNatOrigin* (3080/3081) is the 1SP spelling.
+                  // Older libgeotiff output wrote the natural-origin keys
+                  // here, and current FAA sectionals write the false-origin
+                  // ones, so either spelling of either axis is accepted.
                   if( !m_geodata.m_proj_std_parallel_1_present )
                   {
                      m_geodata_error_message =
@@ -3643,16 +3649,18 @@ void CGeoTiffFrameFile::check_geodata(  )
                         "Standard parallel 2 is missing.";
                      goto FAIL;
                   }
-                  if( !m_geodata.m_proj_nat_origin_long_present )
+                  if( !m_geodata.m_proj_nat_origin_long_present &&
+                      !m_geodata.m_proj_false_origin_long_present )
                   {
                      m_geodata_error_message =
-                        "Natural origin longitude is missing.";
+                        "Origin longitude is missing.";
                      goto FAIL;
                   }
-                  if( !m_geodata.m_proj_false_origin_lat_present )
+                  if( !m_geodata.m_proj_false_origin_lat_present &&
+                      !m_geodata.m_proj_nat_origin_lat_present )
                   {
                      m_geodata_error_message =
-                        "False origin latitude is missing.";
+                        "Origin latitude is missing.";
                      goto FAIL;
                   }
                   m_geodata_supported = TRUE;
@@ -5010,9 +5018,19 @@ int CGeoTiffFrameFile::inv_transform_lambert_conf_conic( int hpix, int vpix,
    y = m_geodata.m_model_tie_point_y[0] - m_geodata.m_model_pixel_scale_y *
        ( (double)vpix - m_geodata.m_model_tie_point_vpix[0] );
 
-   // subtract false easting from x and false northing from y
-   x -= m_geodata.m_proj_false_easting;
-   y -= m_geodata.m_proj_false_northing;
+   // subtract false easting from x and false northing from y.  A 2SP Lambert
+   // spells these ProjFalseOrigin{Easting,Northing} (3086/3087); fall back to
+   // those when the 1SP keys (3082/3083) are absent.
+   if( m_geodata.m_proj_false_easting_present ||
+       !m_geodata.m_proj_false_origin_easting_present )
+      x -= m_geodata.m_proj_false_easting;
+   else
+      x -= m_geodata.m_proj_false_origin_easting;
+   if( m_geodata.m_proj_false_northing_present ||
+       !m_geodata.m_proj_false_origin_northing_present )
+      y -= m_geodata.m_proj_false_northing;
+   else
+      y -= m_geodata.m_proj_false_origin_northing;
 
    a = m_geodata.m_geog_semi_major_axis;
    b = m_geodata.m_geog_semi_minor_axis;
@@ -5020,10 +5038,19 @@ int CGeoTiffFrameFile::inv_transform_lambert_conf_conic( int hpix, int vpix,
    e_sqrd = 2*f - f*f;
    e = sqrt( e_sqrd );
 
-   phi0 = m_geodata.m_proj_false_origin_lat * pi_over_180;
+   // 2SP's origin is ProjFalseOrigin{Lat,Long}; ProjNatOrigin* is the 1SP
+   // spelling, which older writers used here.  Take whichever is present -
+   // a file that loads today has the same one it always had.
+   if( m_geodata.m_proj_false_origin_lat_present )
+      phi0 = m_geodata.m_proj_false_origin_lat * pi_over_180;
+   else
+      phi0 = m_geodata.m_proj_nat_origin_lat * pi_over_180;
    phi1 = m_geodata.m_proj_std_parallel_1 * pi_over_180;
    phi2 = m_geodata.m_proj_std_parallel_2 * pi_over_180;
-   lambda0 = m_geodata.m_proj_nat_origin_long * pi_over_180;
+   if( m_geodata.m_proj_nat_origin_long_present )
+      lambda0 = m_geodata.m_proj_nat_origin_long * pi_over_180;
+   else
+      lambda0 = m_geodata.m_proj_false_origin_long * pi_over_180;
 
    m1 = cos( phi1 ) / sqrt( 1 - e_sqrd * sin( phi1 ) * sin( phi1 ) );
    m2 = cos( phi2 ) / sqrt( 1 - e_sqrd * sin( phi2 ) * sin( phi2 ) );
@@ -5098,10 +5125,19 @@ int CGeoTiffFrameFile::fwd_transform_lambert_conf_conic( double latitude,
    e_sqrd = 2*f - f*f;
    e = sqrt( e_sqrd );
 
-   phi0 = m_geodata.m_proj_false_origin_lat * pi_over_180;
+   // 2SP's origin is ProjFalseOrigin{Lat,Long}; ProjNatOrigin* is the 1SP
+   // spelling, which older writers used here.  Take whichever is present -
+   // a file that loads today has the same one it always had.
+   if( m_geodata.m_proj_false_origin_lat_present )
+      phi0 = m_geodata.m_proj_false_origin_lat * pi_over_180;
+   else
+      phi0 = m_geodata.m_proj_nat_origin_lat * pi_over_180;
    phi1 = m_geodata.m_proj_std_parallel_1 * pi_over_180;
    phi2 = m_geodata.m_proj_std_parallel_2 * pi_over_180;
-   lambda0 = m_geodata.m_proj_nat_origin_long * pi_over_180;
+   if( m_geodata.m_proj_nat_origin_long_present )
+      lambda0 = m_geodata.m_proj_nat_origin_long * pi_over_180;
+   else
+      lambda0 = m_geodata.m_proj_false_origin_long * pi_over_180;
 
    m1 = cos( phi1 ) / sqrt( 1 - e_sqrd * sin( phi1 ) * sin( phi1 ) );
    m2 = cos( phi2 ) / sqrt( 1 - e_sqrd * sin( phi2 ) * sin( phi2 ) );
@@ -5128,9 +5164,18 @@ int CGeoTiffFrameFile::fwd_transform_lambert_conf_conic( double latitude,
    x = rho * sin(theta);
    y = rho0 - rho * cos(theta);
 
-   // add false easting to x and false northing to y
-   x += m_geodata.m_proj_false_easting;
-   y += m_geodata.m_proj_false_northing;
+   // add false easting to x and false northing to y - the same 2SP fallback
+   // the inverse transform makes
+   if( m_geodata.m_proj_false_easting_present ||
+       !m_geodata.m_proj_false_origin_easting_present )
+      x += m_geodata.m_proj_false_easting;
+   else
+      x += m_geodata.m_proj_false_origin_easting;
+   if( m_geodata.m_proj_false_northing_present ||
+       !m_geodata.m_proj_false_origin_northing_present )
+      y += m_geodata.m_proj_false_northing;
+   else
+      y += m_geodata.m_proj_false_origin_northing;
 
    dhpix = m_geodata.m_model_tie_point_hpix[0] +
            (x - m_geodata.m_model_tie_point_x[0]) /
@@ -6173,6 +6218,7 @@ int CGeoTiffFrameFile::inspect_tags( )
          case GEOTIFF_NO_COMPRESSION:
          case GEOTIFF_CCITT_1D:
          case GEOTIFF_PACKBITS:
+         case GEOTIFF_LZW:
 		 case GEOTIFF_JPEG:
             break;
          default:                      // all others unsupported at present
@@ -6182,6 +6228,34 @@ int CGeoTiffFrameFile::inspect_tags( )
    }
    else
       m_compression_scheme = GEOTIFF_NO_COMPRESSION;
+
+   // get the predictor (default is 1, none).  Only 1 and 2 exist for integer
+   // samples; 3 is the floating-point predictor, which no reader here wants.
+   if( find_tag( GEOTIFF_PREDICTOR_TAG, tag_index ) == SUCCESS )
+   {
+      switch( m_tags[tag_index].m_type )
+      {
+         case GEOTIFF_SHORT:
+            m_predictor = m_tags[tag_index].m_short_values[0];
+            break;
+         default:
+            // data is wrong type
+            m_new_error_description = "Predictor tag is invalid data type.";
+            return FAILURE;
+      }
+      switch( m_predictor )
+      {
+         case 1:                        // no predictor
+            break;
+         case 2:                        // horizontal differencing
+            break;
+         default:
+            m_new_error_description = "Predictor tag value is not supported.";
+            return FAILURE;
+      }
+   }
+   else
+      m_predictor = 1;
 
    // get the jpeg table info if it's there
    if (m_compression_scheme == GEOTIFF_JPEG)
@@ -7247,6 +7321,292 @@ int CGeoTiffFrameFile::decompress_packbits( int compressed_size,
 // *****************************************************************
 // *****************************************************************
 
+int CGeoTiffFrameFile::decompress_lzw( int compressed_size,
+                                   unsigned char *compressed,
+                                   int decompressed_size,
+                                   unsigned char *decompressed )
+{
+   // this function decompresses an array of bytes using the TIFF 6.0 variant
+   // of LZW (compression tag 5).  Same contract as decompress_packbits:
+   // compressed_size is the number of bytes available - not all of them will
+   // necessarily be used; decompressed_size is the number of bytes expected,
+   // and decoding stops as soon as that many have been produced.
+   // returns SUCCESS or FAILURE
+   //
+   // Codes are packed most-significant-bit first (fill order 2 is rejected at
+   // load time, so there is no bit-reversed case to handle here).  Widths run
+   // 9..12 bits and step up ONE CODE EARLY - the off-by-one in the TIFF 6.0
+   // pseudocode that every encoder in the wild reproduces.  Codes 256 and 257
+   // are Clear and EndOfInformation; 258 up are string table entries.
+
+   const int clear_code = 256;
+   const int eoi_code = 257;
+   const int first_entry = 258;
+   const int max_entries = 4096;
+
+   // the string table: each entry is a prefix code plus one suffix byte, so a
+   // string is walked backwards down the prefix chain and emitted reversed
+   short prefix[max_entries];
+   unsigned char suffix[max_entries];
+   unsigned char reversed[max_entries];
+
+   int i, code, old_code, code_width, next_entry;
+   int walk, nbytes;
+   unsigned int bit_pos, bit_end, byte_index, accum;
+   unsigned char first_char;
+   unsigned char *decomp = decompressed;
+   unsigned char *decomp_end = decomp + decompressed_size;
+
+   if( compressed_size <= 0 || decompressed_size <= 0 )
+      return FAILURE;
+
+   for( i = 0; i < 256; i++ )
+   {
+      prefix[i] = -1;
+      suffix[i] = (unsigned char)i;
+   }
+
+   bit_pos = 0;
+   bit_end = (unsigned int)compressed_size * 8;
+
+   code_width = 9;
+   next_entry = first_entry;
+   old_code = -1;
+   first_char = 0;
+
+   while( bit_pos + (unsigned int)code_width <= bit_end )
+   {
+      // read code_width bits, most significant bit first
+      byte_index = bit_pos >> 3;
+      accum = (unsigned int)compressed[byte_index] << 16;
+      accum |= (unsigned int)compressed[byte_index+1] << 8;
+      if( byte_index + 2 < (unsigned int)compressed_size )
+         accum |= (unsigned int)compressed[byte_index+2];
+      code = (int)( ( accum >> ( 24 - ( bit_pos & 7 ) - code_width ) ) &
+                    ( ( 1u << code_width ) - 1 ) );
+      bit_pos += (unsigned int)code_width;
+
+      if( code == eoi_code )
+         break;
+
+      if( code == clear_code )
+      {
+         code_width = 9;
+         next_entry = first_entry;
+         old_code = -1;
+         continue;
+      }
+
+      if( old_code == -1 )
+      {
+         // first code after a Clear must be a literal
+         if( code >= 256 )
+            return FAILURE;
+         if( decomp >= decomp_end )
+            return SUCCESS;
+         *decomp++ = (unsigned char)code;
+         if( decomp == decomp_end )
+            return SUCCESS;
+         old_code = code;
+         first_char = (unsigned char)code;
+         continue;
+      }
+
+      if( code < next_entry )
+      {
+         // the code is in the table: emit its string, then add old_code plus
+         // that string's first character as the next entry
+         walk = code;
+      }
+      else if( code == next_entry && next_entry < max_entries )
+      {
+         // the KwKwK case: the encoder used an entry it had only just added,
+         // so the string is old_code's string plus its own first character
+         walk = -1;
+      }
+      else
+      {
+         return FAILURE;
+      }
+
+      if( walk >= 0 )
+      {
+         nbytes = 0;
+         while( walk >= 0 && nbytes < max_entries )
+         {
+            reversed[nbytes++] = suffix[walk];
+            walk = prefix[walk];
+         }
+         if( walk >= 0 )
+            return FAILURE;                   // corrupt prefix chain
+         first_char = reversed[nbytes-1];
+      }
+      else
+      {
+         nbytes = 0;
+         walk = old_code;
+         while( walk >= 0 && nbytes < max_entries )
+         {
+            reversed[nbytes++] = suffix[walk];
+            walk = prefix[walk];
+         }
+         if( walk >= 0 )
+            return FAILURE;
+         first_char = reversed[nbytes-1];
+         // prepend (in reversed order, append) the leading character
+         if( nbytes >= max_entries )
+            return FAILURE;
+         for( i = nbytes; i > 0; i-- )
+            reversed[i] = reversed[i-1];
+         reversed[0] = first_char;
+         nbytes++;
+      }
+
+      for( i = nbytes - 1; i >= 0; i-- )
+      {
+         if( decomp >= decomp_end )
+            return SUCCESS;                   // caller wanted only this much
+         *decomp++ = reversed[i];
+      }
+
+      // add old_code + first character of what we just emitted
+      if( next_entry < max_entries )
+      {
+         prefix[next_entry] = (short)old_code;
+         suffix[next_entry] = first_char;
+         next_entry++;
+      }
+
+      old_code = code;
+
+      // "early change": the width steps up one code before the table is full
+      if( next_entry + 1 >= ( 1 << code_width ) && code_width < 12 )
+         code_width++;
+
+      if( decomp == decomp_end )
+         return SUCCESS;
+   }
+
+   // ran out of codes: SUCCESS only if we produced everything asked for
+   return ( decomp == decomp_end ) ? SUCCESS : FAILURE;
+}
+
+// *****************************************************************
+// *****************************************************************
+
+int CGeoTiffFrameFile::undo_horizontal_predictor( unsigned char *data,
+                                                  int size, int row_bytes )
+{
+   // undoes TIFF predictor 2 (horizontal differencing) in place.  Each sample
+   // was stored as its difference from the sample one PIXEL to its left, so
+   // the stride is samples-per-pixel and each row restarts.
+   // returns SUCCESS or FAILURE
+
+   int row_start, i, spp;
+
+   if( row_bytes <= 0 )
+      return FAILURE;
+
+   spp = (int)m_samples_per_pixel;
+   if( spp <= 0 )
+      return FAILURE;
+
+   if( m_bits_per_sample == 8 )
+   {
+      for( row_start = 0; row_start < size; row_start += row_bytes )
+      {
+         int row_len = __min( row_bytes, size - row_start );
+         unsigned char *row = data + row_start;
+         for( i = spp; i < row_len; i++ )
+            row[i] = (unsigned char)( row[i] + row[i-spp] );
+      }
+      return SUCCESS;
+   }
+
+   if( m_bits_per_sample == 16 )
+   {
+      // differencing is over 16-bit samples; the bytes are in file order, so
+      // reassemble each sample with the file's byte order and write it back
+      int stride = spp * 2;
+      for( row_start = 0; row_start < size; row_start += row_bytes )
+      {
+         int row_len = __min( row_bytes, size - row_start );
+         unsigned char *row = data + row_start;
+         for( i = stride; i + 1 < row_len; i += 2 )
+         {
+            unsigned int prev, cur;
+            if( m_byte_order == GEOTIFF_BIG_ENDIAN )
+            {
+               prev = ( (unsigned int)row[i-stride] << 8 ) | row[i-stride+1];
+               cur  = ( (unsigned int)row[i] << 8 ) | row[i+1];
+               cur = ( cur + prev ) & 0xFFFF;
+               row[i]   = (unsigned char)( cur >> 8 );
+               row[i+1] = (unsigned char)( cur & 0xFF );
+            }
+            else
+            {
+               prev = ( (unsigned int)row[i-stride+1] << 8 ) | row[i-stride];
+               cur  = ( (unsigned int)row[i+1] << 8 ) | row[i];
+               cur = ( cur + prev ) & 0xFFFF;
+               row[i+1] = (unsigned char)( cur >> 8 );
+               row[i]   = (unsigned char)( cur & 0xFF );
+            }
+         }
+      }
+      return SUCCESS;
+   }
+
+   return FAILURE;                             // predictor 2 needs 8 or 16 bpp
+}
+
+// *****************************************************************
+// *****************************************************************
+
+int CGeoTiffFrameFile::decompress_strip( int compressed_size,
+                                   unsigned char *compressed,
+                                   int decompressed_size,
+                                   unsigned char *decompressed )
+{
+   // one entry point for every reader below: pick the codec, then undo the
+   // predictor.  With PackBits and predictor 1 - everything this reader
+   // handled before LZW was added - it is decompress_packbits and nothing
+   // else, byte for byte.
+   // returns SUCCESS or FAILURE
+
+   int row_bytes;
+
+   switch( m_compression_scheme )
+   {
+      case GEOTIFF_PACKBITS:
+         if( decompress_packbits( compressed_size, compressed,
+                                  decompressed_size, decompressed ) != SUCCESS )
+            return FAILURE;
+         break;
+      case GEOTIFF_LZW:
+         if( decompress_lzw( compressed_size, compressed,
+                             decompressed_size, decompressed ) != SUCCESS )
+            return FAILURE;
+         break;
+      default:
+         return FAILURE;
+   }
+
+   if( m_predictor == 2 )
+   {
+      // a row of the strip, or of the tile when the image is tiled
+      row_bytes = (int)( m_image_is_tiled ? m_tile_width : m_image_width ) *
+                  (int)m_samples_per_pixel * ( (int)m_bits_per_sample / 8 );
+      if( undo_horizontal_predictor( decompressed, decompressed_size,
+                                     row_bytes ) != SUCCESS )
+         return FAILURE;
+   }
+
+   return SUCCESS;
+}
+
+// *****************************************************************
+// *****************************************************************
+
 int CGeoTiffFrameFile::get_8bit_grayscale_as_rgb_subimage( int min_hpix, int min_vpix,
       int max_hpix, int max_vpix, unsigned char *red_array,
       unsigned char *green_array, unsigned char *blue_array )
@@ -7367,6 +7727,7 @@ int CGeoTiffFrameFile::get_8bit_grayscale_as_rgb_subimage( int min_hpix, int min
             break;
          case GEOTIFF_CCITT_1D:
             goto FAIL;                          // not yet supported
+         case GEOTIFF_LZW:                      // LZW compression scheme
          case GEOTIFF_PACKBITS:                 // PackBits compression scheme
             // copy decompressed strip data to pixel array
             // decompress data
@@ -7375,7 +7736,7 @@ int CGeoTiffFrameFile::get_8bit_grayscale_as_rgb_subimage( int min_hpix, int min
             decompressed_size =
                __min( (int)(m_image_width * m_rows_per_strip *
                   m_samples_per_pixel), num_remaining_bytes );
-            if( decompress_packbits( (int)strip_byte_count, strip_data,
+            if( decompress_strip( (int)strip_byte_count, strip_data,
                 decompressed_size, decompressed_strip_data ) != SUCCESS )
                 goto FAIL;
             for( i = 0; i < decompressed_size; i++ )
@@ -7584,6 +7945,7 @@ int CGeoTiffFrameFile::get_16bit_grayscale_as_rgb_subimage( int min_hpix, int mi
             break;
          case GEOTIFF_CCITT_1D:
             goto FAIL;                          // not yet supported
+         case GEOTIFF_LZW:                      // LZW compression scheme
          case GEOTIFF_PACKBITS:                 // PackBits compression scheme
             // copy decompressed strip data to pixel array
             // decompress data
@@ -7592,7 +7954,7 @@ int CGeoTiffFrameFile::get_16bit_grayscale_as_rgb_subimage( int min_hpix, int mi
             decompressed_size =
                __min( (int)(2 * m_image_width * m_rows_per_strip *
                   m_samples_per_pixel), num_remaining_bytes );
-            if( decompress_packbits( (int)strip_byte_count, strip_data,
+            if( decompress_strip( (int)strip_byte_count, strip_data,
                 decompressed_size, decompressed_strip_data ) != SUCCESS )
                 goto FAIL;
             // swap byte order if necessary
@@ -7741,7 +8103,8 @@ int CGeoTiffFrameFile::get_24bit_rgb_as_rgb_subimage( int min_hpix, int min_vpix
       if (jblu == nullptr)
          goto FAIL;
 	}
-	else if ( m_compression_scheme == GEOTIFF_PACKBITS )
+	else if ( m_compression_scheme == GEOTIFF_PACKBITS ||
+	          m_compression_scheme == GEOTIFF_LZW )
 	{
 		// if compressed, allocate memory for a decompressed strip
 		decompressed_strip_data = new unsigned char[m_image_width * m_rows_per_strip *
@@ -7882,16 +8245,18 @@ int CGeoTiffFrameFile::get_24bit_rgb_as_rgb_subimage( int min_hpix, int min_vpix
 					  break;
 				   case GEOTIFF_CCITT_1D:
 					  goto FAIL;                     // not yet supported
+				   case GEOTIFF_LZW:                      // LZW compression scheme
 				   case GEOTIFF_PACKBITS:            // PackBits compression scheme
 					  // decompress data
-					  if( m_compression_scheme == GEOTIFF_PACKBITS )
+					  if( m_compression_scheme == GEOTIFF_PACKBITS ||
+					      m_compression_scheme == GEOTIFF_LZW )
 					  {
 						 num_remaining_bytes =
 							(m_num_pixels - ipixel) * m_samples_per_pixel;
 						 decompressed_size =
 							__min( (int)(m_image_width * m_rows_per_strip *
 							m_samples_per_pixel), num_remaining_bytes );
-						 if( decompress_packbits( (int)strip_byte_count, strip_data,
+						 if( decompress_strip( (int)strip_byte_count, strip_data,
 							 decompressed_size, decompressed_strip_data ) != SUCCESS )
 							 goto FAIL;
 					  }
@@ -8112,16 +8477,18 @@ int CGeoTiffFrameFile::get_8bit_palette_as_rgb_subimage( int min_hpix, int min_v
                   break;
                case GEOTIFF_CCITT_1D:
                   goto FAIL;                      // not yet supported
+               case GEOTIFF_LZW:                      // LZW compression scheme
                case GEOTIFF_PACKBITS:             // PackBits compression scheme
                   // decompress data
-                  if( m_compression_scheme == GEOTIFF_PACKBITS )
+                  if( m_compression_scheme == GEOTIFF_PACKBITS ||
+                      m_compression_scheme == GEOTIFF_LZW )
                   {
                      num_remaining_bytes =
                         (m_num_pixels - ipixel) * m_samples_per_pixel;
                      decompressed_size =
                         __min( (int)(m_image_width * m_rows_per_strip *
                         m_samples_per_pixel), num_remaining_bytes );
-                     if( decompress_packbits( (int)strip_byte_count, strip_data,
+                     if( decompress_strip( (int)strip_byte_count, strip_data,
                          decompressed_size, decompressed_strip_data ) != SUCCESS )
 						 goto FAIL;
                   }
@@ -8332,6 +8699,7 @@ int CGeoTiffFrameFile::get_8bit_grayscale_tile_as_rgb_image( int itile,
             pixel_index++;
          }
          break;
+      case GEOTIFF_LZW:                      // LZW compression scheme
       case GEOTIFF_PACKBITS:                 // PackBits compression scheme
          // allocate memory for decompressed data
          decompressed_tile_data = NULL;
@@ -8344,7 +8712,7 @@ int CGeoTiffFrameFile::get_8bit_grayscale_tile_as_rgb_image( int itile,
          num_remaining_bytes = m_tile_width * m_tile_length;
          decompressed_size = m_tile_width * m_tile_length;
          // decompress data
-         if( decompress_packbits( (int)tile_byte_count, tile_data,
+         if( decompress_strip( (int)tile_byte_count, tile_data,
              decompressed_size, decompressed_tile_data ) != SUCCESS )
              goto FAIL;
          // copy decompressed strip data to pixel array
@@ -8509,6 +8877,7 @@ int CGeoTiffFrameFile::get_16bit_grayscale_tile_as_rgb_image( int itile,
             pixel_index++;
          }
          break;
+      case GEOTIFF_LZW:                      // LZW compression scheme
       case GEOTIFF_PACKBITS:                 // PackBits compression scheme
          // allocate memory for decompressed data
          decompressed_tile_data = NULL;
@@ -8521,7 +8890,7 @@ int CGeoTiffFrameFile::get_16bit_grayscale_tile_as_rgb_image( int itile,
          num_remaining_bytes = 2 * m_tile_width * m_tile_length;
          decompressed_size = 2 * m_tile_width * m_tile_length;
          // decompress data
-         if( decompress_packbits( (int)tile_byte_count, tile_data,
+         if( decompress_strip( (int)tile_byte_count, tile_data,
              decompressed_size, decompressed_tile_data ) != SUCCESS )
              goto FAIL;
          // swap byte order if necessary
@@ -8686,6 +9055,7 @@ int CGeoTiffFrameFile::get_24bit_rgb_tile_as_rgb_image( int itile,
             pixel_index++;
          }
          break;
+      case GEOTIFF_LZW:                      // LZW compression scheme
       case GEOTIFF_PACKBITS:                 // PackBits compression scheme
          // allocate memory for decompressed data
          decompressed_tile_data = NULL;
@@ -8696,7 +9066,7 @@ int CGeoTiffFrameFile::get_24bit_rgb_tile_as_rgb_image( int itile,
          num_remaining_bytes = 3 * m_tile_width * m_tile_length;
          decompressed_size = 3 * m_tile_width * m_tile_length;
          // decompress data
-         if( decompress_packbits( (int)tile_byte_count, tile_data,
+         if( decompress_strip( (int)tile_byte_count, tile_data,
              decompressed_size, decompressed_tile_data ) != SUCCESS )
              goto FAIL;
          // copy decompressed strip data to pixel array
@@ -8856,6 +9226,7 @@ int CGeoTiffFrameFile::get_8bit_palette_tile_as_rgb_image( int itile,
                (unsigned char)(m_blue_color_map[palette_index]/256);
          }
          break;
+      case GEOTIFF_LZW:                      // LZW compression scheme
       case GEOTIFF_PACKBITS:                 // PackBits compression scheme
          // allocate memory for decompressed data
          decompressed_tile_data = NULL;
@@ -8868,7 +9239,7 @@ int CGeoTiffFrameFile::get_8bit_palette_tile_as_rgb_image( int itile,
          num_remaining_bytes = m_tile_width * m_tile_length;
          decompressed_size = m_tile_width * m_tile_length;
          // decompress data
-         if( decompress_packbits( (int)tile_byte_count, tile_data,
+         if( decompress_strip( (int)tile_byte_count, tile_data,
              decompressed_size, decompressed_tile_data ) != SUCCESS )
              goto FAIL;
          // copy decompressed strip data to pixel array

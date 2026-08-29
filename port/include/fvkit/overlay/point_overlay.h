@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/overlay/point_overlay.h — the first C++ FILE overlay (A6).
 //
@@ -48,7 +48,17 @@
 // a document that wants the bare tile says so by making the colour transparent
 // (alpha 0), which suppresses the badge and its edge.
 //
-// A schema-1 document still opens, columns and all — see `ReadFile`.
+// SCHEMA 3 — A POINT IS SOMETHING YOU CAN GET TO. `phone` and `url` join the
+// row (Chris, 2026-08-20, for Pippin's point sheet). They are ordinary TEXT
+// columns and nothing in the overlay draws or picks on them; what they exist
+// for is the thing above the drawing — a marker a rider taps turns into a
+// number they can ring and a page they can open, which is the difference
+// between a chart symbol and a place. Empty is the normal value and means
+// "this point has no such thing", so a UI shows the row or hides it and never
+// has to distinguish absent from blank.
+//
+// A schema-1 or schema-2 document still opens, columns and all — see
+// `ReadFile` — and is saved forward, which is the same bargain schema 2 made.
 
 #pragma once
 
@@ -59,6 +69,7 @@
 #include <vector>
 
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/search.h"
 #include "fvkit/canvas/canvas.h"
 #include "fvkit/canvas/geo_draw.h"
 #include "fvkit/symbol/builtin.h"
@@ -143,13 +154,22 @@ struct MapPoint {
   std::string category;
   double elevation_ft = 0.0;
   std::string remarks;
+  // Schema 3. Free text, both of them, and deliberately UNVALIDATED here: a
+  // document is authored by `sqlite3` as often as by an app, and a reader that
+  // rejected "(843) 555 0100" or "kiawahresort.com" would be enforcing a
+  // format nobody agreed to. Whatever dials and whatever opens is the SHELL's
+  // question — it knows what a tel: URL is and this layer does not.
+  std::string phone;
+  std::string url;
 };
 
 class PointOverlay : public Overlay,
                      public app::Persistence,
                      public app::HitTest,
+                     public app::SnapTo,
                      public app::ContextMenu,
-                     public app::EditTarget {
+                     public app::EditTarget,
+                     public app::SearchProvider {
  public:
   explicit PointOverlay(std::string name = "Points");
   ~PointOverlay() override;
@@ -161,8 +181,10 @@ class PointOverlay : public Overlay,
   // Capability accessors (R2 — never dynamic_cast).
   app::Persistence* AsPersistence() override { return this; }
   app::HitTest* AsHitTest() override { return this; }
+  app::SnapTo* AsSnapTo() override { return this; }
   app::ContextMenu* AsContextMenu() override { return this; }
   app::EditTarget* AsEditTarget() override { return this; }
+  app::SearchProvider* AsSearch() override { return this; }
 
   // --- drawing ------------------------------------------------------------
 
@@ -172,6 +194,21 @@ class PointOverlay : public Overlay,
   // full of names is the label-collision gap the ledger already carries.
   void SetShowLabels(bool on) { show_labels_ = on; }
   bool show_labels() const { return show_labels_; }
+
+  // THE DPI GAP, CLOSED THE WAY `RouteOverlay` CLOSES IT. The comment above
+  // `PointShape` has said since G2 that this decision was deferred because
+  // "the overlay does not know the device"; a shell that DOES can now say so,
+  // and `GeoDraw::symbol_dpi_scale` is where the number has always been meant
+  // to land. 1.0 is the identity and is what every pinned golden was drawn at,
+  // so nothing moves for a caller that never sets it.
+  //
+  // A point's `size_px` is therefore an AUTHORED pixel — the same unit the
+  // route's diamonds and the ownship's chevron are in (Pippin P12) — and on a
+  // 3x phone a 22-px marker is 22 points wide rather than a third of that.
+  // The hit test scales with it, because a marker a finger can see is only
+  // useful if it is a marker a finger can press.
+  void SetSymbolDpiScale(double s) { dpi_scale_ = s > 0.0 ? s : 1.0; }
+  double symbol_dpi_scale() const { return dpi_scale_; }
 
   // --- the document -------------------------------------------------------
 
@@ -183,6 +220,15 @@ class PointOverlay : public Overlay,
   int64_t AddPoint(MapPoint point);
   bool RemovePoint(int64_t id);
   const MapPoint* Find(int64_t id) const;
+
+  // Replaces the row with `point.id` in place, keeping its position in the
+  // draw order. False — and nothing changed — when no such row exists, which
+  // is what an editor holding a stale id gets instead of a silent insert.
+  //
+  // It is a whole-row replacement rather than a set of field setters for the
+  // reason `SetWaypoints` is: what an editing sheet produces is a complete
+  // point, and a per-field API would let a caller write half of one.
+  bool UpdatePoint(const MapPoint& point);
 
   // --- the symbol palette -------------------------------------------------
 
@@ -232,8 +278,49 @@ class PointOverlay : public Overlay,
   void HitTestPoint(const MapProjection& proj, PixelPoint p,
                     double tolerance_px, std::vector<app::HitItem>& out) override;
 
+  // --- SnapTo -------------------------------------------------------------
+
+  // A point IS a snap target, and it is the one this capability was written
+  // for: a place somebody surveyed, named and put in a file, whose whole worth
+  // is that its coordinate is exact. A route waypoint dropped by eye at the
+  // Ruddy Turnstone is NEAR the Ruddy Turnstone; snapped, it is AT it.
+  //
+  // The same reach as HitTestPoint, and deliberately the same call shape, so
+  // the two never disagree about what the finger is over: the tolerance plus
+  // the marker's DRAWN half-width, because a target is as big as it looks.
+  //
+  // The candidate's `description` is the point's NAME, which is the row text a
+  // chooser wants and the words a phone puts on its confirm button ("Use Ruddy
+  // Turnstone"). A nameless point falls back to its category and then to its
+  // id, so a snap is never offered as a blank row.
+  void SnapToPoint(const MapProjection& proj, PixelPoint p,
+                   double tolerance_px,
+                   std::vector<app::SnapToItem>& out) override;
+
   void AppendMenuItems(const MapProjection& proj, PixelPoint p,
                        app::MenuNode& menu) override;
+
+  // --- SearchProvider -----------------------------------------------------
+
+  // A linear scan of the document, and that is the whole implementation. A
+  // `.fvpoints` file is SQLite and a big one could gain a `COLLATE NOCASE`
+  // index later; nothing today holds enough points to notice, and an index
+  // that is not needed is a second definition of what matching means.
+  //
+  // WHICH FIELD IS THE LABEL, which is the one thing a provider decides for
+  // itself: `name`, falling back to `category`. That is the same chain
+  // SnapToPoint's description follows, so what a search finds and what a snap
+  // offers are called the same thing — and searching "restaurant" finds the
+  // unnamed points of that category, which is the only place `category` is
+  // reachable by text at all.
+  //
+  // NO PROJECTION, NO TOLERANCE, NO VISIBILITY TEST, and that is the contrast
+  // with HitTestPoint and SnapToPoint two methods up: those answer about the
+  // frame that was drawn, because a finger points at pixels. This answers
+  // about the DOCUMENT — a point outside the viewport, in a hidden overlay, on
+  // a map nobody has rendered yet, is still where it is.
+  void Search(const app::SearchQuery& q, const std::atomic<bool>& cancel,
+              std::vector<app::SearchResult>& out) override;
 
   // --- the sample document ------------------------------------------------
 
@@ -295,6 +382,7 @@ class PointOverlay : public Overlay,
   int64_t next_id_ = 1;
   int64_t next_symbol_id_ = 1;
   bool show_labels_ = false;
+  double dpi_scale_ = 1.0;
 };
 
 }  // namespace fv

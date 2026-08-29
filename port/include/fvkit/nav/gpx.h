@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/nav/gpx.h — GPX 1.0/1.1 tracks, waypoints and routes (nav plan MM6).
 //
@@ -90,6 +90,13 @@ struct GpxDocument {
 
   std::vector<PositionFix> waypoints;  // <wpt>, with their names alongside
   std::vector<std::string> waypoint_names;
+  // <wpt><desc>, one per waypoint, empty where there is none. A TRACK point's
+  // <desc> is still dropped — it has nowhere to live on a `PositionFix` — but
+  // a waypoint is a PLACE somebody wrote a sentence about, and the sentence is
+  // most of what makes it worth sharing. Parallel to `waypoints` for the same
+  // reason `waypoint_names` is: a waypoint is a fix plus two strings, and
+  // inventing a struct for two strings would change the reader's whole shape.
+  std::vector<std::string> waypoint_descriptions;
 
   std::vector<GpxTrack> tracks;  // <trk>
   std::vector<GpxTrack> routes;  // <rte>, a PLANNED line and not a recorded one
@@ -151,6 +158,97 @@ bool ParseIso8601Utc(const std::string& text, double* epoch_seconds);
 
 // The inverse, always in Z form with whole seconds — what a GPX writer needs.
 std::string FormatIso8601Utc(double epoch_seconds);
+
+// The same with a chosen number of fractional digits (0..3). A recorder is
+// the reason: a phone stamps a fix at 20:55:59.482, and a writer that rounds
+// every stamp to a whole second can hand two points of a 1 Hz ride the SAME
+// time — which the reader is then right to drop as non-monotonic. The reader
+// has always accepted a fraction; the writer now emits one.
+std::string FormatIso8601UtcFractional(double epoch_seconds, int fractional_digits);
+
+// ---------------------------------------------------------------------------
+// Writing (P10)
+// ---------------------------------------------------------------------------
+//
+// GPX 1.1 ONLY. The reader takes both versions because a file arrives from
+// wherever it arrives; a writer that emits both would be two formats to keep
+// right for no reader's benefit.
+//
+// FOUR RULES, and they are the mirror images of the reader's.
+//
+// 1. A FIELD WITH NO VALIDITY IS NOT WRITTEN. `has_altitude` false means no
+//    <ele> element, not `<ele>0</ele>` — the reader would take the zero for a
+//    sea-level fix, and rule 1 of the reader (a missing <time> yields
+//    has_time false) only survives a round trip if the writer honours it.
+//
+// 2. SPEED IS NOT WRITTEN AT ALL. Base GPX has nowhere to put it: Garmin's
+//    TrackPointExtension does, and writing a vendor namespace to carry a
+//    number the reader DERIVES anyway (reader rule 2) would be a second
+//    source of truth for a quantity that already has one. A ride written here
+//    and read back derives its speed from the geometry, which is what the
+//    reader does for every other file it is handed.
+//
+// 3. A SEGMENT BOUNDARY IS WRITTEN AS A SEGMENT BOUNDARY. `GpxTrackSegment`
+//    is what the reader's `split_gap_s` produced, and <trkseg> is where it
+//    goes back — so a recorder that saw the rider stop for lunch writes the
+//    pen coming off the paper rather than relying on the next reader to
+//    guess the same gap threshold.
+//
+// 4. THE PRECISION IS THE FORMAT'S, NOT THE DOUBLE'S. Seven decimals of
+//    latitude is 11 mm, which is finer than any receiver knows and is where
+//    every GPX on the internet sits; a %.17g round trip would be bit-exact
+//    and unreadable. Round-trip equality is therefore stated as a TOLERANCE
+//    (1e-7 degrees, 0.05 m of elevation), and the tests pin it there.
+struct GpxWriteOptions {
+  // The <gpx creator="..."> attribute: what wrote the file. Every consumer
+  // shows it, so it is a real field and not decoration.
+  std::string creator = "Peregrine";
+
+  // Decimal places for lat/lon (rule 4) and for <ele>.
+  int coordinate_decimals = 7;
+  int elevation_decimals = 1;
+
+  // Fractional digits on every <time>. -1 means AUTO: three digits when the
+  // stamp actually carries a fraction, none when it does not — so a file read
+  // from a 1 Hz device and written straight back out looks the way it came in.
+  int time_decimals = -1;
+
+  // Write <metadata><time> from GpxDocument::time_s when it is valid.
+  bool write_metadata_time = true;
+
+  // Indent with two spaces per level. Off gives one long line per element and
+  // is only useful to a diff.
+  bool pretty = true;
+};
+
+// The document as GPX 1.1 text. Never fails: a document with nothing in it is
+// a valid empty GPX, which is the reader's own position on the matter.
+std::string WriteGpx(const GpxDocument& document,
+                     const GpxWriteOptions& options = GpxWriteOptions());
+
+// The same, to a file. kIoError if it will not open or the write fails.
+// Written to `path` + ".tmp" and renamed over `path`, so a reader that opens
+// the file while it is being written sees the OLD ride and never half of the
+// new one. (The recorder in `fvkit/nav/gpx_recorder.h` does NOT go through
+// here — it appends, for the reason stated there.)
+Status WriteGpxFile(const std::string& path, const GpxDocument& document,
+                    const GpxWriteOptions& options = GpxWriteOptions());
+
+// A one-track document from a run of fixes: what a recorder, a replay or a
+// snapshot of a live ride all want. A new <trkseg> is started wherever
+// consecutive fixes are more than `split_gap_s` apart (0 to never split),
+// which is `GpxReadOptions::split_gap_s`'s mirror. Fixes without a position
+// are skipped — there is no such thing as a <trkpt> without one.
+GpxDocument BuildGpxTrack(const std::vector<PositionFix>& fixes, const std::string& track_name,
+                          const std::string& track_type, double split_gap_s = 0.0);
+
+// One <trkpt> element, indented `indent_level` levels, newline-terminated —
+// exactly the bytes `WriteGpx` puts inside a <trkseg>. Public because the
+// recorder (`fvkit/nav/gpx_recorder.h`) APPENDS points to a file it never
+// holds in memory, and it must produce byte-identical points to the whole-
+// document writer or a recorded ride and a saved one would be two formats.
+std::string FormatGpxTrackPoint(const PositionFix& fix, const GpxWriteOptions& options,
+                                int indent_level);
 
 }  // namespace fv
 

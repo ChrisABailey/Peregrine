@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fv_osm_vector_source.h — OSM vector tiles at the FvKit vector seam
 // (OSM phase O1). The port's THIRD IVectorSource, after DNC (V5a) and ENC
@@ -67,6 +67,29 @@ class OsmVectorSource : public IVectorSource {
   std::vector<std::string> Layers() const override;
   Status Query(const VectorQuery& q, std::vector<VectorFeature>* out) override;
   Status Describe(const FeatureRef& ref, FeatureDescription* out) override;
+
+  // --- the name index (search-plan-COMPLETE.md, S3) ------------------------
+  //
+  // A pack built by port/Osm/tools/fvnames.cpp carries a `search_names` table
+  // of everything it holds a name for, and these two are how a search reaches
+  // it: `HasNameIndex` is true from Open, and `SearchNames` is one SELECT
+  // whatever the size of the pyramid. A pack without one answers false and
+  // kUnsupported, and VectorMapOverlay falls back to reading tiles.
+  //
+  // THE REFS COME BACK LIVE. The index stores z/x/y and a layer NAME, because
+  // FeatureRef::tile is an index this object assigns as it goes and means
+  // nothing in another process; interning them here is what lets Describe()
+  // work on a row that was found without a single tile being read.
+  bool HasNameIndex() const override;
+  Status SearchNames(const VectorNameQuery& q,
+                     std::vector<VectorNameHit>* out) override;
+
+  // The pyramid tile and layer name a ref came from — the inverse of the
+  // interning above, and what the index BUILDER writes down (it gets refs out
+  // of an ordinary query and has to store something durable). False for a ref
+  // this source never minted.
+  bool ResolveRef(const FeatureRef& ref, webmerc::TileId* tile,
+                  std::string* layer) const;
 
   // --- knobs ---------------------------------------------------------------
 

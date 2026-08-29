@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/catalog/catalog.h — FvKit L2 coverage catalog (SQLite + R-tree).
 // Contracts: port/fvkit-contracts.md; schema mirrors the MDM's
@@ -15,6 +15,15 @@
 //
 // The catalog is an internal cache, not an interchange file: schema may
 // change freely until the ledger says otherwise (version in meta table).
+//
+// SCHEMA 2 (2026-08-29): a map series is identified by (format, series_key,
+// scale, scale_units) and NOT by the key alone, because FalconView's own
+// tblMapSeries is keyed that way -- CCoverageCache::GetMapSeriesIdentity
+// looks a frame up by SelectByScale(scale, units, series_name), so on Windows
+// a 1 metre Color GeoTIFF and a 50 metre Color GeoTIFF are two map types.
+// Keying on the key alone collapsed every generic GeoTIFF resolution into one
+// series that reported whichever frame was catalogued first.  An older
+// catalog is REBUILT on Open (NeedsRescan() then says so).
 
 #pragma once
 
@@ -35,6 +44,10 @@ struct SeriesRow {
   double scale = 0;        // as reported by the enumerator
   int scale_units = 0;     // MapScaleUnitsEnum value
   double scale_denom = 0;  // normalized denominator (0 = not comparable)
+  // FalconView's FORMAT_SERIES_SCALE map-type label ("GNC 1:5 M",
+  // "Color 1 meter"); the series_key alone when there is no scale to name.
+  // Unique within a format, so it is the handle a CLI or a menu can use.
+  std::string display_name;
 };
 
 struct CoverageRow {
@@ -56,6 +69,10 @@ class Catalog {
 
   // db_path may be ":memory:". Creates/migrates the schema.
   Status Open(const std::string& db_path);
+
+  // True when Open() had to rebuild a pre-schema-2 catalog: the data sources
+  // survived, their coverage did not. The caller should Scan() each one.
+  bool NeedsRescan() const { return needs_rescan_; }
 
   // Registers a data source (a directory tree of one format). Idempotent on
   // (path, format).
@@ -87,6 +104,7 @@ class Catalog {
                        int64_t* series_id);
 
   mutable detail::SqliteDb db_;
+  bool needs_rescan_ = false;
 };
 
 }  // namespace fv

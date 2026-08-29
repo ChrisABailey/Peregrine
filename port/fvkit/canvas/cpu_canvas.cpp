@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // CpuCanvas implementation — see fvkit/canvas/cpu_canvas.h.
 
@@ -53,11 +53,49 @@ void CpuCanvas::BlendPixel(int x, int y, const FvColor& c) {
     p[3] = 255;
     return;
   }
-  int a = c.a;                            // src-over, non-premultiplied
-  p[0] = (unsigned char)((c.r * a + p[0] * (255 - a)) / 255);
-  p[1] = (unsigned char)((c.g * a + p[1] * (255 - a)) / 255);
-  p[2] = (unsigned char)((c.b * a + p[2] * (255 - a)) / 255);
-  p[3] = (unsigned char)(a + p[3] * (255 - a) / 255);
+  const int a = c.a;                      // src-over, non-premultiplied
+  const int inv = 255 - a;
+  if (p[3] == 255) {
+    // THE OPAQUE DESTINATION, UNCHANGED. Every canvas in the tree before P18
+    // was cleared opaque and stayed opaque, so this is the arithmetic every
+    // pinned golden was made with, in the same order. It is kept as its own
+    // branch rather than folded into the general case below — the two agree
+    // to the byte when p[3] is 255, and a branch says so structurally instead
+    // of asking a reader to verify the algebra.
+    p[0] = (unsigned char)((c.r * a + p[0] * inv) / 255);
+    p[1] = (unsigned char)((c.g * a + p[1] * inv) / 255);
+    p[2] = (unsigned char)((c.b * a + p[2] * inv) / 255);
+    p[3] = 255;
+    return;
+  }
+
+  // A TRANSLUCENT DESTINATION — which is what a canvas being used as a LAYER
+  // is (P18: the overlay is drawn on its own transparent surface and
+  // composited over the cached base map).
+  //
+  // The formula above is wrong here and wrong in a way that looks like a
+  // rendering bug rather than a blending one. These bytes are STRAIGHT
+  // (non-premultiplied) colour, so weighting the source by its own alpha
+  // against a destination that contributes nothing drags every antialiased
+  // edge toward the cleared colour: a half-covered white glyph pixel over
+  // transparent black comes out mid-grey at alpha 128, and CoreGraphics —
+  // told the buffer is `kCGImageAlphaLast` — then draws exactly that grey.
+  // Symbols and text get a dark fringe; the map underneath is innocent.
+  //
+  // So the destination is weighted by ITS OWN alpha too, and the result is
+  // divided back out of the composite alpha to return to straight colour.
+  // Everything is kept in 1/255 units (`num` is the composite alpha times
+  // 255) so no intermediate is rounded before the division.
+  //
+  // The divisor cannot be zero: a fully transparent SOURCE returned at the
+  // top of this function, so `a` is at least 1 and `num` at least 255. There
+  // is deliberately no guard for a case that cannot arrive.
+  const int num = a * 255 + p[3] * inv;  // composite alpha * 255
+  const int dw = p[3] * inv;             // the destination's weight, same units
+  p[0] = (unsigned char)((c.r * a * 255 + p[0] * dw) / num);
+  p[1] = (unsigned char)((c.g * a * 255 + p[1] * dw) / num);
+  p[2] = (unsigned char)((c.b * a * 255 + p[2] * dw) / num);
+  p[3] = (unsigned char)(num / 255);
 }
 
 void CpuCanvas::Stamp(int x, int y, const Pen& pen) {
@@ -349,6 +387,54 @@ Status CpuCanvas::SetDefaultFont(const std::string& font_path) {
   return Status::Ok();
 }
 
+namespace {
+
+// UTF-8 -> code points, so `utf8` means what ICanvas says it means.
+//
+// Every glyph loop below used to walk BYTES, with a comment saying the ASCII
+// subset was all GeoSym needed. It was, until the graticule wanted a degree
+// sign: U+00B0 is two bytes, and a byte walk drew both of them ("35A°"). An
+// ASCII string decodes to exactly the same code points it did before, so no
+// pinned golden in the tree moves -- the only strings whose rendering changes
+// are the ones that were already wrong.
+//
+// Malformed input yields U+FFFD and advances one byte, which keeps the loop
+// finite on any bytes at all; a font without the replacement glyph then draws
+// nothing for it, which is the right amount of noise for bad text.
+int NextCodepoint(const std::string& s, size_t* i) {
+  const unsigned char c0 = static_cast<unsigned char>(s[*i]);
+  auto cont = [&s](size_t k) {
+    return k < s.size() && (static_cast<unsigned char>(s[k]) & 0xC0) == 0x80;
+  };
+  auto bits = [&s](size_t k) {
+    return static_cast<int>(static_cast<unsigned char>(s[k]) & 0x3F);
+  };
+  if (c0 < 0x80) {
+    *i += 1;
+    return c0;
+  }
+  if ((c0 & 0xE0) == 0xC0 && cont(*i + 1)) {
+    const int cp = ((c0 & 0x1F) << 6) | bits(*i + 1);
+    *i += 2;
+    return cp;
+  }
+  if ((c0 & 0xF0) == 0xE0 && cont(*i + 1) && cont(*i + 2)) {
+    const int cp = ((c0 & 0x0F) << 12) | (bits(*i + 1) << 6) | bits(*i + 2);
+    *i += 3;
+    return cp;
+  }
+  if ((c0 & 0xF8) == 0xF0 && cont(*i + 1) && cont(*i + 2) && cont(*i + 3)) {
+    const int cp = ((c0 & 0x07) << 18) | (bits(*i + 1) << 12) |
+                   (bits(*i + 2) << 6) | bits(*i + 3);
+    *i += 4;
+    return cp;
+  }
+  *i += 1;
+  return 0xFFFD;
+}
+
+}  // namespace
+
 Status CpuCanvas::DrawTextString(const std::string& utf8, int x, int y,
                                  const TextStyle& style) {
   Status s;
@@ -357,8 +443,8 @@ Status CpuCanvas::DrawTextString(const std::string& utf8, int x, int y,
 
   float scale = stbtt_ScaleForPixelHeight(&font->info, (float)style.size);
   double pen_x = x;
-  // ASCII subset is all GeoSym labels need for now; document and move on.
-  for (unsigned char ch : utf8) {
+  for (size_t i = 0; i < utf8.size();) {
+    const int ch = NextCodepoint(utf8, &i);
     int w = 0, h = 0, xoff = 0, yoff = 0;
     unsigned char* bmp = stbtt_GetCodepointBitmap(&font->info, scale, scale,
                                                   ch, &w, &h, &xoff, &yoff);
@@ -412,7 +498,8 @@ Status CpuCanvas::DrawRotatedTextString(const std::string& utf8, double x,
   // ICanvas::DrawRotatedTextString: e_u = (cos a, -sin a), e_v = (-sin a, -cos a).
   const float scale = stbtt_ScaleForPixelHeight(&font->info, (float)style.size);
   double pen_u = 0.0;
-  for (unsigned char ch : utf8) {
+  for (size_t i = 0; i < utf8.size();) {
+    const int ch = NextCodepoint(utf8, &i);
     int w = 0, h = 0, xoff = 0, yoff = 0;
     unsigned char* bmp = stbtt_GetCodepointBitmap(&font->info, scale, scale, ch,
                                                   &w, &h, &xoff, &yoff);
@@ -480,7 +567,8 @@ Status CpuCanvas::GetTextExtent(const std::string& utf8, const TextStyle& style,
   int ascent = 0, descent = 0, gap = 0;
   stbtt_GetFontVMetrics(&font->info, &ascent, &descent, &gap);
   double width = 0;
-  for (unsigned char ch : utf8) {
+  for (size_t i = 0; i < utf8.size();) {
+    const int ch = NextCodepoint(utf8, &i);
     int advance = 0, lsb = 0;
     stbtt_GetCodepointHMetrics(&font->info, ch, &advance, &lsb);
     width += advance * scale;

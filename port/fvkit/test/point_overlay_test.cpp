@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 Chris Bailey
 // Part of Peregrine, a cross-platform port of FalconView(tm).
-// See LICENSE and NOTICE.md for the full licensing picture.
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // A6: the first C++ FILE overlay — a point set in a SQLite document, drawn as
 // geometric shapes and answering picks.
@@ -158,6 +158,121 @@ TEST(PointOverlay, ADocumentRoundTripsEveryColumn) {
   // the author named rather than to a path.
   EXPECT_EQ("Harbour Marks", in.Name());
   std::remove(spec.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Schema 3: a point is something you can get to
+// ---------------------------------------------------------------------------
+
+TEST(PointOverlay, ThePhoneAndTheUrlRoundTrip) {
+  const std::string spec = TempSpec("contact");
+  std::remove(spec.c_str());
+
+  PointOverlay out("Kiawah");
+  MapPoint p = MakePoint(3, "Freshfields Village", 32.6323, -80.1102);
+  p.phone = "+1 843-768-6491";
+  p.url = "https://freshfieldsvillage.com/";
+  MapPoint bare = MakePoint(4, "Beach Access 12", 32.5957, -80.1097);
+  out.SetPoints({p, bare});
+  ASSERT_TRUE(out.FileSaveAs(spec, 0).ok());
+
+  PointOverlay in;
+  ASSERT_TRUE(in.FileOpen(spec).ok());
+  ASSERT_EQ(2u, in.points().size());
+  EXPECT_EQ("+1 843-768-6491", in.points()[0].phone);
+  EXPECT_EQ("https://freshfieldsvillage.com/", in.points()[0].url);
+  // EMPTY IS THE NORMAL VALUE, and it is what a UI hides a row on. A point
+  // with no phone must come back with an empty string rather than with the
+  // previous row's — the column is NOT NULL DEFAULT '' for exactly this.
+  EXPECT_EQ("", in.points()[1].phone);
+  EXPECT_EQ("", in.points()[1].url);
+  std::remove(spec.c_str());
+}
+
+TEST(PointOverlay, TheTextIsCarriedVerbatimRatherThanValidated) {
+  // A document is authored by `sqlite3` as often as by an app, so the reader
+  // enforces no format: whatever dials and whatever opens is the shell's
+  // question. Anything that survived a round trip here would have been
+  // mangled by a normaliser.
+  const std::string spec = TempSpec("verbatim");
+  std::remove(spec.c_str());
+  PointOverlay out;
+  MapPoint p = MakePoint(1, "Odd", 32.6, -80.1);
+  p.phone = "(843) 555 0100 ext. 4";
+  p.url = "kiawahresort.com";  // no scheme, which is a real thing to type
+  out.SetPoints({p});
+  ASSERT_TRUE(out.FileSaveAs(spec, 0).ok());
+
+  PointOverlay in;
+  ASSERT_TRUE(in.FileOpen(spec).ok());
+  ASSERT_EQ(1u, in.points().size());
+  EXPECT_EQ("(843) 555 0100 ext. 4", in.points()[0].phone);
+  EXPECT_EQ("kiawahresort.com", in.points()[0].url);
+  std::remove(spec.c_str());
+}
+
+TEST(PointOverlay, ASchema2DocumentOpensAndIsSavedForward) {
+  // Schema 2 is the version the port shipped before this one, and there are
+  // files on disk in it. The migration is an ALTER per column, so the test is
+  // that a v2 document reads (with empty contact fields) and that saving it
+  // back can bind the columns CREATE TABLE IF NOT EXISTS could not add.
+  const std::string spec = TempSpec("v2");
+  std::remove(spec.c_str());
+  {
+    fv::detail::SqliteDb db;
+    ASSERT_TRUE(db.Open(spec).ok());
+    ASSERT_TRUE(db.Exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
+                        "INSERT INTO meta VALUES('schema_version','2');"
+                        "CREATE TABLE points("
+                        "  id INTEGER PRIMARY KEY, name TEXT NOT NULL,"
+                        "  lat REAL NOT NULL, lon REAL NOT NULL,"
+                        "  shape TEXT NOT NULL, size_px REAL NOT NULL,"
+                        "  color TEXT NOT NULL, category TEXT NOT NULL,"
+                        "  elevation_ft REAL NOT NULL, remarks TEXT NOT NULL,"
+                        "  symbol_id INTEGER NOT NULL DEFAULT 0);"
+                        "INSERT INTO points VALUES(4,'Buoy',32.7,-79.9,"
+                        "  'square',10,'#102030','buoy',0,'',0);")
+                    .ok());
+  }
+  PointOverlay o;
+  ASSERT_TRUE(o.FileOpen(spec).ok());
+  ASSERT_EQ(1u, o.points().size());
+  EXPECT_EQ("Buoy", o.points()[0].name);
+  EXPECT_EQ("", o.points()[0].phone) << "a column that is not there is empty";
+  EXPECT_EQ("", o.points()[0].url);
+
+  MapPoint p = o.points()[0];
+  p.phone = "555";
+  p.url = "https://example.invalid/";
+  ASSERT_TRUE(o.UpdatePoint(p));
+  ASSERT_TRUE(o.FileSaveAs(spec, 0).ok());
+
+  PointOverlay again;
+  ASSERT_TRUE(again.FileOpen(spec).ok());
+  ASSERT_EQ(1u, again.points().size());
+  EXPECT_EQ("555", again.points()[0].phone);
+  EXPECT_EQ("https://example.invalid/", again.points()[0].url);
+  std::remove(spec.c_str());
+}
+
+TEST(PointOverlay, UpdateReplacesInPlaceAndRefusesAnIdThatIsNotThere) {
+  PointOverlay o;
+  o.SetPoints({MakePoint(1, "A", 1, 1), MakePoint(2, "B", 2, 2)});
+
+  MapPoint b = o.points()[1];
+  b.name = "B, moved";
+  b.position = fv::GeoPoint{3, 3};
+  ASSERT_TRUE(o.UpdatePoint(b));
+  ASSERT_EQ(2u, o.points().size()) << "an update is not an insert";
+  // IN PLACE: the draw order is the document's order, so an edited point must
+  // not jump to the top of the map.
+  EXPECT_EQ("A", o.points()[0].name);
+  EXPECT_EQ("B, moved", o.points()[1].name);
+  EXPECT_NEAR(3.0, o.points()[1].position.lat, 1e-12);
+
+  MapPoint stale = MakePoint(99, "ghost", 4, 4);
+  EXPECT_FALSE(o.UpdatePoint(stale)) << "a stale id is refused, not inserted";
+  EXPECT_EQ(2u, o.points().size());
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +774,133 @@ TEST(PointOverlay, AHitReportsThePointsOwnIdAndAttributes) {
   EXPECT_NE(std::string::npos, hits[0].hint.status.find("163 ft"));
   EXPECT_NE(std::string::npos, hits[0].hint.status.find("Sullivans Island"));
   EXPECT_EQ(fv::app::CursorId::kHand, hits[0].cursor);
+}
+
+TEST(PointOverlay, ASnapReturnsTheDocumentsCoordinateAndNotThePixelsOne) {
+  // THE WHOLE VALUE OF A SNAP, in one assertion. The probe is deliberately a
+  // few pixels OFF the marker's centre, which is what a thumb produces; what
+  // comes back has to be the surveyed position to full precision, not the
+  // un-projection of the pixel that was actually touched.
+  const fv::MapProjection proj = HarbourProj();
+  PointOverlay o("Marks");
+  const double kLat = 32.7401234;
+  const double kLon = -79.8905678;
+  o.SetPoints({MakePoint(11, "Ruddy Turnstone", kLat, kLon)});
+
+  double sx = 0, sy = 0;
+  ASSERT_TRUE(proj.GeoToSurface({kLat, kLon}, &sx, &sy).ok());
+
+  std::vector<fv::app::SnapToItem> snaps;
+  o.SnapToPoint(proj, {(int)(sx + 5), (int)(sy - 4)}, 8.0, snaps);
+  ASSERT_EQ(1u, snaps.size());
+  EXPECT_EQ(&o, snaps[0].overlay);
+  EXPECT_EQ("Ruddy Turnstone", snaps[0].description);
+  // Exact, not near: this is the point of the feature.
+  EXPECT_DOUBLE_EQ(kLat, snaps[0].point.lat);
+  EXPECT_DOUBLE_EQ(kLon, snaps[0].point.lon);
+  EXPECT_GT(snaps[0].distance_px, 0.0) << "the finger was not on the centre";
+  EXPECT_LT(snaps[0].distance_px, 8.0);
+}
+
+TEST(PointOverlay, ASnapAndAHitAgreeAboutWhatTheFingerIsOver) {
+  // The header promises the two never disagree about reach. The dpi scale is
+  // the knob most likely to break that promise, so it is the one tested: at 3x
+  // a probe outside the authored ink is inside the DRAWN ink, and both
+  // capabilities have to say so together.
+  const fv::MapProjection proj = HarbourProj();
+  MapPoint p = MakePoint(1, "X", 32.74, -79.89);
+  p.size_px = 10;
+  const fv::PixelPoint probe{420, 300};  // 20.5 px off the surface centre
+
+  for (const double scale : {1.0, 3.0}) {
+    PointOverlay o;
+    o.SetPoints({p});
+    o.SetSymbolDpiScale(scale);
+    std::vector<fv::app::HitItem> hits;
+    std::vector<fv::app::SnapToItem> snaps;
+    o.HitTestPoint(proj, probe, 8.0, hits);
+    o.SnapToPoint(proj, probe, 8.0, snaps);
+    EXPECT_EQ(hits.size(), snaps.size()) << "dpi scale " << scale;
+  }
+}
+
+TEST(PointOverlay, ANamelessPointIsNeverOfferedAsABlankRow) {
+  // A chooser row and a phone's confirm button are both built from
+  // `description`, and an empty one reads as a bug in the app rather than as a
+  // point somebody forgot to name.
+  const fv::MapProjection proj = HarbourProj();
+  MapPoint bare = MakePoint(7, "", 32.74, -79.89);
+  MapPoint categorised = MakePoint(8, "", 32.74, -79.89);
+  categorised.category = "beacon";
+
+  PointOverlay o;
+  o.SetPoints({bare});
+  std::vector<fv::app::SnapToItem> snaps;
+  o.SnapToPoint(proj, {400, 300}, 8.0, snaps);
+  ASSERT_EQ(1u, snaps.size());
+  EXPECT_EQ("Point 7", snaps[0].description);
+
+  PointOverlay o2;
+  o2.SetPoints({categorised});
+  snaps.clear();
+  o2.SnapToPoint(proj, {400, 300}, 8.0, snaps);
+  ASSERT_EQ(1u, snaps.size());
+  EXPECT_EQ("beacon", snaps[0].description) << "the category before the id";
+}
+
+TEST(PointOverlay, TheDpiScaleWidensTheMarkerAndTheTargetTogether) {
+  // The ledger's symbol-DPI gap, closed for this overlay. The property that
+  // matters is not that the marker grows — it is that the marker and the HIT
+  // TEST grow by the same factor, because a target a finger can see and
+  // cannot press is worse than a small one.
+  const fv::MapProjection proj = HarbourProj();
+  MapPoint p = MakePoint(1, "X", 32.74, -79.89);  // the projection's centre
+  p.shape = PointShape::kSquare;
+  p.size_px = 10;
+  p.color = fv::FvColor{0, 0, 255, 255};
+
+  // 20.5 px off centre (the surface's centre is `(w-1)/2` = 399.5, not 400):
+  // outside a 10-px marker's ink plus the 8-px tolerance, inside a 3x one's.
+  const fv::PixelPoint probe{420, 300};
+
+  PointOverlay small;
+  small.SetPoints({p});
+  std::vector<fv::app::HitItem> hits;
+  small.HitTestPoint(proj, probe, 8.0, hits);
+  EXPECT_TRUE(hits.empty()) << "5 + 8 does not reach 20.5 px out";
+
+  PointOverlay big;
+  big.SetPoints({p});
+  big.SetSymbolDpiScale(3.0);
+  hits.clear();
+  big.HitTestPoint(proj, probe, 8.0, hits);
+  EXPECT_EQ(1u, hits.size()) << "15 + 8 does reach 20.5 px out";
+
+  // And the ink agrees with the target: the same pixel that is now hittable
+  // is now the point's own colour.
+  fv::CpuCanvas canvas(800, 600);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  ASSERT_TRUE(big.OnDraw(proj, canvas).ok());
+  const unsigned char* px = canvas.Buffer().Row(300) + 412 * 4;  // 12 px out
+  EXPECT_GT((int)px[2], 200) << "no blue ink 12 px from a 30-px marker";
+
+  fv::CpuCanvas plain(800, 600);
+  plain.Clear(fv::FvColor{255, 255, 255, 255});
+  ASSERT_TRUE(small.OnDraw(proj, plain).ok());
+  const unsigned char* q = plain.Buffer().Row(300) + 412 * 4;
+  EXPECT_GT((int)q[2], 200) << "the two draw the same thing at the centre";
+  EXPECT_GT((int)q[0], 200) << "a 10-px marker does not reach 12 px out";
+}
+
+TEST(PointOverlay, TheDefaultDpiScaleIsTheIdentityEveryGoldenWasDrawnAt) {
+  PointOverlay o;
+  EXPECT_EQ(1.0, o.symbol_dpi_scale());
+  // A shell that asks for nonsense gets the identity rather than an invisible
+  // marker — the same guard `GeoDraw` and `RouteOverlay` use.
+  o.SetSymbolDpiScale(0.0);
+  EXPECT_EQ(1.0, o.symbol_dpi_scale());
+  o.SetSymbolDpiScale(-2.0);
+  EXPECT_EQ(1.0, o.symbol_dpi_scale());
 }
 
 TEST(PointOverlay, ABigSymbolIsHitAnywhereOnItsInk) {
