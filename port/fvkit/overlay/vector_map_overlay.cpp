@@ -167,6 +167,18 @@ Status VectorMapOverlay::DescribeFeature(uint64_t id,
 
 void VectorMapOverlay::SetUseNameIndex(bool on) { use_name_index_ = on; }
 
+void VectorMapOverlay::SetSearchFallbackArea(std::optional<GeoRect> area) {
+  // A DEGENERATE BOX IS NO BOX. A projection that has not drawn a frame yet
+  // reports a zero-sized viewport, and a shell should be able to hand that
+  // over without a special case of its own — the alternative is every caller
+  // repeating the same two comparisons before every search.
+  if (area && !(area->ur.lat > area->ll.lat || area->ur.lon != area->ll.lon)) {
+    fallback_area_.reset();
+    return;
+  }
+  fallback_area_ = std::move(area);
+}
+
 void VectorMapOverlay::Search(const app::SearchQuery& q,
                               const std::atomic<bool>& cancel,
                               std::vector<app::SearchResult>& out) {
@@ -182,6 +194,22 @@ void VectorMapOverlay::Search(const app::SearchQuery& q,
   // scan runs — that is the whole of "degrades gracefully".
   if (!q.text.empty() && use_name_index_ && source_->HasNameIndex()) {
     if (SearchIndex(q, cancel, out)) return;
+  }
+
+  // THE LENT WINDOW, and it is reached only when everything above has failed
+  // to make this a global answer: the query carries text, brought no area of
+  // its own, and tier 2 either does not exist here or did not work. Scanning
+  // tiles with no area is the case that finds nothing at all, so a caller that
+  // has told us where to look gets looked there instead.
+  //
+  // A SPATIAL QUERY NEVER COMES HERE. "What is in this box" already has its
+  // box, and substituting a different one would answer a question nobody
+  // asked.
+  if (!q.text.empty() && !q.area && fallback_area_) {
+    app::SearchQuery windowed = q;
+    windowed.area = fallback_area_;
+    SearchTiles(windowed, cancel, out);
+    return;
   }
   SearchTiles(q, cancel, out);
 }

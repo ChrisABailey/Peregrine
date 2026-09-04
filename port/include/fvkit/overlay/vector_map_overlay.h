@@ -49,7 +49,9 @@
 //     with no index" is a pyramid walk nobody would wait for. The session's
 //     `near` + `radius_m` becomes an area before a provider ever sees it, so
 //     "within 5 km of me" is already an area query, and a pack with an index
-//     answers with no area at all.
+//     answers with no area at all. `SetSearchFallbackArea` below is the way a
+//     shell says "then look HERE instead" without putting that area on the
+//     query, where it would also cut down the providers that never needed it.
 //   * THE INDEX BAKED IN ITS LABEL CHOICE. `SetLabelTags` below steers tier 1
 //     only: which tag became a row's `name` was decided when the index was
 //     built. The two agree by construction when the same tags built it, and
@@ -74,6 +76,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -162,6 +165,30 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
   void SetUseNameIndex(bool on);
   bool use_name_index() const { return use_name_index_; }
 
+  // THE WINDOW A CALLER LENDS THIS OVERLAY when it cannot answer globally.
+  //
+  // It exists because "a query with no area and no index finds nothing" (the
+  // header note above) is a property of THIS class and not of the search, and
+  // a shell searching a mixed stack pays for it everywhere. A point document
+  // and a road graph both hold complete name tables and can answer "where is
+  // X" over the whole world; the tile pyramid cannot, so a shell that wanted
+  // one honest answer had to put an area on the QUERY — which is a cut on
+  // every provider, and silently shrank the two that had no need of one.
+  //
+  // With this set, a TEXT query that arrives with no area of its own is run
+  // over this box instead of over nothing. Nothing else changes: a query that
+  // brings its own area is unaffected, a spatial-only query is unaffected, and
+  // a source with a working name index never reaches here because tier 2
+  // answered first — which is the point, since an indexed pack IS global and
+  // should not be windowed.
+  //
+  // A degenerate box is ignored, so a shell that has not drawn a frame yet can
+  // hand over whatever its projection says without a special case.
+  void SetSearchFallbackArea(std::optional<GeoRect> area);
+  const std::optional<GeoRect>& search_fallback_area() const {
+    return fallback_area_;
+  }
+
   // --- SearchProvider ------------------------------------------------------
 
   // See the header note for the contract this honours and the one query it
@@ -232,6 +259,7 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
   size_t max_features_ = 0;
   double merge_gap_m_ = 100.0;
   bool use_name_index_ = true;
+  std::optional<GeoRect> fallback_area_;
 
   std::map<RefKey, uint64_t> by_ref_;
   std::vector<FeatureRef> by_id_;  // index = id - 1

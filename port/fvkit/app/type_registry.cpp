@@ -7,9 +7,11 @@
 
 #include <cctype>
 
+#include "fvkit/overlay/contour_overlay.h"
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
+#include "fvkit/overlay/ta_mask_overlay.h"
 
 namespace fv {
 namespace app {
@@ -124,6 +126,41 @@ Status RegisterBuiltinOverlayTypes(OverlayTypeRegistry& registry) {
   points.file = std::move(file);
   points.factory = [] { return std::make_shared<PointOverlay>(); };
   s = registry.Register(std::move(points));
+  if (!s.ok()) return s;
+
+  // Contour lines (plan C2). STATIC -- there is one terrain and it has no
+  // document -- and it sits BELOW the graticule at 880, because contours are
+  // part of the ground being described and a grid is drawn over the ground.
+  //
+  // NOT restored at startup, unlike the grid. A restored contour overlay with
+  // no elevation source attached yet draws nothing and says nothing, which
+  // looks exactly like a broken overlay; a user turning it on is the moment a
+  // shell knows to attach a source.
+  OverlayTypeDesc contour;
+  contour.id = ContourOverlay::kTypeId;
+  contour.display_name = "Contour Lines";
+  contour.icon = "contour";
+  contour.default_display_order = 880;
+  contour.factory = [] { return std::make_shared<ContourOverlay>(); };
+  s = registry.Register(std::move(contour));
+  if (!s.ok()) return s;
+
+  // The terrain avoidance mask (plan TA6). STATIC, like the contours and for
+  // the same reason -- there is one terrain and it has no document -- and NOT
+  // restored at startup, because an overlay with no elevation source attached
+  // yet draws nothing and says nothing, which looks exactly like a broken
+  // overlay.
+  //
+  // 890 puts it ABOVE the contours (880) and below the graticule: the two
+  // describe the same ground, and the mask is a wash of colour that a contour
+  // line drawn under it would disappear into.
+  OverlayTypeDesc tamask;
+  tamask.id = TAMaskOverlay::kTypeId;
+  tamask.display_name = "Terrain Avoidance Mask";
+  tamask.icon = "tamask";
+  tamask.default_display_order = 890;
+  tamask.factory = [] { return std::make_shared<TAMaskOverlay>(); };
+  s = registry.Register(std::move(tamask));
   if (!s.ok()) return s;
 
   // The moving map (MM4). STATIC, like the grid and for the same reason: there

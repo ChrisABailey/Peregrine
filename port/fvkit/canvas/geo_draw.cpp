@@ -209,10 +209,34 @@ Status GeoDraw::StrokePaths(
   if (!stroke.valid) return Status::Ok();
   const PixelSize size = canvas_->Size();
   const double half = std::max(0.5, stroke.pen.width / 2.0);
+  // A dashed pen is laid down by the placer, against the unclipped path, for
+  // the reason PatternPaths already is: the rasterizer starts its cycle at the
+  // first point it is given, so a clipped line would re-phase its dashes on
+  // every pan. Measured from the path's first vertex instead, a casing and the
+  // line it cases produce the same dash pieces and register exactly.
+  const std::vector<PathRun> dash = DashRuns(stroke.pen.dash);
+  Pen pen = stroke.pen;
+  pen.dash.clear();
   Status first = Status::Ok();
   for (const std::vector<SurfacePoint>& sub : paths) {
+    if (!dash.empty() && sub.size() >= 2) {
+      for (const std::vector<SurfacePoint>& d :
+           PlaceAlongPath(sub, dash, stroke.dash_phase).dashes) {
+        for (auto& run : ClipPolyline(d, size.width, size.height)) {
+          Status s = canvas_->DrawLines(run, pen);
+          if (!s.ok() && first.ok()) first = s;
+          ++draws_emitted_;
+        }
+      }
+      // Picked along the whole line: a tap in a gap is still a tap on it.
+      if (pick_enabled_) {
+        for (auto& run : ClipPolyline(sub, size.width, size.height))
+          pick_.AddStroke(feature_, priority_, run, half);
+      }
+      continue;
+    }
     for (auto& run : ClipPolyline(sub, size.width, size.height)) {
-      Status s = canvas_->DrawLines(run, stroke.pen);
+      Status s = canvas_->DrawLines(run, pen);
       if (!s.ok() && first.ok()) first = s;
       ++draws_emitted_;
       if (pick_enabled_) pick_.AddStroke(feature_, priority_, run, half);

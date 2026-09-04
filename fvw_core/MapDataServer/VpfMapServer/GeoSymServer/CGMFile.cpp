@@ -3196,13 +3196,23 @@ void CCGMPattern::AddMonochromeBit(bool is_on)
 
 bool CCGMPattern::IsSolid()
 {
-	for (int nLoop = 0; nLoop < m_num_bytes; nLoop++)
-	{
-		if (m_bits[nLoop] != 0xFF)
-			return false;
-	}
-
-	return true;
+	// PORT NOTE - preserved Windows behaviour, do not "fix" without a golden.
+	// The original body was:
+	//     for (int nLoop = 0; nLoop < m_num_bytes; nLoop++)
+	//         if (m_bits[nLoop] != 0xFF)
+	//             return false;
+	//     return true;
+	// m_bits is char, and plain char is signed under both MSVC (the .vcxproj
+	// does not pass /J) and Apple clang, so the element promotes to int in
+	// -128..127 and can never equal 255: the test is always true and IsSolid()
+	// has always returned false for every allocated pattern on Windows too.
+	// Callers (SanSymbol) therefore always take the pattern-brush path.
+	// If this fast path is ever revived, the constant is also wrong:
+	// AddMonochromeBit stores an INVERTED pattern (bit set = colour index 0 =
+	// background), so a genuinely solid, all-foreground pattern is all ZERO
+	// bytes, not all 0xFF. Reviving it needs `!= 0` plus a rendering golden,
+	// because it changes which brush and which compositing path SanSymbol uses.
+	return m_num_bytes <= 0;
 }
 
 

@@ -40,7 +40,14 @@ add_library(fv_fvkit STATIC
   canvas/cpu_canvas.cpp
   canvas/geo_draw.cpp
   canvas/label_placer.cpp
+  canvas/path_shaping.cpp
+  analysis/measure.cpp
+  analysis/path.cpp
+  analysis/profile.cpp
+  analysis/viewshed.cpp
   geo/contour.cpp
+  geo/elevation_tiling.cpp
+  geo/terrain_contour.cpp
   proj/map_projection.cpp
   settings.cpp
   scale_table.cpp
@@ -57,9 +64,11 @@ add_library(fv_fvkit STATIC
   nav/gpx_recorder.cpp
   nav/trip.cpp
   overlay/manager.cpp
+  overlay/contour_overlay.cpp
   overlay/grid_overlay.cpp
   overlay/grid_spacing.cpp
   overlay/point_overlay.cpp
+  overlay/ta_mask_overlay.cpp
   overlay/vector_map_overlay.cpp
   overlay/moving_map_overlay.cpp
   app/type_registry.cpp
@@ -117,6 +126,7 @@ if(FVW_BUILD_TESTS)
   add_executable(fv_fvkit_test
     test/geo_test.cpp
     test/geo_contour_test.cpp
+    test/terrain_contour_test.cpp
     test/geo_draw_test.cpp
     test/dted_adapter_test.cpp
     test/dted_shaded_adapter_test.cpp
@@ -128,7 +138,15 @@ if(FVW_BUILD_TESTS)
     test/proj_engine_test.cpp
     test/overlay_test.cpp
     test/overlay_toolkit_test.cpp
+    test/path_shaping_test.cpp
     test/grid_overlay_test.cpp
+    test/contour_overlay_test.cpp
+    test/ta_mask_overlay_test.cpp
+    test/elevation_tiling_test.cpp
+    analysis/test/analysis_measure_test.cpp
+    analysis/test/analysis_path_test.cpp
+    analysis/test/analysis_profile_test.cpp
+    analysis/test/analysis_viewshed_test.cpp
     nav/test/nav_position_test.cpp
     nav/test/nav_heading_test.cpp
     nav/test/nav_scripted_source_test.cpp

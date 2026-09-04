@@ -1199,9 +1199,13 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
         ss.pen.color = WithOpacity(L.color.At(zoom), L.opacity, zoom);
         ss.pen.width = w_px;
         if (!L.dash.empty()) {
-          // GL dash runs are in LINE-WIDTH units, not pixels.
+          // GL dash runs are in LINE-WIDTH units, not pixels, and are measured
+          // against the width BEFORE it is rounded to a whole pen: rounding
+          // twice would step the pattern every time the pen stepped, and two
+          // layers meant to case each other would then dash out of register.
+          const double w_dash = w_css * dpi_scale;
           for (double d : L.dash)
-            ss.pen.dash.push_back(std::max(1, static_cast<int>(std::lround(d * w_px))));
+            ss.pen.dash.push_back(std::max(0.0, d) * w_dash);
           if (ss.pen.dash.size() % 2 != 0)  // Pen wants on/off pairs
             ss.pen.dash.push_back(ss.pen.dash.back());
         }

@@ -272,6 +272,28 @@ const PropertySpec* Properties::FindSpec(const std::string& key) const {
   return nullptr;
 }
 
+// A kChoice in a settings file is written by NAME -- `smoothing = chaikin`,
+// not `smoothing = 1`. The index is what the value IS, but a settings file is
+// read and diffed by people, which is the same argument R4 made for a string
+// TypeId. A number still parses, so nothing that wrote one is broken; the
+// contour overlay is the first type to declare a choice at all, so there is
+// no older spelling to keep working.
+namespace {
+
+bool ChoiceIndexForName(const PropertySpec& spec, const std::string& text,
+                        long long* out) {
+  const std::string want = Lower(text);
+  for (size_t i = 0; i < spec.choices.size(); ++i) {
+    if (Lower(spec.choices[i]) == want) {
+      *out = static_cast<long long>(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 Status Properties::LoadFrom(const Settings& settings, const std::string& prefix,
                             std::vector<std::string>* warnings) {
   for (const PropertySpec& spec : Describe()) {
@@ -280,6 +302,13 @@ Status Properties::LoadFrom(const Settings& settings, const std::string& prefix,
     PropertyValue v = spec.default_value;
     v.type = spec.type;
     const std::string raw = settings.GetString(full);
+    if (spec.type == PropertyType::kChoice &&
+        ChoiceIndexForName(spec, raw, &v.i)) {
+      Status s = SetProperty(spec.key, v);
+      if (!s.ok() && warnings != nullptr)
+        warnings->push_back(full + " = " + raw + " rejected: " + s.message);
+      continue;
+    }
     if (!v.FromString(raw)) {
       if (warnings != nullptr)
         warnings->push_back(full + " = " + raw +
@@ -301,7 +330,13 @@ Status Properties::SaveTo(Settings* settings, const std::string& prefix,
     Status s = GetProperty(spec.key, &v);
     if (!s.ok()) return s;
     if (only_changed && SameValue(v, spec.default_value)) continue;
-    settings->Set(prefix + spec.key, v.ToString());
+    // Written back the way LoadFrom reads it: a choice by name.
+    if (spec.type == PropertyType::kChoice && v.i >= 0 &&
+        v.i < static_cast<long long>(spec.choices.size()))
+      settings->Set(prefix + spec.key,
+                    spec.choices[static_cast<size_t>(v.i)]);
+    else
+      settings->Set(prefix + spec.key, v.ToString());
   }
   return Status::Ok();
 }

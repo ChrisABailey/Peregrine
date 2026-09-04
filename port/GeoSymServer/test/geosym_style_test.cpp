@@ -852,7 +852,7 @@ TEST(GeoSymStyle, EveryShippedSymbolConverts) {
 // CGM actually authors. 972 pixels moved; nothing else in the scene did.
 // Visually re-checked geosym_harbor.png before updating.
 // 0 = probe mode (prints hash, no assert).
-constexpr uint64_t kHashHarbor = 0x33b43456964b19daull;
+constexpr uint64_t kHashHarbor = 0xff2caf6ea91219c4ull;
 
 // E3b: a SAMI line component whose cycle stamps a point symbol becomes a
 // LINE PATTERN for the shared placer, not a pen. Before E3b the symbol run's

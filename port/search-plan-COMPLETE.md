@@ -26,6 +26,19 @@ Python face, because the seam's one async behaviour needs a flag Python can rais
 releases the GIL for the walk. **`Overlay.search` joined the trampoline's capability list**, so
 "a capability is a method you defined" now covers all seven.
 
+**A LATER FINDING, from S2's first phone shell (Pippin P20, 2026-08-30).** The consequence below
+— "a search box wants the VIEW as its default scope" — is right about the CHART and wrong as a
+property of the query, and a mixed stack is where the difference shows. Putting the view on the
+`SearchQuery` to give the chart something to scan is a cut on EVERY provider, and it silently
+shrinks the ones that never needed it: a `.fvpoints` document is a few dozen rows, and
+`RoadGraphOverlay` tests each distinct name once against the graph's own name table (which is why
+its own header says a text query can afford visiting every node). Both answer globally for
+nothing. So the scope belongs to the provider that cannot afford otherwise:
+`VectorMapOverlay::SetSearchFallbackArea` is a window a shell LENDS the chart, used only for a
+text query that arrived with no area and only when tier 2 did not answer — so an indexed pack
+stays global, as it should. PythonView's box is unaffected and still correct for what it is: one
+scope over one stack, offered to a user who is exploring a pack.
+
 **Third, a shell can only search what is in the stack**, and PythonView had two searchable things
 that were not overlays: the chart and the graph. Both are now wrapped and held invisible — which
 is why `VectorMapOverlay` is bound as `pyfvw.overlay.VectorMapOverlay`. The other shell-level

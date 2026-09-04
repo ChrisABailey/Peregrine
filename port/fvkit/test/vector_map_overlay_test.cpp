@@ -422,6 +422,124 @@ TEST(VectorMapOverlay, NoAreaFindsNothingAndDoesNotAskTheSource) {
   EXPECT_EQ(0, src->queries);
 }
 
+// --- the lent window -------------------------------------------------------
+//
+// The way a shell says "you cannot answer globally, so look HERE" without
+// putting that area on the QUERY — where it would also cut down the point
+// documents and road graphs in the same stack, which never needed one.
+
+TEST(VectorMapOverlay, TheFallbackAreaAnswersAQueryThatBroughtNone) {
+  auto src = KiawahIsh();
+  VectorMapOverlay ov("Kiawah", src);
+  ov.SetSearchFallbackArea(Island());
+  SearchQuery q;
+  q.text = "ruddy turnstone";  // still no area of its own
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  ASSERT_EQ(1u, out.size());
+  EXPECT_EQ("Ruddy Turnstone", out[0].title);
+  // The source WAS asked, and asked about the lent box.
+  EXPECT_EQ(1, src->queries);
+  EXPECT_NEAR(Island().ll.lat, src->last_area.ll.lat, 1e-9);
+  EXPECT_NEAR(Island().ur.lon, src->last_area.ur.lon, 1e-9);
+}
+
+TEST(VectorMapOverlay, AQueryWithItsOwnAreaIgnoresTheFallback) {
+  auto src = KiawahIsh();
+  VectorMapOverlay ov("Kiawah", src);
+  // A window somewhere else entirely: if it were ever preferred over the
+  // query's own box, this search would answer nothing.
+  ov.SetSearchFallbackArea(GeoRect{{10.0, 10.0}, {11.0, 11.0}});
+  SearchQuery q;
+  q.area = Island();
+  q.text = "ruddy turnstone";
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_EQ(1u, out.size());
+  EXPECT_NEAR(Island().ll.lat, src->last_area.ll.lat, 1e-9);
+}
+
+TEST(VectorMapOverlay, ASpatialOnlyQueryIsNeverWindowed) {
+  // "What is in this box" already has its box, and substituting a different
+  // one answers a question nobody asked. A query with no text and no area is
+  // not a search at all and still finds nothing.
+  auto src = KiawahIsh();
+  VectorMapOverlay ov("Kiawah", src);
+  ov.SetSearchFallbackArea(Island());
+  SearchQuery q;  // no text, no area
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_TRUE(out.empty());
+  EXPECT_EQ(0, src->queries);
+}
+
+TEST(VectorMapOverlay, AnIndexedPackIsGlobalAndIsNeverWindowed) {
+  // THE WHOLE REASON THE FALLBACK IS LAST. Tier 2 answers a global text query
+  // properly, so a pack that has an index must not be quietly cut down to the
+  // caller's viewport — the window is what a source does INSTEAD of failing,
+  // not a scope the shell gets to impose.
+  auto src = KiawahIsh();
+  // Index Ruddy Turnstone, which lies OUTSIDE the tiny window lent below.
+  src->Index(Road("Ruddy Turnstone", "residential",
+                  {{32.600, -80.100}, {32.600, -80.070}}, 1, 0));
+  VectorMapOverlay ov("Kiawah", src);
+  ov.SetSearchFallbackArea(GeoRect{{10.0, 10.0}, {11.0, 11.0}});
+  SearchQuery q;
+  q.text = "ruddy turnstone";
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_TRUE(ov.last_search_used_index());
+  EXPECT_EQ(1u, out.size());
+  // The index was asked with NO area, which is what "global" means here.
+  EXPECT_FALSE(src->last_name_area.has_value());
+}
+
+TEST(VectorMapOverlay, AFailedIndexFallsBackToTheWindowRatherThanToNothing) {
+  auto src = KiawahIsh();
+  src->Index(Road("Ruddy Turnstone", "residential",
+                  {{32.600, -80.100}, {32.600, -80.070}}, 1, 0));
+  src->index_fails = true;
+  VectorMapOverlay ov("Kiawah", src);
+  ov.SetSearchFallbackArea(Island());
+  SearchQuery q;
+  q.text = "ruddy turnstone";
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_FALSE(ov.last_search_used_index());
+  EXPECT_EQ(1u, out.size());
+  EXPECT_EQ(1, src->queries);
+}
+
+TEST(VectorMapOverlay, ADegenerateWindowIsNoWindow) {
+  // A projection nobody has drawn with reports a zero-sized viewport, and a
+  // shell should be able to hand that straight over — the alternative is
+  // every caller repeating the same two comparisons before every search.
+  auto src = KiawahIsh();
+  VectorMapOverlay ov("Kiawah", src);
+  const GeoPoint p{32.6, -80.1};
+  ov.SetSearchFallbackArea(GeoRect{p, p});
+  EXPECT_FALSE(ov.search_fallback_area().has_value());
+  SearchQuery q;
+  q.text = "ruddy turnstone";
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_TRUE(out.empty());
+  EXPECT_EQ(0, src->queries);
+}
+
+TEST(VectorMapOverlay, TheWindowCanBeTakenBack) {
+  auto src = KiawahIsh();
+  VectorMapOverlay ov("Kiawah", src);
+  ov.SetSearchFallbackArea(Island());
+  ov.SetSearchFallbackArea(std::nullopt);
+  EXPECT_FALSE(ov.search_fallback_area().has_value());
+  SearchQuery q;
+  q.text = "ruddy turnstone";
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_TRUE(out.empty());
+}
+
 TEST(VectorMapOverlay, ARoadThroughTheAreaIsInItEvenIfItsAnchorIsNot) {
   auto src = std::make_shared<FakeSource>();
   src->Open("");

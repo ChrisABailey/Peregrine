@@ -34,8 +34,12 @@ struct FvColor {
 
 struct Pen {
   FvColor color;
-  int width = 1;          // pixels; stamped square nib (non-AA)
-  std::vector<int> dash;  // on/off run lengths in px; empty = solid
+  int width = 1;  // pixels; stamped square nib (non-AA)
+  // On/off run lengths in pixels; empty = solid. Real numbers, not whole
+  // pixels: a style that derives its runs from the line width (an OSM
+  // line-dasharray is in width units) rounds to a different pattern for every
+  // width, and two widths of the same line must dash alike to case each other.
+  std::vector<double> dash;
 };
 
 struct Brush {

@@ -149,6 +149,23 @@ TEST(BuiltinSymbols, NorthPointsAtPlusYBecauseSymbolSpaceIsYUp) {
   EXPECT_EQ(n->max_y, tip->y);
 }
 
+TEST(BuiltinSymbols, TheNorthArrowIsAnArrowAndNotANeedle) {
+  // The proportions are the behaviour here, so they get an assertion of their
+  // own rather than only a golden (the standing rule). This symbol is what
+  // Pippin stamps at the ownship, and it was authored at 0.28 wide for its
+  // length — which reads as a line segment on a moving chart, and a line
+  // segment has two ends. The band is wide on purpose: what is being pinned
+  // is "shaped like the arrow on the GPS button", not one particular vertex.
+  fv::BuiltinSymbolLibrary lib;
+  const fv::VectorSymbol* n = lib.Symbol(fv::builtin_symbol::kNorthArrow);
+  ASSERT_NE(n, nullptr);
+  const double length = n->max_y - n->min_y;
+  const double width = n->max_x - n->min_x;
+  ASSERT_GT(length, 0.0);
+  EXPECT_GT(width / length, 0.55) << "too narrow for its length";
+  EXPECT_LT(width / length, 1.10) << "no longer reads as pointing anywhere";
+}
+
 TEST(BuiltinSymbols, TheCrosshairLeavesItsCentreOpen) {
   // The pixel the user is aiming at is the one thing it must not cover.
   fv::BuiltinSymbolLibrary lib;

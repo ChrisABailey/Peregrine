@@ -162,7 +162,7 @@ Scene MakeScene(const std::string& mb_path, const std::string& style_path) {
 // no feature shifted, no colour appeared or vanished, the description above
 // still reads true off the PNG.
 // 0 = probe mode (prints the hash, asserts nothing).
-constexpr uint64_t kHashAtlanta = 0x4c8ca75e922f59ffull;
+constexpr uint64_t kHashAtlanta = 0xc53a5352fc5bb38full;
 
 TEST(OsmRender, AtlantaViewport) {
   SKIP_WITHOUT_DATA();

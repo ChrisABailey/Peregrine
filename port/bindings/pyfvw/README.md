@@ -280,6 +280,35 @@ Notes that save time:
   `dash=` pattern), `fill_polygon` (even-odd over multiple rings), `draw_text`,
   and `draw_pixmap` for alpha-blending a `PixelBuffer`.
 
+### Terrain contours
+
+`pyfvw.overlay.ContourOverlay` is the ported Contour Lines overlay: it traces
+contours from an elevation source and draws them, with major lines heavier than
+minor ones and the elevation labelled on the majors.
+
+```python
+c = pyfvw.overlay.ContourOverlay()
+c.set_elevation_source(pyfvw.formats.DtedElevationSource("/data/dted"))
+c.set_property("major_interval", 500.0)     # in `interval_unit`s
+c.set_property("interval_unit", "meters")   # a choice takes its NAME or index
+c.set_property("show_labels", True)
+mgr.add(c)
+```
+
+Three things are worth knowing:
+
+- **Nothing is drawn without an elevation source**, and nothing is drawn on a
+  map smaller in scale than `display_threshold` (1:250 K by default) — contours
+  at 1:5 M are a smear. `c.last_draw` says which of the two it was
+  (`no_source`, `below_threshold`) along with everything else the draw did.
+- **The tracing is cached on a geographic lattice**, so a pan is nearly free and
+  only a change of interval, of sampling, or of source re-reads the terrain.
+- **`smoothing`** (`none` / `chaikin` / `spline`) rounds the staircase a
+  contour traced off elevation posts has at large scales. It works on the
+  projected line, so it costs what is on screen and never invalidates the
+  cache — `last_draw["vertices"]` versus `["shaped_vertices"]` is what it costs
+  in ink.
+
 ### Features from a real product
 
 When the features are a *map product* rather than your own data, don't hand-roll
@@ -611,7 +640,79 @@ rows = app.SearchSession(manager).search(q, flag)   # returns what it had, ranke
 
 ---
 
-## 6. Where to find more
+## 6. Measuring and seeing: `pyfvw.analysis`
+
+Four tools, no overlay and no shell. `pyfvw.analysis` is FalconView's Range & Bearing and
+Intervisibility work as **values a Python UI can hold** — a path, the terrain profile under it,
+a viewshed, and the labels the Windows overlay would have drawn.
+
+A path is the spine, and it is the same object for a two-point line, a polyline and a route:
+
+```python
+an = pyfvw.analysis
+path = an.GeoPath([pyfvw.geo.GeoPoint(31.2, -81.8),
+                   pyfvw.geo.GeoPoint(31.8, -81.2)])     # GREAT_CIRCLE by default
+path.total_length_m                                       # 60 nm to the degree
+path.point_at_distance(path.total_length_m / 2)           # on the great circle, not the rhumb
+```
+
+The line type belongs to the **path**, so `an.LineType.RHUMB` changes both the range and where the
+midpoint is. A leg the geodesy refuses is zero-length and `leg(i).ok` is false — never dropped, so
+every index still lines up with the vertices.
+
+**The elevation profile of anything, including a route**, is one call, because AN2 walks the path
+rather than reading a diagonal out of a DTED block: N elevation reads for N samples, correct at
+every bearing.
+
+```python
+src  = pyfvw.formats.DtedElevationSource(dted_root)
+opts = an.ProfileOptions(); opts.sample_count = 200
+r    = an.sample_terrain_profile(src, path, opts)
+plot(r.distances_m, r.elevations_m)      # NaN where there is no data -> a gap, not a refusal
+r.min_m, r.max_m, r.gain_m, r.no_data_count
+```
+
+A hole is not a failure and a path with no coverage at all is still a successful profile with
+every point `has_data == False`. Pass `opts.step_m` instead of a count and every turning point
+stays a sample.
+
+**The viewshed** is the one call in pyfvw long enough to need a progress bar, and it is bound for
+that: the GIL is released for the computation, so a UI thread keeps painting, and the result is a
+zero-copy buffer rather than a million boxed floats.
+
+```python
+req = an.ViewshedRequest()
+req.observer, req.observer_height_m, req.range_m = observer, 30.0, 25000.0
+req.step_deg = an.viewshed_step_from_post_spacing(src, observer)
+
+r = an.compute_viewshed(src, req, lambda pct: not cancelled)   # False cancels
+grid = np.asarray(r)          # zero-copy (span, span) float32; row 0 north, col 0 west
+```
+
+`0.0` means visible from the observer, a positive value is the height something would need to
+reach there to be seen, and `NaN` means no answer. A callback that **raises** surfaces its own
+exception (a `KeyboardInterrupt` stays a `KeyboardInterrupt`); one that returns `False` raises
+`FvError(INTERRUPTED)`. Over `max_posts` the **step widens and the range is still delivered** —
+there is no "reduce the range" dialog here.
+
+**The measurements** are the labels, spelled exactly as FalconView spells them, padding spaces
+included:
+
+```python
+m = an.Measurement(an.MeasurementKind.MULTI_POINT, path)
+m.summary_label      # '64.35 NM'
+m.labels             # a CUMULATIVE distance at each turning point
+m.leg_label(0)       # ' 045.0°T / 12.34 NM '
+```
+
+`m.style` is the property sheet — units, degrees or mils, the bearing format, true or magnetic.
+The decimal ladder is on the **value** (under 100 gets two places), so one leg reads `12.34 NM`
+and `74977 ft`. Magnetic bearings go through `geo_tool`'s model; note that there is no `wmm.dat`
+in the tree, so the declination is currently the built-in **WMM-95** table.
+
+---
+
+## 7. Where to find more
 
 The bindings are documented in the module itself; nothing here is the only copy.
 
@@ -628,7 +729,9 @@ The bindings are documented in the module itself; nothing here is the only copy.
   **[`test/test_pyfvw_app.py`](test/test_pyfvw_app.py)** — the executable spec.
   Every bound surface has a test with pinned values, and the tests are written
   to be read as examples; the second file is section 5's whole surface with a
-  scripted shell. Run them with `ctest --test-dir build -R pyfvw_pytest`.
+  scripted shell, and
+  **[`test/test_pyfvw_analysis.py`](test/test_pyfvw_analysis.py)** is section
+  6's. Run them with `ctest --test-dir build -R pyfvw_pytest`.
 - **[`../../apps/PythonView.py`](../../apps/PythonView.py)** — a complete
   desktop viewer over this API: catalog management, every data family,
   pan/zoom, overlays, click-to-identify, headless `--shot` rendering, and (A6)
@@ -636,6 +739,11 @@ The bindings are documented in the module itself; nothing here is the only copy.
   **[`../../apps/route.py`](../../apps/route.py)** is the smaller read, and as
   of 2026-08-27 it is small indeed: a tool palette and a type descriptor, which
   is all a shell owns once the overlay behind it is `pyfvw.route`.
+- **`pyfvw.analysis`** — the Analysis tools (section 6): `GeoPath`,
+  `sample_terrain_profile`, `compute_viewshed` and the four `Measurement`
+  kinds, plus the unit and formatting table. Headless — nothing in it knows
+  what a chart looks like, which is why the profile of a route is the profile
+  call with a route's path.
 - **`pyfvw.route`** — RouteKit: the `.fvrte` document, `RoutePlanner` over the
   road graph, `RouteOverlay`, and `RouteEditSession` (`overlay.edit`) — select,
   drag, add, delete, undo, and a snap on every position it places. Its own

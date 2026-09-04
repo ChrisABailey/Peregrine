@@ -45,6 +45,10 @@ namespace fv {
 struct StrokeStyle {
   bool valid = false;
   Pen pen;
+  // Pixels into the dash cycle at the path's first vertex. The renderer
+  // measures the rest from there along the unclipped path, so two styles that
+  // share a geometry and a pattern dash in step and can case each other.
+  double dash_phase = 0.0;
 };
 
 struct FillStyle {

@@ -2574,3 +2574,150 @@ def test_grid_draws_a_real_graticule():
     # and the grid is not a border round the edge.
     interior = a[100:380, 100:540, 0]
     assert interior.max() > 200
+
+# ---------------------------------------------------------------------------
+# The contour overlay (port/contour-plan.md)
+# ---------------------------------------------------------------------------
+
+
+def test_contour_needs_a_source_and_says_so_in_its_stats():
+    o = pyfvw.overlay.ContourOverlay()
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(320, 240)
+    proj.set_center(pyfvw.geo.GeoPoint(34.75, -83.75))
+    proj.set_scale(100000)
+    cv = pyfvw.canvas.CpuCanvas(320, 240)
+    o.on_draw(proj, cv)
+    assert o.last_draw["no_source"] is True
+    assert o.last_draw["lines_drawn"] == 0
+    assert o.cached_tiles == 0
+
+
+def test_contour_interval_is_major_over_divisions():
+    o = pyfvw.overlay.ContourOverlay()
+    # FalconView's defaults: 1000 feet in 5 divisions.
+    assert o.major_interval_meters == pytest.approx(304.8)
+    assert o.interval_meters == pytest.approx(60.96)
+    o.set_property("interval_unit", "meters")
+    o.set_property("major_interval", 300.0)
+    o.set_property("divisions", 6)
+    assert o.interval_meters == pytest.approx(50.0)
+
+
+def test_a_choice_property_takes_its_name_or_its_index():
+    o = pyfvw.overlay.ContourOverlay()
+    spec = {r["key"]: r for r in o.describe_properties()}["smoothing"]
+    assert spec["type"] == "choice"
+    assert spec["choices"] == ["none", "chaikin", "spline"]
+
+    o.set_property("smoothing", "spline")
+    assert o.get_property("smoothing") == 2      # the index is the value
+    o.set_property("smoothing", 0)               # and still works
+    assert o.get_property("smoothing") == 0
+    with pytest.raises(pyfvw.FvError):
+        o.set_property("smoothing", "wobbly")
+
+
+def test_contour_draws_real_terrain_and_smoothing_only_changes_the_ink():
+    root = _testdata("dted")
+    if root is None:
+        pytest.skip("no DTED in the test data")
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(400, 400)
+    proj.set_center(pyfvw.geo.GeoPoint(34.75, -83.75))
+    proj.set_scale(50000)
+    cv = pyfvw.canvas.CpuCanvas(400, 400)
+
+    o = pyfvw.overlay.ContourOverlay()
+    o.set_elevation_source(pyfvw.formats.DtedElevationSource(root))
+    o.set_property("smoothing", "none")
+    o.set_property("thinning_px", 0.0)
+    o.on_draw(proj, cv)
+    plain = o.last_draw
+    assert plain["lines_drawn"] > 0
+    assert plain["major_lines"] > 0
+    assert plain["shaped_vertices"] == plain["vertices"]
+
+    # Smoothing is a property of the PICTURE: more ink, the same geometry, and
+    # not one elevation post re-read.
+    o.set_property("smoothing", "chaikin")
+    o.on_draw(proj, cv)
+    smooth = o.last_draw
+    assert smooth["vertices"] == plain["vertices"]
+    assert smooth["shaped_vertices"] > smooth["vertices"]
+    assert smooth["samples"] == 0
+    assert smooth["tiles_traced"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The terrain avoidance mask (port/tamask-plan.md)
+# ---------------------------------------------------------------------------
+
+
+def test_tamask_needs_a_source_and_says_so_in_its_stats():
+    o = pyfvw.overlay.TAMaskOverlay()
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(320, 240)
+    proj.set_center(pyfvw.geo.GeoPoint(34.75, -83.75))
+    proj.set_scale(500000)
+    cv = pyfvw.canvas.CpuCanvas(320, 240)
+    o.on_draw(proj, cv)
+    assert o.last_draw["no_source"] is True
+    assert o.last_draw["mask_pixels"] == 0
+    assert o.cached_tiles == 0
+
+
+def test_tamask_levels_are_the_altitude_less_each_clearance():
+    o = pyfvw.overlay.TAMaskOverlay()
+    # FalconView's defaults: 2500 ft with 100 / 300 / 500 ft of clearance.
+    assert o.altitude == 2500.0
+    assert o.altitude_meters == pytest.approx(2500 * 0.3048)
+    assert o.levels["warn_m"] == pytest.approx((2500 - 100) * 0.3048)
+    assert o.levels["ok_m"] == pytest.approx((2500 - 500) * 0.3048)
+
+    # The dead band is FalconView's Sensitivity, and it is a property like
+    # everything else here.
+    assert o.set_altitude(2510.0) is False
+    assert o.altitude == 2500.0
+    assert o.set_altitude(3000.0) is True
+    assert o.altitude == 3000.0
+
+    o.set_property("unit", "meters")
+    assert o.altitude_meters == 3000.0
+
+
+def test_tamask_colours_real_terrain_and_a_climb_re_reads_nothing():
+    root = _testdata("dted")
+    if root is None:
+        pytest.skip("no DTED in the test data")
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(320, 320)
+    proj.set_center(pyfvw.geo.GeoPoint(34.75, -83.75))
+    proj.set_scale(500000)
+    cv = pyfvw.canvas.CpuCanvas(320, 320)
+
+    o = pyfvw.overlay.TAMaskOverlay()
+    o.set_elevation_source(pyfvw.formats.DtedElevationSource(root))
+    # North Georgia tops out around 1400 m, so fly low enough to light up.
+    o.set_property("altitude", 4000.0)
+    o.set_property("show_labels", False)  # a headless canvas may have no font
+    o.on_draw(proj, cv)
+    low = o.last_draw
+    assert low["tiles_sampled"] > 0
+    assert low["samples"] > 0
+    assert low["mask_pixels"] > 0
+    assert low["band_pixels"]["warn"] > 0
+    assert low["peak_drawn"] is True
+    assert low["peak_elev_m"] > 0
+
+    # Climb. FalconView rebuilt every tile's byte mask here; this caches the
+    # ELEVATION, so the picture changes and not one post is re-read.
+    assert o.set_altitude(20000.0) is True
+    o.on_draw(proj, cv)
+    high = o.last_draw
+    assert high["tiles_sampled"] == 0
+    assert high["samples"] == 0
+    assert high["band_pixels"]["warn"] < low["band_pixels"]["warn"]
+    assert high["peak_elev_m"] == low["peak_elev_m"]  # the ground did not move

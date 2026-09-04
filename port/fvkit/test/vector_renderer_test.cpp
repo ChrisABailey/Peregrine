@@ -709,6 +709,7 @@ class StubStyle : public fv::IStyleEngine {
   int priority = 0;
   bool emit_symbol = false;
   int wide_pen = 1;
+  std::vector<double> dash;  // empty = solid
   // PR2: a NORTH-UP symbol angle, the kind a chart rotation acts on.
   double symbol_rotation_deg = 0.0;
   fv::VectorSymbol symbol;
@@ -728,6 +729,7 @@ class StubStyle : public fv::IStyleEngine {
       r.stroke.valid = true;
       r.stroke.pen.color = color;
       r.stroke.pen.width = wide_pen;
+      r.stroke.pen.dash = dash;
     }
     out->push_back(r);
     return fv::Status::Ok();
@@ -1116,6 +1118,146 @@ TEST(VectorRenderer, LongLineIsClippedNotDropped) {
   };
   EXPECT_TRUE(column_has_red(0));
   EXPECT_TRUE(column_has_red(63));
+}
+
+// --- dashed strokes --------------------------------------------------------
+
+namespace {
+
+// The inked columns of a frame, as a set of x for a given row band.
+std::vector<bool> InkedColumns(const fv::PixelBuffer& b, int w, int h) {
+  std::vector<bool> on(w, false);
+  for (int x = 0; x < w; ++x)
+    for (int y = 0; y < h; ++y)
+      if (Px(b, x, y)[0] == 255) on[x] = true;
+  return on;
+}
+
+// One dashed render of a line that runs well past both side edges.
+std::vector<bool> DashedFrame(double centre_lon, int width,
+                              const std::vector<double>& dash) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("a", {{0.0, -170.0}, {0.0, 170.0}}));
+  auto style = std::make_shared<StubStyle>();
+  style->wide_pen = width;
+  style->dash = dash;
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  EXPECT_TRUE(r.Render(Proj(64, 64, 0.0, centre_lon, 1.0), &canvas).ok());
+  return InkedColumns(canvas.Buffer(), 64, 64);
+}
+
+}  // namespace
+
+// The bug this guards: dashes used to be counted by the rasterizer from the
+// first point it was handed, which on a line leaving the canvas is wherever
+// the clipper cut it, so the whole pattern slid along the road as the map
+// moved. Panning east by n whole pixels must now shift the picture by exactly
+// n pixels and change nothing else.
+TEST(VectorRenderer, ADashedLineHoldsStillWhenTheMapPans) {
+  const std::vector<double> dash{5.0, 3.0};
+  const std::vector<bool> a = DashedFrame(0.0, 1, dash);
+  // Deliberately not a whole number of cycles: a pattern locked to the SCREEN
+  // would also survive a pan of exactly one period.
+  const int pan = 5;  // degrees == pixels at 1 dpp
+  const std::vector<bool> b = DashedFrame(pan, 1, dash);
+
+  int inked = 0;
+  for (int x = 0; x + pan < 64; ++x) {
+    EXPECT_EQ(a[x + pan], b[x]) << "dash moved at column " << x;
+    if (b[x]) ++inked;
+  }
+  EXPECT_GT(inked, 20) << "the line came out solid or blank";
+}
+
+// Two widths of one pattern over one geometry draw the same dash pieces, so
+// the wider pass shows as a halo of (w1 - w2) / 2 all round the narrower one —
+// ends included, because the nib is square and overhangs each end by half its
+// width.
+TEST(VectorRenderer, AWiderPenCasesADashedLineDashForDash) {
+  const std::vector<double> dash{3.0, 3.0};
+  auto frame = [&](int width) {
+    auto src = std::make_shared<StubSource>();
+    src->features.push_back(Line("a", {{0.0, -170.0}, {0.0, 170.0}}));
+    auto style = std::make_shared<StubStyle>();
+    style->wide_pen = width;
+    style->dash = dash;
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    EXPECT_TRUE(r.Render(Proj(64, 64, 0.0, 0.0, 1.0), &canvas).ok());
+    std::vector<bool> on(64 * 64, false);
+    for (int y = 0; y < 64; ++y)
+      for (int x = 0; x < 64; ++x) on[y * 64 + x] = Px(canvas.Buffer(), x, y)[0] == 255;
+    return on;
+  };
+  const std::vector<bool> six = frame(6);
+  const std::vector<bool> four = frame(4);
+
+  int covered = 0;
+  for (int y = 1; y + 1 < 64; ++y) {
+    for (int x = 1; x + 1 < 64; ++x) {
+      if (!four[y * 64 + x]) continue;
+      ++covered;
+      EXPECT_TRUE(six[y * 64 + x]) << "uncased pixel at " << x << "," << y;
+      EXPECT_TRUE(six[y * 64 + (x - 1)]) << "no halo left of " << x << "," << y;
+      EXPECT_TRUE(six[y * 64 + (x + 1)]) << "no halo right of " << x << "," << y;
+      EXPECT_TRUE(six[(y - 1) * 64 + x]) << "no halo above " << x << "," << y;
+      EXPECT_TRUE(six[(y + 1) * 64 + x]) << "no halo below " << x << "," << y;
+    }
+  }
+  EXPECT_GT(covered, 50) << "nothing was drawn to case";
+}
+
+// The nib covers the pixel it lands on, so the ink/gap boundary sits a pixel
+// back from the arc length the pattern names; the cycle length is untouched.
+TEST(DashRuns, EvenEntriesInkAndOddOnesSkip) {
+  const std::vector<fv::PathRun> runs = fv::DashRuns({5.0, 3.0});
+  ASSERT_EQ(runs.size(), 2u);
+  EXPECT_EQ(runs[0].type, fv::PathRunType::kDash);
+  EXPECT_DOUBLE_EQ(runs[0].length, 4.0);
+  EXPECT_EQ(runs[1].type, fv::PathRunType::kGap);
+  EXPECT_DOUBLE_EQ(runs[1].length, 4.0);
+  EXPECT_DOUBLE_EQ(runs[0].length + runs[1].length, 8.0);
+}
+
+// A zero run neither inks nor skips, and a kDash of length 0 means "to the end
+// of the line" to the placer — so it is dropped and its neighbours merged
+// rather than passed through.
+TEST(DashRuns, ZeroLengthEntriesAreDroppedAndTheirNeighboursMerged) {
+  const std::vector<fv::PathRun> runs = fv::DashRuns({5.0, 0.0, 4.0, 2.0});
+  ASSERT_EQ(runs.size(), 2u);
+  EXPECT_EQ(runs[0].type, fv::PathRunType::kDash);
+  EXPECT_DOUBLE_EQ(runs[0].length, 8.0);  // 5 + 4, less the nib
+  EXPECT_EQ(runs[1].type, fv::PathRunType::kGap);
+  EXPECT_DOUBLE_EQ(runs[1].length, 3.0);
+}
+
+// SVG and GL both read a one-entry pattern as that length on, that length off.
+TEST(DashRuns, AnOddPatternIsLaidTwiceSoInkAndGapAlternate) {
+  const std::vector<fv::PathRun> runs = fv::DashRuns({4.0});
+  ASSERT_EQ(runs.size(), 2u);
+  EXPECT_EQ(runs[0].type, fv::PathRunType::kDash);
+  EXPECT_DOUBLE_EQ(runs[0].length, 3.0);
+  EXPECT_EQ(runs[1].type, fv::PathRunType::kGap);
+  EXPECT_DOUBLE_EQ(runs[1].length, 5.0);
+}
+
+// A dash short enough to vanish under the nib correction keeps a sliver, so
+// it stamps one pixel instead of being read as "run to the end of the line".
+TEST(DashRuns, AOnePixelDashStillStampsAPixel) {
+  const std::vector<fv::PathRun> runs = fv::DashRuns({1.0, 1.0});
+  ASSERT_EQ(runs.size(), 2u);
+  EXPECT_EQ(runs[0].type, fv::PathRunType::kDash);
+  EXPECT_GT(runs[0].length, 0.0);
+  EXPECT_LT(runs[0].length, 0.5);
+}
+
+TEST(DashRuns, APatternWithNothingToBreakItIsSolid) {
+  EXPECT_TRUE(fv::DashRuns({}).empty());
+  EXPECT_TRUE(fv::DashRuns({0.0, 0.0}).empty());
+  EXPECT_TRUE(fv::DashRuns({4.0, 0.0}).empty());
 }
 
 TEST(VectorRenderer, RejectsANullCanvasAndAnUnreadyProjection) {

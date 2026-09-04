@@ -290,6 +290,48 @@ bool PointInRing(const std::vector<SurfacePoint>& ring, double x, double y) {
 
 }  // namespace
 
+std::vector<PathRun> DashRuns(const std::vector<double>& dash) {
+  // An odd-length pattern is laid twice, so ink and gap always alternate and
+  // the second lap inverts the first. This is what SVG and GL mean by it.
+  const size_t n = dash.size() % 2 == 0 ? dash.size() : dash.size() * 2;
+
+  std::vector<PathRun> runs;
+  runs.reserve(n);
+  bool any_gap = false;
+  for (size_t i = 0; i < n; ++i) {
+    const double len = dash[i % dash.size()];
+    if (!(len > 0.0)) continue;
+    const PathRunType t =
+        (i % 2 == 0) ? PathRunType::kDash : PathRunType::kGap;
+    any_gap = any_gap || t == PathRunType::kGap;
+    if (!runs.empty() && runs.back().type == t) {
+      runs.back().length += len;
+      continue;
+    }
+    PathRun r;
+    r.type = t;
+    r.length = len;
+    runs.push_back(std::move(r));
+  }
+  if (!any_gap) runs.clear();  // nothing breaks the line: it is solid
+
+  // The stamped nib covers the pixel it lands on, so a piece drawn from its
+  // first to its last point inks one pixel more than its arc length: a 5/3
+  // pattern would come out 6 on, 2 off, and a 1/1 pattern would be solid. The
+  // boundary between ink and gap moves back a pixel to pay for it, which
+  // leaves the cycle length — and so the phase of every later dash — alone.
+  for (PathRun& r : runs) {
+    if (r.type == PathRunType::kDash) {
+      // Never to zero: PlaceAlongPath reads a kDash of length 0 as GeoSym's
+      // "run to the end of the line", which would draw the pattern solid.
+      r.length = (std::max)(1e-6, r.length - 1.0);
+    } else {
+      r.length += 1.0;
+    }
+  }
+  return runs;
+}
+
 PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
                              const std::vector<PathRun>& runs, double phase) {
   PathPlacement out;
@@ -787,10 +829,39 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
         }
       } else if (sr.stroke.valid && proj_part.size() >= 2) {
         const double half = std::max(0.5, sr.stroke.pen.width / 2.0);
-        for (auto& run : ClipPolyline(proj_part, size.width, size.height)) {
-          canvas->DrawLines(run, sr.stroke.pen);
-          ++draws_emitted_;
-          if (pick_enabled_) pick_.AddStroke(it.ref, sr.priority, run, half);
+        // A dashed stroke is placed along the WHOLE projected path and clipped
+        // afterwards, for the same reason the pattern branch below is: the
+        // rasterizer would start its cycle at the first point it is handed,
+        // which on a line that leaves the canvas is wherever the clipper cut
+        // it, so every pan of one pixel would move every dash. Placed here,
+        // the cycle is measured from the path's own first vertex — a property
+        // of the geometry, not of the viewport — and two styles over the same
+        // geometry with the same pattern produce the same dash pieces, which
+        // is what lets a wider pen case a narrower one dash for dash.
+        const std::vector<PathRun> dash = DashRuns(sr.stroke.pen.dash);
+        if (dash.empty()) {
+          for (auto& run : ClipPolyline(proj_part, size.width, size.height)) {
+            canvas->DrawLines(run, sr.stroke.pen);
+            ++draws_emitted_;
+            if (pick_enabled_) pick_.AddStroke(it.ref, sr.priority, run, half);
+          }
+        } else {
+          Pen solid = sr.stroke.pen;
+          solid.dash.clear();
+          const PathPlacement placed =
+              PlaceAlongPath(proj_part, dash, sr.stroke.dash_phase);
+          for (const std::vector<SurfacePoint>& d : placed.dashes) {
+            for (auto& run : ClipPolyline(d, size.width, size.height)) {
+              canvas->DrawLines(run, solid);
+              ++draws_emitted_;
+            }
+          }
+          // Picked along the whole line, not dash by dash: a tap that lands in
+          // a gap is still a tap on the road.
+          if (pick_enabled_) {
+            for (auto& run : ClipPolyline(proj_part, size.width, size.height))
+              pick_.AddStroke(it.ref, sr.priority, run, half);
+          }
         }
       }
 

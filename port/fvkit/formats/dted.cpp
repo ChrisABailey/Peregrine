@@ -143,16 +143,12 @@ DtedElevationSource::~DtedElevationSource() = default;
 
 GeoRect DtedElevationSource::Bounds() const { return bounds_; }
 
-Status DtedElevationSource::GetElevation(const GeoPoint& p,
-                                         float* elevation_meters) {
-  if (elevation_meters == nullptr)
-    return Status::Error(kInvalidArg, "elevation_meters is null");
-  if (!scan_status_.ok()) return scan_status_;
+DtedCell* DtedElevationSource::CellFor(const GeoPoint& p) {
+  if (!scan_status_.ok()) return nullptr;
 
   CellKey key{(int)std::floor(p.lat), (int)std::floor(p.lon)};
   auto refs = cells_.find(key);
-  if (refs == cells_.end())
-    return Status::Error(kOutOfCoverage, "no DTED cell covers the point");
+  if (refs == cells_.end()) return nullptr;
 
   auto opened = open_cells_.find(key);
   if (opened == open_cells_.end()) {
@@ -167,20 +163,48 @@ Status DtedElevationSource::GetElevation(const GeoPoint& p,
     if (!ok) cell.reset();
     opened = open_cells_.emplace(key, std::move(cell)).first;
   }
-  if (opened->second == nullptr)
-    return Status::Error(kIoError,
-                         "cell file(s) exist but none opened: " +
-                             refs->second.front().path);
+  return opened->second.get();
+}
+
+Status DtedElevationSource::GetElevation(const GeoPoint& p,
+                                         float* elevation_meters) {
+  if (elevation_meters == nullptr)
+    return Status::Error(kInvalidArg, "elevation_meters is null");
+  if (!scan_status_.ok()) return scan_status_;
+
+  CellKey key{(int)std::floor(p.lat), (int)std::floor(p.lon)};
+  if (cells_.find(key) == cells_.end())
+    return Status::Error(kOutOfCoverage, "no DTED cell covers the point");
+
+  DtedCell* cell = CellFor(p);
+  if (cell == nullptr)
+    return Status::Error(kIoError, "cell file(s) exist but none opened: " +
+                                       cells_.find(key)->second.front().path);
 
   long elev = 0;
-  if (!opened->second->GetElevation(p.lat, p.lon, DTED_ELEVATION_METERS, elev))
+  if (!cell->GetElevation(p.lat, p.lon, DTED_ELEVATION_METERS, elev))
     return Status::Error(kIoError, "elevation read failed in " +
-                                       refs->second.front().path);
+                                       cells_.find(key)->second.front().path);
   if (elev == PARTIAL_DTED_ELEVATION)  // void post -> NaN, Status ok (D4)
     *elevation_meters = std::numeric_limits<float>::quiet_NaN();
   else
     *elevation_meters = (float)elev;
   return Status::Ok();
+}
+
+bool DtedElevationSource::PostSpacing(const GeoPoint& p, double* lat_deg,
+                                      double* lon_deg) {
+  DtedCell* cell = CellFor(p);
+  if (cell == nullptr) return false;
+  const int ns = cell->NsPosts(), ew = cell->EwPosts();
+  if (ns < 2 || ew < 2) return false;
+  // A cell is one degree square, so the spacing is 1/(posts - 1) either way.
+  // The east-west count is the smaller one at high latitude -- that is the
+  // DTED thinning FalconView reproduced with a hard-coded zone table
+  // (contour.cpp's DTED_Zone_Conversion); the file says it itself.
+  if (lat_deg != nullptr) *lat_deg = 1.0 / (ns - 1);
+  if (lon_deg != nullptr) *lon_deg = 1.0 / (ew - 1);
+  return true;
 }
 
 }  // namespace fv

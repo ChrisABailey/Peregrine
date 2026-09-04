@@ -64,8 +64,18 @@ class DtedElevationSource : public IElevationSource {
   // (adjacent cells share them). Revisit if a consumer ever cares.
   Status GetElevation(const GeoPoint& p, float* elevation_meters) override;
 
+  // From the covering cell's own post counts, so a DTED2 cell inside a DTED1
+  // tree answers 1 arcsecond where its neighbours answer 3. False when no
+  // cell covers `p` or none of its files open.
+  bool PostSpacing(const GeoPoint& p, double* lat_deg,
+                   double* lon_deg) override;
+
  private:
   using CellKey = std::pair<int, int>;  // (sw_lat, sw_lon), whole degrees
+
+  // The open cell covering `p`, opening it on first use. nullptr when no cell
+  // is indexed there or every candidate file failed to open.
+  DtedCell* CellFor(const GeoPoint& p);
 
   struct CellRef {
     int level;  // 0..3, from the file extension

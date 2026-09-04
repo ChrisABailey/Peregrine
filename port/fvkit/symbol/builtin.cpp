@@ -181,13 +181,32 @@ void BuiltinSymbolLibrary::Rebuild() {
       One({Line({P(-kR, kR * 0.6), P(kR * 0.6, 0), P(-kR, -kR * 0.6)}, c, w)});
 
   // --- map furniture --------------------------------------------------------
-  // North points at +y (symbol space is y up), and the arrow is drawn at twice
-  // the shape box because it is furniture rather than a marker.
+  // North points at +y (symbol space is y up), and the arrow is drawn LARGER
+  // than the shape box because it is furniture rather than a marker.
+  //
+  // IT IS AS WIDE AS 0.73 OF ITS LENGTH, and the first authoring was 0.28
+  // (Chris, 2026-09-02: "it appears too narrow for its length"). The needle
+  // was defensible for a compass rose in a corner and is wrong for the thing
+  // that actually draws it: Pippin stamps this at the ownship, where a rider
+  // glances down at a red mark on a moving chart and has to read WHICH WAY IT
+  // POINTS in that glance. A dart four times longer than it is wide reads as a
+  // line segment, and a line segment has two ends.
+  //
+  // The proportions are the ones already on the screen beside it — Apple's
+  // `location.fill` on the GPS button and `location.north.line.fill` on the
+  // compass, both close to square in their own boxes — so the map's arrow and
+  // the buttons' arrows now agree about what an arrow is shaped like.
+  //
+  // The LENGTH also came down, from 4.00 of the shape box to 2.60, because a
+  // rebalance that only widened would have made an ownship 28 points long and
+  // 20 wide: a ratio is fixable by moving either number and only one of them
+  // keeps the mark the size a phone wants. `movingmap.size_px` in the pack is
+  // what turns that back into points, and it moved with this.
   {
-    const double h = kR * 2.0;
+    const double h = kR * 1.30;        // half the length, tip to tail
+    const double half_w = kR * 0.95;   // half the width, tail to tail
     symbols_[bs::kNorthArrow] =
-        One({Ring({P(0, h), P(kR * 0.55, -h), P(0, -h * 0.45),
-                   P(-kR * 0.55, -h)},
+        One({Ring({P(0, h), P(half_w, -h), P(0, -h * 0.40), P(-half_w, -h)},
                   c, w)});
   }
   // A crosshair leaves the centre OPEN — the pixel the user is aiming at is

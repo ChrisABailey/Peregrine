@@ -33,6 +33,8 @@
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/engine.h"
+#include "fvkit/overlay/contour_overlay.h"
+#include "fvkit/overlay/ta_mask_overlay.h"
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/overlay/point_overlay.h"
@@ -91,6 +93,8 @@ void BindDraw(py::module_& m);
 void BindNav(py::module_& m);
 // pyfvw_route.cpp -- RouteKit, which links the router that fvkit may not.
 void BindRoute(py::module_& m);
+// pyfvw_analysis.cpp -- the Analysis tools (AN1-AN4), headless.
+void BindAnalysis(py::module_& m);
 }  // namespace pyfvw
 
 namespace {
@@ -638,8 +642,23 @@ fv::app::PropertyValue PropertyFromPy(const fv::app::PropertySpec& spec,
       return fv::app::PropertyValue::Bool(py::cast<bool>(o));
     case fv::app::PropertyType::kInt:
       return fv::app::PropertyValue::Int(py::cast<long long>(o));
-    case fv::app::PropertyType::kChoice:
+    case fv::app::PropertyType::kChoice: {
+      // By NAME or by index. The name is what a settings file carries (see
+      // Properties::LoadFrom) and it is what a script should be able to say:
+      // set_property("smoothing", "chaikin") reads as what it does, and
+      // set_property("smoothing", 1) does not.
+      if (py::isinstance<py::str>(o)) {
+        const std::string want = py::cast<std::string>(o);
+        for (size_t i = 0; i < spec.choices.size(); ++i) {
+          if (spec.choices[i] == want)
+            return fv::app::PropertyValue::Choice((long long)i);
+        }
+        throw FvErrorCpp{fv::Status::Error(
+            fv::kInvalidArg,
+            "'" + want + "' is not a choice for property '" + spec.key + "'")};
+      }
       return fv::app::PropertyValue::Choice(py::cast<long long>(o));
+    }
     case fv::app::PropertyType::kDouble:
       return fv::app::PropertyValue::Double(py::cast<double>(o));
     case fv::app::PropertyType::kString:
@@ -685,6 +704,11 @@ PYBIND11_MODULE(pyfvw, m) {
   m.attr("IO_ERROR") = (int)fv::kIoError;
   m.attr("UNSUPPORTED") = (int)fv::kUnsupported;
   m.attr("OUT_OF_COVERAGE") = (int)fv::kOutOfCoverage;
+  // INTERRUPTED reaches Python for the first time with AN5: a viewshed
+  // progress callback that returns False cancels, and the cancel is the
+  // only thing that raises it.
+  m.attr("INTERRUPTED") = (int)fv::kInterrupted;
+  m.attr("INTERNAL") = (int)fv::kInternal;
 
   // ---- pyfvw.geo ----------------------------------------------------------
   py::module_ geo = m.def_submodule("geo", "Geographic primitives (WGS-84 "
@@ -1080,12 +1104,12 @@ PYBIND11_MODULE(pyfvw, m) {
           [to_color, to_points](fv::ICanvas& c,
                                 const std::vector<std::pair<int, int>>& pts,
                                 py::sequence color, int width,
-                                const std::vector<int>& dash) {
+                                const std::vector<double>& dash) {
             fv::Pen pen{to_color(color), width, dash};
             ThrowIfError(c.DrawLines(to_points(pts), pen));
           },
           "points"_a, "color"_a, "width"_a = 1,
-          "dash"_a = std::vector<int>{})
+          "dash"_a = std::vector<double>{})
       .def(
           "fill_polygon",
           [to_color, to_points](
@@ -1655,6 +1679,135 @@ PYBIND11_MODULE(pyfvw, m) {
              g.SetColor(col);
            },
            "color"_a);
+
+  py::class_<fv::ContourOverlay, fv::Overlay,
+             std::shared_ptr<fv::ContourOverlay>>(
+      ovl, "ContourOverlay",
+      "Built-in terrain contour lines. Draws NOTHING until an elevation "
+      "source is attached -- everything else about it (interval, colour, "
+      "labels, smoothing) is a declared property, so it is reached through "
+      "describe_properties() / get_property / set_property on Overlay like "
+      "any other overlay's settings.")
+      .def(py::init<>())
+      .def("set_elevation_source", &fv::ContourOverlay::SetElevationSource,
+           "source"_a.none(true), py::keep_alive<1, 2>(),
+           "e.g. formats.DtedElevationSource. Replacing it drops every "
+           "traced tile.")
+      .def_property_readonly("interval_meters",
+                             &fv::ContourOverlay::IntervalMeters,
+                             "The MINOR interval actually traced, in metres: "
+                             "major_interval / divisions, converted from "
+                             "interval_unit.")
+      .def_property_readonly("major_interval_meters",
+                             &fv::ContourOverlay::MajorIntervalMeters)
+      .def("clear_cache", &fv::ContourOverlay::ClearCache)
+      .def_property_readonly("cached_tiles", &fv::ContourOverlay::cached_tiles)
+      .def_property_readonly(
+          "last_draw",
+          [](const fv::ContourOverlay& c) {
+            const fv::ContourOverlay::DrawStats& s = c.last_draw();
+            py::dict d;
+            d["below_threshold"] = s.below_threshold;
+            d["no_source"] = s.no_source;
+            d["tiles_considered"] = s.tiles_considered;
+            d["tiles_traced"] = s.tiles_traced;
+            d["tiles_over_budget"] = s.tiles_over_budget;
+            d["lines_drawn"] = s.lines_drawn;
+            d["major_lines"] = s.major_lines;
+            d["vertices"] = s.vertices;
+            d["shaped_vertices"] = s.shaped_vertices;
+            d["labels_placed"] = s.labels_placed;
+            d["labels_rejected"] = s.labels_rejected;
+            d["labels_offscreen"] = s.labels_offscreen;
+            d["samples"] = s.samples;
+            d["scale_denominator"] = s.scale_denominator;
+            d["interval_m"] = s.interval_m;
+            d["sample_lat_deg"] = s.sample_lat_deg;
+            d["sample_lon_deg"] = s.sample_lon_deg;
+            d["tile_deg"] = s.tile_deg;
+            return d;
+          },
+          "What the last draw actually did, as a dict. `vertices` is what was "
+          "traced and `shaped_vertices` what was stroked, so the ratio is "
+          "what the smoothing costs in ink.");
+
+  py::class_<fv::TAMaskOverlay, fv::Overlay,
+             std::shared_ptr<fv::TAMaskOverlay>>(
+      ovl, "TAMaskOverlay",
+      "Built-in terrain avoidance mask: the ground coloured by how much room "
+      "is left under an aircraft. Draws NOTHING until an elevation source is "
+      "attached; the bands, their colours, the shading and the thresholds are "
+      "declared properties, reached through describe_properties() / "
+      "get_property / set_property on Overlay like any other overlay's "
+      "settings.")
+      .def(py::init<>())
+      .def("set_elevation_source", &fv::TAMaskOverlay::SetElevationSource,
+           "source"_a.none(true), py::keep_alive<1, 2>(),
+           "e.g. formats.DtedElevationSource. Replacing it drops every "
+           "sampled tile.")
+      .def("set_altitude", &fv::TAMaskOverlay::SetAltitude, "altitude"_a,
+           "The automation seam -- FalconView's UpdateAltitude. MSL, in the "
+           "overlay's own `unit`. Returns False when the move was inside the "
+           "`sensitivity` dead band and was therefore ignored. True is a cue "
+           "to repaint and NOTHING more: the tile cache holds elevation, so "
+           "an altitude change costs no terrain reads at all.")
+      .def_property_readonly("altitude", &fv::TAMaskOverlay::Altitude)
+      .def_property_readonly("altitude_meters",
+                             &fv::TAMaskOverlay::AltitudeMeters)
+      .def_property_readonly(
+          "levels",
+          [](const fv::TAMaskOverlay& t) {
+            const fv::ClearanceLevels l = t.Levels();
+            py::dict d;
+            d["warn_m"] = l.warn_m;
+            d["caution_m"] = l.caution_m;
+            d["ok_m"] = l.ok_m;
+            d["show_warn"] = l.show_warn;
+            d["show_caution"] = l.show_caution;
+            d["show_ok"] = l.show_ok;
+            return d;
+          },
+          "The three band levels in metres MSL for the current altitude and "
+          "clearances -- what the fill, the outlines and the classifier all "
+          "read.")
+      .def("clear_cache", &fv::TAMaskOverlay::ClearCache)
+      .def_property_readonly("cached_tiles", &fv::TAMaskOverlay::cached_tiles)
+      .def_property_readonly(
+          "last_draw",
+          [](const fv::TAMaskOverlay& t) {
+            const fv::TAMaskOverlay::DrawStats& s = t.last_draw();
+            py::dict d;
+            d["below_threshold"] = s.below_threshold;
+            d["no_source"] = s.no_source;
+            d["tiles_considered"] = s.tiles_considered;
+            d["tiles_sampled"] = s.tiles_sampled;
+            d["tiles_over_budget"] = s.tiles_over_budget;
+            d["mask_pixels"] = s.mask_pixels;
+            py::dict bands;
+            bands["none"] = s.band_pixels[0];
+            bands["ok"] = s.band_pixels[1];
+            bands["caution"] = s.band_pixels[2];
+            bands["warn"] = s.band_pixels[3];
+            bands["no_data"] = s.band_pixels[4];
+            d["band_pixels"] = bands;
+            d["contour_lines"] = s.contour_lines;
+            d["contour_levels"] = s.contour_levels;
+            d["contour_vertices"] = s.contour_vertices;
+            d["peak_drawn"] = s.peak_drawn;
+            d["peak_elev_m"] = s.peak_elev_m;
+            d["peak"] = py::make_tuple(s.peak.lat, s.peak.lon);
+            d["samples"] = s.samples;
+            d["scale_denominator"] = s.scale_denominator;
+            d["altitude_m"] = s.altitude_m;
+            d["tile_deg"] = s.tile_deg;
+            d["sample_lat_deg"] = s.sample_lat_deg;
+            d["sample_lon_deg"] = s.sample_lon_deg;
+            return d;
+          },
+          "What the last draw actually did, as a dict. `band_pixels` counts "
+          "every pixel CLASSIFIED into each band and `mask_pixels` only those "
+          "that were inked, so the two differ when draw_mask is off or a band "
+          "is hidden.");
 
   py::class_<fv::OverlayManager>(ovl, "OverlayManager")
       .def(py::init<>())
@@ -3053,5 +3206,11 @@ PYBIND11_MODULE(pyfvw, m) {
   // RouteKit. AFTER pyfvw.app, because `register_route_overlay_type` names
   // OverlayTypeRegistry, and after pyfvw.overlay/geo for Overlay and GeoPoint.
   pyfvw::BindRoute(m);
+
+  // ---- pyfvw.analysis --------------------------------------------------
+  // The Analysis tools. After pyfvw.geo and pyfvw.formats, whose GeoPoint,
+  // GeoRect and IElevationSource it names; it needs nothing else, because
+  // AN1-AN4 are headless computation and know nothing about a chart.
+  pyfvw::BindAnalysis(m);
 
 }

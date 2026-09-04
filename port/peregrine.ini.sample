@@ -408,3 +408,151 @@ simplify_pixels = 0.5
 # that has already chosen one wants. With no font anywhere the grid still
 # draws its LINES: a label that cannot be drawn is not an error.
 # label_font = ""
+
+[contour]
+# Terrain contour lines (`fv.contour`, a STATIC overlay type), ported from
+# FalconView's Contour Lines overlay. Same property machinery as [grid] above,
+# so everything said there about colours and about bad values applies here.
+#
+# IT NEEDS AN ELEVATION SOURCE. The overlay draws nothing at all until a shell
+# hands it one (PythonView attaches the first `dted` data source it finds), and
+# nothing here can supply one — this section styles an overlay, it does not
+# open data.
+
+# --- what is drawn, and when ------------------------------------------------
+# Contours are not drawn on a map SMALLER in scale than this. FalconView's
+# default is 1:250 K, and the reason is legibility rather than cost: at 1:5M a
+# contour set is a smear.
+# display_threshold = 250000.0
+# A safety valve, not a tuning knob: elevation posts read in one draw. Tiles
+# beyond it are left for the next draw, so a mistyped interval costs a slow
+# frame instead of a hung one.
+# max_samples_per_draw = 1000000
+
+# --- the interval -----------------------------------------------------------
+# MAJOR interval, in whichever unit interval_unit names, and how many minor
+# lines go between two majors. The default is FalconView's: 1000 feet in 5
+# divisions, so a line every 200 feet and every fifth one drawn heavy.
+#
+# The DATA is metres either way; the unit is what you write here and what a
+# contour label says. (FalconView stored metres always and converted in its
+# dialog, so a registry holding 304.8 meant a user who had typed 1000 feet.)
+# major_interval = 1000.0
+# interval_unit = "feet"        # feet | meters
+# divisions = 5
+
+# --- lines ------------------------------------------------------------------
+# line_color = "#C00040FF"      # FalconView's RGB(192, 0, 64)
+# major_width_px = 2
+# minor_width_px = 1
+# show_minor_lines = true
+#
+# SMOOTHING. A contour traced from elevation posts is a staircase of straight
+# legs between them, and on a large-scale map — contours over a street map is
+# the case this was written for — the posts are tens of pixels apart, so the
+# staircase shows. This is the one thing here the Windows overlay never did.
+#
+#   none      FalconView's geometry, vertex for vertex
+#   chaikin   corner cutting; cannot overshoot, so a smoothed contour can
+#             never bulge across the one above it. The default.
+#   spline    centripetal Catmull-Rom; passes through every traced crossing
+#             exactly, at a little more cost and with no overshoot guarantee
+#
+# It happens in PIXELS, on the projected line, so it costs what is on screen
+# rather than what was traced, and changing it re-draws without re-reading a
+# single elevation post.
+# smoothing = "chaikin"
+#
+# Douglas-Peucker tolerance in pixels, applied BEFORE smoothing: zoomed out,
+# most of a traced contour's vertices are within half a pixel of each other.
+# 0 keeps every vertex. This is what FalconView's ThinningLevel was for — over
+# there it was stored, clamped, written to the registry and never read.
+# thinning_px = 0.5
+
+# --- labels -----------------------------------------------------------------
+# MAJOR lines only, one label per line, near the middle, with the line BROKEN
+# for the text. Off by default, as in FalconView. The label is the elevation in
+# interval_unit with no suffix, because every line on the map is in the same
+# unit.
+# show_labels = false
+# label_threshold = 250000.0    # independent of display_threshold
+# label_size_px = 11.0
+# label_color = "#FFFFFFFF"
+# label_halo_color = "#000000C8"
+# label_halo_width_px = 1.0
+# label_font = ""
+
+[tamask]
+# Terrain avoidance mask (`fv.tamask`, a STATIC overlay type), ported from
+# FalconView's TAMask. An aircraft is at some altitude MSL and this colours
+# the ground by how much room is left underneath it. Same property machinery
+# as [grid] and [contour] above.
+#
+# IT NEEDS AN ELEVATION SOURCE, exactly as [contour] does, and nothing here
+# can supply one.
+
+# --- what is drawn, and when ------------------------------------------------
+# Not drawn on a map SMALLER in scale than this. FalconView's 1:2 M is
+# COARSER than the contour overlay's 1:250 K on purpose: a colour wash still
+# reads at a scale where contour lines are a smear.
+# display_threshold = 2000000.0
+# label_threshold = 500000.0
+# max_samples_per_draw = 1000000
+
+# --- the aircraft -----------------------------------------------------------
+# Altitude MSL, in whichever unit `unit` names. This is FalconView's TestAlt:
+# the altitude to use when no overlay is feeding one. A shell that has a
+# moving map calls SetAltitude() instead and this becomes the starting value.
+# altitude = 2500.0
+# unit = "feet"                 # feet | meters
+#
+# The dead band on that feed. A live altitude that jitters must not repaint
+# the map continuously. Note it damps a REPAINT and nothing more: the tile
+# cache holds elevation rather than colour, so an altitude change costs no
+# terrain reads at all (FalconView rebuilt every tile's mask here).
+# sensitivity = 25.0
+
+# --- the bands --------------------------------------------------------------
+# Ground within `warn_clearance` of the aircraft is a warning, and so on down.
+# Tested from the top with `>=`, so a post EXACTLY on the warning level is a
+# warning. A band switched off gives its ground to the band BELOW it rather
+# than punching a hole in the picture — turning off caution makes that ground
+# green, not blank — which is what FalconView's cascading colour indices do.
+# warn_clearance = 100.0
+# caution_clearance = 300.0
+# ok_clearance = 500.0
+# show_warn_level = true
+# show_caution_level = true
+# show_ok_level = true
+# warn_color = "#FF0000FF"
+# caution_color = "#FFFF00FF"
+# ok_color = "#00FF00FF"
+#
+# Voids INSIDE the coverage, drawn whether or not the fill is: a hole in the
+# terrain under an aircraft is the most important thing on the screen. Ground
+# the elevation source does not reach at all is left alone — that distinction
+# is per POST, not per tile.
+# show_no_data_mask = true
+# no_data_color = "#FF0080FF"   # FalconView's RGB(255, 0, 128)
+
+# --- the mask ---------------------------------------------------------------
+# Percent opacity of the fill over the base map; FalconView's 50 is the 128 it
+# hands its alpha blitter. The mask is an overlay on terrain the pilot still
+# needs to read, not a replacement for it.
+# shading = 50
+# draw_mask = true
+#
+# Contour lines at the same three levels as the fill — FalconView's
+# TraceClearanceContours, and off by default over there too.
+# draw_contours = false
+# contour_width_px = 2
+
+# --- the peak ---------------------------------------------------------------
+# The highest post IN VIEW, one only, with its elevation beside it.
+# show_peak = true
+# peak_color = "#000000FF"
+# show_labels = true
+# label_size_px = 12.0
+# label_color = "#000000FF"
+# label_halo_color = "#FFFFFFDC"
+# label_font = ""

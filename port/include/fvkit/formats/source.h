@@ -58,6 +58,24 @@ struct IElevationSource {
 
   virtual Status GetElevation(const GeoPoint& p, float* elevation_meters) = 0;
 
+  // The NATIVE post spacing at `p`, in degrees, when the source has one.
+  // Returns false for "I don't know", which is the default and is a legal
+  // answer -- a caller that asks is choosing a sampling rate and must have a
+  // fallback anyway.
+  //
+  // Why it exists (contour overlay, plan C2): sampling elevation finer than
+  // the posts invents terrain, so a consumer building a grid wants
+  // max(what the screen needs, what the data actually has). Latitude and
+  // longitude are separate because a DTED cell thins its east-west posts
+  // toward the poles -- one value would be wrong above 50 degrees.
+  virtual bool PostSpacing(const GeoPoint& p, double* lat_deg,
+                           double* lon_deg) {
+    (void)p;
+    (void)lat_deg;
+    (void)lon_deg;
+    return false;
+  }
+
  protected:
   IElevationSource() = default;
 };

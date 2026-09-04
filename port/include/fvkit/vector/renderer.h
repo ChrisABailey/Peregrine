@@ -246,6 +246,25 @@ struct PathPlacement {
 PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
                              const std::vector<PathRun>& runs, double phase);
 
+// A Pen's dash pattern as placement runs, so a dashed pen can be laid down by
+// PlaceAlongPath — against the whole projected path, from its first vertex —
+// instead of by the rasterizer, which counts from whatever point it is handed
+// and so re-phases every dash whenever the clipper cuts the line somewhere
+// new. Two styles over one geometry with one pattern therefore produce the
+// same pieces, which is what lets a wide pen case a narrow one dash for dash.
+//
+// Even entries are ink, odd are gaps; an odd-length pattern is laid twice so
+// the two alternate, as SVG and GL read it. Empty result = draw it solid.
+//
+// Two adjustments the caller does not have to know about: zero-length entries
+// are dropped and their neighbours merged (a zero run neither inks nor skips,
+// and a kDash of length 0 is GeoSym's "run to the end of the line", which
+// would swallow the pattern whole), and the ink/gap boundary moves back one
+// pixel to pay for the nib covering the pixel it lands on — without which a
+// 5/3 pattern draws 6 on 2 off and a 1/1 pattern draws solid. The cycle
+// length, and so the phase of every later dash, is unchanged by either.
+std::vector<PathRun> DashRuns(const std::vector<double>& dash);
+
 // Grid of stamp positions covering `ring`, the EXACT projected outline in
 // sub-pixel surface coordinates — deliberately not the clipped, whole-pixel
 // ring the fill is drawn from, whose vertices move by up to half a pixel with

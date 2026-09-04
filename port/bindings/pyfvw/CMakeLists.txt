@@ -14,7 +14,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(pybind11)
 
 pybind11_add_module(pyfvw pyfvw_module.cpp pyfvw_app.cpp pyfvw_draw.cpp pyfvw_nav.cpp
-                          pyfvw_route.cpp)
+                          pyfvw_route.cpp pyfvw_analysis.cpp)
 # fv_vpf = VpfVectorSource, fv_geosym = GeoSymStyleEngine; both link fv_fvkit
 # (the shared VectorRenderer + canvas + projection).
 # fv_routing = the O4 road graph + router (pyfvw.routing).
@@ -36,4 +36,15 @@ if(FVW_BUILD_TESTS)
   # PYTHONPATH value, so MSPCCS_DATA/FVW_TESTDATA_DIR were never set.
   set_tests_properties(pyfvw_pytest PROPERTIES ENVIRONMENT
     "PYTHONPATH=$<TARGET_FILE_DIR:pyfvw>;MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+
+  # The PythonView application's own suite (AN6/AN7 — the analysis overlay,
+  # its palette and the button bar). It lives here rather than under a
+  # CMakeLists of its own in port/apps because it needs exactly what the suite
+  # above needs and nothing else: this interpreter, this build's pyfvw, and
+  # TestData. `port/apps` is on the path so the sibling modules import as the
+  # application imports them.
+  add_test(NAME pythonview_pytest
+    COMMAND ${PYTHON_EXECUTABLE} -m pytest -q ${CMAKE_SOURCE_DIR}/port/apps/test)
+  set_tests_properties(pythonview_pytest PROPERTIES ENVIRONMENT
+    "PYTHONPATH=$<TARGET_FILE_DIR:pyfvw>:${CMAKE_SOURCE_DIR}/port/apps;MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
 endif()

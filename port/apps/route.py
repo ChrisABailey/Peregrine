@@ -162,7 +162,21 @@ class RouteEditor:
             app.MenuNode(label="Undo (u)",
                          enabled=bool(edit is not None and edit.can_undo()),
                          action=lambda: edit is not None and edit.undo()),
+            # AN6, and the reason it needed no C++: the profile is a call over
+            # a GeoPath, and a route is one. The SHELL owns the window (this
+            # module knows nothing about tk and nothing about the analysis
+            # tools), so all that is here is the button and the question of
+            # whether there is anything to profile.
+            app.MenuNode(label="Elevation profile...",
+                         enabled=bool(routable and self.app is not None and
+                                      hasattr(self.app, "open_route_profile")),
+                         action=self._profile),
         ]
+
+    def _profile(self):
+        fn = getattr(self.app, "open_route_profile", None)
+        if fn is not None:
+            fn()
 
     # --- what the tools act on --------------------------------------------
 

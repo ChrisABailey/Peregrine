@@ -59,6 +59,8 @@ import pyfvw        # noqa: E402
 import tk_keys      # noqa: E402  (sibling module, see its header)
 import route as route_mod  # noqa: E402  (sibling module)
 from route import RouteEditor  # the tool palette; the overlay is C++
+import analysis as analysis_mod  # noqa: E402  (AN6/AN7 — the analysis tools)
+import toolbar as toolbar_mod    # noqa: E402  (the palette, as buttons)
 
 # ----------------------------------------------------------------------------
 # App-wide constants
@@ -84,6 +86,15 @@ ROADGRAPH_TYPE_ID = pyfvw.route.RoadGraphOverlay.TYPE_ID
 # MM4. A BUILT-IN type (fvkit registers it), so unlike the two above the app
 # does not describe it — it only configures the instance the toggle creates.
 MOVING_MAP_TYPE_ID = "fv.movingmap"
+# Contour lines. A built-in type too, but unlike the moving map it needs DATA:
+# an elevation source has to be handed to the instance the toggle creates, and
+# again whenever the catalog changes under it (_attach_elevation).
+CONTOUR_TYPE_ID = "fv.contour"
+# AN6/AN7. The Range & Bearing and Intervisibility tools, written in Python
+# over `pyfvw.analysis` — the split is Chris's: the arithmetic is C++ in FvKit
+# and the picture, the gesture and the chart are here. Static, like the
+# contours: the `.rbo` document format is out of scope by name in the plan.
+ANALYSIS_TYPE_ID = analysis_mod.ANALYSIS_TYPE_ID
 NATIVE_MM_PER_PIXEL = pyfvw.engine.NATIVE_DISPLAY_MM_PER_PIXEL  # 0.25
 ZOOM_STEP = 2.0 ** 0.5
 FEATURE_STEP = 1.25
@@ -434,6 +445,7 @@ class PythonView(pyfvw.app.AppShell):
         self._tkmod = None
         self.label = None              # the map widget; None until run()
         self._hover_hint = ""          # what the pick session last reported
+        self._editor = None            # the active editor, or None
         self._editor_tools = []        # the active editor's palette, as data
         # Settings first: everything below takes its default from the file when
         # the file has an opinion. See port/peregrine.ini.sample for the keys,
@@ -641,6 +653,12 @@ class PythonView(pyfvw.app.AppShell):
         pyfvw.app.register_builtin_types(self.registry)
         self.registry.register(route_mod.route_type_desc(
             factory=self._make_route, editor_factory=lambda: RouteEditor(self)))
+        # The SECOND editable type, and the one that proved the palette is
+        # reusable: `toolbar.py` renders both from the same MenuNode list and
+        # knows about neither.
+        self.registry.register(analysis_mod.analysis_type_desc(
+            factory=self._make_analysis,
+            editor_factory=lambda: analysis_mod.AnalysisEditor(self)))
         # With a registry, `add` inserts by the type's display order instead of
         # blindly on top, and the top-most band draws last (A2).
         self.mgr.set_type_registry(self.registry)
@@ -710,6 +728,13 @@ class PythonView(pyfvw.app.AppShell):
             ]
             self.route.dirty = False
 
+        # AN6's windows. A list, because a route profile and a measurement
+        # profile are two charts of two different things and closing one is
+        # not closing the other.
+        self.profile_windows = []
+        self.toolbar = None
+        self._viewshed_poll = None
+
         self.mouse_readout = ""
         self.render_error = None
         self._frames, self._ms = 0, 0.0
@@ -740,6 +765,108 @@ class PythonView(pyfvw.app.AppShell):
         ov.edit.snap_tolerance_px = self.pick.tolerance_px
         return ov
 
+    def _make_analysis(self):
+        """The analysis type's factory. Same shape as `_make_route`, and for
+        the same reason: the manager is handed over for mouse CAPTURE (a drag
+        that wanders off a vertex keeps feeding this overlay), and the
+        settings are where the viewshed's range and the observer's height come
+        from — the ini is the property sheet, here as everywhere else."""
+        ov = analysis_mod.AnalysisOverlay("Analysis", manager=self.mgr,
+                                          settings=self.settings)
+        # The SECOND source is a factory and not the object: a viewshed runs on
+        # a worker thread and a DtedElevationSource makes no thread-safety
+        # promise, so the job opens its own rather than sharing the one the map
+        # is drawing with.
+        ov.set_elevation_source(self._elevation_source(),
+                                factory=self._elevation_source)
+        ov.set_on_changed(self._on_analysis_changed)
+        ov.style = self._measure_style()
+        return ov
+
+    @property
+    def analysis(self):
+        """The analysis overlay, or None when it is off. Static, like the
+        contours: 'off' and 'not open' are the same state."""
+        return self.mgr.first_of_type(ANALYSIS_TYPE_ID)
+
+    def _on_analysis_changed(self):
+        """The measured path moved. Every open chart of it re-samples — AN2
+        costs N elevation reads for N samples, so a chart that follows a
+        dragged vertex is affordable and a chart that does not is wrong."""
+        self._refresh_profiles()
+
+    # --- AN6: the profile windows -------------------------------------------
+
+    def open_profile_window(self, path_provider, title="Terrain Profile",
+                            style=None, samples=200):
+        """The one door into AN6's chart. Both ways in (a measurement and a
+        route) are the same call with a different path, because AN2 samples a
+        GeoPath and does not care where it came from."""
+        if self.tk is None:
+            return None
+        src = self._elevation_source()
+        for w in list(self.profile_windows):
+            if w.alive and w.win.title() == title:
+                w.elevation = src
+                w.refresh()
+                w.lift()
+                return w
+        w = analysis_mod.ProfileWindow(
+            self.tk, path_provider, src, style=style, title=title,
+            samples=samples, on_close=self._forget_profile_window)
+        self.profile_windows.append(w)
+        return w
+
+    def _forget_profile_window(self, w):
+        if w in self.profile_windows:
+            self.profile_windows.remove(w)
+
+    def _refresh_profiles(self):
+        for w in list(self.profile_windows):
+            if not w.alive:
+                self.profile_windows.remove(w)
+                continue
+            w.refresh()
+
+    def open_route_profile(self):
+        """`Route > Elevation profile` — the thing Chris asked for, and it
+        needed no C++ at all. The path FOLLOWS THE PLAN when the route follows
+        roads: profiling the waypoints of a road route would sample a straight
+        line over ground the route never touches."""
+        route = self._current_route()
+        path = analysis_mod.route_geo_path(route)
+        if path is None:
+            self.report_error(0, "The route needs two waypoints to profile.")
+            return
+        name = route.name or "Route"
+        self.open_profile_window(
+            lambda r=route: analysis_mod.route_geo_path(r),
+            title=f"Terrain Profile — {name}",
+            style=self._measure_style(),
+            samples=self.settings.get_int("analysis.profile_samples", 200))
+
+    def _current_route(self):
+        edited = self.editors.edited if self.editors else None
+        if isinstance(edited, pyfvw.route.RouteOverlay):
+            return edited
+        return self.mgr.first_of_type(route_mod.ROUTE_TYPE_ID)
+
+    def _measure_style(self):
+        """The units every label and every chart axis in this application is
+        spelled with. One object, read from the ini, because a route profile
+        in nautical miles beside a measurement in kilometres is a bug the user
+        reports as 'the numbers are wrong'."""
+        st = analysis_mod.an.MeasureStyle()
+        names = {"nm": analysis_mod.an.RangeUnit.NAUTICAL_MILES,
+                 "miles": analysis_mod.an.RangeUnit.MILES,
+                 "km": analysis_mod.an.RangeUnit.KILOMETERS,
+                 "m": analysis_mod.an.RangeUnit.METERS,
+                 "yards": analysis_mod.an.RangeUnit.YARDS,
+                 "ft": analysis_mod.an.RangeUnit.FEET}
+        st.units = names.get(self.settings.get("analysis.units", "nm").lower(),
+                             analysis_mod.an.RangeUnit.NAUTICAL_MILES)
+        return st
+
     @property
     def cross(self):
         """The crosshair, or None when it is off — a static overlay is not
@@ -769,6 +896,35 @@ class PythonView(pyfvw.app.AppShell):
 
     def _set_grid(self, on):
         self._set_static(pyfvw.app.GRID_TYPE_ID, on)
+
+    # --- contour lines ------------------------------------------------------
+
+    @property
+    def contour(self):
+        """The contour overlay, or None when it is off. Static, like the
+        grid: there is one terrain and it has no document."""
+        return self.mgr.first_of_type(CONTOUR_TYPE_ID)
+
+    def _set_contour(self, on):
+        """Toggle it AND feed it. The overlay draws nothing at all without an
+        elevation source, and a toggle that switched on something invisible
+        would look exactly like a broken overlay -- so the source goes in
+        here, and _attach_elevation puts it back after a catalog change.
+
+        ONLY on the transition, which matters: this runs from
+        _ui_apply_overlays, so it is called on every menu action, and
+        set_elevation_source drops every traced tile. Attaching it again
+        because somebody ticked a different box would re-read the terrain."""
+        was = self.contour
+        self._set_static(CONTOUR_TYPE_ID, on)
+        ovl = self.contour
+        if ovl is None or was is not None:
+            return
+        src = self._elevation_source()
+        ovl.set_elevation_source(src)
+        if src is None:
+            self.report_error(
+                0, "Contour lines need a DTED data source; there is none open.")
 
     # --- the moving map (MM4) ----------------------------------------------
 
@@ -1344,9 +1500,10 @@ class PythonView(pyfvw.app.AppShell):
             self.refresh()
 
     def on_editor_changed(self, type_id, editor):
+        self._editor = editor
         self._editor_tools = editor.tools() if editor is not None else []
         if self.tk is not None:
-            self._rebuild_tools_menu()
+            self._refresh_palette()
             self._update_status()
 
     def report_error(self, code, message):
@@ -1431,15 +1588,38 @@ class PythonView(pyfvw.app.AppShell):
         if self.series is None:
             self._pick_default_series()
 
-    def _attach_elevation(self):
+    def _elevation_source(self):
+        """The first DTED tree among the open data sources, or None. It backs
+        both the cursor elevation readout and the contour overlay -- one
+        source, two consumers, which is why this is separate from the engine
+        it usually ends up in."""
         for _sid, fmt, path, _n in list_data_sources(self.db_path):
             if fmt == "dted" and os.path.isdir(path):
                 try:
-                    self.engine.set_elevation_source(
-                        pyfvw.formats.DtedElevationSource(path))
-                    return
+                    return pyfvw.formats.DtedElevationSource(path)
                 except pyfvw.FvError:
                     pass
+        return None
+
+    def _attach_elevation(self):
+        src = self._elevation_source()
+        if src is not None:
+            self.engine.set_elevation_source(src)
+        # The contour overlay holds its own reference: it is asked for posts
+        # outside anything the engine is drawing, and it outlives the engine
+        # object, which _on_catalog_changed replaces wholesale.
+        ovl = self.contour
+        if ovl is not None:
+            ovl.set_elevation_source(src)
+        # Same reasoning for the analysis overlay, plus the factory its
+        # viewshed worker opens a source of its own with.
+        ovl = self.analysis
+        if ovl is not None:
+            ovl.set_elevation_source(src, factory=self._elevation_source)
+        for w in list(self.profile_windows):
+            if w.alive:
+                w.elevation = src
+                w.refresh()
 
     def _pick_default_series(self):
         """Open at the smallest drawable scale (typically the world tile)."""
@@ -1904,6 +2084,16 @@ class PythonView(pyfvw.app.AppShell):
 
         self._build_menus()
 
+        # THE BUTTON BAR (Chris, 2026-09-02). It is packed BEFORE the map
+        # frame so it claims the top; the map frame is the expanding one, so
+        # the bar keeps its natural height at every window size. It renders
+        # the palette `_palette_nodes` composes and knows about no editor in
+        # particular — which is what makes it the answer for the next one too.
+        self.toolbar = toolbar_mod.ToolBar(self.tk, tk, ttk,
+                                           on_invoke=self._on_palette_invoke)
+        self.toolbar.frame.pack(side="top", fill="x")
+        ttk.Separator(self.tk, orient="horizontal").pack(side="top", fill="x")
+
         # Layout: status bar and identify panel claim the bottom; the map
         # frame takes everything else and drives the render surface size.
         self.status = tk.Label(self.tk, anchor="w", font=("Menlo", 11))
@@ -1939,6 +2129,7 @@ class PythonView(pyfvw.app.AppShell):
         # not pan, and every move goes to the overlay instead. See _on_press.
         self._overlay_gesture = False
 
+        self._refresh_palette()
         if first_run_scan_prompt:
             self.tk.after(200, self._first_run_prompt)
         self.refresh()
@@ -2036,6 +2227,17 @@ class PythonView(pyfvw.app.AppShell):
         m_ovl.add_checkbutton(label="Lat/Lon Grid", accelerator="g",
                               variable=self.var_grid, command=self._ui_apply_overlays)
         m_ovl.add_checkbutton(label="Crosshair", variable=self.var_cross,
+                              command=self._ui_apply_overlays)
+        self.var_contour = tk.BooleanVar(value=self.contour is not None)
+        m_ovl.add_checkbutton(label="Contour Lines", variable=self.var_contour,
+                              command=self._ui_apply_overlays)
+        # AN6/AN7. The mode button on the bar CREATES this overlay (a static
+        # type's editor toggles one into existence); this is how it goes away
+        # again, which the bar deliberately does not do — leaving the editor
+        # should not throw the measurement away.
+        self.var_analysis = tk.BooleanVar(value=self.analysis is not None)
+        m_ovl.add_checkbutton(label="Analysis (Range && Bearing)",
+                              variable=self.var_analysis,
                               command=self._ui_apply_overlays)
         m_ovl.add_separator()
         # MM4. The overlay and its three modes: the modes are a sub-menu
@@ -2137,37 +2339,75 @@ class PythonView(pyfvw.app.AppShell):
         self.tk.config(menu=self.menubar)
         self._rebuild_map_menu()
 
-    def _rebuild_tools_menu(self):
-        """The Tools menu, with the EDITOR half built from the registry: one
-        toggle per type that has an editor (~ FalconView's drawing-tools
-        menu), and the active editor's own palette under it. Rebuilt whenever
-        the mode changes, because `tools()` reports live state — whether add
-        is armed, whether there is anything to undo."""
+    def _palette_nodes(self):
+        """THE PALETTE, AS DATA, and the only place it is composed: one mode
+        button per editable type, then the active editor's own tools.
+
+        Two renderers read this — the button BAR at the top of the window and
+        the Tools MENU — so the two can never disagree about what is enabled,
+        which is the failure a menu built separately always ends in. `tools()`
+        is asked afresh every time because it reports live state: whether a
+        drawing tool is armed, whether there is anything to undo, whether the
+        path is long enough to profile."""
+        editor = self._editor
+        self._editor_tools = editor.tools() if editor is not None else []
+        nodes = toolbar_mod.mode_nodes(
+            self.registry, self.editors,
+            lambda tid: self._ui_flow(lambda: self.editors.toggle_editor(tid)),
+            pyfvw.app.MenuNode)
+        if self._editor_tools:
+            nodes.append(pyfvw.app.MenuNode(label=""))
+            nodes.extend(self._editor_tools)
+        return nodes
+
+    def _refresh_palette(self):
+        """Push the palette at both renderers. Called on every frame, which is
+        the requirement: whether "Profile..." is enabled changes when the user
+        clicks the MAP, not when the editor changes."""
+        if self.tk is None:
+            return
+        nodes = self._palette_nodes()
+        if self.toolbar is not None:
+            self.toolbar.set_tools(nodes)
+        self._rebuild_tools_menu(nodes)
+
+    def _on_palette_invoke(self):
+        # A tool that ran has almost certainly changed the map and the rest of
+        # the palette with it.
+        self.refresh()
+
+    def _rebuild_tools_menu(self, nodes=None):
+        """The Tools menu over the same nodes the bar renders, plus the two
+        application commands that are not any editor's business."""
         tk = self._tkmod
         m = self.m_tools
+        if nodes is None:
+            nodes = self._palette_nodes()
         m.delete(0, "end")
-        mode = self.editors.current_mode
-        for desc in self.registry.with_editors():
-            if not desc.display_name:
-                continue
-            m.add_checkbutton(
-                label=f"Edit {desc.display_name}",
-                variable=tk.BooleanVar(value=(desc.id == mode)),
-                command=lambda d=desc: self._ui_flow(
-                    lambda: self.editors.toggle_editor(d.id)))
-        for tool in self._editor_tools:
-            if tool.is_separator:
+        for node in nodes:
+            if node.is_separator:
                 m.add_separator()
+            elif node.checked or self._is_mode_node(node):
+                m.add_checkbutton(
+                    label=node.label,
+                    variable=tk.BooleanVar(value=node.checked),
+                    command=lambda n=node: (n.invoke(), self.refresh()))
             else:
-                m.add_command(label=f"    {tool.label}",
-                              state="normal" if tool.enabled else "disabled",
-                              command=lambda t=tool: (t.invoke(),
-                                                      self._rebuild_tools_menu(),
+                m.add_command(label=node.label,
+                              state="normal" if node.enabled else "disabled",
+                              command=lambda n=node: (n.invoke(),
                                                       self.refresh()))
         m.add_separator()
         m.add_command(label="Options...", command=self._ui_options)
         m.add_command(label="Build Tile Pack (fvpack)...",
                       command=self._ui_fvpack_help)
+
+    def _is_mode_node(self, node):
+        # A mode button is one named after an editable TYPE. The menu wants a
+        # checkbutton for those whether or not they happen to be on; the bar
+        # does not care, because it renders every node as a toggle anyway.
+        return any(d.display_name == node.label
+                   for d in self.registry.with_editors())
 
     def _series_menu_key(self, s):
         # display_name, not series_key: since catalog schema 2 a key can name
@@ -2618,9 +2858,11 @@ class PythonView(pyfvw.app.AppShell):
         if hasattr(self, "var_grid"):
             self.var_grid.set(self.grid is not None)
             self.var_cross.set(self.cross is not None)
+            self.var_contour.set(self.contour is not None)
+            self.var_analysis.set(self.analysis is not None)
             self.var_cov.set(self.coverage is not None)
             self.var_mm.set(self.moving_map is not None)
-        self._rebuild_tools_menu()
+        self._refresh_palette()
 
     def _current_document(self):
         """The overlay File > Save/Close act on: the CURRENT one when it is a
@@ -2693,6 +2935,8 @@ class PythonView(pyfvw.app.AppShell):
     def _ui_apply_overlays(self):
         self._set_grid(self.var_grid.get())
         self._set_static(CROSSHAIR_TYPE_ID, self.var_cross.get())
+        self._set_contour(self.var_contour.get())
+        self._set_static(ANALYSIS_TYPE_ID, self.var_analysis.get())
         self.mm_modes.auto_center = self.var_mm_center.get()
         self.mm_modes.auto_rotate = self.var_mm_rotate.get()
         self.mm_modes.continuous = self.var_mm_cont.get()
@@ -3432,7 +3676,30 @@ class PythonView(pyfvw.app.AppShell):
         ppm = b"P6 %d %d 255\n" % (self.W, self.H) + arr[:, :, :3].tobytes()
         self.photo = self._tkmod.PhotoImage(data=ppm)  # keep a reference!
         self.label.configure(image=self.photo)
+        self._refresh_palette()
+        self._ensure_viewshed_poll()
         self._update_status()
+
+    def _ensure_viewshed_poll(self):
+        """A viewshed runs on a worker and TK IS NOT THREAD-SAFE, so nothing
+        on that thread may touch a widget. The worker publishes a percentage
+        and this polls it — one `after` loop that exists only while there is
+        something to watch, and that stops on its own when there is not."""
+        ovl = self.analysis
+        if ovl is None or not ovl.viewshed_running:
+            return
+        if self._viewshed_poll is not None:
+            return
+        self._viewshed_poll = self.tk.after(150, self._poll_viewshed)
+
+    def _poll_viewshed(self):
+        self._viewshed_poll = None
+        ovl = self.analysis
+        if ovl is None:
+            return
+        # refresh() re-arms the poll while anything is still running, so a
+        # finished viewshed draws exactly once more and the loop ends.
+        self.refresh()
 
     def _update_status(self):
         if self.tk is None:
@@ -3510,6 +3777,14 @@ class PythonView(pyfvw.app.AppShell):
                 elif source.at_end:
                     txt += " - closed"
             txt += "]"
+        # AN7's progress. The one computation in this application long enough
+        # to owe the user a number — and the reason AN5 releases the GIL, so
+        # this line moves while the map still repaints.
+        ovl = self.analysis
+        if ovl is not None:
+            vs = ovl.status_line()
+            if vs:
+                txt += f"   [{vs}]"
         doc = self._current_document()
         if doc is not None and doc.dirty:
             txt += f"   [{self._overlay_display_name(doc)} *]"
@@ -3580,6 +3855,45 @@ def run_selftest(app, outdir):
         app.var_cov.set(True)
         app._ui_apply_overlays()
     steps.append(step(coverage_on, "coverage_on"))
+
+    # AN6/AN7. The whole path the button bar exists for, driven the way a user
+    # drives it: press the mode button, press a tool, click the map, ask for
+    # the chart. It asserts the WIRING -- that the mode created an overlay,
+    # that the palette reached the bar, that the clicks landed on the overlay
+    # and not on the map's pan -- because none of that is visible in a
+    # snapshot of the map surface.
+    def analysis_tools():
+        app._ui_flow(lambda: app.editors.toggle_editor(ANALYSIS_TYPE_ID))
+        ovl = app.analysis
+        if ovl is None:
+            raise AssertionError("the Analysis mode created no overlay")
+        if app.toolbar is None or app.toolbar.empty:
+            raise AssertionError("the palette never reached the button bar")
+        ovl.set_tool(analysis_mod.TOOL_POLYLINE)
+        app.refresh()                     # the overlay learns the projection
+        for x, y in ((200, 200), (320, 260), (420, 180)):
+            app.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(x, y, 0))
+        ovl.on_key_down(pyfvw.overlay.KeyEvent(key=pyfvw.overlay.key.RETURN))
+        if len(ovl.points) != 3:
+            raise AssertionError(f"3 clicks made {len(ovl.points)} points")
+        labels = [n.label for n in app._palette_nodes() if n.label]
+        if "Profile..." not in labels:
+            raise AssertionError(f"palette is {labels}")
+        win = app.open_profile_window(ovl.geo_path, title="selftest profile",
+                                      style=ovl.style)
+        got = win.result
+        win.close()
+        # And an observer, which is the one thing here that runs on a worker.
+        ovl.set_tool(analysis_mod.TOOL_VIEWSHED)
+        app.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(300, 240, 0))
+        if not ovl.observers:
+            raise AssertionError("the viewshed tool dropped no observer")
+        ovl.observers[0].wait(30)
+        vs = ovl.observers[0]
+        print(f"  selftest: profile {len(got.points) if got else 0} samples, "
+              f"viewshed {'span %d' % vs.result.span if vs.result else vs.error}",
+              flush=True)
+    steps.append(step(analysis_tools, "analysis_tools", settle_ms=600))
 
     # S4. The search box, over whatever series the walk above left showing:
     # open it, ask the stack for everything in view, and go to the first

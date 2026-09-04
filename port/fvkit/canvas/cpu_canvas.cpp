@@ -110,14 +110,20 @@ Status CpuCanvas::DrawLines(const std::vector<PixelPoint>& pts, const Pen& pen) 
   if (pts.size() < 2) return Status::Error(kInvalidArg, "need >= 2 points");
   if (pen.width < 1) return Status::Error(kInvalidArg, "pen width < 1");
 
-  // dash bookkeeping continues across segments
-  long dash_total = 0;
-  for (int d : pen.dash) dash_total += d;
+  // Dash bookkeeping continues across segments. This measures the step count
+  // of a Bresenham walk, which is the Chebyshev distance, not the arc length —
+  // a diagonal run comes out sqrt(2) long — and it restarts at whatever point
+  // the caller happened to hand in. Callers that need a dash to hold still
+  // under a pan, or to line up with a second pass at another width, place the
+  // runs themselves against the unclipped path (VectorRenderer::DashRuns +
+  // PlaceAlongPath) and stroke the pieces with a solid pen.
+  double dash_total = 0.0;
+  for (double d : pen.dash) dash_total += d;
   long travelled = 0;
 
   auto inked = [&](long dist) {
-    if (pen.dash.empty() || dash_total <= 0) return true;
-    long m = dist % dash_total;
+    if (pen.dash.empty() || !(dash_total > 0.0)) return true;
+    double m = std::fmod(static_cast<double>(dist), dash_total);
     for (size_t i = 0; i < pen.dash.size(); ++i) {
       if (m < pen.dash[i]) return i % 2 == 0;  // even runs are "on"
       m -= pen.dash[i];

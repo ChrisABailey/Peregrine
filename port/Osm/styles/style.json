@@ -1,5 +1,5 @@
 {
-  "_comment": "Style orriginally based on OpenCycleMap (CC-BY-SA 2.0)",
+  "_comment": "Style originally based on OpenCycleMap (CC-BY-SA 2.0)",
   "version": 8,
   "name": "CyclOSM",
   "metadata": {},
@@ -63,6 +63,25 @@
             ]
           ]
         }
+      }
+    },
+    {
+      "_comment": "S-52's MARSHES1 tuft, stamped over the marsh fill from z14 — the fill alone goes half-transparent at z16. Its own layer because fill-pattern may not be a zoom function, so gating it needs a second layer.",
+      "id": "marsh_pattern",
+      "type": "fill",
+      "source-layer": "landcover",
+      "minzoom": 14,
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "wetland",
+          "swamp"
+        ]
+      ],
+      "paint": {
+        "fill-pattern": "marsh_pattern"
       }
     },
     {
@@ -295,7 +314,7 @@
     ],
     "paint": {
       "line-color": "hsl(25, 55%, 35%)",
-      "line-width": {"stops": [[15, 4], [18, 8]]}
+      "line-width": {"stops": [[15, 3], [19, 8]]}
     }
     },
     {
@@ -311,8 +330,8 @@
     ],
     "paint": {
       "line-color": "hsl(47, 26%, 88%)",
-      "line-width": {"stops": [[15, 2], [18, 5]]},
-      "line-dasharray": [4, 4]
+      "line-width": {"stops": [[15, 1], [19, 4]]},
+      "line-dasharray": [2, 1]
     }
     },
     {
@@ -323,7 +342,8 @@
       "filter": [
         "all",
         ["==", "$type", "LineString"],
-        ["in", "class", "path", "track"]
+        ["in", "class", "path", "track"],
+        ["none", ["==", "subclass", "cycleway"], ["in", "bicycle", "yes", "designated"]]
       ],
       "layout": {
         "line-cap": "square",
@@ -331,12 +351,32 @@
         "visibility": "visible"
       },
       "paint": {
-        "line-color": "hsl(0, 0%, 97%)",
-        "line-dasharray": [1, 1],
+        "line-color": "hsl(25, 55%, 35%)",
+        "line-dasharray": [2, 1],
         "line-width": {"base": 1.55, "stops": [[4, 0.25], [20, 10]]}
       }
     },
     {
+      "id": "road_minor-casing",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "minzoom": 13,
+      "filter": [
+        "all",
+        ["==", "$type", "LineString"],
+        ["in", "class", "minor", "service"]
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round",
+        "visibility": "visible"
+      },
+      "paint": {
+        "line-color": "#30603060",
+        "line-width": {"base": 1.55, "stops": [[4, 0.25], [20, 30]]}
+      }
+    },{
       "id": "road_minor",
       "type": "line",
       "source": "openmaptiles",
@@ -353,8 +393,8 @@
         "visibility": "visible"
       },
       "paint": {
-        "line-color": "hsl(0, 0%, 97%)",
-        "line-width": {"base": 1.55, "stops": [[4, 0.25], [20, 30]]}
+        "line-color": "#ffffff",
+        "line-width": {"base": 1.55, "stops": [[4, 0.25], [20, 20]]}
       }
     },
     {
@@ -624,9 +664,9 @@
         "visibility": "visible"
       },
       "paint": {
-        "line-color": "#FFFFFF",
-        "line-dasharray": [3, 3],
-        "line-width": {"base": 1.5, "stops": [[10, 2.0], [18, 10]]}
+        "line-color": "#30000080",
+        "line-dasharray": [2, 2],
+        "line-width": {"base": 1.5, "stops": [[6, 0.75], [18, 7.5]]}
       }
     },
     {
@@ -652,7 +692,7 @@
       "paint": {
         "line-color": "#64D564",
         "line-dasharray": [3, 3],
-        "line-width": {"base": 1.5, "stops": [[6, 0.5], [18, 6]]}
+        "line-width": {"base": 1.5, "stops": [[6, 0.5], [18, 5]]}
       }
     },
     {
@@ -733,6 +773,20 @@
       }
     },
     {
+      "id": "golf_hole",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "golf",
+      "minzoom": 15,
+      "filter": ["all", ["==", "$type", "LineString"], ["==", "class", "hole"]],
+      "layout": {"line-cap": "round", "line-join": "round"},
+      "paint": {
+        "line-color": "#808080",
+        "line-opacity": 0.45,
+        "line-width": {"stops": [[15, 0.5], [19, 2.0]]}
+      }
+    },
+    {
       "id": "poi_label",
       "type": "symbol",
       "source": "openmaptiles",
@@ -750,7 +804,7 @@
         "visibility": "visible"
       },
       "paint": {
-        "text-color": "#666",
+        "text-color": "#888",
         "text-halo-blur": 1,
         "text-halo-color": "rgba(255,255,255,0.75)",
         "text-halo-width": 1
@@ -802,6 +856,24 @@
         "text-color": "#000",
         "text-halo-color": "hsl(0, 0%, 100%)",
         "text-halo-width": 2
+      }
+    },
+    {
+      "id": "golf_hole_label",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "golf",
+      "minzoom": 15,
+      "filter": ["all", ["==", "$type", "Point"], ["==", "class", "hole"]],
+      "layout": {
+        "text-field": "{ref}",
+        "text-font": ["Noto Sans Regular"],
+        "text-size": {"stops": [[15, 10], [19, 13]]}
+      },
+      "paint": {
+        "text-color": "#9a3f3f",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.1
       }
     },
     {

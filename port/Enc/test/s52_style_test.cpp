@@ -1406,7 +1406,7 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // reproducible, being every cell whose coverage meets lat 32.60..32.95,
 // lon -80.15..-79.75, which is the padded extent of every coordinate these
 // tests name.
-constexpr uint64_t kHashCharleston = 0xe00d1fe6b6907b43ull;
+constexpr uint64_t kHashCharleston = 0xf828df94fa9a5721ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();
