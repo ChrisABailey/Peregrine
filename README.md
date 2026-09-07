@@ -128,6 +128,7 @@ render straight to a PNG.
 ![GeoTIFF](Screenshots/GeoTIFF.png)
 ![VPF/DNC](Screenshots/DNC.png)
 ![ENC](Screenshots/ENC.png)
+![Pippin](Screenshots/Pippin.png)
 
 ## Pippin (iOS app)
 
@@ -137,12 +138,9 @@ map with GPS, course-up follow, road-snapped routing, a point overlay, search,
 a trip computer and GPX ride recording — all against a bundled data pack, with
 no network at run time.
 
-The source is complete here; **the data pack is not**. `port/apps/Pippin/`
-ships the app, its Xcode project and `stage_data.py`, but the pack that script
-stages — a vector-tile pyramid, a routing graph, a font and a seed point file —
-is cut from map data this repository does not distribute (see *Test data*). So
+The source is complete here but you currently need to provide your own data pack so
 a clone builds and tests Pippin's C++ out of the box and needs its own data
-before the app has a map to draw.
+before the app has a map to draw.  In the long run I would like to build tools to assist in gathering OSM data ansd creating a data pack, but for now you can use the `fvpack` tool to build one from your own OSM extracts.  The tools are generally available in this repository but it is a bit piecemeal and not yet documented.  The `fvpack` tool is the most useful for creating a data pack from OSM extracts.
 
 ```sh
 cmake --build build -j                     # includes Pippin's C++ tests
