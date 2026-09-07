@@ -67,6 +67,7 @@ add_library(fv_fvkit STATIC
   overlay/contour_overlay.cpp
   overlay/grid_overlay.cpp
   overlay/grid_spacing.cpp
+  overlay/point_edit.cpp
   overlay/point_overlay.cpp
   overlay/ta_mask_overlay.cpp
   overlay/vector_map_overlay.cpp
@@ -164,6 +165,7 @@ if(FVW_BUILD_TESTS)
     app/test/app_editor_test.cpp
     app/test/app_pick_test.cpp
     app/test/app_search_test.cpp
+    test/point_edit_test.cpp
     test/point_overlay_test.cpp
     test/vector_map_overlay_test.cpp
     test/feature_rows_test.cpp

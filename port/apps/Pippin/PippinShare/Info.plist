@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- What the row in the share sheet is called. The APP's name and not
+	     "PippinShare": the user is sending a place to the app, and the
+	     extension is an implementation detail they should never meet.
+
+	     `$(PP_DISPLAY_NAME)` rather than a literal, so the row in Apple
+	     Maps' share sheet is called whatever the home screen calls this app
+	     — see `Pippin.xcconfig`, which is also what `AppName.display` reads
+	     back at runtime to name the app in this extension's own sentences. -->
+	<key>CFBundleDisplayName</key>
+	<string>$(PP_DISPLAY_NAME)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<!-- WHEN PIPPIN APPEARS IN A SHARE SHEET.
+
+			     A web URL covers Apple Maps (which shares a link) and
+			     Google Maps' link row. Text covers Google Maps' other
+			     share, which is a string with the place's name on one
+			     line and the link on the next, and it is also how a
+			     pasted "32.60841, -80.07213" arrives.
+
+			     The cost is that Pippin shows up when sharing any text
+			     or any link, including ones that are not places — which
+			     is why `ShareViewController` refuses politely rather
+			     than dropping a marker on whatever it was given. There
+			     is no activation rule that means "a link that has a
+			     coordinate in it"; only the parse can know that, and the
+			     parse runs after the user has already tapped Pippin.
+
+			     A shared Contact FILE does not activate this — that
+			     would need attachments to be allowed, and allowing
+			     attachments puts Pippin in the share sheet for every
+			     photo on the phone. A vCard that arrives as TEXT is
+			     still read (`PlaceLink.placeInVCard`). -->
+			<key>NSExtensionActivationRule</key>
+			<dict>
+				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
+				<integer>1</integer>
+				<key>NSExtensionActivationSupportsText</key>
+				<true/>
+			</dict>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+	</dict>
+</dict>
+</plist>

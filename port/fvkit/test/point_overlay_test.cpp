@@ -27,6 +27,8 @@
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/detail/sqlite.h"
 #include "fvkit/overlay/manager.h"
+#include "fvkit/symbol/png_library.h"
+#include "fvkit/tools/png_io.h"
 #include "fvkit/tools/png_write.h"
 
 namespace {
@@ -367,6 +369,53 @@ TEST(PointOverlay, AddSymbolDedupsByNameAndNamesAFileByItsStem) {
   EXPECT_TRUE(o.RemoveSymbol(first));
   EXPECT_FALSE(o.RemoveSymbol(first));
   EXPECT_EQ(nullptr, o.FindSymbolByName("harbor"));
+}
+
+TEST(PointOverlay, ASpriteIsImportedFromALibraryAsThePngTheDocumentCarries) {
+  // The path a shell takes to put a style's own icon set in front of a user:
+  // the library holds the artwork, the document ends up holding the bytes.
+  ScratchDir icons("library");
+  ASSERT_TRUE(fv::WritePng(Solid(6, 5, 10, 20, 30), icons.file("cafe.png")).ok());
+  ASSERT_TRUE(fv::WritePng(Solid(4, 4, 90, 80, 70), icons.file("pier.png")).ok());
+  fv::PngSymbolLibrary lib;
+  ASSERT_TRUE(lib.OpenDirectory(icons.str()).ok());
+
+  PointOverlay o;
+  int64_t cafe = 0;
+  ASSERT_TRUE(o.AddSymbolFromLibrary(lib, "cafe", "", &cafe).ok());
+  ASSERT_NE(0, cafe);
+  const PointSymbol* row = o.FindSymbol(cafe);
+  ASSERT_NE(nullptr, row);
+  EXPECT_EQ("cafe", row->name) << "an empty name takes the library's id";
+  EXPECT_DOUBLE_EQ(1.0, row->pixel_ratio);
+  EXPECT_FALSE(row->has_pivot) << "a centred pivot is an UNSET one";
+
+  // The row carries a real PNG of the library's own tile, not a path to it.
+  fv::PixelBuffer back;
+  ASSERT_TRUE(fv::DecodePng(row->image.data(), row->image.size(), &back).ok());
+  EXPECT_EQ(6, back.Width());
+  EXPECT_EQ(5, back.Height());
+  EXPECT_EQ(10, back.Row(0)[0]);
+  EXPECT_EQ(20, back.Row(0)[1]);
+  EXPECT_EQ(30, back.Row(0)[2]);
+
+  // Deduped by name like every other add, so a shell may import on every pick
+  // without asking whether the document already has it.
+  int64_t again = 0;
+  ASSERT_TRUE(o.AddSymbolFromLibrary(lib, "cafe", "", &again).ok());
+  EXPECT_EQ(cafe, again);
+  EXPECT_EQ(1u, o.symbols().size());
+
+  // An explicit name is the row's, which is what lets one sheet's sprite be
+  // filed under the author's own word for it.
+  int64_t named = 0;
+  ASSERT_TRUE(o.AddSymbolFromLibrary(lib, "pier", "Dock", &named).ok());
+  ASSERT_NE(nullptr, o.FindSymbolByName("Dock"));
+  EXPECT_EQ(named, o.FindSymbolByName("Dock")->id);
+
+  // A sprite the library has never heard of is an error, not a blank row.
+  EXPECT_FALSE(o.AddSymbolFromLibrary(lib, "no_such_sprite").ok());
+  EXPECT_EQ(2u, o.symbols().size());
 }
 
 TEST(PointOverlay, ASchema1DocumentStillOpensAndIsSavedForward) {

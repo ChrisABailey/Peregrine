@@ -53,6 +53,14 @@ Status OverlayTypeRegistry::Register(OverlayTypeDesc desc) {
   return Status::Ok();
 }
 
+bool OverlayTypeRegistry::SetEditorFactory(
+    const TypeId& id, std::function<std::unique_ptr<OverlayEditor>()> factory) {
+  auto it = by_id_.find(id);
+  if (it == by_id_.end()) return false;
+  it->second->editor_factory = std::move(factory);
+  return true;
+}
+
 const OverlayTypeDesc* OverlayTypeRegistry::Find(const TypeId& id) const {
   auto it = by_id_.find(id);
   return it == by_id_.end() ? nullptr : it->second;

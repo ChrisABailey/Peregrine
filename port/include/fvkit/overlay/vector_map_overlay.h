@@ -18,13 +18,16 @@
 // DTED hillshade" layering feature arriving early — which is why this class is
 // named for what it IS rather than for the one capability it starts with.
 //
-// WHAT IT DOES NOT DO YET, and the omission is deliberate: it does not DRAW.
-// `OnDraw` is the base class's, which draws nothing. Owning a `VectorScene`,
-// rebuilding it when the camera moves and choosing which band it renders in is
-// the layering feature's work, and none of it touches the search seam — a
-// shell today can hold a not-visible VectorMapOverlay purely as the search
-// provider while it keeps drawing the base map its own way (Pippin's two-layer
-// economy, P18, is untouched by this file existing).
+// IT ALSO DRAWS, given a style engine as well as a source: `SetStyle` builds
+// the same `VectorRenderer` the base map is drawn with, and `OnDraw` renders
+// into whatever the shell's projection is. A source with no style draws
+// nothing, which is what a shell holding one purely as a search provider
+// wants (Pippin's two-layer economy).
+//
+// THE BACKGROUND LAYER IS NEVER PAINTED HERE. A GL style's `background` is a
+// canvas clear, and an overlay clearing the canvas would erase the map it is
+// laid over; the style meant for this use declares no background and no opaque
+// area fills (port/Osm/styles/peregrine-osm-overlay.json).
 //
 // TWO TIERS, AND THE SOURCE DECIDES WHICH ONE ANSWERS.
 //
@@ -83,6 +86,8 @@
 #include "fvkit/app/search.h"
 #include "fvkit/overlay/overlay.h"
 #include "fvkit/vector/feature_rows.h"
+#include "fvkit/vector/renderer.h"
+#include "fvkit/vector/style.h"
 #include "fvkit/vector/vector.h"
 
 namespace fv {
@@ -96,7 +101,7 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
                             VectorSourcePtr source = nullptr);
   ~VectorMapOverlay() override;
 
-  // Capability accessors (R2 — never dynamic_cast). Search ONLY, for now.
+  // Capability accessors (R2 — never dynamic_cast).
   app::SearchProvider* AsSearch() override { return this; }
 
   const VectorSourcePtr& source() const { return source_; }
@@ -104,6 +109,42 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
   // pack that minted it, and handing the same number to a different pack is
   // the one way a stale bookmark could point at the wrong thing silently.
   void SetSource(VectorSourcePtr source);
+
+  // --- drawing -------------------------------------------------------------
+
+  // The style engine `OnDraw` renders through. Null (the default) leaves the
+  // overlay search-only. Setting either half discards the current renderer,
+  // and with it the retained scene.
+  void SetStyle(StyleEnginePtr style);
+  const StyleEnginePtr& style() const { return style_; }
+
+  // The renderer, built on first use once both halves are present; null
+  // otherwise. Exposed so a shell can read its stats and reach knobs this
+  // class does not forward.
+  VectorRenderer* renderer();
+
+  // Forwarded to the renderer, and remembered so they survive a source or
+  // style change. Meanings and defaults are `VectorRenderer`'s own.
+  void SetSceneMargin(double fraction);
+  double scene_margin() const { return scene_margin_; }
+  void SetSimplifyPixels(double px);
+  double simplify_pixels() const { return simplify_px_; }
+  void SetSymbolScale(double s);
+  double symbol_scale() const { return symbol_scale_; }
+  void SetDeviceDpi(double dpi);
+  double device_dpi() const { return dpi_; }
+  void SetLabelReferenceScale(double scale_denominator);
+  double label_reference_scale() const { return label_ref_scale_; }
+  void SetMaxDrawFeatures(size_t n);
+  size_t max_draw_features() const { return max_draw_; }
+
+  // Renders the source through the style for `proj`. Draws nothing, and
+  // succeeds, when either half is missing. The canvas is not cleared: an
+  // overlay draws over what is already there.
+  Status OnDraw(const MapProjection& proj, ICanvas& canvas) override;
+
+  // Features drawn by the last `OnDraw`; 0 when there was no renderer.
+  size_t last_draw_features() const { return last_draw_features_; }
 
   // --- what this provider calls a label ------------------------------------
 
@@ -254,6 +295,8 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
   };
 
   VectorSourcePtr source_;
+  StyleEnginePtr style_;
+  std::unique_ptr<VectorRenderer> renderer_;
   std::vector<std::string> label_tags_;
   double scale_denominator_ = 0.0;
   size_t max_features_ = 0;
@@ -264,9 +307,20 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
   std::map<RefKey, uint64_t> by_ref_;
   std::vector<FeatureRef> by_id_;  // index = id - 1
 
+  double scene_margin_ = 0.0;
+  double simplify_px_ = 0.0;
+  double symbol_scale_ = 1.0;
+  double dpi_ = 96.0;
+  double label_ref_scale_ = 0.0;
+  size_t max_draw_ = 0;
+
   size_t last_features_ = 0;
   size_t last_results_ = 0;
   bool last_used_index_ = false;
+  size_t last_draw_features_ = 0;
+
+  // Pushes the remembered knobs onto a freshly built renderer.
+  void ApplyRenderSettings();
 
   // The two tiers, each appending to `out`. `SearchIndex` answers false when
   // the source turned out to have no index (or reading it failed), which is

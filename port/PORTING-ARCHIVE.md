@@ -11,8 +11,8 @@ now `port/fvkit-app-plan-COMPLETE.md` and `fvkit-draw-plan.md` is now
 `port/fvkit-draw-plan-COMPLETE.md`. Both are finished; read them only for design intent behind a
 bug.
 
-Full strategy: `/Users/chrisbailey/.claude/plans/this-project-is-extreamly-enumerated-marshmallow.md`
-(key facts repeated here so this file is self-sufficient).
+Full strategy: a planning document kept outside this repository (key facts repeated here so
+this file is self-sufficient).
 
 ## Status legend
 `—` not started · `C` compiles on macOS · `T` tests pass · `P` exposed in Python

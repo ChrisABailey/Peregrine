@@ -84,6 +84,11 @@ namespace fv {
 // with yet — so it is a pointer here and a class in point_overlay.cpp.
 class EmbeddedSymbolLibrary;
 
+// The editing gestures (fvkit/overlay/point_edit.h). Held by pointer so this
+// header stays includable by a shell that only draws.
+class PointEditSession;
+class OverlayManager;
+
 // How a point is drawn.
 //
 // It used to say here that a shape is three lines of canvas calls and needs no
@@ -190,6 +195,42 @@ class PointOverlay : public Overlay,
 
   Status OnDraw(const MapProjection& proj, ICanvas& canvas) override;
 
+  // --- editing ------------------------------------------------------------
+
+  /// The gestures, the armed add-mode and the undo stack. Always present: an
+  /// overlay nobody edits simply never calls into it, so this never returns
+  /// null and a caller does not have to check.
+  PointEditSession& edit() { return *edit_; }
+  const PointEditSession& edit() const { return *edit_; }
+
+  // The input SPI, forwarded to the session.
+  bool OnMouseDown(const MouseEvent& e) override;
+  bool OnMouseMove(const MouseEvent& e) override;
+  bool OnMouseUp(const MouseEvent& e) override;
+  bool OnKeyDown(const KeyEvent& e) override;
+
+  /// The stack, for mouse CAPTURE and for the snap walk, and for nothing else.
+  /// Null is legal: the gestures still work, they are just uncaptured and
+  /// unsnapped.
+  void SetManager(OverlayManager* manager) { manager_ = manager; }
+  OverlayManager* manager() const { return manager_; }
+
+  /// A copy of the projection the last frame was drawn with. The input SPI
+  /// carries no projection, so an overlay that turns a click into a position
+  /// keeps the one it drew with.
+  bool has_projection() const { return have_proj_; }
+  const MapProjection& last_projection() const { return last_proj_; }
+
+  /// Draw everything at reduced opacity — the badge, its edge, the label and
+  /// the embedded icon alike.
+  ///
+  /// It is a statement about the WINDOW and not about the document: a shell
+  /// with several point sets open dims the ones that are not being edited, so
+  /// which set a click belongs to is visible rather than remembered. Selection
+  /// still draws, because a dimmed overlay is not an inert one.
+  void SetDimmed(bool on);
+  bool dimmed() const { return dimmed_; }
+
   // Labels are off by default: a point set is a pick target first, and a screen
   // full of names is the label-collision gap the ledger already carries.
   void SetShowLabels(bool on) { show_labels_ = on; }
@@ -253,6 +294,18 @@ class PointOverlay : public Overlay,
                               const std::string& name = std::string(),
                               int64_t* out_id = nullptr);
 
+  // The same from a symbol LIBRARY's tile — one sprite out of a sheet, which
+  // is how a palette is assembled from a style's own icon set rather than from
+  // loose files. `name` empty takes the library's own id for it. The tile is
+  // re-encoded as a PNG and embedded here and now, so the sheet is never
+  // referenced again and the document stays self-contained.
+  //
+  // Deduped by name like every other add: importing a sprite the document
+  // already carries returns the row it has.
+  Status AddSymbolFromLibrary(ISymbolLibrary& library, const std::string& id,
+                              const std::string& name = std::string(),
+                              int64_t* out_id = nullptr);
+
   bool RemoveSymbol(int64_t id);
   const PointSymbol* FindSymbol(int64_t id) const;
   const PointSymbol* FindSymbolByName(const std::string& name) const;
@@ -261,6 +314,15 @@ class PointOverlay : public Overlay,
   // NOT a document change: selecting does not dirty the overlay.
   int64_t selected() const { return selected_; }
   void SetSelected(int64_t id) { selected_ = id; }
+
+  // --- EditTarget ---------------------------------------------------------
+
+  void EnterEditFocus() override;
+  void ReleaseEditFocus() override;
+  bool CanUndo() const override;
+  void Undo() override;
+  bool CanRedo() const override;
+  void Redo() override;
 
   // --- Persistence --------------------------------------------------------
 
@@ -376,12 +438,18 @@ class PointOverlay : public Overlay,
   std::map<uint32_t, std::unique_ptr<BuiltinSymbolLibrary>> libraries_;
   std::unique_ptr<EmbeddedSymbolLibrary> symbol_library_;
 
+  std::unique_ptr<PointEditSession> edit_;
+  OverlayManager* manager_ = nullptr;
+  MapProjection last_proj_;
+  bool have_proj_ = false;
+
   std::vector<MapPoint> points_;
   std::vector<PointSymbol> symbols_;
   int64_t selected_ = 0;
   int64_t next_id_ = 1;
   int64_t next_symbol_id_ = 1;
   bool show_labels_ = false;
+  bool dimmed_ = false;
   double dpi_scale_ = 1.0;
 };
 

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- PrivacyInfo.xcprivacy — the privacy manifest App Store Connect requires.
+
+     WITHOUT THIS FILE THE UPLOAD IS REJECTED, not warned about: since spring
+     2024 an app that calls a "required reason" API and does not declare why
+     comes back as ITMS-91053 within minutes of the upload finishing. It is a
+     STATIC check over the binary — nobody reads this file to decide whether
+     it is true — so the only thing that matters is that every category the
+     code actually touches is listed, with a reason code from Apple's own
+     table for that category.
+
+     TWO CATEGORIES, AND THEY ARE THE ONLY TWO THIS APP HAS:
+
+       * USER DEFAULTS. Four preferences (the distance units, the symbol
+         size, the last search term) plus the five `-PP…` launch arguments
+         the probes read. All of it is this app's own, read back by this app
+         only, which is exactly what CA92.1 describes.
+
+       * FILE TIMESTAMP. `RideLibrary.rides()` and `ReportLibrary.reports()`
+         read `.creationDateKey` to sort and title the lists — of files this
+         app wrote itself, in its own container. That is C617.1.
+
+     WHAT IS DELIBERATELY ABSENT, so a later reader does not "fix" it:
+     DiskSpace (never asked), SystemBootTime (never asked), ActiveKeyboards
+     (never asked). `.fileSizeKey` is read beside the creation date and is
+     NOT a required-reason API — only the timestamp is.
+
+     AND THE SHARE EXTENSION HAS NO MANIFEST OF ITS OWN, on purpose: a
+     manifest is per-bundle and needed only where a required-reason API is
+     called, and `PippinShare` is two files (`ShareViewController.swift` and
+     `PlaceLink.swift`) that between them touch none of them. Adding an empty
+     one would be a second file to keep true for no gain.
+
+     NOTHING IS COLLECTED. `NSPrivacyCollectedDataTypes` is empty because it
+     is empty: no analytics, no crash reporter, no account, no server. The
+     one network call in the app (`PlaceLink.resolve`) follows a link the
+     user has just handed over from another app, to the company that minted
+     it — it sends nothing about the rider and stores nothing, so it is not
+     collection and it is not tracking. `NSPrivacyTrackingDomains` is empty
+     for the same reason, and MUST stay empty while `NSPrivacyTracking` is
+     false: App Store Connect rejects the combination of false with a
+     non-empty domain list.
+
+     KEEP THIS IN STEP WITH THE APP STORE PRIVACY LABEL. The questionnaire in
+     App Store Connect is a separate answer to the same question, and the two
+     disagreeing is a review conversation nobody wants: answer it "Data Not
+     Collected". -->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- CA92.1 — "access information from the app itself, and
+				     app group containers the app is a member of". -->
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- C617.1 — "access the timestamps of files INSIDE the
+				     app's own container", which is where every ride and
+				     every report this reads was written. -->
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

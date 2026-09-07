@@ -1385,6 +1385,10 @@ _OSM_STYLE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "..", "..", "Osm", "styles", "peregrine-osm.json")
 
+_OSM_OVERLAY_STYLE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "Osm", "styles", "peregrine-osm-overlay.json")
+
 
 def _mbtiles():
     d = _testdata("OSM")
@@ -2721,3 +2725,67 @@ def test_tamask_colours_real_terrain_and_a_climb_re_reads_nothing():
     assert high["samples"] == 0
     assert high["band_pixels"]["warn"] < low["band_pixels"]["warn"]
     assert high["peak_elev_m"] == low["peak_elev_m"]  # the ground did not move
+
+
+def test_vector_map_overlay_draws_over_the_map_underneath():
+    """OSM as an overlay: the source, the overlay sheet, and a canvas that
+    already has a map on it.
+
+    The two properties that make a sheet usable this way are what is asserted —
+    it declares no background, and what it draws leaves the map below showing.
+    """
+    path = _mbtiles()
+    if path is None:
+        pytest.skip("no OSM TestData")
+    src = pyfvw.vector.OsmVectorSource()
+    src.open(path)
+    style = pyfvw.vector.OsmStyleEngine()
+    style.load_file(_OSM_OVERLAY_STYLE)
+    style.set_reference_latitude(33.755)
+    style.set_display_mm_per_pixel(src.display_mm_per_pixel)
+    assert style.background(25000.0) is None
+
+    ov = pyfvw.overlay.VectorMapOverlay("OSM", src)
+    assert ov.renderer is None          # a source with no style is search-only
+    ov.set_style(style)
+    assert ov.renderer is not None
+
+    proj = pyfvw.engine.MapProjection()
+    proj.set_surface_size(256, 256)
+    proj.set_center(pyfvw.geo.GeoPoint(33.755, -84.390))
+    proj.set_physical_scale(25000.0, 0.25)
+    under = (96, 104, 96)
+    cv = pyfvw.canvas.CpuCanvas(256, 256)
+    cv.clear(under)
+    ov.on_draw(proj, cv)
+
+    assert ov.last_draw_features > 100
+    arr = np.asarray(cv.buffer)
+    still = np.all(arr[..., :3] == np.array(under, dtype=arr.dtype), axis=-1)
+    assert still.sum() > arr.shape[0] * arr.shape[1] // 5
+
+
+def test_vector_map_overlay_forwards_its_render_knobs():
+    ov = pyfvw.overlay.VectorMapOverlay("Empty")
+    ov.scene_margin = 0.25
+    ov.simplify_pixels = 1.5
+    ov.symbol_scale = 2.0
+    ov.device_dpi = 144.0
+    ov.label_reference_scale = 50000.0
+    ov.max_draw_features = 1234
+    assert ov.renderer is None          # nothing to build a renderer over yet
+
+    path = _mbtiles()
+    if path is None:
+        pytest.skip("no OSM TestData")
+    src = pyfvw.vector.OsmVectorSource()
+    src.open(path)
+    style = pyfvw.vector.OsmStyleEngine()
+    style.load_file(_OSM_OVERLAY_STYLE)
+    ov.set_source(src)
+    ov.set_style(style)
+    # The knobs were set before either half existed and still reach the
+    # renderer that is built from them.
+    assert ov.renderer.scene_margin == 0.25
+    assert ov.renderer.simplify_pixels == 1.5
+    assert ov.renderer.label_reference_scale == 50000.0

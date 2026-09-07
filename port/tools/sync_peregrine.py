@@ -54,29 +54,18 @@ DEST_OWNED_DIRS = ("Screenshots/",)
 
 # Held back from publication on purpose — subtrees that exist upstream and are
 # deliberately not part of the published subset. This is a policy list, not a
-# derivation: everything here would otherwise be shipped, so removing an entry
-# publishes it. Applied to BOTH sources of truth (the build closure and the
-# git-tracked port/ files), because a held-back subtree can be reached either
-# way — Pippin is compiled by the mac build as `fv_pippin_test`, so excluding
-# it from the tracked list alone would still publish its sources via the .o.d
-# closure.
+# derivation: adding an entry hides it, removing one publishes it.
 #
-#   port/apps/Pippin/         the iOS app and PippinKit (Chris, 2026-08-29: not
-#                             ready to publish; App Store distribution is also
-#                             still blocked — see NOTICE.md §6 and the LGPL §10
-#                             problem, so there is nothing to gain by shipping
-#                             it early)
-#   port/pippin-plan.md       its plan and requirements documents
-#   port/apps/Pippin_requirements.md
+# It must be applied to BOTH sources of truth — the build closure and the
+# git-tracked port/ walk — because a subtree can be reached either way. Pippin
+# is the case that proves it: the mac build compiles PippinKit's pure-C++ half
+# as `fv_pippin_test`, so excluding it from the tracked list alone would still
+# have published its sources through the .o.d closure.
 #
-# Note this hides only the app. Core `port/` files that MENTION Pippin in a
-# comment (RouteKit, fvkit headers, PORTING.md) still ship — they are the
-# port's own code describing its consumer, not the app.
-HELD_BACK = (
-    "port/apps/Pippin/",
-    "port/pippin-plan.md",
-    "port/apps/Pippin_requirements.md",
-)
+# Empty since 2026-09-07: Pippin publishes with the rest. Its offline data pack
+# is not affected by this list — `port/apps/Pippin/{Data,fonts,local}/` are
+# git-ignored, so the tracked-files rule never sees them.
+HELD_BACK = ()
 
 
 def held_back(rel):
@@ -93,6 +82,16 @@ RUNTIME_DATA = [
 ]
 # `port/` needs no entries here: port_extras() ships everything git tracks
 # under port/, run-time data included.
+
+# Repo-root sources that publish verbatim. The closure never reaches them —
+# it walks port/, fvw_core/ and third_party/ — so they are named here rather
+# than copied into the destination by hand, where they would drift the way the
+# destination-owned README and CMakeLists have three times.
+ROOT_SOURCES = [
+    # The `ios` and `ios-sim` presets Pippin's build instructions name. Without
+    # this a clone can build the mac tests and nothing for a phone.
+    "CMakePresets.json",
+]
 
 
 def canonical(repo, rel):
@@ -183,6 +182,7 @@ def main():
     wanted = build_closure(repo, build_dir)
     wanted.update(port_extras(repo))
     wanted.update(RUNTIME_DATA)
+    wanted.update(ROOT_SOURCES)
 
     mapping = {}
     for rel in sorted(wanted):

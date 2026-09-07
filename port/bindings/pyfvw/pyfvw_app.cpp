@@ -582,6 +582,32 @@ void BindApp(py::module_& m) {
            "Rejects an empty id, a duplicate id and a missing factory — a type "
            "that cannot be instantiated fails here rather than under the "
            "user's click.")
+      .def("set_editor_factory",
+           [](OverlayTypeRegistry& r, const std::string& id,
+              py::object editor_factory) {
+             std::function<std::unique_ptr<OverlayEditor>()> made;
+             if (!editor_factory.is_none()) {
+               made = [editor_factory]() -> std::unique_ptr<OverlayEditor> {
+                 py::gil_scoped_acquire gil;
+                 try {
+                   py::object obj = editor_factory();
+                   if (obj.is_none()) return nullptr;
+                   return std::unique_ptr<OverlayEditor>(
+                       new PyEditorProxy(std::move(obj)));
+                 } catch (py::error_already_set&) {
+                   PyErr_Clear();
+                   return nullptr;
+                 }
+               };
+             }
+             return r.SetEditorFactory(id, std::move(made));
+           },
+           "type_id"_a, "editor_factory"_a.none(true),
+           "Attaches a palette to a type that is already registered — a "
+           "BUILT-IN type's tool belongs to the shell. fvkit says what a "
+           "point set is and where it sits in the stack; a desktop with a "
+           "toolbar says what editing one looks like. False when no such type "
+           "is registered; None clears the editor.")
       .def("find", &OverlayTypeRegistry::Find, "type_id"_a,
            py::return_value_policy::reference_internal)
       .def("find_by_extension", &OverlayTypeRegistry::FindByExtension, "ext"_a,
@@ -728,8 +754,15 @@ void BindApp(py::module_& m) {
           [](const EditorManager& m) { return EditorToPython(m.CurrentEditor()); },
           "The object your editor_factory returned, or None.")
       .def_property_readonly(
-          "edited", [](const EditorManager& m) { return m.edited(); },
-          py::return_value_policy::reference,
+          "edited",
+          [](const EditorManager& m) -> std::shared_ptr<fv::Overlay> {
+            // The STACK's handle, not a wrapper minted around the raw
+            // pointer: an overlay is held by shared_ptr here, and returning
+            // the bare `Overlay*` would hand back a second Python object for
+            // the same overlay — so `editors.edited is my_overlay` would be
+            // false for the overlay actually being edited.
+            return m.manager().FindShared(m.edited());
+          },
           "The overlay holding edit focus — null while a mode is active with "
           "nothing of its type open.")
       .def_property_readonly("active_constraints",

@@ -48,28 +48,11 @@
 #include "fv_route_overlay.h"
 #include "fv_route_planner.h"
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/edit_position.h"
 #include "fvkit/geo.h"
 #include "fvkit/overlay/overlay.h"
 
 namespace fv {
-
-// What a pixel means, once the snapper has had its say.
-//
-// Returned rather than just a GeoPoint because a shell wants to SAY so: P19's
-// button reads "Use Ruddy Turnstone" and its ring changes colour, and a
-// desktop status bar can do the same with one string. A snap that happens
-// silently is indistinguishable from a drag that missed.
-struct EditPosition {
-  GeoPoint position;
-  // False when there is no projection yet (nothing has drawn this overlay) or
-  // the pixel is off it. A caller that gets this holds its position — it does
-  // not guess a coordinate.
-  bool valid = false;
-  bool snapped = false;
-  // The candidate's own description ("Points: Ruddy Turnstone"), empty when
-  // nothing was snapped to.
-  std::string snapped_to;
-};
 
 class RouteEditSession {
  public:

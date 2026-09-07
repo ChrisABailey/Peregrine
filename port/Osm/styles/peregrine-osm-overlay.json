@@ -1,0 +1,718 @@
+{
+  "version": 8,
+  "name": "Peregrine OSM overlay (OpenMapTiles)",
+  "metadata": {
+    "peregrine:note": "peregrine-osm.json rewritten for use as an OVERLAY over another map. Two differences, and nothing else: there is no `background` layer, because an overlay clearing the canvas would erase the map under it; and the opaque ground fills (landcover, landuse, park) are gone, water is a wash rather than a colour, and a building is its outline. What is left is the linework and the names, which is what a chart adds to a shaded relief or an image."
+  },
+  "sources": {
+    "openmaptiles": {
+      "type": "vector"
+    }
+  },
+  "layers": [
+    {
+      "id": "water",
+      "type": "fill",
+      "source-layer": "water",
+      "filter": [
+        "!=",
+        "brunnel",
+        "tunnel"
+      ],
+      "paint": {
+        "fill-color": "#a0c8f0",
+        "fill-opacity": 0.35,
+        "fill-outline-color": "#5c93c4"
+      }
+    },
+    {
+      "id": "waterway",
+      "type": "line",
+      "source-layer": "waterway",
+      "minzoom": 8,
+      "paint": {
+        "line-color": "#a0c8f0",
+        "line-width": {
+          "base": 1.3,
+          "stops": [
+            [
+              8,
+              0.5
+            ],
+            [
+              14,
+              2.0
+            ],
+            [
+              18,
+              6.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "aeroway-runway",
+      "type": "line",
+      "source-layer": "aeroway",
+      "filter": [
+        "==",
+        "class",
+        "runway"
+      ],
+      "minzoom": 10,
+      "paint": {
+        "line-color": "#c8c8cc",
+        "line-width": {
+          "base": 1.5,
+          "stops": [
+            [
+              10,
+              2.0
+            ],
+            [
+              16,
+              14.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-minor-casing",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "minor",
+          "service",
+          "track"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 12,
+      "paint": {
+        "line-color": "#cfcdca",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              12,
+              1.5
+            ],
+            [
+              16,
+              6.0
+            ],
+            [
+              20,
+              24.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-secondary-casing",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "secondary",
+          "tertiary"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 9,
+      "paint": {
+        "line-color": "#c0b8a8",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              9,
+              1.5
+            ],
+            [
+              14,
+              6.0
+            ],
+            [
+              20,
+              34.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-primary-casing",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "primary",
+          "trunk"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 6,
+      "paint": {
+        "line-color": "#a06b3c",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              6,
+              1.0
+            ],
+            [
+              14,
+              8.0
+            ],
+            [
+              20,
+              40.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-motorway-casing",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "==",
+          "class",
+          "motorway"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 4,
+      "paint": {
+        "line-color": "#8a4b2a",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              4,
+              1.0
+            ],
+            [
+              14,
+              10.0
+            ],
+            [
+              20,
+              46.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-minor",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "minor",
+          "service",
+          "track"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 12,
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              12,
+              0.5
+            ],
+            [
+              16,
+              4.0
+            ],
+            [
+              20,
+              20.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-secondary",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "secondary",
+          "tertiary"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 9,
+      "paint": {
+        "line-color": "#fefefe",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              9,
+              0.5
+            ],
+            [
+              14,
+              4.0
+            ],
+            [
+              20,
+              30.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-primary",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "in",
+          "class",
+          "primary",
+          "trunk"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 6,
+      "paint": {
+        "line-color": "#fea",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              6,
+              0.5
+            ],
+            [
+              14,
+              6.0
+            ],
+            [
+              20,
+              36.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-motorway",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "all",
+        [
+          "==",
+          "class",
+          "motorway"
+        ],
+        [
+          "!=",
+          "brunnel",
+          "tunnel"
+        ]
+      ],
+      "minzoom": 4,
+      "paint": {
+        "line-color": "#fc8",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              4,
+              0.5
+            ],
+            [
+              14,
+              8.0
+            ],
+            [
+              20,
+              42.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "road-rail",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "==",
+        "class",
+        "rail"
+      ],
+      "minzoom": 10,
+      "paint": {
+        "line-color": "#a8a8a8",
+        "line-width": {
+          "base": 1.4,
+          "stops": [
+            [
+              10,
+              0.8
+            ],
+            [
+              16,
+              2.5
+            ]
+          ]
+        },
+        "line-dasharray": [
+          3,
+          3
+        ]
+      }
+    },
+    {
+      "id": "road-path",
+      "type": "line",
+      "source-layer": "transportation",
+      "filter": [
+        "==",
+        "class",
+        "path"
+      ],
+      "minzoom": 14,
+      "paint": {
+        "line-color": "#b0a08c",
+        "line-width": {
+          "stops": [
+            [
+              14,
+              0.8
+            ],
+            [
+              18,
+              2.0
+            ]
+          ]
+        },
+        "line-dasharray": [
+          2,
+          2
+        ]
+      }
+    },
+    {
+      "id": "building",
+      "type": "fill",
+      "source-layer": "building",
+      "minzoom": 13,
+      "paint": {
+        "fill-outline-color": "#8c8378"
+      }
+    },
+    {
+      "id": "boundary-country",
+      "type": "line",
+      "source-layer": "boundary",
+      "filter": [
+        "<=",
+        "admin_level",
+        "2"
+      ],
+      "paint": {
+        "line-color": "#9e9cab",
+        "line-width": {
+          "base": 1.2,
+          "stops": [
+            [
+              3,
+              0.8
+            ],
+            [
+              10,
+              2.5
+            ]
+          ]
+        },
+        "line-dasharray": [
+          4,
+          2
+        ]
+      }
+    },
+    {
+      "id": "boundary-state",
+      "type": "line",
+      "source-layer": "boundary",
+      "filter": [
+        "all",
+        [
+          ">",
+          "admin_level",
+          "2"
+        ],
+        [
+          "<=",
+          "admin_level",
+          "4"
+        ]
+      ],
+      "minzoom": 4,
+      "paint": {
+        "line-color": "#b0aebb",
+        "line-width": {
+          "base": 1.2,
+          "stops": [
+            [
+              4,
+              0.6
+            ],
+            [
+              12,
+              1.8
+            ]
+          ]
+        },
+        "line-dasharray": [
+          3,
+          2
+        ]
+      }
+    },
+    {
+      "id": "poi-dot",
+      "type": "circle",
+      "source-layer": "poi",
+      "minzoom": 15,
+      "paint": {
+        "circle-color": "#8b6f52",
+        "circle-radius": {
+          "stops": [
+            [
+              15,
+              2.0
+            ],
+            [
+              18,
+              4.0
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "water-name",
+      "type": "symbol",
+      "source-layer": "water_name",
+      "minzoom": 9,
+      "layout": {
+        "text-field": "{name:latin}",
+        "text-size": {
+          "stops": [
+            [
+              9,
+              10.0
+            ],
+            [
+              14,
+              13.0
+            ]
+          ]
+        }
+      },
+      "paint": {
+        "text-color": "#3f7ea8",
+        "text-halo-color": "#eef4f8",
+        "text-halo-width": 1.5
+      }
+    },
+    {
+      "id": "road-name",
+      "type": "symbol",
+      "source-layer": "transportation_name",
+      "minzoom": 14,
+      "layout": {
+        "text-field": "{name:latin}",
+        "text-size": {
+          "stops": [
+            [
+              14,
+              10.0
+            ],
+            [
+              18,
+              13.0
+            ]
+          ]
+        },
+        "symbol-placement": "line",
+        "symbol-spacing": 400,
+        "text-max-angle": 40,
+        "text-offset": [
+          0,
+          -0.7
+        ]
+      },
+      "paint": {
+        "text-color": "#5a5a5a",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.5
+      }
+    },
+    {
+      "id": "place-town",
+      "type": "symbol",
+      "source-layer": "place",
+      "filter": [
+        "in",
+        "class",
+        "town",
+        "village",
+        "suburb"
+      ],
+      "minzoom": 9,
+      "layout": {
+        "text-field": "{name:latin}",
+        "text-size": {
+          "stops": [
+            [
+              9,
+              10.0
+            ],
+            [
+              14,
+              15.0
+            ]
+          ]
+        }
+      },
+      "paint": {
+        "text-color": "#4a4a4a",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.5
+      }
+    },
+    {
+      "id": "place-city",
+      "type": "symbol",
+      "source-layer": "place",
+      "filter": [
+        "==",
+        "class",
+        "city"
+      ],
+      "minzoom": 4,
+      "layout": {
+        "text-field": "{name:latin}",
+        "text-size": {
+          "base": 1.2,
+          "stops": [
+            [
+              4,
+              11.0
+            ],
+            [
+              12,
+              20.0
+            ]
+          ]
+        }
+      },
+      "paint": {
+        "text-color": "#333333",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 2
+      }
+    },
+    {
+      "id": "place-state",
+      "type": "symbol",
+      "source-layer": "place",
+      "filter": [
+        "==",
+        "class",
+        "state"
+      ],
+      "minzoom": 3,
+      "maxzoom": 8,
+      "layout": {
+        "text-field": "{name:latin}",
+        "text-size": {
+          "stops": [
+            [
+              3,
+              10.0
+            ],
+            [
+              7,
+              14.0
+            ]
+          ]
+        }
+      },
+      "paint": {
+        "text-color": "#7a7a7a",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 2
+      }
+    }
+  ]
+}

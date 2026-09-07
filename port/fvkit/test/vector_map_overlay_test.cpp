@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "fvkit/app/search.h"
+#include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/overlay/point_overlay.h"
 
@@ -980,4 +981,147 @@ TEST(VectorMapOverlayIndex, CancelBeforeTheIndexReadCostsTheReadItself) {
   // AND IT DOES NOT THEN SCAN: a cancelled search is not a reason to go and
   // do the expensive half of the work instead.
   EXPECT_EQ(0, src->queries);
+}
+
+// ---------------------------------------------------------------------------
+// Drawing — the other half of what this class is for. A vector map laid over
+// another map, which is what the style engine makes it and what the canvas is
+// asked to prove.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Strokes every feature in one colour at one priority. The draw tests are
+// about what the OVERLAY does — build a renderer, honour its knobs, leave the
+// canvas alone when it cannot draw — so the style is the smallest one that
+// puts ink down.
+class OneColourStyle : public fv::IStyleEngine {
+ public:
+  fv::FvColor color{255, 0, 0, 255};
+
+  fv::Status Style(const fv::VectorFeature&, const fv::StyleContext&,
+                   std::vector<fv::StyleResult>* out) override {
+    ++styled;
+    fv::StyleResult r;
+    r.stroke.valid = true;
+    r.stroke.pen.color = color;
+    r.stroke.pen.width = 1;
+    out->push_back(r);
+    return fv::Status::Ok();
+  }
+
+  const fv::VectorSymbol* Symbol(const std::string&) override {
+    return nullptr;
+  }
+
+  int styled = 0;
+};
+
+// A projection over the fixture island, big enough that the roads are several
+// pixels long.
+fv::MapProjection IslandProjection() {
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(256, 256);
+  proj.SetCenter(GeoPoint{32.605, -80.085});
+  proj.SetPhysicalScale(100000.0, 0.25);
+  return proj;
+}
+
+// Pixels that are not the fill the canvas was cleared with.
+size_t InkedPixels(const fv::CpuCanvas& c, fv::FvColor ground) {
+  const fv::PixelBuffer& buf = c.Buffer();
+  size_t n = 0;
+  for (int y = 0; y < buf.Height(); ++y) {
+    const unsigned char* p = buf.Row(y);
+    for (int x = 0; x < buf.Width(); ++x, p += 4) {
+      if (p[0] != ground.r || p[1] != ground.g || p[2] != ground.b) ++n;
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST(VectorMapOverlayDraw, NoStyleDrawsNothingAndStillSearches) {
+  VectorMapOverlay ov("Kiawah", KiawahIsh());
+  EXPECT_EQ(nullptr, ov.renderer());
+
+  const fv::FvColor ground{40, 40, 40, 255};
+  fv::CpuCanvas canvas(256, 256);
+  canvas.Clear(ground);
+  fv::MapProjection proj = IslandProjection();
+  ASSERT_TRUE(ov.OnDraw(proj, canvas).ok());
+  EXPECT_EQ(0u, InkedPixels(canvas, ground));
+  EXPECT_EQ(0u, ov.last_draw_features());
+
+  SearchQuery q;
+  q.area = Island();
+  q.text = "ruddy turnstone";
+  std::vector<SearchResult> out;
+  ov.Search(q, NotCancelled(), out);
+  EXPECT_EQ(1u, out.size());
+}
+
+TEST(VectorMapOverlayDraw, DrawsOverWhatIsAlreadyOnTheCanvas) {
+  auto style = std::make_shared<OneColourStyle>();
+  VectorMapOverlay ov("Kiawah", KiawahIsh());
+  ov.SetStyle(style);
+  ASSERT_NE(nullptr, ov.renderer());
+
+  // The ground is the map underneath. THE OVERLAY MUST NOT CLEAR IT: most of
+  // the frame is still that colour after a draw, which is the whole reason a
+  // style sheet meant for this use declares no background layer.
+  const fv::FvColor ground{40, 40, 40, 255};
+  fv::CpuCanvas canvas(256, 256);
+  canvas.Clear(ground);
+  fv::MapProjection proj = IslandProjection();
+  ASSERT_TRUE(ov.OnDraw(proj, canvas).ok());
+
+  const size_t inked = InkedPixels(canvas, ground);
+  EXPECT_GT(inked, 0u);
+  EXPECT_LT(inked, size_t(256 * 256) / 4);
+  EXPECT_GT(ov.last_draw_features(), 0u);
+}
+
+TEST(VectorMapOverlayDraw, KnobsSurviveASourceOrStyleChange) {
+  VectorMapOverlay ov("Kiawah");
+  ov.SetSceneMargin(0.25);
+  ov.SetSimplifyPixels(1.5);
+  ov.SetSymbolScale(2.0);
+  ov.SetDeviceDpi(144.0);
+  ov.SetLabelReferenceScale(50000.0);
+  ov.SetMaxDrawFeatures(1234);
+
+  ov.SetSource(KiawahIsh());
+  ov.SetStyle(std::make_shared<OneColourStyle>());
+  fv::VectorRenderer* r = ov.renderer();
+  ASSERT_NE(nullptr, r);
+  EXPECT_DOUBLE_EQ(0.25, r->scene_margin());
+  EXPECT_DOUBLE_EQ(1.5, r->simplify_pixels());
+  EXPECT_DOUBLE_EQ(144.0, r->device_dpi());
+  EXPECT_DOUBLE_EQ(50000.0, r->label_reference_scale());
+}
+
+TEST(VectorMapOverlayDraw, ReplacingEitherHalfBuildsAFreshRenderer) {
+  auto first = std::make_shared<OneColourStyle>();
+  VectorMapOverlay ov("Kiawah", KiawahIsh());
+  ov.SetStyle(first);
+  fv::CpuCanvas canvas(256, 256);
+  fv::MapProjection proj = IslandProjection();
+  ASSERT_TRUE(ov.OnDraw(proj, canvas).ok());
+  ASSERT_GT(first->styled, 0);
+
+  // A renderer holds the style it was built with, so the second engine can
+  // only be asked if the overlay dropped the first renderer.
+  auto second = std::make_shared<OneColourStyle>();
+  ov.SetStyle(second);
+  const int before = first->styled;
+  ASSERT_TRUE(ov.OnDraw(proj, canvas).ok());
+  EXPECT_GT(second->styled, 0);
+  EXPECT_EQ(before, first->styled);
+
+  // And a source with no style goes back to search-only, rather than keeping
+  // a renderer over the pack it no longer holds.
+  ov.SetSource(nullptr);
+  EXPECT_EQ(nullptr, ov.renderer());
 }

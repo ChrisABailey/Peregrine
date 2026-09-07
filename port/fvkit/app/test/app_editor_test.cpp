@@ -132,6 +132,10 @@ constexpr const char kRouteType[] = "test.route";    // file type, has an editor
 constexpr const char kShapeType[] = "test.shape";    // file type, has an editor
 constexpr const char kMarkType[] = "test.mark";      // static type, has an editor
 constexpr const char kPlainType[] = "test.plain";    // file type, NO editor
+// The two the ORDER tests need: everything above is display order 100, which
+// cannot tell "on top" from "in its band" apart.
+constexpr const char kUnderType[] = "test.under";    // order 50, below the rest
+constexpr const char kCrownType[] = "test.crown";    // top-most: the crosshair
 
 class EditorTest : public ::testing::Test {
  protected:
@@ -165,6 +169,27 @@ class EditorTest : public ::testing::Test {
       return std::make_shared<EditableDoc>(&log_, "Plain");
     };
     ASSERT_TRUE(registry_.Register(plain).ok());
+
+    OverlayTypeDesc under;
+    under.id = kUnderType;
+    under.display_name = "Test Under";
+    under.default_display_order = 50;
+    under.factory = [this] {
+      return std::make_shared<EditableOverlay>(&log_, "Under");
+    };
+    ASSERT_TRUE(registry_.Register(under).ok());
+
+    // No editor and top-most: the crosshair, which is drawn over everything
+    // however the rest of the stack is arranged and is never edited.
+    OverlayTypeDesc crown;
+    crown.id = kCrownType;
+    crown.display_name = "Test Crown";
+    crown.default_display_order = 100;
+    crown.is_top_most = true;
+    crown.factory = [this] {
+      return std::make_shared<EditableOverlay>(&log_, "Crown");
+    };
+    ASSERT_TRUE(registry_.Register(crown).ok());
 
     manager_.SetTypeRegistry(&registry_);
     editors_.SetSession(&session_);
@@ -659,6 +684,80 @@ TEST_F(EditorTest, ASetModeFromInsideOnEditorChangedFailsLoudly) {
   EXPECT_EQ(shell.nested_calls, 1);
   EXPECT_EQ(shell.nested, FlowResult::kFailed);
   EXPECT_EQ(editors.CurrentMode(), kRouteType);  // still settled, not half-left
+}
+
+// ---------------------------------------------------------------------------
+// Invariant 5 — the thing being edited is on top
+// ---------------------------------------------------------------------------
+
+// Names bottom-to-top, which is the stack's own direction.
+std::vector<std::string> Order(const fv::OverlayManager& m) {
+  std::vector<std::string> out;
+  for (const auto& o : m.Overlays()) out.push_back(o->Name());
+  return out;
+}
+
+TEST_F(EditorTest, TheEditedOverlayGoesAboveEverythingButTheTopMostBand) {
+  std::shared_ptr<fv::Overlay> under = Place(kUnderType, "under");
+  std::shared_ptr<fv::Overlay> route = Place(kRouteType, "route");
+  std::shared_ptr<fv::Overlay> shape = Place(kShapeType, "shape");
+  std::shared_ptr<fv::Overlay> crown = Place(kCrownType, "crown");
+  ASSERT_EQ(Order(manager_),
+            (std::vector<std::string>{"under", "route", "shape", "crown"}));
+
+  // The ROUTE is edited, so it goes over the shape it is registered below --
+  // "on top" is a statement about what the user is working on, not about which
+  // type outranks which.
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  EXPECT_EQ(Order(manager_),
+            (std::vector<std::string>{"under", "shape", "route", "crown"}));
+
+  // And the crosshair stays over the lot, which is what it is flagged for.
+  ASSERT_EQ(editors_.SetMode(kShapeType), FlowResult::kDone);
+  EXPECT_EQ(Order(manager_),
+            (std::vector<std::string>{"under", "route", "shape", "crown"}));
+}
+
+TEST_F(EditorTest, LeavingTheModePutsTheStackBackInItsDefaultOrder) {
+  std::shared_ptr<fv::Overlay> under = Place(kUnderType, "under");
+  std::shared_ptr<fv::Overlay> route = Place(kRouteType, "route");
+  std::shared_ptr<fv::Overlay> shape = Place(kShapeType, "shape");
+
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  ASSERT_EQ(Order(manager_),
+            (std::vector<std::string>{"under", "shape", "route"}));
+
+  ASSERT_EQ(editors_.SetMode(TypeId()), FlowResult::kDone);
+  // Back to bands. The route and the shape share a display order, so the sort
+  // is stable and leaves the raise's relative order alone -- the thing most
+  // recently edited stays the upper of its peers, which is the same answer
+  // Add's newest-on-top rule gives.
+  EXPECT_EQ(Order(manager_),
+            (std::vector<std::string>{"under", "shape", "route"}));
+  // The one that must move back is the one that crossed a BAND.
+  EXPECT_EQ(manager_.Overlays().front()->Name(), "under");
+}
+
+TEST_F(EditorTest, ARaiseNeverLiftsAnOverlayOutOfItsPlaceBelowATopMostOne) {
+  std::shared_ptr<fv::Overlay> crown = Place(kCrownType, "crown");
+  std::shared_ptr<fv::Overlay> route = Place(kRouteType, "route");
+  // Add already put the route UNDER the crown; editing must not change that.
+  ASSERT_EQ(Order(manager_), (std::vector<std::string>{"route", "crown"}));
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  EXPECT_EQ(Order(manager_), (std::vector<std::string>{"route", "crown"}));
+}
+
+TEST_F(EditorTest, MakingAnotherOverlayCurrentRaisesThatOneInstead) {
+  std::shared_ptr<fv::Overlay> lower = Place(kRouteType, "lower");
+  std::shared_ptr<fv::Overlay> upper = Place(kRouteType, "upper");
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  ASSERT_EQ(editors_.edited(), upper.get());   // the topmost of its type
+
+  // Invariant 2 moves the edit; invariant 5 moves the stack after it. This is
+  // the whole of what a shell does to bring a dimmed overlay forward.
+  ASSERT_TRUE(manager_.MakeCurrent(lower).ok());
+  EXPECT_EQ(editors_.edited(), lower.get());
+  EXPECT_EQ(Order(manager_), (std::vector<std::string>{"upper", "lower"}));
 }
 
 }  // namespace

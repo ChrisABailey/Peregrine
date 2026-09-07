@@ -19,15 +19,18 @@ port can currently render, driven from the L2 catalog.
 
 The catalog is a persistent SQLite file (File menu: New/Open/Add Map Data /
 Manage Data Sources). The Map menu lists every series grouped by family; the
-Overlays menu adds a graticule, a crosshair, and a color-coded COVERAGE
-overlay showing where each map family has data. The window resizes freely —
-the map re-renders at the new surface size.
+Overlays menu adds a graticule, a crosshair, a color-coded COVERAGE overlay
+showing where each map family has data, and Vector Map Overlays, which draws
+any vector series OVER the base map instead of as it. The window resizes
+freely — the map re-renders at the new surface size.
 
 Usage (from the repo root, after `cmake --build build`):
   python3 port/apps/PythonView.py                     # open (scan on 1st run)
   python3 port/apps/PythonView.py --scan TestData     # (re)build the catalog
   python3 port/apps/PythonView.py --at "32.78 -79.95" --series cadrg/LFC
   python3 port/apps/PythonView.py --shot out.png --series dted-shaded/DTED1
+  python3 port/apps/PythonView.py --shot out.png --series dted-shaded/DTED1 \
+      --map-overlay osm/us-south                      # OSM over the relief
   python3 port/apps/PythonView.py --selftest          # scripted UI self-check
 
 Keys: arrows pan (or drag with the mouse) · -/= zoom · 0 reset ·
@@ -59,6 +62,7 @@ import pyfvw        # noqa: E402
 import tk_keys      # noqa: E402  (sibling module, see its header)
 import route as route_mod  # noqa: E402  (sibling module)
 from route import RouteEditor  # the tool palette; the overlay is C++
+import points as points_mod  # noqa: E402  (the point overlay's palette)
 import analysis as analysis_mod  # noqa: E402  (AN6/AN7 — the analysis tools)
 import toolbar as toolbar_mod    # noqa: E402  (the palette, as buttons)
 
@@ -502,14 +506,27 @@ class PythonView(pyfvw.app.AppShell):
         self.osm_style_path = cfg.get(
             "osm.style", os.path.join(REPO, "port", "Osm", "styles",
                                       "peregrine-osm.json"))
-        # A6/schema 2: the icon set File > Sample points embeds in the
-        # starter document. Loose <name>.png files — the port ships none, so
-        # like geosym.data_dir this is user-supplied test data — and the
-        # artwork is copied INTO the document, so this path is read once at
-        # write time and never again.
+        # The sheet OSM is drawn with when it is an OVERLAY rather than the
+        # base map: no `background` layer (an overlay that cleared the canvas
+        # would erase the map under it) and no opaque ground fills, so the
+        # relief or imagery underneath shows through the linework.
+        self.osm_overlay_style_path = cfg.get(
+            "osm.overlay_style", os.path.join(REPO, "port", "Osm", "styles",
+                                              "peregrine-osm-overlay.json"))
+        # A6/schema 2: the icon set a point document draws on — what File >
+        # Sample points embeds in the starter document, and what the point
+        # sheet's "+" browses. Either form `PngSymbolLibrary` reads: a
+        # directory of loose <name>.png files (the default, the maki set the
+        # sample document's own artwork comes from) or a MapLibre sprite sheet
+        # (a .png beside its .json index).
+        #
+        # The artwork is copied INTO the document either way, so this path is
+        # read while writing or while choosing and is never referenced by the
+        # file that results.
         self.point_symbol_dir = cfg.get(
             "points.symbol_dir",
             os.path.join(self.geosym_dir, "GeoSymbol", "makiPng"))
+        self._point_library = None
         # O4: the routable road graph the route overlay follows on "r". A
         # build artifact (fvgraph build), not sample data, so there is no
         # sensible default path — without the key the overlay says so and
@@ -605,9 +622,17 @@ class PythonView(pyfvw.app.AppShell):
         # pixel size had been chosen at that scale. Off means road names stay
         # legible at every zoom; on means they belong to the ground.
         self.label_ref_scale = cfg.get_float("vector.label_reference_scale", 0.0)
-        self.vsources = {}            # series_id -> (source, renderer)
+        self.vsources = {}            # series_id -> (source, renderer, style)
+        self.vsrc_by_id = {}          # series_id -> IVectorSource, shared
         self.vrenderer = None
         self.vsource = None
+        # A vector chart drawn OVER whatever the base map is: one
+        # VectorMapOverlay per series the user has switched on, keyed by
+        # series id. Distinct from `_search_map`, which is the base map itself
+        # and never draws.
+        self.map_overlays = {}        # series_id -> (series, VectorMapOverlay)
+        self._osm_ovl_style = None    # OsmStyleEngine for the overlay sheet
+        self._osm_ovl_ref_lat = None
         self.vscale = 50e3
         self.feature_scale = 1.0
         self.labels = False
@@ -659,6 +684,12 @@ class PythonView(pyfvw.app.AppShell):
         self.registry.register(analysis_mod.analysis_type_desc(
             factory=self._make_analysis,
             editor_factory=lambda: analysis_mod.AnalysisEditor(self)))
+        # The THIRD editable type, and the only one this shell did not
+        # register: `fv.points` is fvkit's own, and all that is added here is a
+        # palette for it. Re-declaring the descriptor would put its extension,
+        # its filters and its display order in two places to drift apart.
+        points_mod.attach_editor(self.registry,
+                                 lambda: points_mod.PointEditor(self))
         # With a registry, `add` inserts by the type's display order instead of
         # blindly on top, and the top-most band draws last (A2).
         self.mgr.set_type_registry(self.registry)
@@ -764,6 +795,158 @@ class PythonView(pyfvw.app.AppShell):
         ov.edit.pick_tolerance_px = self.pick.tolerance_px
         ov.edit.snap_tolerance_px = self.pick.tolerance_px
         return ov
+
+    def sync_point_dimming(self):
+        """Bind every open point set to this shell, and dim the ones that are
+        not being edited.
+
+        BINDING IS PART OF IT because the point type is fvkit's own: its
+        factory makes a bare `PointOverlay` and knows nothing about this
+        window, so the manager (mouse capture and the snap walk) and the
+        tolerances are attached here, where a set first turns up in the stack.
+        A set opened from File > Open goes through exactly this path.
+
+        DIMMING IS A STATEMENT ABOUT THE WINDOW and not about the document,
+        which is why it lives in the shell and does not dirty anything: with
+        several sets open, which one a click belongs to should be visible
+        rather than remembered. Nothing is dimmed while the point editor is
+        off — outside an edit session all the sets are equally live."""
+        edited = self.editors.edited if self.editors is not None else None
+        editing = (self.editors is not None and
+                   self.editors.current_mode == points_mod.POINTS_TYPE_ID)
+        for ov in self.mgr.overlays:
+            if not isinstance(ov, pyfvw.overlay.PointOverlay):
+                continue
+            ov.set_manager(self.mgr)
+            ov.edit.pick_tolerance_px = self.pick.tolerance_px
+            ov.edit.snap_tolerance_px = self.pick.tolerance_px
+            dim = bool(editing and ov is not edited)
+            ov.dimmed = dim
+            # A set that has never been edited starts WITH edit focus — the
+            # default that keeps a scripted overlay editable — so without this
+            # it would take the press before the dimmed picture had a chance to
+            # be true. Releasing is only ever done to a set the EditorManager
+            # already considers un-edited, so it never contradicts the focus
+            # bracketing.
+            if dim:
+                ov.edit.release_edit_focus()
+
+    def point_symbol_library(self):
+        """The icon set the point sheet imports from, or None.
+
+        Opened once and kept: the chooser asks for it every time a point is
+        edited. An icon set that is not there is not an error -- it is a
+        convenience, and the document's own artwork is what a point wears."""
+        if self._point_library is None:
+            path = self.point_symbol_dir
+            lib = pyfvw.symbol.PngSymbolLibrary()
+            try:
+                # A directory and a sheet are the two forms an icon set ships
+                # in, and one library reads both — so which one this is is a
+                # question about the path and not about the code below it.
+                if os.path.isdir(path):
+                    lib.open_directory(path)
+                elif os.path.isfile(path):
+                    lib.open_sheet(path, "")
+                else:
+                    return None
+            except pyfvw.FvError as e:
+                self.report_error(e.code, str(e.message))
+                return None
+            if not lib.ids:
+                return None
+            self._point_library = points_mod.SymbolLibrary(lib)
+        return self._point_library
+
+    def _point_dialog(self, ov, point, title, mode):
+        """The point sheet, wired to this window's icon library.
+
+        `on_import` is the document's own import and is called by the dialog
+        on Save, so a sprite chosen and then cancelled leaves the palette as
+        it was. `add_symbol_from_library` dedups by name, so re-choosing one
+        the document already carries costs a lookup and nothing else."""
+        return points_mod.PointDialog(
+            self.tk, point, ov.symbols, title=title, mode=mode,
+            library=self.point_symbol_library(),
+            on_import=lambda name, o=ov: o.add_symbol_from_library(
+                self._point_library.library, name))
+
+    def edit_point_dialog(self, ov, point_id, mode="edit"):
+        """Open the point sheet on a row and write the answer back.
+
+        `mode` picks the face the dialog opens on: "edit" is the form, "info"
+        is the read-only view a right-click opens, whose Edit button turns it
+        into the form. Either way there is one answer to write back or none.
+
+        The write goes through `edit.update`, not through the row handed out by
+        `find`: a row out of the document is a COPY, and one undo entry for the
+        whole dialog is what the user made -- one edit."""
+        p = ov.find(point_id)
+        if p is None or self.tk is None:
+            return False
+        dlg = self._point_dialog(
+            ov, p, p.name or "Point" if mode == "info" else "Edit Point", mode)
+        edited = dlg.run()
+        if edited is None:
+            return False
+        ov.edit.update(edited)
+        self.refresh()
+        return True
+
+    def point_info_dialog(self, ov, point_id):
+        """The read-only face, which is what a right-click on a marker opens."""
+        return self.edit_point_dialog(ov, point_id, mode="info")
+
+    def add_point_at(self, ov, x, y):
+        """Place a point where the user clicked, through the dialog.
+
+        The SHELL drives this rather than the overlay's own armed-add handler,
+        because the core does not open dialogs (rule R1) and a point is not
+        placed until its sheet is accepted. `resolve_pixel` and `add_at` are
+        the same functions the overlay's handler calls, entered one level up --
+        which is what the session exposes them for.
+
+        The last accepted point is the next one's PROTOTYPE, so placing ten
+        shelters costs one set of choices rather than ten. Without a window
+        (a script, a test) the prototype is placed as it stands, which is the
+        only sensible reading of "no dialog to accept"."""
+        where = ov.edit.resolve_pixel(x, y)
+        if not where.valid:
+            return False
+        proto = self._point_prototype()
+        if self.tk is not None:
+            proto = self._point_dialog(ov, proto, "New Point", "edit").run()
+            if proto is None:
+                return False
+        pid = ov.edit.add_at(proto, where.position)
+        if pid:
+            # Remember the choices, not the identity: a prototype carrying the
+            # last point's name would offer to make a second point of the same
+            # name at every click.
+            self._point_proto = ov.find(pid)
+            self._point_proto.name = ""
+            self._point_proto.phone = ""
+            self._point_proto.url = ""
+            self._point_proto.remarks = ""
+        if where.snapped:
+            self._set_readout(" snapped to %s" % where.snapped_to)
+        self.refresh()
+        return bool(pid)
+
+    def _point_prototype(self):
+        proto = getattr(self, "_point_proto", None)
+        return proto if proto is not None else pyfvw.overlay.MapPoint()
+
+    def raise_point_overlay(self, ov):
+        """Hand a point set the edit, which is the whole of bringing it forward.
+
+        Making it current is the only move here. EditorManager's second
+        invariant switches the edit onto it, and its fifth puts what is being
+        edited on top — of everything, not of its own band, because that is
+        what the user is working on. Nothing in this shell has to know where
+        the stack ends up.""" 
+        self.mgr.make_current(ov)
+        self.sync_point_dimming()
 
     def _make_analysis(self):
         """The analysis type's factory. Same shape as `_make_route`, and for
@@ -1502,6 +1685,9 @@ class PythonView(pyfvw.app.AppShell):
     def on_editor_changed(self, type_id, editor):
         self._editor = editor
         self._editor_tools = editor.tools() if editor is not None else []
+        # Entering or leaving the point mode changes which sets are dimmed, and
+        # so does switching between two of them.
+        self.sync_point_dimming()
         if self.tk is not None:
             self._refresh_palette()
             self._update_status()
@@ -1572,7 +1758,13 @@ class PythonView(pyfvw.app.AppShell):
         self.engine = pyfvw.engine.MapEngine(self.catalog)
         self.engine.set_surface(self.W, self.H)
         self.vsources.clear()
+        self.vsrc_by_id.clear()
         self.vrenderer = self.vsource = None
+        # Every map overlay named a series in the OLD catalog. Drop them; the
+        # menu rebuild is what puts back the ones that still exist.
+        for _series, ov in self.map_overlays.values():
+            self.mgr.remove(ov)
+        self.map_overlays.clear()
         self._attach_elevation()
         if self.series is not None:
             # Re-resolve the active series in the new catalog (ids may move).
@@ -1742,19 +1934,15 @@ class PythonView(pyfvw.app.AppShell):
             print(f"families[{product}]: {len(fams)} families, "
                   f"off: {', '.join(off)}", file=sys.stderr)
 
-    def _open_vector(self, series):
-        """Open (or reuse) the source + style engine behind a vector series.
+    def _vector_source(self, series):
+        """Open (or reuse) the IVectorSource behind a vector series.
 
-        Three products now, one seam: DNC through VPF + GeoSym, ENC through
-        S-57 + the official S-52 presentation library, OSM through an MVT
-        pyramid + a MapLibre GL style sheet. Everything downstream of
-        `renderer` — the retained scene, identify, coverage, the render loop —
-        is the same code for all three, which is the whole point of the vector
-        seam and is why this method is the only place that forks.
+        Cached by series id and shared: a chart drawn as the base map and
+        again as a map overlay opens its files once.
         """
-        if series.id in self.vsources:
-            self.vsource, self.vrenderer, self.vstyle = self.vsources[series.id]
-            return
+        source = self.vsrc_by_id.get(series.id)
+        if source is not None:
+            return source
         rows = self.catalog.select_by_geo_rect(pyfvw.geo.GeoRect.world(), series.id)
         if not rows:
             raise RuntimeError(f"no coverage rows for {series.series_key}")
@@ -1768,15 +1956,8 @@ class PythonView(pyfvw.app.AppShell):
             # The display pitch is half of the zoom<->scale relation, and the
             # source and the style engine must be given the SAME one (the
             # other half, the reference latitude, moves with the viewport and
-            # is set per frame in _render_vector).
+            # is set per frame).
             source.set_display_mm_per_pixel(self.mm_per_pixel)
-            if self.osm is None:
-                self.osm = pyfvw.vector.OsmStyleEngine()
-                self.osm.load_file(self.osm_style_path)
-                self.osm.set_display_mm_per_pixel(self.mm_per_pixel)
-                self._osm_ref_lat = None
-                self._apply_families("osm", self.osm)
-            style = self.osm
         elif series.format == "enc":
             # One ENC row = one cell file, and an ENC series IS a usage band —
             # so the source opens exactly the cells the catalog filed under
@@ -1792,24 +1973,59 @@ class PythonView(pyfvw.app.AppShell):
             # place — only naming the cells can say which one is wanted.
             source = pyfvw.vector.EncVectorSource()
             source.open_cells(sorted({r.path for r in rows}), self.enc_dir)
+        else:
+            db_root = rows[0].path.split("|")[0]
+            lib_dir = os.path.join(db_root, series.series_key)
+            source = pyfvw.vector.VpfVectorSource()
+            source.open(lib_dir)
+        self.vsrc_by_id[series.id] = source
+        return source
+
+    def _vector_style(self, fmt):
+        """The shared style engine a vector format is drawn with.
+
+        One engine per product, not per series: a style is a presentation
+        choice about DNC or ENC or OSM, and the mariner settings, the family
+        switches and the label toggle are all set on it once.
+        """
+        if fmt == "osm":
+            if self.osm is None:
+                self.osm = pyfvw.vector.OsmStyleEngine()
+                self.osm.load_file(self.osm_style_path)
+                self.osm.set_display_mm_per_pixel(self.mm_per_pixel)
+                self._osm_ref_lat = None
+                self._apply_families("osm", self.osm)
+            return self.osm
+        if fmt == "enc":
             if self.s52 is None:
                 self.s52 = pyfvw.vector.S52StyleEngine()
                 self.s52.open(self.enc_dir)
                 self.s52.set_show_meta_objects(self.show_meta)
                 self._apply_mariner(self.s52)
                 self._apply_families("enc", self.s52)
-            style = self.s52
-        else:
-            db_root = rows[0].path.split("|")[0]
-            lib_dir = os.path.join(db_root, series.series_key)
-            source = pyfvw.vector.VpfVectorSource()
-            source.open(lib_dir)
-            if self.style is None:
-                self.style = pyfvw.vector.GeoSymStyleEngine()
-                self.style.open(self.geosym_dir, pyfvw.vector.GEOSYM_DNC)
-                self._apply_mariner(self.style)
-                self._apply_families("dnc", self.style)
-            style = self.style
+            return self.s52
+        if self.style is None:
+            self.style = pyfvw.vector.GeoSymStyleEngine()
+            self.style.open(self.geosym_dir, pyfvw.vector.GEOSYM_DNC)
+            self._apply_mariner(self.style)
+            self._apply_families("dnc", self.style)
+        return self.style
+
+    def _open_vector(self, series):
+        """Open (or reuse) the source + style engine behind a vector series.
+
+        Three products now, one seam: DNC through VPF + GeoSym, ENC through
+        S-57 + the official S-52 presentation library, OSM through an MVT
+        pyramid + a MapLibre GL style sheet. Everything downstream of
+        `renderer` — the retained scene, identify, coverage, the render loop —
+        is the same code for all three, which is the whole point of the vector
+        seam.
+        """
+        if series.id in self.vsources:
+            self.vsource, self.vrenderer, self.vstyle = self.vsources[series.id]
+            return
+        source = self._vector_source(series)
+        style = self._vector_style(series.format)
         renderer = pyfvw.vector.VectorRenderer(source, style)
         # R3a: retain a scene larger than the window, so a drag-pan re-projects
         # and redraws but does not re-query VPF or re-run GeoSym (~40% of a
@@ -1822,6 +2038,84 @@ class PythonView(pyfvw.app.AppShell):
         renderer.set_label_reference_scale(self.label_ref_scale)
         self.vsources[series.id] = (source, renderer, style)
         self.vsource, self.vrenderer, self.vstyle = source, renderer, style
+
+    # --- vector charts as overlays -----------------------------------------
+    #
+    # The other half of what VectorMapOverlay is for. A vector series drawn
+    # here is not the base map: it goes into the overlay stack, under the
+    # documents and over whatever the map engine put down, so OSM roads and
+    # names can be read against shaded relief or imagery.
+
+    def _map_overlay_style(self, fmt):
+        """The style engine a vector series is drawn with AS AN OVERLAY.
+
+        OSM gets a sheet of its own (osm.overlay_style) because its base sheet
+        paints a ground: a background colour, landcover, landuse and building
+        fills, all of which would hide the map underneath. DNC and ENC draw
+        through the base map's own engines — their symbology is already
+        linework over an unpainted ground, and S-52's colours are a chart
+        correctness rule rather than a preference to fork.
+        """
+        if fmt != "osm":
+            return self._vector_style(fmt)
+        if self._osm_ovl_style is None:
+            e = pyfvw.vector.OsmStyleEngine()
+            e.load_file(self.osm_overlay_style_path)
+            e.set_display_mm_per_pixel(self.mm_per_pixel)
+            self._apply_families("osm", e)
+            self._osm_ovl_style = e
+            self._osm_ovl_ref_lat = None
+        return self._osm_ovl_style
+
+    def set_map_overlay(self, series, on):
+        """Switch one vector series on or off as an overlay."""
+        entry = self.map_overlays.get(series.id)
+        if not on:
+            if entry is not None:
+                self.mgr.remove(entry[1])
+                del self.map_overlays[series.id]
+            return
+        if entry is not None:
+            return
+        ov = pyfvw.overlay.VectorMapOverlay(series.display_name,
+                                            self._vector_source(series))
+        ov.set_style(self._map_overlay_style(series.format))
+        ov.scene_margin = self.scene_margin
+        ov.simplify_pixels = self.simplify_px
+        self.mgr.add(ov)
+        # A map belongs under the documents drawn on it, whatever order the
+        # user switched things on in.
+        self.mgr.move_to_bottom(ov)
+        self.map_overlays[series.id] = (series, ov)
+
+    def _sync_map_overlays(self):
+        """Per-frame inputs for the map overlays, before anything draws.
+
+        An OSM style engine has to be told where on the globe it is: Web
+        Mercator's zoom<->scale relation is latitude-dependent and the tile
+        source derives its own zoom the same way, so the two disagree about
+        which layers are on unless they share both halves. Stepped rather than
+        continuous for the reason OSM_REF_LAT_STEP gives.
+        """
+        if not self.map_overlays:
+            return
+        dpi = _dpi_for(self.mm_per_pixel) * self.feature_scale
+        want_osm = False
+        for series, ov in self.map_overlays.values():
+            ov.device_dpi = dpi
+            ov.symbol_scale = self.feature_scale
+            ov.label_reference_scale = self.label_ref_scale
+            if series.format == "osm":
+                want_osm = True
+                ov.source.set_display_mm_per_pixel(self.mm_per_pixel)
+        if want_osm and self._osm_ovl_style is not None:
+            e = self._osm_ovl_style
+            e.set_draw_labels(self.labels and self.font is not None)
+            e.set_display_mm_per_pixel(self.mm_per_pixel)
+            lat = round(self.center.lat / self.OSM_REF_LAT_STEP) * self.OSM_REF_LAT_STEP
+            if lat != self._osm_ovl_ref_lat:
+                e.set_reference_latitude(lat)
+                self._osm_ovl_ref_lat = lat
 
     def set_surface_size(self, w, h):
         if (w, h) == (self.W, self.H):
@@ -1849,6 +2143,7 @@ class PythonView(pyfvw.app.AppShell):
             # keep the app alive and say so in the status bar instead.
             try:
                 self.render_error = None
+                self._sync_map_overlays()
                 if self.mode == "vector":
                     self._render_vector()
                 else:
@@ -2307,6 +2602,12 @@ class PythonView(pyfvw.app.AppShell):
                                       command=self._ui_apply_overlays)
         m_ovl.add_cascade(label="Coverage Families", menu=m_cov)
         m_ovl.add_separator()
+        # A vector chart drawn OVER the base map instead of as it. Rebuilt
+        # with the Map menu because it lists the same series.
+        self.m_mapovl = tk.Menu(m_ovl, tearoff=0)
+        m_ovl.add_cascade(label="Vector Map Overlays", menu=self.m_mapovl)
+        self.var_mapovl = {}
+        m_ovl.add_separator()
         self.var_labels = tk.BooleanVar(value=self.labels)
         m_ovl.add_checkbutton(label="Feature Labels (vector)", accelerator="l",
                               variable=self.var_labels,
@@ -2338,6 +2639,7 @@ class PythonView(pyfvw.app.AppShell):
 
         self.tk.config(menu=self.menubar)
         self._rebuild_map_menu()
+        self._rebuild_map_overlay_menu()
 
     def _palette_nodes(self):
         """THE PALETTE, AS DATA, and the only place it is composed: one mode
@@ -2415,6 +2717,39 @@ class PythonView(pyfvw.app.AppShell):
         # four map types, as they are in FalconView), and a radiobutton
         # variable that cannot tell them apart selects the wrong one.
         return f"{s.format}/{s.display_name}"
+
+    def _rebuild_map_overlay_menu(self):
+        """Repopulate the Vector Map Overlays submenu from the catalog.
+
+        A series that has gone away takes its overlay with it: the checkbutton
+        is the only handle on one, so leaving the overlay in the stack would
+        leave it undrawable-off.
+        """
+        import tkinter as tk
+
+        m = self.m_mapovl
+        m.delete(0, "end")
+        rows = sorted((s for s in self.series_by_id.values()
+                       if s.format in VECTOR_FORMATS),
+                      key=lambda s: (s.format, -s.scale_denom, s.series_key))
+        for sid in [i for i in self.map_overlays if i not in self.series_by_id]:
+            self.mgr.remove(self.map_overlays.pop(sid)[1])
+        self.var_mapovl = {s.id: self.var_mapovl.get(s.id) or tk.BooleanVar(
+            value=s.id in self.map_overlays) for s in rows}
+        if not rows:
+            m.add_command(label="No vector series in the catalog",
+                          state="disabled")
+            return
+        for s in rows:
+            m.add_checkbutton(
+                label=f"{s.display_name}   ({s.format})",
+                variable=self.var_mapovl[s.id],
+                command=lambda s=s: self._ui_toggle_map_overlay(s))
+
+    def _ui_toggle_map_overlay(self, series):
+        def go():
+            self.set_map_overlay(series, bool(self.var_mapovl[series.id].get()))
+        self._ui_flow(go)
 
     def _rebuild_map_menu(self):
         """Repopulate the Map menu from the catalog: one section per family,
@@ -2583,6 +2918,16 @@ class PythonView(pyfvw.app.AppShell):
         self._drag = None
         self._drag_moved = False
         self._overlay_gesture = False
+        # An ARMED POINT ADD is taken here rather than by the overlay, because
+        # placing a point opens a dialog and the core opens none. The session's
+        # own handler would have added a default point and spent the mode
+        # before this shell ever saw the click.
+        edited = self.editors.edited if self.editors is not None else None
+        if (isinstance(edited, pyfvw.overlay.PointOverlay) and
+                edited.edit.adding):
+            edited.edit.adding = False
+            self.add_point_at(edited, e.x, e.y)
+            return
         if self.mgr.route_mouse_down(self._mouse(e)):
             self._overlay_gesture = True
             self.refresh()
@@ -2647,6 +2992,14 @@ class PythonView(pyfvw.app.AppShell):
                 # the overlay's own business and this shell stays generic.
                 if isinstance(hit.overlay, pyfvw.overlay.PointOverlay):
                     hit.overlay.selected = hit.feature
+                    # A CLICK ON A DIMMED SET BRINGS IT FORWARD. It reached
+                    # here at all because the edited set declined the press,
+                    # which is what an overlay without edit focus does. Making
+                    # it current is the whole move: EditorManager's second
+                    # invariant switches the edit to it, the stack puts it on
+                    # top of its band, and the dim walk follows.
+                    if hit.overlay.dimmed:
+                        self.raise_point_overlay(hit.overlay)
                 # A road-graph hit gets a FULL dump on the console as well as
                 # the one line on the status bar. The status line is what you
                 # read while moving; the dump is what you paste into a bug
@@ -2692,12 +3045,59 @@ class PythonView(pyfvw.app.AppShell):
 
     def _on_right_click(self, e):
         """The aggregated context menu: every overlay under the point appends
-        its own section, top-down. False means nobody contributed, and an
-        empty menu flashing open is worse than no menu — so nothing happens."""
+        its own section, top-down, and this shell adds one of its own on top.
+
+        The shell's section is the point sheet, because the core opens no
+        dialogs (rule R1) and "what is this place?" is the first thing a
+        right-click on a marker is asking. Everything below it is the overlays'
+        own composition, unchanged.
+
+        An empty menu flashing open is worse than no menu, so nothing happens
+        when neither this shell nor any overlay contributed."""
         proj = self.proj
-        if proj is not None:
-            self.pick.show_context_menu(proj, e.x, e.y)
+        if proj is None:
+            return "break"
+        menu = self.pick.build_context_menu(proj, e.x, e.y)
+        section = self._point_info_items(proj, e.x, e.y)
+        if section:
+            children = list(menu.children)
+            if children:
+                section.append(pyfvw.app.MenuNode(label=""))   # separator
+            menu.children = section + children
+        if menu.children:
+            self.show_context_menu(e.x, e.y, menu)
         return "break"
+
+    def _point_info_items(self, proj, x, y):
+        """The "Point info..." rows for whatever markers are under the cursor.
+
+        One row when a single point is there and a submenu when several are,
+        rather than always a submenu: the common case is one marker, and a
+        cascade the user has to open to find its only child is a step for
+        nothing. Selecting is part of opening the sheet — the dialog is about
+        that point, and leaving the selection elsewhere would contradict it."""
+        rows = []
+        for hit in self.pick.hit_test_point(proj, x, y):
+            ov = hit.overlay
+            if not isinstance(ov, pyfvw.overlay.PointOverlay):
+                continue
+            pid = hit.feature
+            label = hit.hint.status or hit.hint.tool_tip or ("Point %d" % pid)
+
+            def open_sheet(o=ov, i=pid):
+                o.selected = i
+                self.point_info_dialog(o, i)
+
+            rows.append((label, open_sheet))
+        if not rows:
+            return []
+        if len(rows) == 1:
+            return [pyfvw.app.MenuNode(label="Point info...",
+                                       action=rows[0][1])]
+        return [pyfvw.app.MenuNode(
+            label="Point info",
+            children=[pyfvw.app.MenuNode(label=text, action=fn)
+                      for text, fn in rows])]
 
     def _on_motion(self, e):
         if self.mgr.route_mouse_move(self._mouse(e)):
@@ -3326,6 +3726,7 @@ class PythonView(pyfvw.app.AppShell):
         messagebox.showinfo(
             "PythonView", f"Cataloged {total} frames:\n\n" + "\n".join(lines))
         self._rebuild_map_menu()
+        self._rebuild_map_overlay_menu()
         self.refresh()
 
     def _ui_open_catalog(self):
@@ -3341,6 +3742,7 @@ class PythonView(pyfvw.app.AppShell):
             messagebox.showerror("PythonView", f"Could not open catalog:\n{exc}")
             return
         self._rebuild_map_menu()
+        self._rebuild_map_overlay_menu()
         self.refresh()
 
     def _ui_new_catalog(self):
@@ -3371,6 +3773,7 @@ class PythonView(pyfvw.app.AppShell):
         total = sum(n for _f, _p, n in results)
         self._on_catalog_changed()
         self._rebuild_map_menu()
+        self._rebuild_map_overlay_menu()
         messagebox.showinfo(
             "PythonView", f"Added {total} frames:\n\n" + "\n".join(lines))
         self.refresh()
@@ -3408,6 +3811,7 @@ class PythonView(pyfvw.app.AppShell):
                 self.catalog.remove_data_source(int(iid))
             self._on_catalog_changed()
             self._rebuild_map_menu()
+            self._rebuild_map_overlay_menu()
             reload_tree()
             self.refresh()
 
@@ -3458,6 +3862,17 @@ class PythonView(pyfvw.app.AppShell):
             filedialog.askopenfilename(
                 initialdir=os.path.dirname(v_os.get()),
                 filetypes=[("MapLibre style", "*.json")]) or v_os.get())).grid(
+            row=row, column=2)
+        row += 1
+
+        tk.Label(win, text="OSM overlay style sheet:").grid(
+            row=row, column=0, sticky="w", padx=8, pady=4)
+        v_oo = tk.StringVar(value=self.osm_overlay_style_path)
+        tk.Entry(win, textvariable=v_oo, width=36).grid(row=row, column=1)
+        tk.Button(win, text="...", command=lambda: v_oo.set(
+            filedialog.askopenfilename(
+                initialdir=os.path.dirname(v_oo.get()),
+                filetypes=[("MapLibre style", "*.json")]) or v_oo.get())).grid(
             row=row, column=2)
         row += 1
 
@@ -3553,8 +3968,23 @@ class PythonView(pyfvw.app.AppShell):
                 self.osm = None
                 self._osm_ref_lat = None
                 reopen = "OSM style"
+            if v_oo.get() != self.osm_overlay_style_path:
+                self.osm_overlay_style_path = v_oo.get()
+                self._osm_ovl_style = None
+                self._osm_ovl_ref_lat = None
+                # An overlay holds the engine it was built with, so re-point
+                # the live ones rather than waiting for a re-add.
+                for series, ov in self.map_overlays.values():
+                    try:
+                        ov.set_style(self._map_overlay_style(series.format))
+                    except Exception as exc:
+                        from tkinter import messagebox
+                        messagebox.showerror(
+                            "PythonView", f"OSM overlay style failed:\n{exc}")
+                        break
             if reopen:
                 self.vsources.clear()
+                self.vsrc_by_id.clear()
                 self.vrenderer = self.vsource = self.vstyle = None
                 if self.mode == "vector":
                     try:
@@ -3856,6 +4286,46 @@ def run_selftest(app, outdir):
         app._ui_apply_overlays()
     steps.append(step(coverage_on, "coverage_on"))
 
+    # A vector chart over a RASTER base — the layering the map-overlay menu
+    # exists for, and the one arrangement no other step reaches: the two
+    # halves are opened by different code and the overlay draws through the
+    # map engine's projection rather than the vector one.
+    # The pair has to OVERLAP, so the vector series is chosen first and the
+    # raster is one with coverage where that chart is.
+    pair = None
+    for vector in (s for s in picks if s.format in VECTOR_FORMATS):
+        here = app.series_bounds_center(vector)
+        rows = app.catalog.select_by_geo_rect(pyfvw.geo.GeoRect(here, here))
+        rasters = [app.series_by_id[r.series_id] for r in rows
+                   if r.series_id in app.series_by_id
+                   and app.series_by_id[r.series_id].format
+                   not in VECTOR_FORMATS]
+        if rasters:
+            pair = (rasters[0], vector)
+            break
+    if pair is not None:
+        raster, vector = pair
+
+        def map_overlay_on():
+            app.var_cov.set(False)
+            app._ui_apply_overlays()
+            app.set_series(raster)
+            app.center = app.series_bounds_center(vector)
+            app.set_map_overlay(vector, True)
+            drawn = app.map_overlays[vector.id][1]
+            app.refresh()
+            if drawn.last_draw_features == 0:
+                raise RuntimeError(
+                    f"{vector.format} overlay drew nothing over "
+                    f"{raster.format}")
+        steps.append(step(map_overlay_on, "map_overlay_on"))
+
+        def map_overlay_off():
+            app.set_map_overlay(vector, False)
+            if app.map_overlays:
+                raise RuntimeError("map overlay outlived its switch")
+        steps.append(step(map_overlay_off, "map_overlay_off"))
+
     # AN6/AN7. The whole path the button bar exists for, driven the way a user
     # drives it: press the mode button, press a tool, click the map, ask for
     # the chart. It asserts the WIRING -- that the mode created an overlay,
@@ -3894,6 +4364,102 @@ def run_selftest(app, outdir):
               f"viewshed {'span %d' % vs.result.span if vs.result else vs.error}",
               flush=True)
     steps.append(step(analysis_tools, "analysis_tools", settle_ms=600))
+
+    # PE4. The point editor driven the way a user drives it: press the mode
+    # button, arm add, click twice, then grab a marker and drag it. It asserts
+    # the WIRING, which is what a snapshot of the map cannot show -- that the
+    # mode found or made a set, that a click landed on the overlay rather than
+    # panning the map, and that the second set really dims and really comes
+    # back to the front when it is clicked.
+    def point_editor():
+        app._ui_flow(lambda: app.editors.toggle_editor(points_mod.POINTS_TYPE_ID))
+        first = app.editors.edited
+        if not isinstance(first, pyfvw.overlay.PointOverlay):
+            raise AssertionError("the Points mode is editing %r" % (first,))
+        app.refresh()                     # the overlay learns the projection
+        for x, y in ((260, 220), (360, 300)):
+            first.edit.adding = True
+            app.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(x, y, 0))
+            app.mgr.route_mouse_up(pyfvw.overlay.MouseEvent(x, y, 0))
+        if len(first.points) != 2:
+            raise AssertionError(f"2 clicks made {len(first.points)} points")
+
+        # The drag: down on the second marker, out past its own bounds, up.
+        moved = first.points[1]
+        app.mgr.route_mouse_down(pyfvw.overlay.MouseEvent(360, 300, 0))
+        app.mgr.route_mouse_move(pyfvw.overlay.MouseEvent(430, 340, 0))
+        app.mgr.route_mouse_up(pyfvw.overlay.MouseEvent(430, 340, 0))
+        after = first.find(moved.id)
+        if after.position.lat == moved.position.lat:
+            raise AssertionError("the drag moved nothing")
+
+        # The right-click sheet, as far as a script can drive it: the row is
+        # built and named here, and invoking it would open a modal window.
+        info = app._point_info_items(app.proj, 260, 220)
+        if len(info) != 1 or not info[0].label:
+            raise AssertionError(f"no point info row over a marker: {info}")
+        if app._point_info_items(app.proj, 20, 20):
+            raise AssertionError("a point info row over empty sky")
+
+        # The icon library, as far as a script can drive it: the sheet opens,
+        # a sprite converts, and importing it puts a real row in the document.
+        lib = app.point_symbol_library()
+        if lib is None:
+            print("  selftest: points no icon library at %s"
+                  % app.point_symbol_dir, flush=True)
+        else:
+            sprite = lib.symbol(lib.ids[0])
+            if sprite is None or not sprite.image:
+                raise AssertionError("the library gave no artwork")
+            before = len(first.symbols)
+            row = first.add_symbol_from_library(lib.library, sprite.name)
+            if not row or len(first.symbols) != before + 1:
+                raise AssertionError("the sprite did not become a row")
+            if first.add_symbol_from_library(lib.library, sprite.name) != row:
+                raise AssertionError("a re-import made a second row")
+            print(f"  selftest: points library {len(lib.ids)} icons, "
+                  f"'{sprite.name}' -> row {row}", flush=True)
+
+        # A second set: the first one dims, and clicking it brings it back.
+        app._ui_flow(lambda: app.session.new_file_overlay(
+            points_mod.POINTS_TYPE_ID))
+        second = app.editors.edited
+        app.sync_point_dimming()
+        if second is first or not first.dimmed or second.dimmed:
+            raise AssertionError("the unedited set did not step back")
+        app.raise_point_overlay(first)
+        if first.dimmed or not second.dimmed:
+            raise AssertionError("the clicked set did not come forward")
+        if app.editors.edited is not first:
+            raise AssertionError("the edit did not follow the raised set")
+        app._ui_flow(lambda: app.session.close(second))
+
+        # INVARIANT 5, watched from the shell: the thing being edited is on
+        # top, whatever type it is, and leaving the mode puts the stack back.
+        def names():
+            return [o.name for o in app.mgr.overlays]
+        # The DEFAULT order is what the stack is in with no editor active. It
+        # has to be read after leaving the mode, because the point set above
+        # has been sitting on top for the length of this step.
+        app._ui_flow(lambda: app.editors.set_mode(""))
+        default = names()
+        app._ui_flow(lambda: app.editors.toggle_editor(route_mod.ROUTE_TYPE_ID))
+        with_route = names()
+        app._ui_flow(lambda: app.editors.toggle_editor(points_mod.POINTS_TYPE_ID))
+        with_points = names()
+        app._ui_flow(lambda: app.editors.set_mode(""))
+        crown = app.cross.name if app.cross is not None else None
+        if with_route[-1] != crown or with_points[-1] != crown:
+            raise AssertionError(f"the crosshair left the top: {with_points}")
+        if with_route[-2] != app.route.name:
+            raise AssertionError(f"the route did not rise: {with_route}")
+        if with_points[-2] == app.route.name:
+            raise AssertionError(f"the points did not rise: {with_points}")
+        if names() != default:
+            raise AssertionError(f"leaving left {names()}, not {default}")
+        print(f"  selftest: points {len(first.points)}, dragged "
+              f"{after.position.lat:+.5f} {after.position.lon:+.5f}", flush=True)
+    steps.append(step(point_editor, "point_editor"))
 
     # S4. The search box, over whatever series the walk above left showing:
     # open it, ask the stack for everything in view, and go to the first
@@ -3947,6 +4513,29 @@ def run_selftest(app, outdir):
 # main
 # ----------------------------------------------------------------------------
 
+def _resolve_series(app, spec, flag):
+    """One "FMT/KEY" argument to the series it names.
+
+    Either spelling is accepted: the bare series_key when it names one series,
+    or the full display_name ("geotiff/Color 1 meter") when it does not.
+    """
+    fmt, _, key = spec.partition("/")
+    match = [s for s in app.series_by_id.values()
+             if s.format == fmt and s.display_name == key]
+    if not match:
+        match = [s for s in app.series_by_id.values()
+                 if s.format == fmt and s.series_key == key]
+    if len(match) > 1:
+        raise SystemExit(f"{flag}: {spec} names {len(match)} series; use one "
+                         "of: " + ", ".join(f"{s.format}/{s.display_name}"
+                                            for s in match))
+    if not match:
+        raise SystemExit(f"{flag}: no {spec} in the catalog; have: "
+                         + ", ".join(sorted(f"{s.format}/{s.display_name}"
+                                            for s in app.series_by_id.values())))
+    return match[0]
+
+
 def main():
     ap = argparse.ArgumentParser(description="PythonView - pyfvw map viewer")
     ap.add_argument("--db", default=DEFAULT_DB, help="catalog SQLite path")
@@ -3960,6 +4549,9 @@ def main():
                     help="assumed display pitch in mm/pixel (default 0.25)")
     ap.add_argument("--shot", metavar="PNG",
                     help="render once headless, save PNG, exit")
+    ap.add_argument("--map-overlay", metavar="FMT/KEY", action="append",
+                    help="draw this vector series as an OVERLAY over the base "
+                         "map; repeatable")
     ap.add_argument("--selftest", action="store_true",
                     help="scripted UI walk-through; exits non-zero on failure")
     ap.add_argument("--settings", metavar="INI",
@@ -3989,25 +4581,13 @@ def main():
     if args.mm:
         app.mm_per_pixel = args.mm
     if args.series:
-        fmt, _, key = args.series.partition("/")
-        # Either spelling: the bare series_key when it names one series, or
-        # the full display_name ("geotiff/Color 1 meter") when it does not.
-        match = [s for s in app.series_by_id.values()
-                 if s.format == fmt and s.display_name == key]
-        if not match:
-            match = [s for s in app.series_by_id.values()
-                     if s.format == fmt and s.series_key == key]
-        if len(match) > 1:
-            raise SystemExit(f"--series: {args.series} names {len(match)} "
-                             "series; use one of: "
-                             + ", ".join(f"{s.format}/{s.display_name}"
-                                         for s in match))
-        if not match:
-            raise SystemExit(f"--series: no {args.series} in the catalog; have: "
-                             + ", ".join(sorted(
-                                 f"{s.format}/{s.display_name}"
-                                 for s in app.series_by_id.values())))
-        app.set_series(match[0], recenter=args.at is None)
+        app.set_series(_resolve_series(app, args.series, "--series"),
+                       recenter=args.at is None)
+    for spec in args.map_overlay or ():
+        series = _resolve_series(app, spec, "--map-overlay")
+        if series.format not in VECTOR_FORMATS:
+            raise SystemExit(f"--map-overlay: {spec} is not a vector series")
+        app.set_map_overlay(series, True)
     if args.at:
         app.center = pyfvw.geo.parse_location(args.at)
 

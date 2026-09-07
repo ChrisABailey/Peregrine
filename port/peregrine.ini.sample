@@ -179,6 +179,16 @@ simplify_pixels = 0.5
 # Default: port/Osm/styles/peregrine-osm.json in the repo.
 # style = "/path/to/style.json"
 
+# The sheet used when OSM is drawn as an OVERLAY (Overlays > Vector Map
+# Overlays) rather than as the base map. It differs from the sheet above in
+# exactly two ways, and both are what make a chart usable over another map:
+# no `background` layer, since an overlay that cleared the canvas would erase
+# what it is laid over, and no opaque ground fills, so the relief or imagery
+# underneath still reads through the linework. Also on Tools > Options.
+#
+# Default: port/Osm/styles/peregrine-osm-overlay.json in the repo.
+# overlay_style = "/path/to/overlay.json"
+
 # The .mbtiles PYRAMIDS themselves are not configured here — they are
 # catalogued like any other map data (File > Add Map Data), one series per
 # file. A pyramid declares no scale (it is a scale RANGE), so it opens fitted
@@ -232,16 +242,26 @@ simplify_pixels = 0.5
 
 
 [points]
-# Where File > Sample points takes the ICONS it embeds in the starter
-# document it writes (schema 2). A directory of loose `<name>.png` files —
-# the port's own is `testdata/GeoSymbol/makiPng`, a copy of the maki icon
-# set — from which the sample takes only the ~20 names its points ask for.
+# The icon set a point document draws on: what File > Sample points embeds in
+# the starter document it writes (schema 2), and what the point sheet's "+"
+# browses when you give a point an icon.
 #
-# The artwork is copied INTO the .fvpoints file, so the document keeps
-# working after this directory moves, and the icons a point wears are the
-# document's own rather than this machine's. A directory that is missing an
-# icon costs those points their icon and nothing else: they draw as plain
-# shapes, which is what a document written with no icons at all looks like.
+# Either form an icon set ships in, told apart by the path itself:
+#   * a DIRECTORY of loose `<name>.png` files — the default, and the port's own
+#     is `testdata/GeoSymbol/makiPng`, a copy of the maki icon set. This is the
+#     set the sample document's own artwork comes from, so a point authored
+#     against it matches the ones already in the file;
+#   * a MapLibre sprite SHEET — one `.png` beside a `.json` index naming each
+#     sprite's rectangle, such as `GeoSymbol/OSM-Liberty/osm-liberty-topo.png`.
+#     A different drawing style from the maki set, so mixing the two in one
+#     document looks like it.
+#
+# The artwork is copied INTO the .fvpoints file either way, so the document
+# keeps working after this path moves and the icons a point wears are the
+# document's own rather than this machine's. A path that is missing costs the
+# sample its icons and the sheet its "+" button, and nothing else: points with
+# no icon draw as plain shapes, which is what a document written with no icons
+# at all looks like.
 # Default: <geosym.data_dir>/GeoSymbol/makiPng.
 # symbol_dir = "/path/to/testdata/GeoSymbol/makiPng"
 

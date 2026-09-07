@@ -29,6 +29,36 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(FVW_BUILD_TESTS "Build unit tests" ON)
 
+# --- iOS cross-build ---------------------------------------------------------
+#
+# `FVW_IOS` is what every module asks. It is SET rather than asked for when the
+# toolchain already says iOS, so an iOS build cannot be configured with the flag
+# forgotten. It buys three things and no more:
+#
+#   * NOTHING WITH A HOST IN IT gets built — no test binaries (a device runs no
+#     ctest, and gtest would come down as a fourth FetchContent), no CLI tools
+#     (fvrender/fvpack/fvgraph are mac tools that MAKE the data a phone reads),
+#     no pyfvw (there is no Python in the bundle).
+#   * `pippin_core`, the umbrella static library the app links (see
+#     port/apps/Pippin/CMakeLists.txt).
+#   * static libraries throughout, which is already how this tree builds.
+#
+# The mac build sees none of it: every guard is `if(FVW_IOS)`, and with the
+# option off this file is what it was.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  set(FVW_IOS ON CACHE BOOL "Cross-build the Pippin core for iOS" FORCE)
+else()
+  option(FVW_IOS "Cross-build the Pippin core for iOS" OFF)
+endif()
+
+if(FVW_IOS)
+  # A cross-built test binary cannot be run by the machine that built it, so
+  # there is nothing to gain by building one. The mac build is the test bed for
+  # every line of C++ in the pack.
+  set(FVW_BUILD_TESTS OFF CACHE BOOL "Build unit tests" FORCE)
+  message(STATUS "peregrine: iOS cross-build — tests, CLI tools and pyfvw are off")
+endif()
+
 if(FVW_BUILD_TESTS)
   include(FetchContent)
   set(FVW_GTEST_VERSION "1.17.0" CACHE STRING "googletest release to build against")
@@ -78,4 +108,12 @@ add_subdirectory(port/fvkit)
 # RouteKit links BOTH fvkit and Routing, which is the one thing fvkit may not
 # do — hence a module of its own, and hence after both of them.
 add_subdirectory(port/RouteKit)
-add_subdirectory(port/bindings/pyfvw)
+# pyfvw embeds CPython; there is none on a phone.
+if(NOT FVW_IOS)
+  add_subdirectory(port/bindings/pyfvw)
+endif()
+
+# Pippin, the iOS app. On iOS this builds the umbrella library the app links
+# (`cmake --preset ios`); on the mac it builds one thing — the gtest over the
+# pure-C++ half of PippinKit — and returns.
+add_subdirectory(port/apps/Pippin)

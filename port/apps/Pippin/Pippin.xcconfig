@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Chris Bailey
+// Part of Peregrine, a cross-platform port of FalconView(tm).
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
+//
+// Pippin.xcconfig — the three values that differ between the open-source
+// project and the app that ships.
+//
+// WHY THEY ARE BUILD SETTINGS AND NOT SOURCE. Each is something the repository
+// must NOT know: the product's App Store name, a contact address that would be
+// scraped the day it was pushed, and the Apple Developer team the build signs
+// against. Kept in source, the only way to have them locally is an edit that is
+// never committed — a permanently dirty working tree, one `git commit -a` away
+// from being public. Kept here, the tracked file carries harmless defaults and
+// the real values live in a git-ignored file beside it.
+//
+// THE DEFAULTS ARE THE OPEN-SOURCE ANSWER, and they are a WORKING answer, not
+// a placeholder: a clone with no local file builds an app called Pippin whose
+// Report a Problem sheet says no address is set and offers the share button
+// instead — which is exactly the state `ReportMail` was written to handle.
+//
+//   PP_DISPLAY_NAME    the name on the home screen, in the share sheet, in
+//                      the location permission alert and in every sentence
+//                      `AppName.display` puts it in.
+//   PP_REPORT_ADDRESS  where Report a Problem mails to. An iCloud Hide My
+//                      Email alias — see `ReportMail` in Sharing.swift.
+//   PP_DEVELOPMENT_TEAM  the ten-character Apple Developer team id every
+//                      target signs against.
+//
+// The team id is the one of the three that is not secret — it is readable in
+// any signed app — but it identifies a personal Apple account and is useless
+// to anyone else, so it belongs here with the other two. Empty is the handled
+// state: an unsigned build of the C++ and the simulator app needs no team, and
+// Xcode's Signing & Capabilities pane or `DEVELOPMENT_TEAM=` on the
+// `xcodebuild` line is the other way to supply one.
+
+PP_DISPLAY_NAME = Pippin
+PP_REPORT_ADDRESS =
+PP_DEVELOPMENT_TEAM =
+
+// THE LOCAL OVERRIDE, and the `?` is the whole point: `#include?` is the
+// OPTIONAL spelling, so a checkout without the file builds silently rather
+// than warning "unable to open base configuration reference file" at everyone
+// who clones this. It is LAST so that what it sets wins.
+//
+// Write it with `local/set-branding.sh`; `local/` is git-ignored, so neither
+// the script nor the values it stores can be committed.
+#include? "local/Local.xcconfig"

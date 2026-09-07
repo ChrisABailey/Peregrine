@@ -15,8 +15,11 @@
 #include <fstream>
 #include <map>
 
+#include "fvkit/overlay/manager.h"
+#include "fvkit/overlay/point_edit.h"
 #include "fvkit/detail/sqlite.h"
 #include "fvkit/tools/png_io.h"
+#include "fvkit/tools/png_write.h"
 
 namespace fv {
 
@@ -97,6 +100,11 @@ Status MigrateColumns(detail::SqliteDb& db) {
 // in to 0.62 — enough that a diamond badge still reads as a diamond.
 constexpr double kIconFractionOfBadge = 0.62;
 
+// What "dimmed" multiplies every ink by. Low enough that a dimmed set reads as
+// background at a glance, high enough that its markers are still findable —
+// they are what the user clicks to bring that set back to the top.
+constexpr double kDimmedAlpha = 0.35;
+
 int HexDigit(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -154,8 +162,12 @@ class EmbeddedSymbolLibrary : public ISymbolLibrary {
  public:
   // The symbol vector is BORROWED and must outlive the library, which is what
   // PointOverlay::InvalidateSymbolLibrary exists to guarantee.
-  explicit EmbeddedSymbolLibrary(const std::vector<PointSymbol>* symbols)
-      : symbols_(symbols) {}
+  // `alpha` scales every decoded tile's alpha channel, which is how a dimmed
+  // overlay fades its artwork: ICanvas::DrawPixmap carries no opacity, so the
+  // faded tile has to BE a tile. 1.0 is the identity and decodes nothing extra.
+  EmbeddedSymbolLibrary(const std::vector<PointSymbol>* symbols,
+                        double alpha = 1.0)
+      : symbols_(symbols), alpha_(alpha) {}
 
   static std::string IdFor(int64_t symbol_id) {
     return std::to_string(symbol_id);
@@ -192,13 +204,25 @@ class EmbeddedSymbolLibrary : public ISymbolLibrary {
         sym.pivot_x = sym.tile.Width() / 2.0;
         sym.pivot_y = sym.tile.Height() / 2.0;
       }
+      if (alpha_ < 1.0) FadeTile(&sym.tile, alpha_);
     }
     auto ins = cache_.emplace(symbol_id, std::move(sym));
     return ins.first->second.tile.Empty() ? nullptr : &ins.first->second;
   }
 
  private:
+  static void FadeTile(PixelBuffer* tile, double alpha) {
+    for (int y = 0; y < tile->Height(); ++y) {
+      unsigned char* row = tile->Row(y);
+      for (int x = 0; x < tile->Width(); ++x) {
+        unsigned char& a = row[4 * x + 3];
+        a = static_cast<unsigned char>(std::lround(a * alpha));
+      }
+    }
+  }
+
   const std::vector<PointSymbol>* symbols_;
+  double alpha_ = 1.0;
   std::map<std::string, SymbolPixmap> cache_;
 };
 
@@ -252,8 +276,38 @@ std::string PointColorToString(const FvColor& color) {
 const char PointOverlay::kTypeId[] = "fv.points";
 const char PointOverlay::kExtension[] = "fvpoints";
 
-PointOverlay::PointOverlay(std::string name) : Overlay(std::move(name)) {}
+PointOverlay::PointOverlay(std::string name)
+    : Overlay(std::move(name)), edit_(new PointEditSession(*this)) {}
 PointOverlay::~PointOverlay() = default;
+
+// ---------------------------------------------------------------------------
+// Editing — the input SPI and EditTarget, both forwarded to the session
+// ---------------------------------------------------------------------------
+
+bool PointOverlay::OnMouseDown(const MouseEvent& e) {
+  return edit_->OnMouseDown(e);
+}
+bool PointOverlay::OnMouseMove(const MouseEvent& e) {
+  return edit_->OnMouseMove(e);
+}
+bool PointOverlay::OnMouseUp(const MouseEvent& e) { return edit_->OnMouseUp(e); }
+bool PointOverlay::OnKeyDown(const KeyEvent& e) { return edit_->OnKeyDown(e); }
+
+void PointOverlay::EnterEditFocus() { edit_->EnterEditFocus(); }
+void PointOverlay::ReleaseEditFocus() { edit_->ReleaseEditFocus(); }
+bool PointOverlay::CanUndo() const { return edit_->CanUndo(); }
+void PointOverlay::Undo() { edit_->Undo(); }
+bool PointOverlay::CanRedo() const { return edit_->CanRedo(); }
+void PointOverlay::Redo() { edit_->Redo(); }
+
+void PointOverlay::SetDimmed(bool on) {
+  if (dimmed_ == on) return;
+  dimmed_ = on;
+  // The faded tiles are a different decode, so the cached library is no longer
+  // the right one. The per-colour builtin libraries are keyed by the ink they
+  // were asked for and need no invalidation.
+  InvalidateSymbolLibrary();
+}
 
 // ---------------------------------------------------------------------------
 // The document
@@ -358,6 +412,34 @@ Status PointOverlay::AddSymbolFromPngFile(const std::string& path,
   return Status::Ok();
 }
 
+Status PointOverlay::AddSymbolFromLibrary(ISymbolLibrary& library,
+                                          const std::string& id,
+                                          const std::string& name,
+                                          int64_t* out_id) {
+  const SymbolPixmap* pm = library.Pixmap(id);
+  if (pm == nullptr || pm->tile.Empty())
+    return Status::Error(kNotFound, "no symbol '" + id + "' in that library");
+  PointSymbol sym;
+  sym.name = name.empty() ? id : name;
+  if (sym.name.empty()) return Status::Error(kInvalidArg, "unnamed symbol");
+  Status st = EncodePng(pm->tile, &sym.image);
+  if (!st.ok()) return st;
+  sym.pixel_ratio = pm->pixel_ratio;
+  // A library states a pivot for every tile and defaults it to the centre.
+  // Only a pivot that is NOT the centre is worth recording, because an unset
+  // pivot already means the centre and is what a marker wants.
+  const double cx = pm->tile.Width() / 2.0;
+  const double cy = pm->tile.Height() / 2.0;
+  if (pm->pivot_x != cx || pm->pivot_y != cy) {
+    sym.has_pivot = true;
+    sym.pivot_x = pm->pivot_x;
+    sym.pivot_y = pm->pivot_y;
+  }
+  const int64_t row = AddSymbol(std::move(sym));
+  if (out_id != nullptr) *out_id = row;
+  return Status::Ok();
+}
+
 bool PointOverlay::RemoveSymbol(int64_t id) {
   auto it = std::find_if(symbols_.begin(), symbols_.end(),
                          [id](const PointSymbol& s) { return s.id == id; });
@@ -387,7 +469,8 @@ const PointSymbol* PointOverlay::FindSymbolByName(const std::string& name) const
 
 EmbeddedSymbolLibrary* PointOverlay::SymbolLibrary() {
   if (!symbol_library_)
-    symbol_library_.reset(new EmbeddedSymbolLibrary(&symbols_));
+    symbol_library_.reset(
+        new EmbeddedSymbolLibrary(&symbols_, dimmed_ ? kDimmedAlpha : 1.0));
   return symbol_library_.get();
 }
 
@@ -437,6 +520,18 @@ BuiltinSymbolLibrary* PointOverlay::LibraryFor(const FvColor& c) {
 Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   if (!proj.Ready()) return Status::Error(kInvalidArg, "projection not ready");
   const PixelSize surf = proj.SurfaceSize();
+  // Kept for the input SPI, which carries no projection: a click has to become
+  // a position with the projection the user was looking at.
+  last_proj_ = proj;
+  have_proj_ = true;
+
+  // Every ink below goes through this. Dimmed, a colour keeps its hue and
+  // loses its opacity, so a dimmed set is the same picture further back rather
+  // than a different one.
+  const auto ink = [this](FvColor c) {
+    if (dimmed_) c.a = static_cast<unsigned char>(std::lround(c.a * kDimmedAlpha));
+    return c;
+  };
 
   // G3. Every marker and every name below goes through GeoDraw, which is what
   // this overlay was A6's placeholder for: the six shapes are BuiltinSymbol-
@@ -509,7 +604,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     if (edge) {
       const double edge_px = p.size_px + 2.0;
       draw.SetState(next_state());
-      draw.SetSymbols(LibraryFor(FvColor{0, 0, 0, 255}));
+      draw.SetSymbols(LibraryFor(ink(FvColor{0, 0, 0, 255})));
       s = draw.DrawSymbolAtPixel(
           sx, sy, id,
           PointSymbolStyle{true, id, 0.0, edge_px / kBuiltinSymbolNominalPx});
@@ -518,7 +613,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
 
     if (badge) {
       draw.SetState(next_state());
-      draw.SetSymbols(LibraryFor(p.color));
+      draw.SetSymbols(LibraryFor(ink(p.color)));
       s = draw.DrawSymbolAtPixel(sx, sy, id,
                                  PointSymbolStyle{true, id, 0.0, scale});
       if (!s.ok()) return s;
@@ -560,7 +655,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
       // beside a marker drawn three times its authored size is a caption a
       // third the height of the thing it names.
       ls.style.size = 12.0 * dpi_scale_;
-      ls.style.color = FvColor{0, 0, 0, 255};
+      ls.style.color = ink(FvColor{0, 0, 0, 255});
       ls.dx = (int)std::lround(r) + 3;
       ls.dy = -(int)std::lround(r);
       // A white halo, which the hand-rolled version could not have had: a name
@@ -568,7 +663,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
       // default — the halo makes a name legible, not un-overlapping, and label
       // collision is still the ledger's open item.
       ls.halo_width = 1.0;
-      ls.halo_color = FvColor{255, 255, 255, 255};
+      ls.halo_color = ink(FvColor{255, 255, 255, 255});
       s = draw.DrawLabelAtPixel(sx, sy, p.name, ls);
       if (!s.ok()) return s;
     }
@@ -587,6 +682,9 @@ Status PointOverlay::FileNew() {
   selected_ = 0;
   next_id_ = 1;
   next_symbol_id_ = 1;
+  // An undo reaching back past a File > New would restore points into a
+  // document they were never in.
+  edit_->ClearHistory();
   // Not dirty: an empty new document has nothing in it to lose. The session
   // still sends it through Save As on the first Save, because it has never
   // been saved (plan §3g).
@@ -713,6 +811,7 @@ Status PointOverlay::FileOpen(const std::string& spec) {
   selected_ = 0;
   next_id_ = 1;
   next_symbol_id_ = 1;
+  edit_->ClearHistory();
   for (const MapPoint& p : points_) next_id_ = std::max(next_id_, p.id + 1);
   for (const PointSymbol& sym : symbols_)
     next_symbol_id_ = std::max(next_symbol_id_, sym.id + 1);

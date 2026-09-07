@@ -766,6 +766,70 @@ TEST(OsmReferenceStyle, LoadsAndStaysInsideTheSubset) {
   EXPECT_LT(casing->priority, fill->priority);
 }
 
+// A casing and the line it cases must resolve to the SAME dash pixels, or the
+// two passes lay their dashes on different stretches of road and the casing
+// reads as a second dashed line rather than as a halo. A GL dasharray is in
+// LINE-WIDTH units, so the casing's array has to be its parent's divided by
+// the width ratio — and the ratio has to hold at every zoom, which means the
+// two width curves must be proportional. This is a property of the delivered
+// style files, not of the renderer, so it is asserted on the files.
+//
+// THE CASING IS THE FIRST DASHED PASS, not a colour. Layer order is what makes
+// a casing a casing, and a sheet is free to draw one in any colour it likes —
+// style.json's cycleway casing is a translucent dark brown, not the white a
+// halo over pale ground would be.
+TEST(OsmReferenceStyle, ACasingDashesInStepWithTheLineItCases) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+
+  // class=path + subclass=cycleway is what both cycleway layers filter on.
+  fv::VectorFeature way;
+  way.type = fv::VectorGeometryType::kLine;
+  way.layer = "transportation";
+  way.style_key = "cycleway";
+  way.attributes.push_back({"class", "path"});
+  way.attributes.push_back({"subclass", "cycleway"});
+  way.parts.push_back({{33.75, -84.39}, {33.76, -84.38}});
+
+  for (const char* name : {"style.json", "OldEurope.json"}) {
+    const std::string path = std::string(dir) + "/" + name;
+    if (!fs::is_regular_file(path)) continue;
+    fv::OsmStyleEngine e;
+    std::string err;
+    ASSERT_TRUE(e.LoadFile(path, &err).ok()) << name << ": " << err;
+    e.SetReferenceLatitude(33.75);
+
+    for (double z : {8.0, 12.0, 16.0, 18.0, 20.0}) {
+      fv::StyleContext ctx;
+      ctx.scale_denominator = fv::webmerc::ScaleForZoomExact(z, 33.75, 0.25);
+      std::vector<fv::StyleResult> out;
+      ASSERT_TRUE(e.Style(way, ctx, &out).ok());
+
+      // The first two dashed passes, in the order the layers declared them:
+      // the casing, then the line it cases.
+      const std::vector<double>* casing = nullptr;
+      const std::vector<double>* line = nullptr;
+      for (const fv::StyleResult& r : out) {
+        if (!r.stroke.valid || r.stroke.pen.dash.empty()) continue;
+        if (casing == nullptr) {
+          casing = &r.stroke.pen.dash;
+          continue;
+        }
+        line = &r.stroke.pen.dash;
+        break;
+      }
+      // A sheet with no dashed cycleway PAIR at this zoom has nothing to say
+      // about the invariant — one dashed pass is a plain dashed line, and no
+      // dashed pass is a cycleway this sheet draws solid or not at all.
+      if (casing == nullptr || line == nullptr) continue;
+      ASSERT_EQ(casing->size(), line->size()) << name << " z" << z;
+      for (size_t i = 0; i < casing->size(); ++i)
+        EXPECT_NEAR((*casing)[i], (*line)[i], 1e-9)
+            << name << " z" << z << " run " << i;
+    }
+  }
+}
+
 TEST(OsmReferenceStyle, StylesRealAtlantaFeatures) {
   const std::string style = StylePath();
   const std::string mb = MbtilesPath();

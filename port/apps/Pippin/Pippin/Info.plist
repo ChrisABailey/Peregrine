@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Documents/ over the USB cable: how the points database, the route
+	     and the recorded rides get off the phone without a share sheet. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<!-- THE EXPORT-COMPLIANCE ANSWER, GIVEN ONCE HERE INSTEAD OF BY HAND ON
+	     EVERY UPLOAD. Without this key App Store Connect stops each build at
+	     "Missing Compliance" and waits for somebody to answer the same two
+	     questions in a web form; with it the build goes straight to
+	     processing.
+
+	     AND `NO` IS THE TRUE ANSWER, not the convenient one. The question is
+	     about NON-EXEMPT encryption, and the only cryptography anywhere near
+	     this app is HTTPS in `PlaceLink.resolve` — the standard TLS of the
+	     operating system's own URLSession, used to fetch, which Category 5
+	     Part 2 note 4 exempts outright. There is no encryption of the
+	     rider's data, no key, no custom algorithm: the points, the route and
+	     the rides are written to `Documents/` as plain XML and plain text. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- `pippin://place?lat=…&lon=…&name=…&address=…` (P14).
+
+	     NOT a public interface anybody else is invited to call: it exists
+	     so the share extension, which is a different process with a
+	     different bundle id, can hand the app a place it has just parsed.
+	     See `PlaceLink.callbackURL(for:)` for why the payload travels in a
+	     URL rather than through an App Group container.
+
+	     Whatever arrives here is treated as input and not as instruction —
+	     `MapScreen.onOpenURL` validates it and the worst a malformed one
+	     can do is nothing. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>org.peregrine.Pippin.place</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pippin</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Where "Report a Problem" sends a saved report (P22).
+
+	     AN ICLOUD **HIDE MY EMAIL** ALIAS, not a real mailbox: it can be
+	     rotated the day it starts collecting spam, and a rider reading it
+	     in their own Mail composer learns nothing about who they are
+	     writing to. It lives here rather than in the Swift so it is one
+	     line to change, and it is deliberately NOT a service endpoint or
+	     an API key — the transport is the rider's own mail app, so this
+	     binary carries no credential anybody could extract from the .ipa.
+
+	     LEAVE IT EMPTY AND THE FEATURE STILL WORKS: the Send button turns
+	     itself off, the sheet says why, and the share button still gets a
+	     report off the phone. See `ReportMail` in Sharing.swift.
+
+	     IT IS A BUILD SETTING AND NOT A LITERAL, because this file is public
+	     and an address written here would be scraped within a day of the
+	     push. `$(PP_REPORT_ADDRESS)` is declared empty in the tracked
+	     `Pippin.xcconfig` and filled in by a git-ignored `local/Local.xcconfig`
+	     on the machine that ships — so a clone builds the handled empty
+	     state above, and the address never reaches the repository. An
+	     undefined build setting expands to the empty string, which is the
+	     same handled state again. -->
+	<key>PPReportAddress</key>
+	<string>$(PP_REPORT_ADDRESS)</string>
+</dict>
+</plist>

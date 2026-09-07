@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "mac",
+      "displayName": "macOS — the test bed",
+      "description": "The default build: every module, every test. `cmake -B build` is this preset by hand, and stays working without it.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "ios",
+      "displayName": "iOS device (arm64) — pippin_core",
+      "description": "Cross-build of the Peregrine core for a phone (Pippin plan, P1). Tests, CLI tools and pyfvw are off automatically; the product is libpippin_core.a.",
+      "binaryDir": "${sourceDir}/build-ios",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "17.0",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "ios-sim",
+      "displayName": "iOS simulator — pippin_core, and it RUNS",
+      "description": "Same cross-build against the simulator SDK. This is the one that can be exercised: `xcrun simctl spawn booted build-ios-sim/port/apps/Pippin/pippin_link_check <pack>` opens the data pack and draws a frame of Kiawah. arm64 is the Apple-silicon simulator; an Intel mac wants x86_64.",
+      "binaryDir": "${sourceDir}/build-ios-sim",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphonesimulator",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "17.0",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "mac", "configurePreset": "mac" },
+    { "name": "ios", "configurePreset": "ios" },
+    { "name": "ios-sim", "configurePreset": "ios-sim" }
+  ],
+  "testPresets": [
+    {
+      "name": "mac",
+      "configurePreset": "mac",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

@@ -39,6 +39,7 @@
 #include "fv_osm_style.h"
 #include "fv_osm_vector_source.h"
 #include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/overlay/vector_map_overlay.h"
 #include "fvkit/proj.h"
 #include "fvkit/vector/renderer.h"
 
@@ -57,6 +58,13 @@ std::string StylePath() {
   const char* d = getenv("FVW_OSM_STYLE_DIR");
   if (d == nullptr) return {};
   const std::string p = std::string(d) + "/peregrine-osm.json";
+  return fs::is_regular_file(p) ? p : std::string();
+}
+
+std::string OverlayStylePath() {
+  const char* d = getenv("FVW_OSM_STYLE_DIR");
+  if (d == nullptr) return {};
+  const std::string p = std::string(d) + "/peregrine-osm-overlay.json";
   return fs::is_regular_file(p) ? p : std::string();
 }
 
@@ -434,5 +442,86 @@ TEST(OsmRender, KiawahCutMatchesSource) {
     EXPECT_EQ(draws[0], draws[1]) << c.name << ": the cut drew a different map";
     EXPECT_EQ(hashes[0], hashes[1]) << c.name << ": the cut is not pixel-identical";
     WritePng(frames[1].Buffer(), c.name);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OSM AS AN OVERLAY: the same pyramid, the overlay sheet, drawn over a map
+// that is already there.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A stand-in for whatever is underneath — shaded relief, imagery, a scanned
+// chart. Any colour would do; a mid grey makes "still there" easy to count.
+constexpr unsigned char kUnderR = 96, kUnderG = 104, kUnderB = 96;
+
+size_t PixelsStillShowingTheMapUnder(const fv::PixelBuffer& b) {
+  size_t n = 0;
+  for (int y = 0; y < b.Height(); ++y) {
+    const unsigned char* row = b.Row(y);
+    for (int x = 0; x < b.Width(); ++x) {
+      const unsigned char* p = row + x * 4;
+      if (p[0] == kUnderR && p[1] == kUnderG && p[2] == kUnderB) ++n;
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
+// The two properties that make a style sheet usable as an overlay, over the
+// real Atlanta tiles: the sheet declares no background, and what it does draw
+// leaves most of the map underneath visible. The base sheet fails both, which
+// is why there are two files.
+TEST(OsmOverlay, LeavesTheMapUnderneathShowing) {
+  const std::string mb_path = MbtilesPath();
+  const std::string overlay_style = OverlayStylePath();
+  const std::string base_style = StylePath();
+  if (mb_path.empty()) GTEST_SKIP() << "no OSM mbtiles";
+  if (overlay_style.empty()) GTEST_SKIP() << "no OSM overlay style";
+
+  Scene s = MakeScene(mb_path, overlay_style);
+  ASSERT_TRUE(s.source && s.style);
+
+  fv::FvColor none{};
+  EXPECT_FALSE(s.style->background(25000.0, &none))
+      << "an overlay sheet must declare no background layer";
+
+  fv::VectorMapOverlay ov("OSM", s.source);
+  ov.SetStyle(s.style);
+
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(512, 512).ok());
+  ASSERT_TRUE(proj.SetCenter(fv::GeoPoint{kAtlantaLat, kAtlantaLon}).ok());
+  ASSERT_TRUE(proj.SetPhysicalScale(25000.0, 0.25).ok());
+
+  fv::CpuCanvas canvas(512, 512);
+  canvas.Clear(fv::FvColor{kUnderR, kUnderG, kUnderB, 255});
+  ASSERT_TRUE(ov.OnDraw(proj, canvas).ok());
+
+  const size_t total = 512 * 512;
+  const size_t under = PixelsStillShowingTheMapUnder(canvas.Buffer());
+  EXPECT_GT(ov.last_draw_features(), 100u);
+  // Downtown Atlanta at 1:25k is as dense as this pack gets — a solid block
+  // grid, the connector and the rail corridor — and a fifth of the frame is
+  // still the map below it. Measured 27%.
+  EXPECT_GT(under, total / 5);
+
+  // The base sheet over the same view. Its background is not counted here at
+  // all (a `background` layer is a canvas clear, and the renderer does not
+  // clear), so what this compares is the FILLS alone: landcover, landuse,
+  // park and building close over the frame where the overlay sheet leaves it
+  // open. Measured 6% against 27%.
+  if (!base_style.empty()) {
+    Scene b = MakeScene(mb_path, base_style);
+    ASSERT_TRUE(b.source && b.style);
+    fv::VectorMapOverlay base("OSM base", b.source);
+    base.SetStyle(b.style);
+    fv::CpuCanvas c2(512, 512);
+    c2.Clear(fv::FvColor{kUnderR, kUnderG, kUnderB, 255});
+    ASSERT_TRUE(base.OnDraw(proj, c2).ok());
+    EXPECT_LT(PixelsStillShowingTheMapUnder(c2.Buffer()), under / 2)
+        << "the base sheet is expected to paint over the map, not beside it";
   }
 }

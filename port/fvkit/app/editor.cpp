@@ -40,15 +40,22 @@ class EditorManager::Hook : public StackObserver {
 // caller that arrives during that is genuinely reentrant.
 class EditorManager::Transition {
  public:
-  explicit Transition(EditorManager& owner) : owner_(owner) {
+  // NESTABLE, and it has to be: the raise in TakeFocus and the restore in
+  // ExitMode are stack manipulations of our own inside transitions that are
+  // already running. An inner guard that cleared the flag on the way out would
+  // leave the rest of the outer transition looking like a caller's reentrant
+  // arrival -- which is exactly the thing this flag exists to tell apart.
+  explicit Transition(EditorManager& owner)
+      : owner_(owner), was_(owner.in_transition_) {
     owner_.in_transition_ = true;
   }
-  ~Transition() { owner_.in_transition_ = false; }
+  ~Transition() { owner_.in_transition_ = was_; }
   Transition(const Transition&) = delete;
   Transition& operator=(const Transition&) = delete;
 
  private:
   EditorManager& owner_;
+  bool was_;
 };
 
 EditorManager::EditorManager(OverlayTypeRegistry& registry,
@@ -113,6 +120,20 @@ void EditorManager::TakeFocus(Overlay* overlay) {
   edited_ = overlay;
   if (overlay == nullptr) return;
   if (EditTarget* target = overlay->AsEditTarget()) target->EnterEditFocus();
+  // INVARIANT 5: THE THING BEING EDITED IS ON TOP. Not the top of its own band
+  // -- a route being edited draws over a point set and a point set being
+  // edited draws over the route, and neither is a statement about which type
+  // belongs above which. It is a statement about what the user is working on,
+  // so it outranks the display order for as long as the edit lasts and
+  // ExitMode puts it back.
+  //
+  // The top-most band is the exception, which is what MoveToTopOfWorking is
+  // for: a crosshair the user is drawing under is worth less than a crosshair
+  // they can see.
+  if (std::shared_ptr<Overlay> held = manager_.FindShared(overlay)) {
+    Transition t(*this);  // the order change is ours; do not chase it back
+    manager_.MoveToTopOfWorking(held);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +160,15 @@ void EditorManager::ExitMode(bool notify) {
   }
   mode_.clear();
   editor_ = nullptr;
+  // The raise lasted exactly as long as the edit: with no editor active there
+  // is nothing whose importance outranks the display order, so the stack goes
+  // back to the order Add would have built. Overlays that share a display
+  // order keep the arrangement they have, so the set most recently edited
+  // stays the upper of its peers.
+  {
+    Transition t(*this);
+    manager_.RestoreDefaultOrder();
+  }
   if (notify) shell_.OnEditorChanged(mode_, nullptr);
 }
 

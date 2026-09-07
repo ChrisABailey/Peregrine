@@ -91,7 +91,7 @@
     "bicycle": {
       "description": "Cycling at a flat speed, preferring cycleways and quiet streets.",
       "mode": "bicycle",
-      "speed": { "source": "fixed", "kph": 15.0 },
+      "speed": { "source": "fixed", "kph": 12.0 },
       "metric": "time",
       // Turn signage is addressed to vehicles; a bicycle is not bound by it here.
       "turn_restrictions": false,

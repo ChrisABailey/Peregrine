@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <utility>
 
 #include "fvkit/vector/feature_rows.h"
@@ -118,11 +119,76 @@ VectorMapOverlay::~VectorMapOverlay() = default;
 
 void VectorMapOverlay::SetSource(VectorSourcePtr source) {
   source_ = std::move(source);
+  renderer_.reset();
   by_ref_.clear();
   by_id_.clear();
   last_features_ = 0;
   last_results_ = 0;
   last_used_index_ = false;
+  last_draw_features_ = 0;
+}
+
+void VectorMapOverlay::SetStyle(StyleEnginePtr style) {
+  style_ = std::move(style);
+  renderer_.reset();
+  last_draw_features_ = 0;
+}
+
+VectorRenderer* VectorMapOverlay::renderer() {
+  if (!renderer_ && source_ && style_) {
+    renderer_ = std::make_unique<VectorRenderer>(source_, style_);
+    ApplyRenderSettings();
+  }
+  return renderer_.get();
+}
+
+void VectorMapOverlay::ApplyRenderSettings() {
+  if (!renderer_) return;
+  renderer_->SetSceneMargin(scene_margin_);
+  renderer_->SetSimplifyPixels(simplify_px_);
+  renderer_->SetSymbolScale(symbol_scale_);
+  renderer_->SetDeviceDpi(dpi_);
+  renderer_->SetLabelReferenceScale(label_ref_scale_);
+  renderer_->SetMaxFeatures(max_draw_);
+}
+
+void VectorMapOverlay::SetSceneMargin(double fraction) {
+  scene_margin_ = fraction > 0.0 ? fraction : 0.0;
+  if (renderer_) renderer_->SetSceneMargin(scene_margin_);
+}
+
+void VectorMapOverlay::SetSimplifyPixels(double px) {
+  simplify_px_ = px > 0.0 ? px : 0.0;
+  if (renderer_) renderer_->SetSimplifyPixels(simplify_px_);
+}
+
+void VectorMapOverlay::SetSymbolScale(double s) {
+  symbol_scale_ = s > 0.0 ? s : 1.0;
+  if (renderer_) renderer_->SetSymbolScale(symbol_scale_);
+}
+
+void VectorMapOverlay::SetDeviceDpi(double dpi) {
+  dpi_ = dpi > 0.0 ? dpi : 96.0;
+  if (renderer_) renderer_->SetDeviceDpi(dpi_);
+}
+
+void VectorMapOverlay::SetLabelReferenceScale(double scale_denominator) {
+  label_ref_scale_ = scale_denominator > 0.0 ? scale_denominator : 0.0;
+  if (renderer_) renderer_->SetLabelReferenceScale(label_ref_scale_);
+}
+
+void VectorMapOverlay::SetMaxDrawFeatures(size_t n) {
+  max_draw_ = n;
+  if (renderer_) renderer_->SetMaxFeatures(max_draw_);
+}
+
+Status VectorMapOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
+  last_draw_features_ = 0;
+  VectorRenderer* r = renderer();
+  if (!r) return Status::Ok();
+  Status st = r->Render(proj, &canvas);
+  last_draw_features_ = r->features_queried();
+  return st;
 }
 
 void VectorMapOverlay::SetLabelTags(std::vector<std::string> tags) {

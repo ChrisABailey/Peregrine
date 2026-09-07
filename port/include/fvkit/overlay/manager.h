@@ -115,6 +115,18 @@ class OverlayManager {
   // Order. Index 0 is the BOTTOM of the stack throughout.
   // ---------------------------------------------------------------------
   Status MoveToTop(const std::shared_ptr<Overlay>& overlay);
+
+  // To the top of the overlays the user WORKS IN -- above everything except
+  // the top-most band (the crosshair, a HUD), which stays above the lot for
+  // the same reason it is flagged.
+  //
+  // This is what "the thing being edited is on top" means, and it is a
+  // different call from MoveToTop because MoveToTop would put a route being
+  // edited over the crosshair. A top-most overlay passed here goes to the
+  // absolute top, which is the top of its own band and the only reading
+  // available.
+  Status MoveToTopOfWorking(const std::shared_ptr<Overlay>& overlay);
+
   Status MoveToBottom(const std::shared_ptr<Overlay>& overlay);
   // `move` ends up directly above / below `anchor`. Both must be in the stack
   // and must not be the same overlay.
@@ -127,6 +139,18 @@ class OverlayManager {
   // the stack is left untouched -- a reorder dialog that has gone stale must
   // not half-apply.
   Status Reorder(const std::vector<std::shared_ptr<Overlay>>& full_order);
+
+  // Puts the stack back in the order `Add` would have built: bands by display
+  // order, top-most ones above the lot. It is what undoes a raise -- an
+  // overlay lifted out of its band for the length of an edit belongs back in
+  // it afterwards.
+  //
+  // A STABLE sort, which is the whole of the promise it makes about overlays
+  // that share a display order: their relative order is left exactly as it is.
+  // Two point sets the user has arranged stay arranged, and the one most
+  // recently raised stays the upper of the two -- which is the same answer
+  // `Add`'s newest-on-top rule gives.
+  Status RestoreDefaultOrder();
 
   // ---------------------------------------------------------------------
   // Current overlay
@@ -153,6 +177,14 @@ class OverlayManager {
   // path is the shell's job, because the rule differs per platform.
   std::shared_ptr<Overlay> FindByFileSpec(const std::string& type_id,
                                           const std::string& file_spec) const;
+
+  // The stack's own handle for an overlay somebody holds a raw pointer to, or
+  // null when it is not in the stack. Every weak reference to an overlay in
+  // this port is an `Overlay*` (EditorManager::edited, the mouse capture), and
+  // this is how one is turned back into the shared_ptr that owns it -- which
+  // matters most at a language boundary, where a second wrapper around the
+  // same address is a second OBJECT.
+  std::shared_ptr<Overlay> FindShared(const Overlay* raw) const;
 
   // ---------------------------------------------------------------------
   // Declutter (~ show_other_overlays(FALSE))
@@ -242,7 +274,6 @@ class OverlayManager {
   int DisplayOrderOf(const Overlay& o) const;
   bool IsTopMost(const Overlay& o) const;
   Overlay* TopWorkingOverlay() const;
-  std::shared_ptr<Overlay> FindShared(const Overlay* raw) const;
 
   // Notification walks a COPY, so an observer may detach itself from inside a
   // callback (the overlay-list row that is being destroyed does exactly that).

@@ -164,6 +164,13 @@ class EditorManager {
   // is active but nothing of its type is open (invariant 1's waiting state).
   Overlay* edited() const { return edited_; }
 
+  // The stack, so a caller holding only this object can ask it about the
+  // overlay `edited()` names. A binding needs it: the raw pointer above is
+  // weak by design, and a language that owns its objects by shared_ptr has to
+  // find the stack's own handle to hand back the SAME object rather than a
+  // second wrapper around the same address.
+  OverlayManager& manager() const { return manager_; }
+
   // What the frame must stop offering while this editor is active. Default-
   // constructed (nothing constrained) when there is no editor.
   EditorUiConstraints ActiveConstraints() const;

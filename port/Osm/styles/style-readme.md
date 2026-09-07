@@ -14,6 +14,13 @@ declaration.
 The reference style in this directory, `peregrine-osm.json`, is written entirely within the
 subset and is the worked example for everything below.
 
+`peregrine-osm-overlay.json` beside it is the same style rewritten for drawing OSM **over another
+map** rather than as the base map. Two differences and nothing else: it declares no `background`
+layer, because an overlay renders into a canvas someone else has already drawn on and a background
+is a canvas clear; and it drops the opaque ground fills (landcover, landuse, park), washes water
+down to `fill-opacity` 0.35 and leaves buildings as an outline — a `fill` layer with a
+`fill-outline-color` and no `fill-color` draws its edge and no brush.
+
 ## The one rule that shapes everything else
 
 **Anything outside the subset FAILS THE LOAD, naming the layer and the property.** It is never

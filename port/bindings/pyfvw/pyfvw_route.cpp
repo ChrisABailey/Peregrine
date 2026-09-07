@@ -185,19 +185,10 @@ void BindRoute(py::module_& m) {
 
   // --- the editor ----------------------------------------------------------
 
-  py::class_<fv::EditPosition>(route, "EditPosition",
-      "What a pixel means, once the snapper has had its say. Returned rather "
-      "than a bare position because a shell wants to SAY so: a snap that "
-      "happens silently is indistinguishable from a drag that missed.")
-      .def_readonly("position", &fv::EditPosition::position)
-      .def_readonly("valid", &fv::EditPosition::valid,
-                    "False when nothing has drawn the overlay yet, or the "
-                    "pixel is off the projection. A caller that gets this "
-                    "HOLDS its position rather than guessing a coordinate.")
-      .def_readonly("snapped", &fv::EditPosition::snapped)
-      .def_readonly("snapped_to", &fv::EditPosition::snapped_to,
-                    "The candidate's own description, e.g. 'Points: Ruddy "
-                    "Turnstone'. Empty when nothing was snapped to.");
+  // EditPosition is `fv::EditPosition`, shared with the point editor and bound
+  // in the overlay module (which initialises first). Aliased here so
+  // `pyfvw.route.EditPosition` still names it.
+  route.attr("EditPosition") = m.attr("overlay").attr("EditPosition");
 
   py::class_<fv::RouteEditSession>(route, "RouteEditSession",
       "The gestures, the armed modes and the undo stack -- what the user is "

@@ -103,6 +103,18 @@ class OverlayTypeRegistry {
 
   const OverlayTypeDesc* Find(const TypeId& id) const;
 
+  // Attaches (or replaces) a registered type's editor. It exists because a
+  // BUILT-IN type's tool belongs to the shell: fvkit defines what a point set
+  // is, its extension and where it sits in the stack, and a desktop with a
+  // toolbar defines what editing one looks like. Without this a shell wanting
+  // a palette would have to re-declare the whole descriptor beside the
+  // built-in one, and the two would drift.
+  //
+  // False when no such type is registered. A null factory clears the editor,
+  // which is what a shell with no UI for the type wants.
+  bool SetEditorFactory(const TypeId& id,
+                        std::function<std::unique_ptr<OverlayEditor>()> factory);
+
   // File-open dispatch: given "…/kiawah.rte", which type opens it. Case-
   // insensitive, and a leading dot on `ext` is tolerated. Registration order
   // breaks a tie between two types claiming one extension -- first wins, so a

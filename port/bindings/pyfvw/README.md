@@ -629,6 +629,24 @@ chart.visible = False
 manager.add(chart)
 ```
 
+**A `VectorMapOverlay` also DRAWS**, once it is given a style engine as well as a source — the
+same source/style/renderer chain the base map uses, in the overlay stack. That is how a chart is
+laid over another map: OSM roads and names over shaded relief, a DNC library over imagery.
+
+```python
+osm = pyfvw.overlay.VectorMapOverlay("OSM", source)
+osm.set_style(style)                 # None again = search-only
+manager.add(osm)
+manager.move_to_bottom(osm)          # a map goes under the documents drawn on it
+```
+
+The style's `background` layer is never painted here — a GL background is a canvas clear, and an
+overlay that cleared the canvas would erase the map under it. A sheet meant for this use declares
+none and keeps its area fills transparent; `port/Osm/styles/peregrine-osm-overlay.json` is the
+worked example. `scene_margin`, `simplify_pixels`, `symbol_scale`, `device_dpi`,
+`label_reference_scale` and `max_draw_features` forward to the renderer and survive a source or
+style change.
+
 A long search can run on a worker thread — `search()` releases the GIL — and be cut short by the
 next keystroke with `app.CancelFlag`:
 

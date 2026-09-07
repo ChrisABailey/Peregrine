@@ -14,7 +14,8 @@ Status: **the core raster and vector readers work headlessly, and there is now
 an application layer over them.** You can render a georeferenced map to a PNG
 from the command line, pan it interactively in the Python demo, read DNC, ENC
 and OpenStreetMap vector data, stack and save overlays, and compute a road
-route — all without Windows, MFC or COM.
+route — all without Windows, MFC or COM. There is also an iOS application,
+Pippin, built on the same core; see below.
 
 ## Build
 
@@ -32,8 +33,8 @@ ctest --test-dir build  # run tests
 Verified on macOS (Apple Silicon, AppleClang). See *Known limitations* for the
 state of Linux.
 
-Without sample map data you should see **565 tests passing, none failing**, of
-which **235 skip themselves** at run time because they need real map data,
+Without sample map data you should see **1990 tests passing, none failing**, of
+which **401 skip themselves** at run time because they need real map data,
 which is not distributed here (`ctest` reports a skipped test as passing; the
 `(Skipped)` lines in its output show which).
 
@@ -75,6 +76,8 @@ port/                  all new Peregrine code (LGPL-3.0-or-later)
   fvkit/               the portable map library (formats, catalog, canvas, engine, overlays)
   bindings/pyfvw/      Python bindings
   <Module>/            per-module CMake targets + tests, compiling fvw_core sources in place
+  apps/PythonView.py   the Tk desktop demo over the bindings
+  apps/Pippin/         Pippin, the iOS app: SwiftUI shell, PippinKit, Xcode project
   PORTING.md           the ledger: module status, decisions, preserved quirks  ← start here
 fvw_core/              FalconView sources used by the port (LGPL-3.0-or-later, upstream)
 third_party/           GEOTRANS 3.3, libjpeg
@@ -126,6 +129,31 @@ render straight to a PNG.
 ![VPF/DNC](Screenshots/DNC.png)
 ![ENC](Screenshots/ENC.png)
 
+## Pippin (iOS app)
+
+Pippin is an offline cycling map for iPhone built on the same core: a SwiftUI
+shell over `PippinKit`, an Objective-C++ layer that wraps FvKit. It does moving
+map with GPS, course-up follow, road-snapped routing, a point overlay, search,
+a trip computer and GPX ride recording — all against a bundled data pack, with
+no network at run time.
+
+The source is complete here; **the data pack is not**. `port/apps/Pippin/`
+ships the app, its Xcode project and `stage_data.py`, but the pack that script
+stages — a vector-tile pyramid, a routing graph, a font and a seed point file —
+is cut from map data this repository does not distribute (see *Test data*). So
+a clone builds and tests Pippin's C++ out of the box and needs its own data
+before the app has a map to draw.
+
+```sh
+cmake --build build -j                     # includes Pippin's C++ tests
+cmake --preset ios-sim && cmake --build --preset ios-sim   # the core, for a phone
+```
+
+`port/apps/Pippin/BUILDING.md` is the step-by-step; `port/apps/Pippin/README.md`
+is the design. The tracked Xcode project signs against no team — set
+`PP_DEVELOPMENT_TEAM`, along with the app's display name and support address,
+in a git-ignored `local/Local.xcconfig` (`Pippin.xcconfig` documents all three).
+
 ## Test data
 
 No map data is included — the sample DTED, CADRG, GeoTIFF, DNC/VPF, ENC, OSM
@@ -157,7 +185,10 @@ exists.
   `"stdafx.h"` while the files on disk are `StdAfx.h`, which resolves on
   case-insensitive filesystems and will not on ext4. Data-file lookup already
   handles this (`fv_win32_path.h`); the `#include` spellings do not yet.
-- Rendering is CPU-only; there is no GPU or native UI. The demo uses Tk.
+- Rendering is CPU-only; there is no GPU. The desktop demo uses Tk; Pippin
+  composites the CPU canvas into a SwiftUI view.
+- Pippin ships without its data pack, so a clone cannot run the app until it
+  cuts one from its own map data.
 - Polar CADRG frames report unsupported; only equal-arc zones are projected.
 - Text rendering is ASCII-only.
 - Several formats are read-only or not yet started — see the port queue in

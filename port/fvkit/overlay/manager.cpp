@@ -229,6 +229,40 @@ Status OverlayManager::MoveToTop(const std::shared_ptr<Overlay>& overlay) {
   return Status::Ok();
 }
 
+Status OverlayManager::MoveToTopOfWorking(
+    const std::shared_ptr<Overlay>& overlay) {
+  auto it = std::find(stack_.begin(), stack_.end(), overlay);
+  if (it == stack_.end()) return Status::Error(kNotFound, "overlay not in stack");
+  if (IsTopMost(**it)) return MoveToTop(overlay);
+
+  // The first top-most overlay from the top down is the floor of that band;
+  // everything below it is what the user works in.
+  size_t band = stack_.size();
+  while (band > 0 && IsTopMost(*stack_[band - 1])) --band;
+
+  const size_t at = static_cast<size_t>(it - stack_.begin());
+  if (at + 1 == band) return Status::Ok();  // already there, no event
+  std::rotate(it, it + 1, stack_.begin() + static_cast<ptrdiff_t>(band));
+  Notify([](StackObserver& s) { s.OverlayOrderChanged(); });
+  return Status::Ok();
+}
+
+Status OverlayManager::RestoreDefaultOrder() {
+  std::vector<std::shared_ptr<Overlay>> before = stack_;
+  std::stable_sort(stack_.begin(), stack_.end(),
+                   [this](const std::shared_ptr<Overlay>& a,
+                          const std::shared_ptr<Overlay>& b) {
+                     const bool ta = IsTopMost(*a), tb = IsTopMost(*b);
+                     if (ta != tb) return tb;  // top-most sorts last
+                     return DisplayOrderOf(*a) < DisplayOrderOf(*b);
+                   });
+  // Silent when nothing moved: "order changed" is the notification, and a
+  // restore that restores nothing must not repaint.
+  if (stack_ != before)
+    Notify([](StackObserver& s) { s.OverlayOrderChanged(); });
+  return Status::Ok();
+}
+
 Status OverlayManager::MoveToBottom(const std::shared_ptr<Overlay>& overlay) {
   auto it = std::find(stack_.begin(), stack_.end(), overlay);
   if (it == stack_.end()) return Status::Error(kNotFound, "overlay not in stack");

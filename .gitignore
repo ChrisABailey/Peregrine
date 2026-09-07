@@ -1,5 +1,8 @@
-# Build output
-build/
+# Build output. ONE anchored glob rather than a list: `cmake --preset ios` and
+# `ios-sim` write build-ios/ and build-ios-sim/, and a working tree grows
+# build-asan and whatever the next toolchain wants. Anchored with a leading
+# slash so it cannot swallow third_party/freetype2's tracked `builds/`.
+/build*/
 compile_commands.json
 
 # Map test data — large, separately distributed, never committed.
@@ -14,6 +17,17 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Xcode per-user state and build products (Pippin).
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# Pippin's staged offline data pack and its local branding — both are cut or
+# written locally and neither belongs in a public tree.
+port/apps/Pippin/Data/
+port/apps/Pippin/fonts/
+/port/apps/Pippin/local/
 
 # Editor / tooling
 .cache/

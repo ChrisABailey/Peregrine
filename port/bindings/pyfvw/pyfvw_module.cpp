@@ -37,6 +37,7 @@
 #include "fvkit/overlay/ta_mask_overlay.h"
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/manager.h"
+#include "fvkit/overlay/point_edit.h"
 #include "fvkit/overlay/point_overlay.h"
 #include "fvkit/proj.h"
 #include "fvkit/settings.h"
@@ -1404,7 +1405,8 @@ PYBIND11_MODULE(pyfvw, m) {
       .def(py::init([](std::string name, double lat, double lon,
                        const std::string& shape, double size_px, py::sequence c,
                        std::string category, double elevation_ft,
-                       std::string remarks, int64_t symbol_id, int64_t id) {
+                       std::string remarks, std::string phone, std::string url,
+                       int64_t symbol_id, int64_t id) {
              fv::MapPoint p;
              p.id = id;
              p.symbol_id = symbol_id;
@@ -1422,12 +1424,16 @@ PYBIND11_MODULE(pyfvw, m) {
              p.category = std::move(category);
              p.elevation_ft = elevation_ft;
              p.remarks = std::move(remarks);
+             p.phone = std::move(phone);
+             p.url = std::move(url);
              return p;
            }),
-           "name"_a, "lat"_a, "lon"_a, "shape"_a = "circle", "size_px"_a = 9.0,
-           "color"_a = py::make_tuple(200, 40, 40), "category"_a = "",
-           "elevation_ft"_a = 0.0, "remarks"_a = "", "symbol_id"_a = 0,
-           "id"_a = 0)
+           // lat/lon are defaulted because the editor's `add_at` takes a
+           // PROTOTYPE, whose position is the click's and not the caller's.
+           "name"_a = "", "lat"_a = 0.0, "lon"_a = 0.0, "shape"_a = "circle",
+           "size_px"_a = 9.0, "color"_a = py::make_tuple(200, 40, 40),
+           "category"_a = "", "elevation_ft"_a = 0.0, "remarks"_a = "",
+           "phone"_a = "", "url"_a = "", "symbol_id"_a = 0, "id"_a = 0)
       .def_readwrite("id", &fv::MapPoint::id)
       .def_readwrite("name", &fv::MapPoint::name)
       .def_readwrite("position", &fv::MapPoint::position)
@@ -1453,6 +1459,11 @@ PYBIND11_MODULE(pyfvw, m) {
       .def_readwrite("category", &fv::MapPoint::category)
       .def_readwrite("elevation_ft", &fv::MapPoint::elevation_ft)
       .def_readwrite("remarks", &fv::MapPoint::remarks)
+      // Schema 3, and deliberately unvalidated: whatever dials and whatever
+      // opens is the shell's question. Empty means "this point has no such
+      // thing", so a UI shows the row or hides it.
+      .def_readwrite("phone", &fv::MapPoint::phone)
+      .def_readwrite("url", &fv::MapPoint::url)
       .def_readwrite("symbol_id", &fv::MapPoint::symbol_id,
                      "The document's own symbol row this point wears, 0 for "
                      "none. Many points may name one row -- that is what the "
@@ -1527,21 +1538,134 @@ PYBIND11_MODULE(pyfvw, m) {
                std::to_string(s.image.size()) + " bytes>";
       });
 
+  py::class_<fv::EditPosition>(ovl, "EditPosition",
+      "What a pixel means, once the snapper has had its say. Returned rather "
+      "than a bare position because a shell wants to SAY so: a snap that "
+      "happens silently is indistinguishable from a drag that missed. Also "
+      "reachable as pyfvw.route.EditPosition — it is one type.")
+      .def_readonly("position", &fv::EditPosition::position)
+      .def_readonly("valid", &fv::EditPosition::valid,
+                    "False when nothing has drawn the overlay yet, or the "
+                    "pixel is off the projection. A caller that gets this "
+                    "HOLDS its position rather than guessing a coordinate.")
+      .def_readonly("snapped", &fv::EditPosition::snapped)
+      .def_readonly("snapped_to", &fv::EditPosition::snapped_to,
+                    "The candidate's own description, e.g. 'Points: Ruddy "
+                    "Turnstone'. Empty when nothing was snapped to.");
+
+  py::class_<fv::PointEditSession>(ovl, "PointEditSession",
+      "The gestures, the armed add-mode and the undo stack for a .fvpoints "
+      "document. Reached as `overlay.edit`; never constructed directly.\n\n"
+      "TWO WAYS IN, and both are the same edit: a desktop routes raw events "
+      "through the overlay's on_mouse_* / on_key_down, a shell with its own "
+      "recognizers calls begin_drag/drag_to/end_drag and the named commands.")
+      .def_property("adding", &fv::PointEditSession::adding,
+                    &fv::PointEditSession::SetAdding,
+                    "Armed by the palette or 'a', spent by the next click. "
+                    "Add is two gestures because a click has to keep meaning "
+                    "'select'.")
+      .def_property("pick_tolerance_px",
+                    &fv::PointEditSession::pick_tolerance_px,
+                    &fv::PointEditSession::SetPickTolerancePx,
+                    "What a press hit-tests with, ADDED to the marker's own "
+                    "drawn half-width.")
+      .def_property("snap_tolerance_px",
+                    &fv::PointEditSession::snap_tolerance_px,
+                    &fv::PointEditSession::SetSnapTolerancePx,
+                    "How far a dropped point looks for something exact to "
+                    "land on. 0 switches snapping off.")
+      .def_property_readonly("has_edit_focus",
+                             &fv::PointEditSession::has_edit_focus)
+      .def("enter_edit_focus", &fv::PointEditSession::EnterEditFocus)
+      .def("release_edit_focus", &fv::PointEditSession::ReleaseEditFocus)
+      .def("can_undo", &fv::PointEditSession::CanUndo)
+      .def("undo", &fv::PointEditSession::Undo)
+      .def("can_redo", &fv::PointEditSession::CanRedo)
+      .def("redo", &fv::PointEditSession::Redo)
+      .def("clear_history", &fv::PointEditSession::ClearHistory)
+      .def("select", &fv::PointEditSession::Select, "point_id"_a)
+      .def("delete", &fv::PointEditSession::Delete, "point_id"_a,
+           "False -- and nothing changed, not even an undo entry -- when no "
+           "such point exists.")
+      .def("add_at", &fv::PointEditSession::AddAt, "prototype"_a, "position"_a,
+           "Adds a copy of `prototype` at `position`, selects it and returns "
+           "its new row id. A whole prototype row rather than a set of "
+           "arguments, because what an editing dialog produces is a complete "
+           "point.")
+      .def("move_to", &fv::PointEditSession::MoveTo, "point_id"_a, "position"_a)
+      .def("update", &fv::PointEditSession::Update, "point"_a,
+           "Replaces the row with point.id, recording one undo entry. The "
+           "dialog's Save.")
+      .def("resolve_pixel",
+           [](const fv::PointEditSession& s, int x, int y) {
+             return s.ResolvePixel(fv::PixelPoint{x, y});
+           },
+           "x"_a, "y"_a)
+      .def("point_at",
+           [](const fv::PointEditSession& s, int x, int y) {
+             return s.PointAt(fv::PixelPoint{x, y});
+           },
+           "x"_a, "y"_a,
+           "The id of the point whose drawn marker covers the pixel, or 0.")
+      .def_property_readonly("dragging", &fv::PointEditSession::dragging,
+                             "True only once the cursor has left the marker "
+                             "it pressed. See drag_pending for the press.")
+      .def_property_readonly("drag_pending",
+                             &fv::PointEditSession::drag_pending)
+      .def_property_readonly("drag_id", &fv::PointEditSession::drag_id)
+      .def("begin_drag",
+           [](fv::PointEditSession& s, int64_t id, int x, int y) {
+             return s.BeginDrag(id, fv::PixelPoint{x, y});
+           },
+           "point_id"_a, "x"_a, "y"_a)
+      .def("drag_to",
+           [](fv::PointEditSession& s, int x, int y) {
+             return s.DragTo(fv::PixelPoint{x, y});
+           },
+           "x"_a, "y"_a)
+      .def("end_drag",
+           [](fv::PointEditSession& s, int x, int y) {
+             return s.EndDrag(fv::PixelPoint{x, y});
+           },
+           "x"_a, "y"_a)
+      .def("cancel_drag", &fv::PointEditSession::CancelDrag,
+           "Escape mid-drag: the point goes back and the undo entry the first "
+           "move pushed is SPENT putting it there, so a cancelled drag leaves "
+           "no trace in the history.");
+
   py::class_<fv::PointOverlay, fv::Overlay, std::shared_ptr<fv::PointOverlay>>(
       ovl, "PointOverlay",
       "A point set read from a SQLite document (.fvpoints). The first C++ "
       "FILE overlay: it is persistent, pickable and has a context menu, and "
       "its type is registered by app.register_builtin_types().")
       .def(py::init<std::string>(), "name"_a = "Points")
-      .def_property_readonly("points", &fv::PointOverlay::points)
+      // COPIES, for `find`'s reason one step further: a list cast from the
+      // document's own vector hands out live views of its rows, so
+      // `overlay.points[0].position = ...` would move a point with no undo
+      // entry and no dirty flag. Rows come out, are edited, and go back
+      // through update_point.
+      .def_property_readonly("points", &fv::PointOverlay::points,
+                             py::return_value_policy::copy)
       .def("set_points", &fv::PointOverlay::SetPoints, "points"_a)
       .def("add_point", &fv::PointOverlay::AddPoint, "point"_a,
            "Returns the id it was given; an id of 0 gets the next free one.")
+      .def("update_point", &fv::PointOverlay::UpdatePoint, "point"_a,
+           "Replaces the row with point.id in place, keeping its draw order. "
+           "False -- and nothing changed -- when no such row exists, which is "
+           "what an editor holding a stale id gets instead of a silent "
+           "insert.")
       .def("remove_point", &fv::PointOverlay::RemovePoint, "point_id"_a)
+      // A COPY, not a view into the document. Writing through a live
+      // reference would change a row without an undo entry and without
+      // dirtying the overlay -- silently, and only from Python, since the C++
+      // accessor is a const pointer. The row comes out, is edited, and goes
+      // back through update_point, which is the whole-row bargain
+      // UpdatePoint already struck.
       .def("find", &fv::PointOverlay::Find, "point_id"_a,
-           py::return_value_policy::reference_internal)
+           py::return_value_policy::copy)
       // --- the embedded palette (schema 2) -------------------------------
-      .def_property_readonly("symbols", &fv::PointOverlay::symbols)
+      .def_property_readonly("symbols", &fv::PointOverlay::symbols,
+                             py::return_value_policy::copy)
       .def("set_symbols", &fv::PointOverlay::SetSymbols, "symbols"_a)
       .def("add_symbol", &fv::PointOverlay::AddSymbol, "symbol"_a,
            "Returns the id it was given -- or the id of the row that already "
@@ -1558,6 +1682,19 @@ PYBIND11_MODULE(pyfvw, m) {
            "Embeds a PNG from disk. An empty name takes the file's stem, and "
            "an `@2x` stem is read as 2x artwork of the un-suffixed name. The "
            "bytes are copied in: the file is never referenced again.")
+      .def("add_symbol_from_library",
+           [](fv::PointOverlay& o, fv::ISymbolLibrary& lib,
+              const std::string& id, const std::string& name) {
+             int64_t row = 0;
+             ThrowIfError(o.AddSymbolFromLibrary(lib, id, name, &row));
+             return row;
+           },
+           "library"_a, "id"_a, "name"_a = "",
+           "Embeds one sprite from a symbol library -- a sheet's tile, "
+           "re-encoded as a PNG and carrying its pixel ratio and any "
+           "off-centre pivot. An empty name takes the library's own id. "
+           "Deduped by name like every other add, so importing a sprite the "
+           "document already carries returns the row it has.")
       .def("remove_symbol", &fv::PointOverlay::RemoveSymbol, "symbol_id"_a,
            "The points that wore it fall back to their shape; they are not "
            "rewritten, so putting the row back makes them wear it again.")
@@ -1571,6 +1708,27 @@ PYBIND11_MODULE(pyfvw, m) {
                     "a document change and does not dirty the overlay.")
       .def_property("show_labels", &fv::PointOverlay::show_labels,
                     &fv::PointOverlay::SetShowLabels)
+      .def_property_readonly(
+          "edit",
+          static_cast<fv::PointEditSession& (fv::PointOverlay::*)()>(
+              &fv::PointOverlay::edit),
+                             py::return_value_policy::reference_internal,
+                             "The editing session. Always present -- an "
+                             "overlay nobody edits simply never calls into "
+                             "it.")
+      .def("set_manager", &fv::PointOverlay::SetManager, "manager"_a.none(true),
+           py::keep_alive<1, 2>(),
+           "The stack, for mouse CAPTURE and for the snap walk, and for "
+           "nothing else. Null is legal: the gestures still work, they are "
+           "just uncaptured and unsnapped.")
+      .def_property_readonly("has_projection",
+                             &fv::PointOverlay::has_projection)
+      .def_property("dimmed", &fv::PointOverlay::dimmed,
+                    &fv::PointOverlay::SetDimmed,
+                    "Draw everything at reduced opacity. A statement about "
+                    "the WINDOW and not about the document -- a shell with "
+                    "several point sets open dims the ones it is not editing "
+                    "-- so it does NOT dirty the overlay.")
       .def("file_new", [](fv::PointOverlay& o) { ThrowIfError(o.FileNew()); })
       .def("file_open",
            [](fv::PointOverlay& o, const std::string& spec) {
@@ -1609,10 +1767,9 @@ PYBIND11_MODULE(pyfvw, m) {
              std::shared_ptr<fv::VectorMapOverlay>>(
       ovl, "VectorMapOverlay",
       "A vector MAP source wearing an overlay's clothes, so that 'where is X' "
-      "has one discovery path (search-plan-COMPLETE.md S2/S3). It does not "
-      "DRAW yet — "
-      "a shell keeps drawing the base map its own way and holds one of these, "
-      "usually not visible, purely as the search provider. Two tiers, and the "
+      "has one discovery path (search-plan-COMPLETE.md S2/S3) and a chart can "
+      "be laid over another map. It draws once it has a STYLE as well as a "
+      "source; with no style it is search-only. Two tiers, and the "
       "SOURCE decides which answers: the pack's own name index when the query "
       "has text and the pack has one, otherwise an area-constrained tile scan "
       "under the source's own tile budget. A query with no area and no index "
@@ -1623,6 +1780,31 @@ PYBIND11_MODULE(pyfvw, m) {
       .def("set_source", &fv::VectorMapOverlay::SetSource, "source"_a.none(true),
            "Replacing the source drops the minted ids: a number names a row in "
            "the pack that minted it.")
+      .def_property_readonly("style", &fv::VectorMapOverlay::style)
+      .def("set_style", &fv::VectorMapOverlay::SetStyle, "style"_a.none(true),
+           "The style engine draw renders through. None leaves the overlay "
+           "search-only. The style's `background` layer is NEVER painted — an "
+           "overlay that cleared the canvas would erase the map under it.")
+      .def_property_readonly("renderer", &fv::VectorMapOverlay::renderer,
+                             py::return_value_policy::reference_internal,
+                             "The VectorRenderer, or None until both a source "
+                             "and a style are set.")
+      .def_property("scene_margin", &fv::VectorMapOverlay::scene_margin,
+                    &fv::VectorMapOverlay::SetSceneMargin)
+      .def_property("simplify_pixels", &fv::VectorMapOverlay::simplify_pixels,
+                    &fv::VectorMapOverlay::SetSimplifyPixels)
+      .def_property("symbol_scale", &fv::VectorMapOverlay::symbol_scale,
+                    &fv::VectorMapOverlay::SetSymbolScale)
+      .def_property("device_dpi", &fv::VectorMapOverlay::device_dpi,
+                    &fv::VectorMapOverlay::SetDeviceDpi)
+      .def_property("label_reference_scale",
+                    &fv::VectorMapOverlay::label_reference_scale,
+                    &fv::VectorMapOverlay::SetLabelReferenceScale)
+      .def_property("max_draw_features",
+                    &fv::VectorMapOverlay::max_draw_features,
+                    &fv::VectorMapOverlay::SetMaxDrawFeatures)
+      .def_property_readonly("last_draw_features",
+                             &fv::VectorMapOverlay::last_draw_features)
       .def_property(
           "label_tags", &fv::VectorMapOverlay::label_tags,
           &fv::VectorMapOverlay::SetLabelTags,
@@ -1826,6 +2008,21 @@ PYBIND11_MODULE(pyfvw, m) {
              ThrowIfError(m2.Remove(o));
            },
            "overlay"_a)
+      .def("move_to_top_of_working",
+           [](fv::OverlayManager& m2, const std::shared_ptr<fv::Overlay>& o) {
+             ThrowIfError(m2.MoveToTopOfWorking(o));
+           },
+           "overlay"_a,
+           "Above everything except the top-most band (the crosshair, a HUD). "
+           "What 'the thing being edited is on top' means — EditorManager "
+           "calls it for you, so a shell rarely does.")
+      .def("restore_default_order",
+           [](fv::OverlayManager& m2) {
+             ThrowIfError(m2.RestoreDefaultOrder());
+           },
+           "Back to the order `add` would have built: bands by display order, "
+           "top-most ones above the lot. A STABLE sort, so overlays sharing a "
+           "display order keep the arrangement they have.")
       .def("move_to_top",
            [](fv::OverlayManager& m2, const std::shared_ptr<fv::Overlay>& o) {
              ThrowIfError(m2.MoveToTop(o));

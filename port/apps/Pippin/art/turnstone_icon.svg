@@ -1,0 +1,94 @@
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12606D"/>
+      <stop offset="0.55" stop-color="#2C8090"/>
+      <stop offset="1" stop-color="#57ADB6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.32" cy="0.24" r="0.85">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rufous" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C8642A"/>
+      <stop offset="1" stop-color="#A24C1D"/>
+    </linearGradient>
+    <clipPath id="icon"><rect x="0" y="0" width="1024" height="1024" rx="224" ry="224"/></clipPath>
+    <clipPath id="head"><circle cx="372" cy="352" r="100"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#icon)">
+    <!-- background -->
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#glow)"/>
+
+    <!-- rock / shoreline pebble -->
+    <ellipse cx="505" cy="800" rx="182" ry="50" fill="#5E6D75"/>
+    <ellipse cx="505" cy="784" rx="162" ry="34" fill="#7C8B92"/>
+    <ellipse cx="360" cy="808" rx="70" ry="26" fill="#54636B"/>
+    <ellipse cx="650" cy="806" rx="78" ry="28" fill="#54636B"/>
+    <!-- contact shadow -->
+    <ellipse cx="508" cy="778" rx="150" ry="26" fill="#11363B" opacity="0.28"/>
+
+    <!-- legs (behind body) -->
+    <g stroke="#E68A2B" stroke-width="24" stroke-linecap="round" fill="none">
+      <path d="M 470 588 L 452 764"/>
+      <path d="M 524 592 L 542 764"/>
+    </g>
+    <g stroke="#CE7620" stroke-width="12" stroke-linecap="round" fill="none">
+      <path d="M 452 764 L 418 788"/>
+      <path d="M 452 764 L 452 792"/>
+      <path d="M 452 764 L 488 786"/>
+      <path d="M 542 764 L 510 788"/>
+      <path d="M 542 764 L 544 792"/>
+      <path d="M 542 764 L 576 786"/>
+    </g>
+
+    <!-- body (rufous back) -->
+    <g transform="rotate(-6 560 480)">
+      <ellipse cx="560" cy="480" rx="206" ry="150" fill="url(#rufous)"/>
+    </g>
+
+    <!-- wing / scapular markings -->
+    <g transform="rotate(-6 560 480)">
+      <ellipse cx="628" cy="432" rx="118" ry="72" fill="#8B4118" opacity="0.9"/>
+      <ellipse cx="590" cy="392" rx="46" ry="27" fill="#201D1B" opacity="0.88"/>
+      <ellipse cx="672" cy="452" rx="42" ry="24" fill="#201D1B" opacity="0.85"/>
+      <ellipse cx="705" cy="500" rx="34" ry="20" fill="#201D1B" opacity="0.8"/>
+      <ellipse cx="540" cy="372" rx="120" ry="26" fill="#D67B3E" opacity="0.55"/>
+    </g>
+
+    <!-- tail -->
+    <path d="M 742 452 L 840 466 L 830 514 L 744 512 Z" fill="url(#rufous)"/>
+    <path d="M 812 462 L 840 466 L 832 512 L 806 508 Z" fill="#201D1B"/>
+    <path d="M 830 468 L 846 470 L 840 505 L 828 504 Z" fill="#F4EFE3"/>
+
+    <!-- white belly / underside -->
+    <g transform="rotate(-5 515 548)">
+      <ellipse cx="515" cy="552" rx="196" ry="112" fill="#F4EFE3"/>
+    </g>
+
+    <!-- black breast bib -->
+    <ellipse cx="432" cy="508" rx="92" ry="76" transform="rotate(-8 432 508)" fill="#201D1B"/>
+
+    <!-- head base -->
+    <circle cx="372" cy="352" r="100" fill="#F4EFE3"/>
+
+    <!-- head harlequin pattern (clipped to head) -->
+    <g clip-path="url(#head)">
+      <ellipse cx="372" cy="278" rx="122" ry="90" fill="#201D1B"/>
+      <ellipse cx="352" cy="360" rx="62" ry="35" transform="rotate(-18 352 360)" fill="#201D1B"/>
+      <ellipse cx="406" cy="416" rx="80" ry="52" fill="#201D1B"/>
+      <ellipse cx="298" cy="338" rx="30" ry="20" fill="#F4EFE3"/>
+      <ellipse cx="352" cy="440" rx="42" ry="24" fill="#F4EFE3"/>
+    </g>
+
+    <!-- eye -->
+    <circle cx="338" cy="350" r="20" fill="#F4EFE3"/>
+    <circle cx="338" cy="350" r="12" fill="#1A1715"/>
+    <circle cx="333" cy="345" r="4.5" fill="#FFFFFF"/>
+
+    <!-- bill -->
+    <path d="M 286 356 Q 240 359 206 372 Q 246 383 290 390 Z" fill="#2A2623"/>
+  </g>
+</svg>

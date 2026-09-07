@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ExportOptions.plist — what `xcodebuild -exportArchive` needs to turn
+     Pippin.xcarchive into a Pippin.ipa. See README.md, "Packaging a .ipa".
+
+     `debugging` is Xcode 15.3+'s name for what used to be spelled
+     `development`: an app signed with a DEVELOPMENT identity, installable
+     only on the devices already in the provisioning profile. It is the only
+     method this project can use today, because the signing identity on this
+     mac is "Apple Development" — a free Apple ID has no distribution
+     certificate, so `release-testing` (ad-hoc) and `app-store-connect` have
+     nothing to sign with.
+
+     THE SEVEN-DAY CLOCK IS THE THING TO REMEMBER. A free team's provisioning
+     profile expires a week after it is issued, and the .ipa stops launching
+     when it does — the phone says nothing useful about why. Re-export and
+     re-install; the app's documents (points, routes, recorded rides) survive
+     a reinstall over the top.
+
+     `signingStyle` is automatic to match the targets, which are both
+     CODE_SIGN_STYLE = Automatic; Xcode picks the profile it already made for
+     `org.peregrine.Pippin` and `org.peregrine.Pippin.Share`. The extension
+     needs its own, which is why the second one exists at all. The team those
+     profiles come from is `PP_DEVELOPMENT_TEAM`, set in local/Local.xcconfig
+     — see Pippin.xcconfig. -->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>debugging</string>
+	<!-- No `teamID` key. It identifies a personal Apple account and this file
+	     is public, so the team is left to be inferred from the archive's own
+	     embedded provisioning profile — which under automatic signing is the
+	     one Xcode already chose. An account that belongs to more than one team
+	     has to say which: add the key back in a local copy of this file and
+	     point `-exportOptionsPlist` at that. -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- One binary carrying every architecture, rather than a per-device
+	     thinned variant: a sideloaded .ipa is installed by hand and there is
+	     no App Store to pick the right slice. -->
+	<key>thinning</key>
+	<string>&lt;none&gt;</string>
+	<!-- Nothing here is uploaded anywhere, so there is nobody to send
+	     symbols to; the dSYMs stay in the .xcarchive where a crash log can
+	     still be symbolicated against them. -->
+	<key>uploadSymbols</key>
+	<false/>
+	<key>stripSwiftSymbols</key>
+	<true/>
+</dict>
+</plist>
