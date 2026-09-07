@@ -1,8 +1,17 @@
 # Pippin — the iOS shell
 
 Pippin is the third shell over the Peregrine core, after PythonView and the CLIs: offline
-cycling and walking navigation on Kiawah Island. The plan is `port/pippin-plan.md`; the
-requirements are `port/apps/Pippin_requirements.md`.
+cycling and walking navigation useing mbtile packages. The plan is `port/pippin-plan.md`; the
+requirements are `port/apps/Pippin_requirements.md`.  Note, Pippin is available on iOS app store 
+as part of the Bike Kiawah app but the code can be easily adapted to work with other data sets. 
+Kiawah is just an easily verified set of test data.  
+
+Note: The swift app was Heavily Vibe codded using Claude but the original map architecture is 
+based on the FalcomnView archicture which I worked on for many years with my co-workers at 
+Georgia Tech Research Institute.  The Map data is all derived from OpenStreetMap which a worldwide 
+community of volunteers maintain.  The map data is free to use and share under the Open Database License (ODbL).  
+
+If you want to help on the project, proving out cycle routes and fixing issues in te street data is the easiest way to contribute.  See OpenStreetMap.org for more information on how to contribute to the map data.  
 
 > **To BUILD it, read [BUILDING.md](BUILDING.md), not this file.** That is the procedure, in
 > order, from a fresh checkout to a signed `.ipa`: the core, the data pack, the app, the
@@ -11,7 +20,7 @@ requirements are `port/apps/Pippin_requirements.md`.
 > sections at the end of this file explain themselves in.
 
 **Built so far: P1 (the data pack and the cross-build), P2 (the app, PippinKit, and a
-styled Kiawah on screen), P3 (a map you can touch), P4 (a ship on it), P5 (the route,
+styled OSM map on screen), P3 (a map you can touch), P4 (a ship on it), P5 (the route,
 moved to C++), P6 (the route on the phone) and P7 (GPS mode, where the map follows
 it), P8 (the trip computer, and the ride bar showing the RIDE's numbers) and P12 (the units:
 an authored pixel is a POINT, and the map opens FILLING the screen).** P9 is built too (the
