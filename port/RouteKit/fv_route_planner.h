@@ -41,6 +41,7 @@
 
 #include "fv_route_rules.h"
 #include "fv_road_graph.h"
+#include "fv_route_maneuvers.h"
 #include "fv_router.h"
 #include "fvkit/geo.h"
 
@@ -88,6 +89,16 @@ struct RoutePlan {
   // route.py's `_road_status_line`, so a user moving between the two shells
   // reads the same sentence.
   std::string status;
+
+  // The turn list (GD1), in travel order. Filled ONLY on a through route:
+  // the per-pair fallback draws straight legs between stops it could not
+  // connect, and instructions along a line the rider cannot follow would be
+  // worse than none. Empty is therefore a supported state and means "no
+  // guidance", which is what `fv::nav::Guidance` does with it.
+  //
+  // The distances are along `legs` joined end to end, which is what
+  // `pippin::RouteStore::RoutePath()` produces.
+  std::vector<nav::Maneuver> maneuvers;
 
   // Set when the plan failed outright — no legs, nothing to draw. `status`
   // carries the same words; this is for a caller that wants the code.

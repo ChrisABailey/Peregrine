@@ -207,6 +207,11 @@ RoutePlan RoutePlanner::Plan(const std::vector<GeoPoint>& stops,
     plan.length_m = through.length_m;
     plan.seconds = through.seconds;
     plan.u_turn_stops = through.u_turn_stops;
+    // The turn list is measured along `through.geometry`, and `legs` joined
+    // end to end is that same line: the cuts are indices into it, and the
+    // duplicate vertices a joiner drops are zero-length segments that no
+    // cumulative distance counted in the first place.
+    plan.maneuvers = ManeuversOf(through);
     std::string turned;
     if (!through.u_turn_stops.empty()) {
       turned = " (turned round at " +

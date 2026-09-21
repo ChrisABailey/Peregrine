@@ -50,6 +50,16 @@ final class MapModel: ObservableObject {
     /// Arrives on the frame because the trip computer is fed on the render queue.
     @Published private(set) var trip: PPTrip?
 
+    /// The next turn, or nil when there is no banner to draw: outside GPS
+    /// mode, with no planned route, or past the destination. Arrives on the
+    /// frame for the trip's reason — the state machine is fed on the render
+    /// queue, where both feeds have already become one stream.
+    @Published private(set) var guidance: PPGuidance?
+
+    /// What the guidance says, out loud and in the hand (GD4). Not published:
+    /// the alerts are an effect of a frame arriving, not state a view draws.
+    private let alerts = TurnAlerts()
+
     /// The route on the map, or nil until one has been loaded or set. A
     /// snapshot taken on the render queue; see `PPRoute.h`.
     @Published private(set) var route: PPRoute?
@@ -162,6 +172,7 @@ final class MapModel: ObservableObject {
             map.setRouteDocumentURL(Self.routeDocumentURL())
             map.setPointsDocumentURL(Self.pointsDocumentURL())
             renderer = Renderer(map: map)
+            alerts.amplitude = map.alertAmplitude
             courseUp = renderer?.initialCourseUp ?? true
             // Centred on the pack with its zoom limits applied; no surface
             // until the view reports one.
@@ -1377,6 +1388,12 @@ final class MapModel: ObservableObject {
                         && !frame.baseViewport.isEquivalent(to: frame.viewport)
                     self.ownship = frame.ownship
                     self.trip = frame.trip
+                    self.guidance = frame.guidance
+                    // After the banner, so the sound and the words a rider
+                    // looks up to read describe the same corner.
+                    if !frame.guidanceEvents.isEmpty {
+                        self.alerts.play(frame.guidanceEvents)
+                    }
                     self.status = self.describe(frame)
                     self.applyCamera(from: frame)
                 case .failure(let error):

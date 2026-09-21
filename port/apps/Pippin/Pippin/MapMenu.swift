@@ -16,59 +16,6 @@ import SwiftUI
 /// renders as a submenu showing its current value, so a row is both the
 /// control and its readout.
 
-// MARK: - Distance units
-
-/// The unit distances are shown in. A display preference only: the trip
-/// computer, router and search all work in metres.
-enum DistanceUnits: String, CaseIterable, Identifiable {
-    case kilometres
-    case miles
-
-    var id: String { rawValue }
-
-    var menuName: String {
-        switch self {
-        case .kilometres: return "Kilometres"
-        case .miles: return "Miles"
-        }
-    }
-
-    /// Formats a distance for reading at arm's length: the small unit close
-    /// in, the big one further out, one decimal at most. The changeover is
-    /// where the big unit gets its first digit, since "0.06 mi" is not a
-    /// number anyone can picture.
-    func distance(_ meters: Double) -> String {
-        switch self {
-        case .kilometres:
-            if meters < 1000 { return String(format: "%.0f m", meters) }
-            return String(format: "%.1f km", meters / 1000.0)
-        case .miles:
-            let feet = meters / Self.metersPerFoot
-            if feet < Self.feetPerMile / 10 {
-                return String(format: "%.0f ft", feet)
-            }
-            return String(format: "%.1f mi", feet / Self.feetPerMile)
-        }
-    }
-
-    /// Whole units per hour, which is all the precision a bicycle has.
-    func speed(_ metersPerSecond: Double) -> String {
-        switch self {
-        case .kilometres:
-            return String(format: "%.0f km/h", metersPerSecond * 3.6)
-        case .miles:
-            let mph = metersPerSecond / Self.metersPerFoot / Self.feetPerMile
-                * 3600.0
-            return String(format: "%.0f mph", mph)
-        }
-    }
-
-    /// The international foot and the statute mile, kept separate so the feet
-    /// conversion is exact too.
-    private static let metersPerFoot = 0.3048
-    private static let feetPerMile = 5280.0
-}
-
 /// The app's unit preference, persisted in user defaults.
 ///
 /// A singleton because the two views that format distances sit on opposite
@@ -100,7 +47,7 @@ final class DisplayUnits: ObservableObject {
 // MARK: - The menu button
 
 /// The menu button above the route button, and its pop-out.
-struct MapMenuButton: View {
+struct MapMenuButton: View, Equatable {
     /// Which symbol-size step the map is drawn at. The factors live in the
     /// pack (`MapModel.symbolZoomSteps`); this view only names them, so a
     /// pack can offer four sizes without a change here.
@@ -149,6 +96,21 @@ struct MapMenuButton: View {
         .tint(.primary)
         .accessibilityLabel("Menu")
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+
+    /// Compared on what the menu draws, so a redraw of the map behind it does
+    /// not rebuild it. Needs `.equatable()` at the call site.
+    ///
+    /// A position feed redraws the map screen several times a second, and
+    /// rebuilding the items of an already-open menu flickers and swallows the
+    /// tap in flight — a picker that takes several taps to change. The action
+    /// closures are deliberately not compared: each captures the model and
+    /// `@State` wrappers, whose identity outlives a body pass, so an older
+    /// closure does what a newer one would.
+    static func == (a: MapMenuButton, b: MapMenuButton) -> Bool {
+        a.symbolStep == b.symbolStep
+            && a.symbolStepLabels == b.symbolStepLabels
+            && a.units == b.units
     }
 }
 

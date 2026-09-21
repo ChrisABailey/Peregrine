@@ -10,6 +10,7 @@
 #import "PPPoint+Internal.h"
 #import "PPRoute+Internal.h"
 #import "PPSearch+Internal.h"
+#import "PPGuidance+Internal.h"
 #import "PPTrip+Internal.h"
 #import "PPViewport+Internal.h"
 
@@ -235,6 +236,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                     baseMilliseconds:(double)baseMs
                              ownship:(PPOwnship*)ownship
                                 trip:(PPTrip*)trip
+                            guidance:(PPGuidance*)guidance
+                      guidanceEvents:(NSArray<PPGuidanceEvent*>*)guidanceEvents
                                 slew:(const fv::SlewState&)slew {
   self = [super init];
   if (self == nil) return nil;
@@ -252,6 +255,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _baseMilliseconds = baseMs;
   _ownship = ownship;
   _trip = trip;
+  _guidance = guidance;
+  _guidanceEvents = guidanceEvents;
   _hasCameraUpdate = slew.changed ? YES : NO;
   _cameraCenter = PPGeoPointMake(slew.center.lat, slew.center.lon);
   _cameraRotationDegrees = slew.rotation_deg;
@@ -335,6 +340,17 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // rather than by luck.
   double _lastTripFixTime;
   BOOL _hasLastTripFixTime;
+
+  // The turn-by-turn machine, fed from `consumeRawFix:` beside the trip
+  // computer and given its route in the same two places. It holds the
+  // maneuvers as well as the line, so setting one without the other is not
+  // possible from here.
+  fv::nav::Guidance _guidance;
+  // The events since the last frame. A fix is consumed whenever one arrives
+  // and a frame is drawn when the display link runs, so the two do not
+  // correspond one to one: a frame that swallowed two fixes carries both
+  // fixes' events, and an alert is never dropped for being early.
+  std::vector<fv::nav::GuidanceEvent> _pendingGuidanceEvents;
 
   // Beside the trip computer and fed from the same place, `consumeRawFix:`,
   // so a ride recorded from the demo replay and one from a real receiver take
@@ -853,6 +869,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
            baseMilliseconds:baseMs
                     ownship:[self ownshipOrNil]
                        trip:[self tripOrNil]
+                   guidance:[self guidanceOrNil]
+             guidanceEvents:[self takeGuidanceEvents]
                        slew:tick.slew];
 }
 
@@ -994,6 +1012,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     return;
   }
   _trip.OnFix(raw);
+  for (const fv::nav::GuidanceEvent& e : _guidance.OnFix(raw)) {
+    _pendingGuidanceEvents.push_back(e);
+  }
   // The same gate serves both, which is why the recorder is here rather than
   // in `pushFix:`: a live fix reaches this method twice, once on arrival and
   // once through the tick that consumed it, and the stamp above makes that one
@@ -1020,6 +1041,38 @@ static double PPEpochNow() {
   // and the bar reading it is hidden in the same breath.
   if (!_gpsModeEnabled) return nil;
   return [[PPTrip alloc] initWithStats:_trip.Stats(PPEpochNow())];
+}
+
+// Nil in the three cases that mean "no banner": no ride, no route to be
+// guided along, and nothing left to say. Off route is NOT one of them — the
+// guidance is running and has stopped naming a corner, which the banner
+// reports rather than disappearing over.
+- (nullable PPGuidance*)guidanceOrNil {
+  if (!_gpsModeEnabled) return nil;
+  if (!_guidance.has_route()) return nil;
+  const fv::nav::GuidanceState& state = _guidance.state();
+  if (!state.valid) return nil;
+  if (state.on_route && !state.has_next) return nil;
+
+  NSString* road = @"";
+  if (state.has_next && state.next_index < _guidance.maneuvers().size()) {
+    const std::string& name = _guidance.maneuvers()[state.next_index].road;
+    if (!name.empty()) road = @(name.c_str());
+  }
+  return [[PPGuidance alloc] initWithState:state road:road];
+}
+
+// Drains the buffer: every event belongs to exactly one frame, and calling
+// this twice for one frame would announce a turn twice.
+- (NSArray<PPGuidanceEvent*>*)takeGuidanceEvents {
+  if (_pendingGuidanceEvents.empty()) return @[];
+  NSMutableArray<PPGuidanceEvent*>* out =
+      [NSMutableArray arrayWithCapacity:_pendingGuidanceEvents.size()];
+  for (const fv::nav::GuidanceEvent& e : _pendingGuidanceEvents) {
+    [out addObject:[[PPGuidanceEvent alloc] initWithEvent:e]];
+  }
+  _pendingGuidanceEvents.clear();
+  return out;
 }
 
 - (nullable PPOwnship*)ownshipOrNil {
@@ -1097,9 +1150,12 @@ static double PPEpochNow() {
   if (enabled) {
     _hasLastTripFixTime = NO;
     _trip.SetRoute(_routeStore->RoutePath());
+    _guidance.SetRoute(_routeStore->RoutePath(), _routeStore->RouteManeuvers());
     _trip.Start(PPEpochNow());
   } else {
     _trip.Stop(PPEpochNow());
+    // Anything not yet drawn is not announced either: the ride is over.
+    _pendingGuidanceEvents.clear();
   }
 
   if (enabled) {
@@ -1242,6 +1298,9 @@ static double PPEpochNow() {
   // and nowhere else. A distance-to-go measured along a route the rider has
   // already replaced is the failure this shape cannot have.
   _trip.SetRoute(_routeStore->RoutePath());
+  // ...and the guidance's, for the same reason: a rider being counted down to
+  // a corner on a route they have just replaced is the same defect.
+  _guidance.SetRoute(_routeStore->RoutePath(), _routeStore->RouteManeuvers());
   return [[PPRoute alloc] initWithSnapshot:snapshot
                           planMilliseconds:_routeStore->last_plan_ms()];
 }
@@ -1348,6 +1407,11 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
       PPSurfacePixel(screenPoint, viewport), tolerance * scale);
   if (!hit.found) return nil;
   return [NSString stringWithUTF8String:hit.label.c_str()];
+}
+
+- (double)alertAmplitude {
+  const double v = _settings.GetDouble("guidance.alert_amplitude", 0.9);
+  return (v > 0.0 && v <= 1.0) ? v : 0.9;
 }
 
 - (double)routeWaypointHitTolerance {

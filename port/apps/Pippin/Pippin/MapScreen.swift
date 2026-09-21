@@ -29,6 +29,7 @@ struct MapScreen: View {
     /// there is no bar.
     @State private var rideBarHeight: CGFloat = 0
     @State private var rideBarTrailingHeight: CGFloat = 0
+    @State private var guidanceBannerHeight: CGFloat = 0
 
     /// The window's safe-area insets. Read from UIKit rather than the
     /// `GeometryProxy`, which reports zero here because the reader has
@@ -92,6 +93,9 @@ struct MapScreen: View {
                     controls(top: top)
                 }
                 if model.gpsMode { rideBar(top: top) }
+                if let guidance = model.guidance {
+                    guidanceBanner(guidance, top: top)
+                }
                 if let notice = model.notice { noticeBanner(notice) }
                 #if DEBUG
                 if showsStats { statsOverlay(top: top) }
@@ -105,6 +109,9 @@ struct MapScreen: View {
             }
             .onPreferenceChange(RideBarTrailingHeightKey.self) { height in
                 rideBarTrailingHeight = height
+            }
+            .onPreferenceChange(GuidanceBannerHeightKey.self) { height in
+                guidanceBannerHeight = height
             }
             .onAppear {
                 safeArea = Self.windowSafeArea()
@@ -559,6 +566,7 @@ struct MapScreen: View {
                         },
                         onAbout: { aboutShown = true },
                         onReportProblem: { problemShown = true })
+                        .equatable()
                     HStack(spacing: ControlMetrics.spacing) {
                     // Route button. With a route on the map the sheet opens
                     // pre-filled. No `isActive`: this symbol has no `.fill`
@@ -735,6 +743,83 @@ struct MapScreen: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
+    /// The turn banner: an arrow, the road being joined, and the distance
+    /// counting down.
+    ///
+    /// Below the ride bar, because a rider glancing down for the next corner
+    /// looks where the ride numbers are. Not hit-testable — there is nothing
+    /// to press, and a banner that swallowed taps would be a hole in the
+    /// chart where the map is.
+    ///
+    /// Off route it says so instead of naming a corner. That is the whole of
+    /// the guidance's silence made visible: `fv::nav::Guidance` stops
+    /// counting down rather than counting down to a corner the rider is not
+    /// approaching, and a banner that simply vanished would read as a bug.
+    private func guidanceBanner(_ guidance: PPGuidance, top: CGFloat) -> some View {
+        VStack {
+            HStack(spacing: 12) {
+                if guidance.onRoute {
+                    Image(systemName: Self.maneuverSymbol(guidance.maneuver))
+                        .font(.system(size: 30, weight: .semibold))
+                    if guidance.hasThen {
+                        // A staggered junction: "right, then immediately
+                        // left". The second glyph is smaller because it is
+                        // the corner after the one being counted down.
+                        Image(systemName: Self.maneuverSymbol(guidance.thenManeuver))
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(display.units.countdown(guidance.distanceMeters))
+                            .font(.system(size: 26, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                        // Dropped rather than drawn blank: a good deal of what
+                        // a bicycle rides on Kiawah has no name in OSM.
+                        if !guidance.road.isEmpty {
+                            Text(guidance.road)
+                                .font(.system(size: 16, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                } else {
+                    Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("Off route")
+                        .font(.system(size: 20, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20,
+                                                            style: .continuous))
+            .measuredHeight(GuidanceBannerHeightKey.self)
+            .padding(.top, rideBarHeight > 0 ? top + rideBarHeight + 12 : top)
+            Spacer()
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// The SF Symbol for a turn. `arrow.turn.*` rather than the `arrowtriangle`
+    /// family: these are the shapes a rider already reads on a road sign.
+    private static func maneuverSymbol(_ maneuver: PPManeuver) -> String {
+        switch maneuver {
+        case .depart: return "location.north.line"
+        case .straight: return "arrow.up"
+        case .slightLeft: return "arrow.up.left"
+        case .left: return "arrow.turn.up.left"
+        case .sharpLeft: return "arrow.uturn.left"
+        case .slightRight: return "arrow.up.right"
+        case .right: return "arrow.turn.up.right"
+        case .sharpRight: return "arrow.uturn.right"
+        case .uTurn: return "arrow.uturn.down"
+        case .arrive: return "flag.checkered"
+        @unknown default: return "arrow.up"
+        }
+    }
+
     /// The notice banner. Body type, since it carries the sentences that most
     /// need reading. Hit-testable only when the notice opens Settings, so it
     /// is not a hole in the chart the rest of the time.
@@ -773,6 +858,17 @@ struct MapScreen: View {
             .background(.regularMaterial, in: Capsule())
     }
 
+    /// The top inset for anything that sits under the ride bar and the turn
+    /// banner. Each is present only sometimes, and a measured height of zero
+    /// means absent rather than a bar of no height.
+    private static func belowBars(top: CGFloat, rideBar: CGFloat,
+                                  guidance: CGFloat) -> CGFloat {
+        var inset = top
+        if rideBar > 0 { inset += rideBar + 12 }
+        if guidance > 0 { inset += guidance + 12 }
+        return inset
+    }
+
     private static let noticeBottom =
         ControlMetrics.bottom + ControlMetrics.diameter * 2
             + ControlMetrics.spacing + 16
@@ -799,8 +895,9 @@ struct MapScreen: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(.thinMaterial, in: Capsule())
-                // Below the ride bar when there is one.
-                .padding(.top, rideBarHeight > 0 ? top + rideBarHeight + 12 : top)
+                // Below the ride bar and the turn banner when there are any.
+                .padding(.top, Self.belowBars(top: top, rideBar: rideBarHeight,
+                                              guidance: guidanceBannerHeight))
             Spacer()
         }
         .allowsHitTesting(false)
@@ -858,6 +955,13 @@ enum ControlMetrics {
 /// the developer readout clears the whole bar and the compass clears only the
 /// right cluster. `max` so the result does not depend on traversal order.
 private struct RideBarHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct GuidanceBannerHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())

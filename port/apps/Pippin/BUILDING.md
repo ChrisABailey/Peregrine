@@ -41,7 +41,12 @@ and 2 are yours to run, and running them is cheap when nothing changed.
   `PP_DEVELOPMENT_TEAM` in the git-ignored `local/Local.xcconfig` (step 0b), and Signing &
   Capabilities or `DEVELOPMENT_TEAM=` on the `xcodebuild` line are the other two ways to give
   it one. The bundle ids have to change too, because a bundle id is unique to the account that
-  signs it.
+  signs it. A free Apple ID is enough for everything up to Step 4; the store export needs a
+  paid Developer Program membership for its distribution certificate.
+* **Enrolling a team that was already signing.** Individual enrolment upgrades the personal team
+  rather than creating a second one, so `PP_DEVELOPMENT_TEAM` does not change. Xcode → Settings
+  → Accounts → Manage Certificates issues the `Apple Distribution` certificate, and the next
+  archive replaces the week-long profiles with year-long ones.
 * **For a device:** plug the phone in, unlock it, answer **Trust This Computer**, and turn on
   **Settings → Privacy & Security → Developer Mode** (the phone restarts). iOS 16+ will not
   launch a sideloaded build without it and says nothing useful when it refuses.
@@ -223,9 +228,9 @@ xcrun devicectl device process launch --console --device "$IPHONE" org.peregrine
 Launch arguments go **after** the bundle id. `--console` keeps the process attached and prints
 its stdout, which is the device equivalent of the Xcode console.
 
-On the first launch of a build signed with a free Apple ID the phone refuses it until the
-profile is approved: **Settings → General → VPN & Device Management → Developer App → Trust**.
-A paid team profile skips this.
+A build signed with a free Apple ID is refused on first launch until the profile is approved:
+**Settings → General → VPN & Device Management → Developer App → Trust**. A paid team profile
+skips this, so it does not apply to this tree.
 
 ## Step 4 — the .ipa
 
@@ -233,8 +238,8 @@ An `.ipa` is a signed `Payload/Pippin.app` in a zip, made in two steps: **archiv
 **export**. Both use the **Release** configuration, which is why Step 2's `--release` comes
 first and why the probes are absent from what this produces.
 
-**The five commands, in this order.** The first two are only needed when their inputs changed,
-and the last three are not optional on a re-sign:
+**The four commands, in this order.** The first two are only needed when their inputs changed,
+and the last two are not optional on a re-sign:
 
 ```sh
 python3 port/apps/Pippin/stage_data.py --release
@@ -242,10 +247,6 @@ python3 port/apps/Pippin/stage_data.py --release
 
 ```sh
 cmake --preset ios && cmake --build build-ios -j
-```
-
-```sh
-rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
 ```
 
 ```sh
@@ -259,10 +260,20 @@ xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptio
 That writes `build-xcode/ipa/Pippin.ipa` — about 3.7 MB, most of it Kiawah — beside a
 `Packaging.log` and a `DistributionSummary.plist` worth reading when something is signed wrong.
 
-The `rm` and `-allowProvisioningUpdates` **go together**: the first makes automatic signing
-issue a fresh profile instead of reusing a part-spent one (on 2026-08-27 a single archive
-shipped an app profile issued on the 19th and an extension profile from the 21st, and the app
-died a day early), and the second is what lets `xcodebuild` reach Apple to issue it.
+`-allowProvisioningUpdates` is what lets `xcodebuild` reach Apple to issue or refresh a profile
+without the Xcode UI. It is not optional.
+
+Wiping the profile cache is a **repair, not a routine step**:
+
+```sh
+rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+```
+
+Do it when a profile is expired or belongs to the wrong team, and the next archive will fetch
+fresh ones. Under a free Apple ID it belonged in every build, because the app and the extension
+carry separate profiles and a part-spent one killed the app early (2026-08-27: an app profile
+issued on the 19th, an extension profile from the 21st). A year of life makes a few days'
+skew irrelevant, so the cost is now a needless round trip to Apple on every archive.
 
 Install it — `devicectl` takes the `.ipa` directly, no unzip:
 
@@ -286,15 +297,15 @@ identifier**, and an app under a rewritten id is a *second app*: its own `Docume
 points, route and rides are invisible to the real one) and a second claim on the `pippin` URL
 scheme, which makes the share extension's handoff a coin toss. `org.peregrine.Pippin.<team-id>`
 on Chris's phone is exactly that, and it cost an afternoon of P14. The answer to a dead profile
-is to re-run the five commands.
+is to re-run the four commands.
 
-### The seven-day clock, and what a paid account changes
+### The profile clock
 
-The identity on this mac is `Apple Development` under a **free** Apple ID, and a free team's
-provisioning profile expires **one week** after it is issued. When it does the app stops
-launching and the phone explains nothing. No date is written down here on purpose — it would be
-wrong within the week. Ask the bundle, and check **both** profiles, because the extension
-carries its own:
+A provisioning profile expires and takes the app with it: it stops launching and the phone
+explains nothing. Under this tree's **paid** Developer Program membership a profile lasts a
+**year**; under a free Apple ID it lasts **one week**, which is what a clone signing with its own
+free Apple ID gets. No date is written down here on purpose — it would go stale. Ask the bundle,
+and check **both** profiles, because the extension carries its own:
 
 ```sh
 security cms -D -i build-xcode/Pippin.xcarchive/Products/Applications/Pippin.app/embedded.mobileprovision | plutil -extract ExpirationDate raw -
@@ -306,13 +317,75 @@ security cms -D -i build-xcode/Pippin.xcarchive/Products/Applications/Pippin.app
 
 The **certificate** is a separate thing with a separate life (`security find-identity -v -p
 codesigning`, good for a year), so an expiry a week out is always the profile, never the
-identity.
+identity. That listing is also where to check that `Apple Distribution` exists at all — the store
+export below needs it, and only a paid membership issues one.
 
-`ExportOptions.plist` says `method = debugging` — Xcode 15.3+'s name for the old
-`development` — because that is the only method a free account can sign. **A paid Developer
-Program membership is what changes this step**: `method = app-store-connect` for TestFlight and
-the store, `release-testing` for ad-hoc, a distribution certificate for both, and a year on the
-profile instead of a week. That change is the first blocker in `pippin-store-review.md`.
+### The store export
+
+Same archive, a second export. `ExportOptions.plist` says `method = debugging` and produces the
+`.ipa` Step 4 installs by hand; `ExportOptions-AppStore.plist` says `app-store-connect` and
+produces the one App Store Connect accepts. **Export re-signs** — the archive is built with a
+development identity and the store export swaps in `Apple Distribution` on the way out — so the
+archive command is unchanged and nothing needs rebuilding to go from one to the other:
+
+```sh
+xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptionsPlist port/apps/Pippin/ExportOptions-AppStore.plist -exportPath build-xcode/ipa-appstore -allowProvisioningUpdates
+```
+
+`-allowProvisioningUpdates` matters more here than anywhere else: the app and the extension each
+need a *distribution* profile that has never been minted before, and without the flag the export
+fails rather than creating them.
+
+### Uploading
+
+`altool` with an **App Store Connect API key**, not Transporter. Transporter signs in as an Apple
+account and reports a failed record lookup as `No suitable application records were found`, which
+names three possible causes and distinguishes none of them; `altool` says which one it is.
+
+Make the key once: App Store Connect → Users and Access → **Integrations** → App Store Connect
+API → **+**, role App Manager. The `.p8` downloads once and is never shown again. It has to be
+named `AuthKey_<KeyID>.p8` and live in one of `./private_keys`, `~/private_keys`,
+`~/.private_keys` or `~/.appstoreconnect/private_keys` — the tools find it by name, and it is a
+credential, so it belongs in none of them inside this repository.
+
+Validate first. It runs the same checks and the same app-record lookup as the upload, and
+delivers nothing:
+
+```sh
+xcrun altool --validate-app -f build-xcode/ipa-appstore/Pippin.ipa -t ios --apiKey XXXXXXXXXX --apiIssuer <issuer-uuid>
+```
+
+```sh
+xcrun altool --upload-app -f build-xcode/ipa-appstore/Pippin.ipa -t ios --apiKey XXXXXXXXXX --apiIssuer <issuer-uuid>
+```
+
+Only the upload and validate verbs take an API key. `--list-providers` and `--list-apps` are
+Apple-ID-and-app-specific-password only, so they are no help in diagnosing a key-authenticated
+upload — validate is the diagnostic.
+
+After `UPLOAD SUCCEEDED` the build processes for minutes to an hour before it appears in
+TestFlight and can be attached to a version.
+
+`xcodebuild` can upload directly instead, with `destination` set to `upload` in a local copy of
+the export plist and the same key passed as `-authenticationKeyPath`, `-authenticationKeyID` and
+`-authenticationKeyIssuerID`. It is one command rather than two, and it reports errors less
+clearly than `altool` does.
+
+Three things App Store Connect rejects a build for, none of which the export checks:
+
+* **No app record, or one on the wrong bundle id.** The record has to exist in App Store Connect
+  *before* the first upload, on platform iOS, on the identifier the build is actually signed
+  with. New App lists identifiers by their portal **name**, not their id, so
+  `XC org peregrine Pippin` is the entry that means `org.peregrine.Pippin`; anything a
+  sideloading tool once registered sits in the same list looking equally plausible. A record's
+  bundle id stays editable in App Information until the first build is uploaded. The export
+  succeeds either way — this fails at upload.
+* **A build number already used.** `CURRENT_PROJECT_VERSION` must be higher than every build
+  previously uploaded for that version string, and all three targets must carry the same one or
+  the extension fails validation. `manageAppVersionAndBuildNumber` is `false` in the plist so
+  that the number in the archive is the number that arrives.
+* **A missing `ITSAppUsesNonExemptEncryption`.** Absent, every upload stops for a manual
+  encryption questionnaire. "Before an upload" below checks it in the built Info.plist.
 
 ---
 
@@ -327,7 +400,7 @@ python3 port/apps/Pippin/stage_data.py && cmake --preset ios-sim && cmake --buil
 A shipping `.ipa` from a clean tree:
 
 ```sh
-python3 port/apps/Pippin/stage_data.py --release && cmake --preset ios && cmake --build build-ios -j && rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision && xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -allowProvisioningUpdates -archivePath build-xcode/Pippin.xcarchive archive && xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptionsPlist port/apps/Pippin/ExportOptions.plist -exportPath build-xcode/ipa
+python3 port/apps/Pippin/stage_data.py --release && cmake --preset ios && cmake --build build-ios -j && xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -allowProvisioningUpdates -archivePath build-xcode/Pippin.xcarchive archive && xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptionsPlist port/apps/Pippin/ExportOptions.plist -exportPath build-xcode/ipa
 ```
 
 ## Before an upload: the checks worth two minutes
@@ -380,5 +453,10 @@ bundle, and the About screen's link should point at a **tag that matches this bu
 | `no DejaVu Sans on this machine` | put `DejaVuSans.ttf` + `LICENSE_DEJAVU` in `port/apps/Pippin/fonts/` |
 | `ld: warning: ignoring file … found architecture 'arm64', required 'x86_64'` | an Intel simulator slice; add `ARCHS=arm64` or use a named `-destination` |
 | `IXUserPresentableErrorDomain error 14` / `0xe8008011` | an expired profile, and probably an install from `Build/Products/`; Step 4 |
+| `No profiles for 'org.peregrine.Pippin' were found` on a store export | the distribution profile has never been minted; add `-allowProvisioningUpdates` to the export line |
+| `No signing certificate "iOS Distribution" found` | no `Apple Distribution` identity; Xcode → Settings → Accounts → Manage Certificates |
+| `Cannot determine the Apple ID from Bundle ID … and platform 'IOS'` | the App Store Connect record is on a different bundle id or platform; App Information, editable until the first upload |
+| Transporter: `No suitable application records were found` | the same thing, told less precisely; re-run it as `altool --validate-app` for the real error |
+| `list-providers does not support APIKey authentication` | that verb needs an Apple ID; validate is the API-key diagnostic |
 | the app builds but is still called Pippin | Xcode cached the settings; reopen the project, or `xcodebuild` fresh |
 | BUILD SUCCEEDED and the old behaviour | the derived-data trap; Step 3's warning |

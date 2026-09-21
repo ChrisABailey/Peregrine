@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ExportOptions-AppStore.plist — the App Store and TestFlight export.
+     ExportOptions.plist beside it is the one for installing on your own
+     phone; both read the same .xcarchive. See BUILDING.md, "The store
+     export".
+
+     Export re-signs. The archive is built with a development identity, and
+     `app-store-connect` swaps in "Apple Distribution" and a distribution
+     profile on the way out, so nothing about the archive step differs
+     between the two exports. A distribution certificate comes with a paid
+     Developer Program membership; without one this export fails and the
+     other file still works. -->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<!-- Automatic to match both targets' CODE_SIGN_STYLE. The app and the
+	     share extension each need their own distribution profile, and this
+	     is what mints them; `xcodebuild -allowProvisioningUpdates` on the
+	     export line is what lets it reach Apple to do so. -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- `export` writes a .ipa to upload by hand. `upload` sends it straight
+	     to App Store Connect, which needs an API key passed on the command
+	     line — BUILDING.md gives both. -->
+	<key>destination</key>
+	<string>export</string>
+	<!-- The build number is set by CURRENT_PROJECT_VERSION and all three
+	     targets have to agree on it or the extension fails validation.
+	     Leaving this at its YES default lets Xcode renumber the build on
+	     upload, which makes the number in the archive a lie. -->
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<!-- The one place symbols should be uploaded: it is what turns a store
+	     crash report into named frames. Nothing leaves the machine on a
+	     development export, which is why the other file says NO. -->
+	<key>uploadSymbols</key>
+	<true/>
+	<key>stripSwiftSymbols</key>
+	<true/>
+	<!-- No `teamID` key, for the same reason as the other file: it names a
+	     personal Apple account and this one is public. It defaults to the
+	     team that built the archive, which is right for a single-team
+	     account; an account in more than one team adds the key in a local
+	     copy and points -exportOptionsPlist at that.
+
+	     No `thinning` key either — it applies to non-App-Store exports
+	     only. The store slices the binary per device itself. -->
+</dict>
+</plist>

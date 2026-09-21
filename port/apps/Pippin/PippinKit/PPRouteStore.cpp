@@ -140,6 +140,11 @@ RouteSnapshot RouteStore::Snapshot() const {
   return out;
 }
 
+const std::vector<fv::nav::Maneuver>& RouteStore::RouteManeuvers() const {
+  static const std::vector<fv::nav::Maneuver> kNone;
+  return overlay_->has_plan() ? overlay_->plan().maneuvers : kNone;
+}
+
 std::vector<fv::GeoPoint> RouteStore::RoutePath() const {
   std::vector<fv::GeoPoint> out;
   if (!overlay_->has_plan()) return out;

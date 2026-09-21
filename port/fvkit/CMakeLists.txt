@@ -63,6 +63,8 @@ add_library(fv_fvkit STATIC
   nav/gpx.cpp
   nav/gpx_recorder.cpp
   nav/trip.cpp
+  nav/maneuver.cpp
+  nav/guidance.cpp
   overlay/manager.cpp
   overlay/contour_overlay.cpp
   overlay/grid_overlay.cpp
@@ -159,6 +161,8 @@ if(FVW_BUILD_TESTS)
     nav/test/nav_gpx_test.cpp
     nav/test/nav_gpx_writer_test.cpp
     nav/test/nav_trip_test.cpp
+    nav/test/nav_maneuver_test.cpp
+    nav/test/nav_guidance_test.cpp
     app/test/app_type_registry_test.cpp
     app/test/app_stack_test.cpp
     app/test/app_session_test.cpp

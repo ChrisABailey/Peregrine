@@ -965,6 +965,37 @@ TEST(RouteStoreDrag, ADragOfSomethingThatIsNotThereIsRefused) {
   EXPECT_TRUE(store.EndWaypointDrag(fv::PixelPoint{110, 110}).calculated);
 }
 
+// GD3: the banner is fed from the store, so the turn list has to survive the
+// same trip the line does — planned on an edit and gone when the route is
+// cleared.
+TEST(RouteStore, TheTurnListRidesWithTheRoute) {
+  SKIP_WITHOUT_GRAPH();
+  TempDocument doc("turns");
+  RouteStore store(graph, RulesFile(), doc.path());
+
+  EXPECT_TRUE(store.RouteManeuvers().empty()) << "nothing planned yet";
+
+  store.SetWaypoints(TheUsualPair(), "bicycle");
+  ASSERT_FALSE(store.RoutePath().empty());
+  const std::vector<fv::nav::Maneuver>& turns = store.RouteManeuvers();
+  ASSERT_GE(turns.size(), 2u);
+  EXPECT_EQ(turns.front().type, fv::nav::ManeuverType::kDepart);
+  EXPECT_EQ(turns.back().type, fv::nav::ManeuverType::kArrive);
+
+  // The last maneuver sits at the end of the line the banner counts down
+  // along — RoutePath(), not the router's own geometry.
+  const std::vector<fv::GeoPoint> path = store.RoutePath();
+  fv::nav::RouteShape shape;
+  shape.geometry = path;
+  shape.legs.push_back({});
+  const std::vector<fv::nav::Maneuver> along = fv::nav::BuildManeuvers(shape);
+  ASSERT_EQ(along.size(), 2u) << "one leg, so depart and arrive and nothing else";
+  EXPECT_NEAR(turns.back().distance_m, along.back().distance_m, 1.0);
+
+  store.Clear();
+  EXPECT_TRUE(store.RouteManeuvers().empty()) << "a cleared route guides nobody";
+}
+
 TEST(RouteStoreDrag, TheSnapToleranceReachesTheEditor) {
   TempDocument doc("drag_snap_tol");
   RouteStore store("/nonexistent/kiawah.fvroad", RulesFile(), doc.path());

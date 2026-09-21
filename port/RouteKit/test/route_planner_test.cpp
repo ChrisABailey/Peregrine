@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -82,6 +83,59 @@ TEST(RoutePlanner, TwoWaypointsOnRoadsGiveAThroughRoute) {
   // Same island, same two ends, and the ride is quicker than the walk: the
   // profiles reach the router rather than being carried and dropped.
   EXPECT_LT(ride.seconds, walk.seconds);
+}
+
+// GD3: the phone plans through RoutePlanner and never sees a routing::Route,
+// so the turn list has to ride on the plan — and its distances have to be
+// along the line RouteStore::RoutePath() joins, not along some other one.
+TEST(RoutePlanner, AThroughRouteCarriesItsTurnList) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+
+  const RoutePlan plan = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  ASSERT_TRUE(plan.found) << plan.status;
+  ASSERT_GE(plan.maneuvers.size(), 2u);
+  EXPECT_EQ(plan.maneuvers.front().type, fv::nav::ManeuverType::kDepart);
+  EXPECT_EQ(plan.maneuvers.back().type, fv::nav::ManeuverType::kArrive);
+
+  // The joined line, duplicates dropped, exactly as RouteStore::RoutePath()
+  // builds it. The last maneuver sits at the end of it.
+  std::vector<GeoPoint> path;
+  for (const auto& leg : plan.legs) {
+    for (const GeoPoint& p : leg) {
+      if (!path.empty() && path.back().lat == p.lat && path.back().lon == p.lon) continue;
+      path.push_back(p);
+    }
+  }
+  ASSERT_GE(path.size(), 2u);
+  double joined_m = 0.0;
+  for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+    constexpr double kR = 6371008.8;
+    const double phi1 = path[i].lat * kDegToRad, phi2 = path[i + 1].lat * kDegToRad;
+    const double dphi = (path[i + 1].lat - path[i].lat) * kDegToRad;
+    const double dlam = fv::NormalizeLon(path[i + 1].lon - path[i].lon) * kDegToRad;
+    const double s1 = std::sin(dphi * 0.5), s2 = std::sin(dlam * 0.5);
+    double h = s1 * s1 + std::cos(phi1) * std::cos(phi2) * s2 * s2;
+    if (h > 1.0) h = 1.0;
+    joined_m += 2.0 * kR * std::asin(std::sqrt(h));
+  }
+  EXPECT_NEAR(plan.maneuvers.back().distance_m, joined_m, 1.0);
+}
+
+// A plan that fell back to straight legs is not one to be guided along.
+TEST(RoutePlanner, ThePerPairFallbackCarriesNoTurnList) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  opts.snap_meters = 200.0;
+
+  const RoutePlan plan = planner.Plan({kRuddyTurnstone, kInTheMarsh, kBeachClub}, opts);
+  ASSERT_FALSE(plan.found);
+  EXPECT_TRUE(plan.maneuvers.empty());
 }
 
 TEST(RoutePlanner, ThreeWaypointsAreOneRouteThroughThem) {

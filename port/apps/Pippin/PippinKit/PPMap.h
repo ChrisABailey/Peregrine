@@ -39,6 +39,7 @@
 #import <PippinKit/PPFix.h>
 #import <PippinKit/PPGeometry.h>
 #import <PippinKit/PPPoint.h>
+#import <PippinKit/PPGuidance.h>
 #import <PippinKit/PPTrip.h>
 #import <PippinKit/PPRoute.h>
 #import <PippinKit/PPSearch.h>
@@ -158,6 +159,18 @@ NS_SWIFT_SENDABLE
 /// runs with the mode, so nil means "no ride in progress" rather than a
 /// missing number, and the bar it feeds is hidden in the same breath.
 @property(nonatomic, readonly, nullable) PPTrip *trip;
+
+/// The next turn as of this frame, or nil when there is no banner to draw:
+/// outside GPS mode, with no planned route, or past the destination. Off
+/// route is not one of those — the guidance is running and has stopped naming
+/// a corner, which `PPGuidance.onRoute` reports.
+@property(nonatomic, readonly, nullable) PPGuidance *guidance;
+
+/// What the guidance said since the previous frame, in order — usually
+/// empty, one entry on the frame that crosses a ring. Buffered rather than
+/// sampled, so a frame that swallowed two fixes carries both fixes' events.
+/// Each event is delivered on exactly one frame.
+@property(nonatomic, readonly) NSArray<PPGuidanceEvent *> *guidanceEvents;
 
 #pragma mark - What the camera decided
 
@@ -532,6 +545,11 @@ NS_SWIFT_SENDABLE
 /// right for a pick is a crosshair the rider can place exactly, and nothing
 /// about a long press is exact.
 @property(nonatomic, readonly) double routeWaypointHitTolerance;
+/// Peak level of the turn chimes, 0 to 1, from `guidance.alert_amplitude`.
+/// Out-of-range values fall back to the default, so a mistyped key is a
+/// normal chime rather than a silent or clipped one.
+@property(nonatomic, readonly) double alertAmplitude;
+
 
 /// How long a press is held before it grabs, in seconds
 /// (`routing.drag_hold_seconds`).

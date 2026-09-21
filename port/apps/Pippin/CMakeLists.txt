@@ -87,6 +87,12 @@ if(NOT FVW_IOS)
     if(APPLE)
       find_program(FVW_XCRUN xcrun)
       if(FVW_XCRUN)
+        add_test(NAME pippin_alert_tone
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_alert_tone_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_guidance_format
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_guidance_format_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_place_link
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_place_link_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})

@@ -2097,9 +2097,6 @@ Trust**. A paid team profile skips this.
 cache, build the device core, archive, export a `.ipa`, install it:
 
 ```sh
-rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
-```
-```sh
 cmake --preset ios && cmake --build build-ios -j
 ```
 ```sh
@@ -2114,10 +2111,12 @@ xcrun devicectl device install app --device "$IPHONE" build-xcode/ipa/Pippin.ipa
 
 The core build is only needed when the C++ changed, and the export needs the
 archive that the command above it makes — the last two on their own will happily
-re-export a week-old `.xcarchive` and install last week's app. The `rm` and
-`-allowProvisioningUpdates` go together: the first makes automatic signing issue
-a fresh seven-day profile instead of reusing a part-spent one, and the second is
-what lets xcodebuild reach Apple to issue it. Neither is optional on a re-sign.
+re-export an old `.xcarchive` and install last week's app.
+`-allowProvisioningUpdates` is what lets xcodebuild reach Apple to issue or
+refresh a profile, and is not optional on a re-sign. Wiping
+`~/Library/Developer/Xcode/UserData/Provisioning Profiles/` is a repair for a
+profile that is expired or from the wrong team, not a routine step; it belonged
+in every build only while a free Apple ID made profiles last a week.
 
 **NOT a re-signing tool, which is the reason this is written down.** Those
 apps — the ones that automatically extend a sideloaded build before its profile
@@ -2128,10 +2127,10 @@ alongside it, which makes the share extension's handoff a coin toss over which
 app iOS launches. `org.peregrine.Pippin.<team-id>` is exactly
 that, and it cost an afternoon of P14 debugging.
 
-**The seven-day clock is what those tools exist to solve, and the answer here is
-to re-run the five commands.** See "Packaging a .ipa" below for why a free Apple
-ID's profile expires in a week, what a paid account changes, and why the install
-must come from the `.ipa` rather than from `build-xcode/Build/Products/`.
+**An expired profile is what those tools exist to solve, and the answer here is
+to re-run the commands above.** See "Packaging a .ipa" below for how long a
+profile lasts, what the paid membership changed, and why the install must come
+from the `.ipa` rather than from `build-xcode/Build/Products/`.
 
 ### From the terminal, without the .ipa
 
@@ -2254,31 +2253,33 @@ security cms -D -i build-xcode/Pippin.xcarchive/Products/Applications/Pippin.app
 (The `.ipa` is a zip, so it has to be unzipped before the same check works on it; the `.xcarchive`
 is a directory and holds the identical bundle.)
 
-**THE SEVEN-DAY CLOCK.** The signing identity on this mac is `Apple Development` under a FREE
-Apple ID, and a free team's provisioning profile expires **one week** after it is issued. When it
-does, the app stops launching and the phone says nothing that explains why. Re-run the commands
-above — cache removal included, or the reissue may be short — and reinstall; the app's documents
-(`points.fvpoints`, the route, `trips/`) live in `Documents/` and survive a reinstall over the
-top. A paid Apple Developer account is what buys a year instead of a week, and with it the other
-two export methods.
+**How long a profile lasts.** A year under this tree's paid Developer Program membership; one
+week under a free Apple ID, which is what a clone signing with its own gets. When a profile
+expires the app stops launching and the phone says nothing that explains why. Re-run the commands
+above and reinstall; the app's documents (`points.fvpoints`, the route, `trips/`) live in
+`Documents/` and survive a reinstall over the top. The membership is also what issues the
+distribution certificate, and with it the other two export methods.
 
 No date is written down here on purpose: it would be wrong within the week. Ask the bundle with
 the `security cms` command above. Note that the **certificate** is a separate thing with a
 separate life — `security find-identity -v -p codesigning` names it, and it is good for a year —
 so an expiry a week out is always the profile, never the identity.
 
-**`method` is `debugging` and cannot be anything else today.** That is Xcode 15.3+'s name for the
-old `development`: signed with a development identity, installable only on devices already listed
-in the profile. `release-testing` (ad-hoc, for other people's phones) and `app-store-connect`
-(TestFlight) both need a **distribution** certificate, which a free account does not have — so
-they fail at export rather than at install, which at least is quick.
+**`method` is `debugging` in `ExportOptions.plist`.** That is Xcode 15.3+'s name for the old
+`development`: signed with a development identity, installable only on devices already listed in
+the profile. `ExportOptions-AppStore.plist` beside it is `app-store-connect`, for TestFlight and
+the store, and `release-testing` (ad-hoc, for other people's phones) is the third. Export
+re-signs, so all three read the same archive; the latter two need a **distribution** certificate,
+which only a paid membership issues. BUILDING.md's "The store export" has the command and the
+three things App Store Connect rejects a build for.
 
 **The share extension has its own bundle id and its own profile.** `org.peregrine.Pippin.Share`
 (P14) is a second App ID, registered under the same team, and both are embedded in the `.ipa`.
 Nothing has to be done about it by hand — automatic signing creates it on the first build — but
 it is worth knowing two things: a free account is rate-limited on new App IDs (10 in 7 days), and
 if the extension ever fails to sign, the app still installs and simply does not appear in other
-apps' share sheets.
+apps' share sheets. For the store it needs its own App Store Connect record and the same
+`CURRENT_PROJECT_VERSION` as the app, or validation rejects the upload.
 
 **An UNSIGNED .ipa, for the sideloading tools that re-sign it themselves** (AltStore, Sideloadly)
 is just the app in a folder called `Payload`, zipped:

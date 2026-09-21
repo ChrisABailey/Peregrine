@@ -177,6 +177,11 @@ class RouteStore {
   // twice.
   std::vector<fv::GeoPoint> RoutePath() const;
 
+  // The turn list along that same line (GD1), or empty when nothing has been
+  // planned or the plan fell back to straight legs. Empty is the "no
+  // guidance" state and is what a half-built route gives.
+  const std::vector<fv::nav::Maneuver>& RouteManeuvers() const;
+
   // --- Dragging a waypoint -------------------------------------------------
   //
   // The edit itself is `fv::RouteEditSession`, whose `BeginDrag`/`DragTo`/

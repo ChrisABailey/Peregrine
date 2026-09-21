@@ -169,6 +169,13 @@ struct RouteLeg {
   std::string klass;  // the OSM highway value
   double length_m = 0.0;
   double seconds = 0.0;
+
+  // Where this leg starts in `Route::geometry`. Leg 0 is always 0, and a
+  // leg's index is the JUNCTION it was joined at — the point it shares with
+  // the end of the leg before. Reported because a leg boundary is where a
+  // turn happens, and the name-and-length pair alone cannot say where on the
+  // drawn line that is.
+  uint32_t geometry_begin = 0;
 };
 
 struct Route {

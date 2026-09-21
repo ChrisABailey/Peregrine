@@ -807,6 +807,10 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
   for (size_t i = 0; i < steps.size(); ++i) {
     const Step& step = steps[i];
     const RoadArc& arc = graph_.arc(step.arc);
+    // Read before this step pushes anything: the previous step's end point is
+    // this one's start, and on the first step the next push is index 0.
+    const uint32_t step_begin =
+        i == 0 ? 0u : static_cast<uint32_t>(out->geometry.size()) - 1u;
     ArcShapeAndLengths(step.arc, &shape, &cum);
     const double total = cum.empty() ? 0.0 : cum.back();
     const double d0 = step.t0 * total, d1 = step.t1 * total;
@@ -844,6 +848,7 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
       RouteLeg leg;
       leg.name = graph_.name(arc.name);
       leg.klass = RoadClassName(arc.klass);
+      leg.geometry_begin = step_begin;
       out->legs.push_back(leg);
       leg_name = arc.name;
       leg_class = arc.klass;

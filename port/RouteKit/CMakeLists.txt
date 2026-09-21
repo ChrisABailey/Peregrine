@@ -20,6 +20,7 @@ add_library(fv_routekit STATIC
   fv_road_graph_overlay.cpp
   fv_route_doc.cpp
   fv_route_edit.cpp
+  fv_route_maneuvers.cpp
   fv_route_overlay.cpp
   fv_route_planner.cpp
 )
@@ -35,6 +36,8 @@ if(FVW_BUILD_TESTS)
     test/road_graph_search_test.cpp
     test/route_doc_test.cpp
     test/route_edit_test.cpp
+    test/route_maneuvers_test.cpp
+    test/route_guidance_test.cpp
     test/route_overlay_test.cpp
     test/route_search_test.cpp
     test/route_planner_test.cpp
