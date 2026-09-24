@@ -126,6 +126,19 @@ simplify_pixels = 0.5
 # Default: 0.25
 # mm_per_pixel = 0.25
 
+# Display projection at startup: equalarc, mercator, lambert,
+# azimuthalequidistant or orthographic. Anything unrecognised falls back to
+# equalarc rather than refusing to start.
+# Mercator is not drawn beyond 80 degrees of latitude, and it moves its
+# working centre towards the equator to keep the view inside that limit.
+# Lambert derives its two standard parallels from the viewport, so a pan or a
+# zoom changes the cone; near the equator it draws as Mercator.
+# The two azimuthal projections show a disc and leave the rest of the window
+# empty: Azimuthal Equidistant fits the whole earth in one, with the antipode
+# of the centre as its rim, and Orthographic shows the near hemisphere only.
+# Default: equalarc
+# projection = equalarc
+
 
 [geosym]
 # Directory holding the GeoSym assets (expects SymAssign/ and Graphics/

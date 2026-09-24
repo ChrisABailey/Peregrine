@@ -31,6 +31,9 @@ struct MapScreen: View {
     @State private var rideBarTrailingHeight: CGFloat = 0
     @State private var guidanceBannerHeight: CGFloat = 0
 
+    /// Built once in `onAppear` from the pack's fixed step list.
+    @State private var symbolStepLabels: [String] = []
+
     /// The window's safe-area insets. Read from UIKit rather than the
     /// `GeometryProxy`, which reports zero here because the reader has
     /// `.ignoresSafeArea()` on it (the map surface must be the whole screen).
@@ -56,12 +59,6 @@ struct MapScreen: View {
     /// it; `DisplayUnits.shared` is also observed from views across sheet
     /// boundaries.
     @ObservedObject private var display = DisplayUnits.shared
-
-    /// `-PPShowStats YES` shows the renderer's per-frame cost. DEBUG only; in
-    /// Release the property, overlay and formatters are compiled out.
-    #if DEBUG
-    private let showsStats = UserDefaults.standard.bool(forKey: "PPShowStats")
-    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -98,7 +95,7 @@ struct MapScreen: View {
                 }
                 if let notice = model.notice { noticeBanner(notice) }
                 #if DEBUG
-                if showsStats { statsOverlay(top: top) }
+                if MapModel.showsStats { statsOverlay(top: top) }
                 #endif
                 if let failure = model.failure { failureOverlay(failure) }
             }
@@ -115,6 +112,7 @@ struct MapScreen: View {
             }
             .onAppear {
                 safeArea = Self.windowSafeArea()
+                symbolStepLabels = Self.symbolStepLabels(model.symbolZoomSteps)
                 model.resize(to: geo.size, scale: displayScale)
                 model.startFeed()
                 model.loadSavedRoute()
@@ -418,11 +416,12 @@ struct MapScreen: View {
     /// these names shows its multiplier.
     private static let symbolSizeNames = ["Small", "Medium", "Large"]
 
-    private var symbolStepLabels: [String] {
-        let steps = model.symbolZoomSteps
-        return steps.indices.map { index in
-            index < Self.symbolSizeNames.count
-                ? Self.symbolSizeNames[index]
+    /// The pack's steps are fixed for the process, so the labels are built
+    /// once rather than on every body pass.
+    private static func symbolStepLabels(_ steps: [Double]) -> [String] {
+        steps.indices.map { index in
+            index < symbolSizeNames.count
+                ? symbolSizeNames[index]
                 : String(format: "%.2gx", steps[index])
         }
     }
@@ -430,10 +429,8 @@ struct MapScreen: View {
     private var problemSheet: some View {
         ReportProblemSheet(
             // The map centre, to five decimals (about a metre).
-            coordinateText: model.viewport.map {
-                String(format: "%.5f, %.5f", $0.center.latitude,
-                       $0.center.longitude)
-            } ?? "—",
+            coordinateText: model.viewport
+                .map { LocationText.describe($0.center) } ?? "—",
             onClose: { problemShown = false })
     }
 
@@ -546,8 +543,7 @@ struct MapScreen: View {
                 }
                 .padding(.horizontal, ControlMetrics.side)
                 // Drops below the ride bar's right cluster when there is one.
-                .padding(.top, rideBarTrailingHeight > 0
-                         ? top + rideBarTrailingHeight + 12 : top)
+                .padding(.top, Self.belowBars(top: top, rideBarTrailingHeight))
             }
             Spacer()
             // Bottom-aligned: both sides are columns of different heights.
@@ -796,7 +792,7 @@ struct MapScreen: View {
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20,
                                                             style: .continuous))
             .measuredHeight(GuidanceBannerHeightKey.self)
-            .padding(.top, rideBarHeight > 0 ? top + rideBarHeight + 12 : top)
+            .padding(.top, Self.belowBars(top: top, rideBarHeight))
             Spacer()
         }
         .allowsHitTesting(false)
@@ -858,15 +854,11 @@ struct MapScreen: View {
             .background(.regularMaterial, in: Capsule())
     }
 
-    /// The top inset for anything that sits under the ride bar and the turn
-    /// banner. Each is present only sometimes, and a measured height of zero
-    /// means absent rather than a bar of no height.
-    private static func belowBars(top: CGFloat, rideBar: CGFloat,
-                                  guidance: CGFloat) -> CGFloat {
-        var inset = top
-        if rideBar > 0 { inset += rideBar + 12 }
-        if guidance > 0 { inset += guidance + 12 }
-        return inset
+    /// The top inset for anything that sits under one or more of the top
+    /// bars. A measured height of zero means absent rather than a bar of no
+    /// height, so it contributes nothing — not even the gap.
+    private static func belowBars(top: CGFloat, _ bars: CGFloat...) -> CGFloat {
+        bars.reduce(top) { $1 > 0 ? $0 + $1 + ControlMetrics.barGap : $0 }
     }
 
     private static let noticeBottom =
@@ -896,8 +888,8 @@ struct MapScreen: View {
                 .padding(.vertical, 6)
                 .background(.thinMaterial, in: Capsule())
                 // Below the ride bar and the turn banner when there are any.
-                .padding(.top, Self.belowBars(top: top, rideBar: rideBarHeight,
-                                              guidance: guidanceBannerHeight))
+                .padding(.top, Self.belowBars(top: top, rideBarHeight,
+                                              guidanceBannerHeight))
             Spacer()
         }
         .allowsHitTesting(false)
@@ -949,31 +941,28 @@ enum ControlMetrics {
     static let bottom: CGFloat = 28
     /// From either side of the screen to the outermost control.
     static let side: CGFloat = 24
+    /// Between one top bar and whatever drops below it.
+    static let barGap: CGFloat = 12
 }
 
-/// Heights of the ride bar and of its right-hand cluster. Two keys because
-/// the developer readout clears the whole bar and the compass clears only the
-/// right cluster. `max` so the result does not depend on traversal order.
-private struct RideBarHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+/// Reports one measured height up the tree. `Tag` separates the measurements
+/// that must not merge: the developer readout clears the whole ride bar, the
+/// compass clears only its right cluster. `max` so the result does not depend
+/// on traversal order.
+private struct HeightKey<Tag>: PreferenceKey {
+    static var defaultValue: CGFloat { 0 }
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }
 }
 
-private struct GuidanceBannerHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
+private enum RideBarTag {}
+private enum GuidanceBannerTag {}
+private enum RideBarTrailingTag {}
 
-private struct RideBarTrailingHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
+private typealias RideBarHeightKey = HeightKey<RideBarTag>
+private typealias GuidanceBannerHeightKey = HeightKey<GuidanceBannerTag>
+private typealias RideBarTrailingHeightKey = HeightKey<RideBarTrailingTag>
 
 private extension View {
     /// Reports this view's height up the tree under `key`. A `background`
@@ -1006,15 +995,35 @@ struct CompassButton: View {
                 // steps a slow render leaves.
                 .rotationEffect(.degrees(northAngleDegrees))
                 .animation(.linear(duration: 0.15), value: northAngleDegrees)
+                .foregroundStyle(.tint)
                 .frame(width: ControlMetrics.diameter,
                        height: ControlMetrics.diameter)
                 .background(.regularMaterial, in: Circle())
                 .overlay(Circle().strokeBorder(.separator, lineWidth: 0.5))
         }
+        // Plain, or the automatic style draws its own tinted capsule behind
+        // the circle: a halo wider than the control. The tint then has to
+        // reach the glyph as a foreground style.
+        .buttonStyle(.circleControl)
         .tint(isActive ? .accentColor : .primary)
         .accessibilityLabel(label)
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
     }
+}
+
+/// Button style for the floating map controls: no system background, dimmed
+/// while pressed. The automatic style draws a tinted capsule behind the label
+/// that reads as an oval halo around the round face.
+struct CircleControlButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.55 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == CircleControlButtonStyle {
+    static var circleControl: CircleControlButtonStyle { .init() }
 }
 
 /// The face shared by every floating control: 56 pt of system material with a
@@ -1027,6 +1036,9 @@ struct CircleControlFace: View {
     var body: some View {
         Image(systemName: systemName)
             .font(.system(size: 22, weight: .medium))
+            // The controls are plain-styled, so the tint reaches the glyph
+            // here rather than through the button style.
+            .foregroundStyle(.tint)
             .frame(width: ControlMetrics.diameter,
                    height: ControlMetrics.diameter)
             .background(.regularMaterial, in: Circle())
@@ -1058,6 +1070,7 @@ struct CircleButton: View {
 
     var body: some View {
         core
+            .buttonStyle(.circleControl)
             .tint(isActive ? (activeTint ?? .accentColor) : .primary)
             .accessibilityLabel(label)
             .shadow(color: .black.opacity(0.18), radius: 6, y: 2)

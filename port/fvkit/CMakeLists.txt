@@ -52,6 +52,7 @@ add_library(fv_fvkit STATIC
   settings.cpp
   scale_table.cpp
   engine/map_engine.cpp
+  engine/raster_warp.cpp
   nav/position.cpp
   nav/heading.cpp
   nav/scripted_source.cpp
@@ -71,6 +72,7 @@ add_library(fv_fvkit STATIC
   overlay/grid_spacing.cpp
   overlay/point_edit.cpp
   overlay/point_overlay.cpp
+  overlay/scale_bar.cpp
   overlay/ta_mask_overlay.cpp
   overlay/vector_map_overlay.cpp
   overlay/moving_map_overlay.cpp
@@ -139,12 +141,20 @@ if(FVW_BUILD_TESTS)
     test/catalog_test.cpp
     test/canvas_test.cpp
     test/proj_engine_test.cpp
+    test/proj_identity_test.cpp
+    test/proj_mercator_test.cpp
+    test/proj_lambert_test.cpp
+    test/proj_azimuthal_test.cpp
+    test/proj_linearity_test.cpp
+    test/engine_world_test.cpp
+    test/raster_warp_test.cpp
     test/overlay_test.cpp
     test/overlay_toolkit_test.cpp
     test/path_shaping_test.cpp
     test/grid_overlay_test.cpp
     test/contour_overlay_test.cpp
     test/ta_mask_overlay_test.cpp
+    test/scale_bar_test.cpp
     test/elevation_tiling_test.cpp
     analysis/test/analysis_measure_test.cpp
     analysis/test/analysis_path_test.cpp

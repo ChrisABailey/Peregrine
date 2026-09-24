@@ -242,9 +242,12 @@ class MovingMapOverlay : public Overlay {
   void SetRotationSupported(bool on);
   bool rotation_supported() const { return rotation_supported_; }
 
-  // Meridian convergence at the ship — MM2's forgotten term, identically zero
-  // on every projection the port has, and settable so that it does not have to
-  // be rediscovered when one of them isn't.
+  // Meridian convergence at the ship — MM2's forgotten term, in the sense the
+  // consumers ADD: the angle from grid north to true north, which is MINUS
+  // `MapProjection::LocalScale::convergence_deg`. Zero on Equal Arc and on
+  // Mercator; on the other three `Tick` fills it from the projection at the
+  // ship's own position and a value set here is overwritten. It stays settable
+  // for a caller drawing on a chart the projection does not model.
   void SetConvergence(double degrees) { convergence_deg_ = degrees; }
   double convergence_deg() const { return convergence_deg_; }
 

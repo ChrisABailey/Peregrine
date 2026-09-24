@@ -368,12 +368,17 @@ void TAMaskOverlay::EvictOutside(const GeoRect& keep) {
 // into a 0.2-degree-aligned pixmap, sliding the on-screen sub-rectangle to
 // the buffer's upper left and stretching the result.
 //
-// It can be this short because THE PROJECTION IS AFFINE (fvkit/proj.h:
-// equal-arc, plus a rotation about the surface centre, which is linear). So
-// the geographic step per pixel across a row and down a column are two
-// constants, taken from three SurfaceToGeo calls rather than from a formula —
-// whatever proj.h does about rotation, resolution mode or physical scale, the
-// walk below stays exact because it asked.
+// It can be this short WHILE THE PROJECTION IS AFFINE (equal-arc, plus a
+// rotation about the surface centre, which is linear). The geographic step per
+// pixel across a row and down a column are then two constants, taken from three
+// SurfaceToGeo calls rather than from a formula — whatever proj.h does about
+// rotation, resolution mode or physical scale, the walk stays exact because it
+// asked.
+//
+// On a projected chart those steps are not constant, so each pixel is inverted
+// on its own (PJ5). That is one SurfaceToGeo per pixel and it is the honest
+// price: the mask reads a nearest post per pixel anyway, so subdividing to a
+// half-pixel tolerance would save arithmetic only to land on the same posts.
 Status TAMaskOverlay::DrawMask(const MapProjection& proj, ICanvas& canvas,
                                const std::vector<Tile*>& visible,
                                const ClearanceLevels& levels) {
@@ -381,17 +386,21 @@ Status TAMaskOverlay::DrawMask(const MapProjection& proj, ICanvas& canvas,
   if (surf.width <= 0 || surf.height <= 0 || visible.empty())
     return Status::Ok();
 
+  const bool affine = proj.IsAffine();
   GeoPoint o, along_x, along_y;
-  if (!proj.SurfaceToGeo(0.5, 0.5, &o).ok() ||
-      !proj.SurfaceToGeo(1.5, 0.5, &along_x).ok() ||
-      !proj.SurfaceToGeo(0.5, 1.5, &along_y).ok())
-    return Status::Ok();
-  const double dlat_dx = along_x.lat - o.lat;
-  const double dlat_dy = along_y.lat - o.lat;
-  // Unwrapped near the origin, or a step taken across the antimeridian comes
-  // out as 360 degrees per pixel.
-  const double dlon_dx = UnwrapLonNear(along_x.lon, o.lon) - o.lon;
-  const double dlon_dy = UnwrapLonNear(along_y.lon, o.lon) - o.lon;
+  double dlat_dx = 0.0, dlat_dy = 0.0, dlon_dx = 0.0, dlon_dy = 0.0;
+  if (affine) {
+    if (!proj.SurfaceToGeo(0.5, 0.5, &o).ok() ||
+        !proj.SurfaceToGeo(1.5, 0.5, &along_x).ok() ||
+        !proj.SurfaceToGeo(0.5, 1.5, &along_y).ok())
+      return Status::Ok();
+    dlat_dx = along_x.lat - o.lat;
+    dlat_dy = along_y.lat - o.lat;
+    // Unwrapped near the origin, or a step taken across the antimeridian comes
+    // out as 360 degrees per pixel.
+    dlon_dx = UnwrapLonNear(along_x.lon, o.lon) - o.lon;
+    dlon_dy = UnwrapLonNear(along_y.lon, o.lon) - o.lon;
+  }
 
   const unsigned char alpha = static_cast<unsigned char>(
       std::lround(std::max<long long>(0, std::min<long long>(
@@ -415,13 +424,19 @@ Status TAMaskOverlay::DrawMask(const MapProjection& proj, ICanvas& canvas,
   const Tile* last = nullptr;  // the tile the previous pixel landed in
 
   for (int y = 0; y < surf.height; ++y) {
-    double lat = o.lat + dlat_dx * 0.0 + dlat_dy * y;
-    double lon = o.lon + dlon_dx * 0.0 + dlon_dy * y;
+    double lat = affine ? o.lat + dlat_dy * y : 0.0;
+    double lon = affine ? o.lon + dlon_dy * y : 0.0;
     unsigned char* row = buf.Row(y);
     for (int x = 0; x < surf.width; ++x, lat += dlat_dx, lon += dlon_dx) {
       unsigned char* px = row + x * 4;
       px[0] = px[1] = px[2] = px[3] = 0;
 
+      if (!affine) {
+        GeoPoint g;
+        if (!proj.SurfaceToGeo(x + 0.5, y + 0.5, &g).ok()) continue;
+        lat = g.lat;
+        lon = g.lon;
+      }
       const double wlon = WrapLon(lon);
       if (lat < -90.0 || lat > 90.0) continue;
 

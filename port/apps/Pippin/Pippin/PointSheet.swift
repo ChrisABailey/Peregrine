@@ -212,10 +212,22 @@ struct PointShapeMark: View {
 
     /// The decoded tile, or nil for no icon and for a blob that will not
     /// read. The overlay treats an unreadable blob the same way: bare shape.
+    ///
+    /// Cached: the artwork is read once with the document and never changes,
+    /// while this is asked on every body pass of the editor — once per
+    /// document symbol in the picker, and again per keystroke in a field.
+    @MainActor
     private static func image(_ symbol: PPPointSymbol?) -> UIImage? {
         guard let symbol, !symbol.imageData.isEmpty else { return nil }
-        return UIImage(data: symbol.imageData)
+        if let cached = decoded[symbol.symbolId] { return cached }
+        let image = UIImage(data: symbol.imageData)
+        decoded[symbol.symbolId] = image
+        return image
     }
+
+    /// Main actor only, which is where SwiftUI evaluates a body. A miss
+    /// stores nil so an unreadable blob is not re-decoded either.
+    @MainActor private static var decoded: [Int64: UIImage?] = [:]
 
     private static func path(_ shape: String, center c: CGPoint,
                              radius r: CGFloat) -> Path {
@@ -337,8 +349,7 @@ struct PointInfoSheet: View {
                 }
 
                 Section {
-                    Text(String(format: "%.5f, %.5f", point.coordinate.latitude,
-                                point.coordinate.longitude))
+                    Text(LocationText.describe(point.coordinate))
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)

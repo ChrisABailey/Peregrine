@@ -12,10 +12,12 @@
 
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/grid_spacing.h"
+#include "fvkit/geo.h"
 #include "fvkit/proj.h"
 #include "fvkit/settings.h"
 
@@ -292,6 +294,196 @@ TEST(GridOverlayDraw, ParallelsFollowTheChartUnderRotation) {
   ASSERT_FALSE(right.empty());
   EXPECT_NE(left, right) << "grid ink is identical in two far-apart columns: "
                             "the lines are still screen-aligned";
+}
+
+// ---------------------------------------------------------------------------
+// PJ5: the two defects the projections exposed
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A wide view at a scale where a Lambert parallel visibly bends. The centre is
+// far enough north that the cone is tight.
+fv::MapProjection WideLambert(double center_lon = 0.0, int w = 800,
+                              int h = 600) {
+  fv::MapProjection p;
+  EXPECT_TRUE(p.SetSurfaceSize(w, h).ok());
+  EXPECT_TRUE(p.SetCenter({55.0, center_lon}).ok());
+  EXPECT_TRUE(p.SetScale(40000000.0).ok());
+  EXPECT_TRUE(p.SetProjectionType(fv::ProjectionType::kLambert).ok());
+  return p;
+}
+
+// Rows of the canvas that carry grid ink in column x, red channel over a
+// threshold the background cannot reach.
+std::vector<int> InkedRows(const fv::CpuCanvas& canvas, int x) {
+  std::vector<int> rows;
+  for (int y = 0; y < canvas.Size().height; ++y)
+    if (canvas.Buffer().Row(y)[4 * x + 0] > 40) rows.push_back(y);
+  return rows;
+}
+
+}  // namespace
+
+// DEFECT 1: a parallel was sampled every 30 degrees and the samples joined by
+// straight legs, which is exact in Equal Arc and wrong everywhere else. In
+// Lambert a parallel is a circular arc, so the chord across a leg cut inside
+// the true line by several pixels. The walk now subdivides by surface
+// deflection, so the ink follows the projected curve to within a pixel.
+TEST(GridOverlayProjected, ALambertParallelIsDrawnAsTheArcItIs) {
+  fv::MapProjection proj = WideLambert();
+  fv::CpuCanvas canvas(800, 600);
+  canvas.SetDefaultFont(SystemFont());
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+
+  fv::GridOverlay grid;
+  ASSERT_TRUE(
+      grid.SetProperty("show_ticks", fv::app::PropertyValue::Bool(false)).ok());
+  ASSERT_TRUE(
+      grid.SetProperty("show_labels", fv::app::PropertyValue::Bool(false)).ok());
+  ASSERT_TRUE(grid.OnDraw(proj, canvas).ok());
+  ASSERT_GT(grid.last_draw().parallels, 0);
+
+  // The parallel nearest the centre row, sampled at the surface centre.
+  const fv::GraticuleSpacing sp = grid.last_draw().lat_spacing;
+  ASSERT_GT(sp.minor_line_deg, 0.0);
+  const double lat =
+      std::round(proj.Center().lat / sp.minor_line_deg) * sp.minor_line_deg;
+
+  // The curve is worth testing only if it actually bends: the sagitta of one
+  // of the old 30-degree chords has to be several pixels.
+  double cx = 0, cy = 0, ex = 0, ey = 0, mx = 0, my = 0;
+  ASSERT_TRUE(proj.GeoToSurface({lat, -15.0}, &cx, &cy).ok());
+  ASSERT_TRUE(proj.GeoToSurface({lat, 15.0}, &ex, &ey).ok());
+  ASSERT_TRUE(proj.GeoToSurface({lat, 0.0}, &mx, &my).ok());
+  const double sagitta = std::fabs(my - 0.5 * (cy + ey));
+  ASSERT_GT(sagitta, 3.0) << "this view does not bend the parallel enough to "
+                             "tell a chord from an arc";
+
+  // Walk the parallel itself and require ink where the projection puts it.
+  // Stepping in longitude rather than in screen columns is what makes this a
+  // statement about the CURVE: a chord would satisfy a column test at its two
+  // ends and fail it in between, which is where these samples fall.
+  const fv::GeoRect b = proj.VmapBounds();
+  int checked = 0;
+  for (int i = 0; i <= 60; ++i) {
+    const double lon = b.ll.lon + (b.ur.lon - b.ll.lon) * (i / 60.0);
+    double px = 0, py = 0;
+    if (!proj.GeoToSurface({lat, lon}, &px, &py).ok()) continue;
+    if (px < 20 || px > 780 || py < 2 || py > 598) continue;
+    const std::vector<int> rows = InkedRows(canvas, static_cast<int>(px));
+    ASSERT_FALSE(rows.empty()) << "no grid ink in column " << px;
+    double best = 1e9;
+    for (int r : rows) best = std::min(best, std::fabs(r - py));
+    EXPECT_LT(best, 1.5) << "at " << lon << " east the nearest ink is " << best
+                         << " px from the projected parallel";
+    ++checked;
+  }
+  EXPECT_GT(checked, 20);
+}
+
+// DEFECT 2: every sample was normalized into [-180, 180) and only then
+// projected, through a short-way unwrap taken per point against the viewport
+// centre. Inside one 360-degree window that is harmless, because the unwrap
+// puts the point back where it belongs. It stops being harmless once the view
+// is wider than the world: the second and third copies of a meridian fold back
+// onto the first, so a world view drew one set of lines where it should draw
+// three, and the run between two folded samples was stroked across the map
+// until the contour builder's seam guard cut it -- leaving a gap instead.
+//
+// The walk now stays in the unwrapped frame VmapLonRange reports, so every
+// copy the view shows is drawn in its own place.
+TEST(GridOverlayProjected, AViewWiderThanTheWorldDrawsEveryCopyOfAMeridian) {
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(900, 300).ok());
+  ASSERT_TRUE(proj.SetCenter({0.0, 0.0}).ok());
+  // 0.6 degrees per pixel over 900 px is 540 degrees of longitude: one and a
+  // half worlds.
+  ASSERT_TRUE(proj.SetResolution(0.6, 0.6).ok());
+  double west = 0, east = 0;
+  ASSERT_TRUE(proj.VmapLonRange(&west, &east).ok());
+  ASSERT_GT(east - west, 360.0) << "this view does not wrap the world";
+
+  fv::CpuCanvas canvas(900, 300);
+  canvas.SetDefaultFont(SystemFont());
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::GridOverlay grid;
+  ASSERT_TRUE(
+      grid.SetProperty("show_ticks", fv::app::PropertyValue::Bool(false)).ok());
+  ASSERT_TRUE(
+      grid.SetProperty("show_labels", fv::app::PropertyValue::Bool(false)).ok());
+  ASSERT_TRUE(grid.OnDraw(proj, canvas).ok());
+  const int meridians = grid.last_draw().meridians;
+  ASSERT_GT(meridians, 3);
+
+  // A meridian is a column inked from top to bottom. Count them, allowing
+  // neighbouring columns to belong to the same stroke.
+  int columns = 0;
+  bool in_run = false;
+  for (int x = 0; x < 900; ++x) {
+    bool full = true;
+    for (int y = 0; y < 300 && full; ++y)
+      full = canvas.Buffer().Row(y)[4 * x + 0] > 40;
+    if (full && !in_run) ++columns;
+    in_run = full;
+  }
+  EXPECT_EQ(columns, meridians)
+      << "the graticule reports " << meridians << " meridians but drew "
+      << columns << " -- the copies past the seam folded onto each other";
+}
+
+// The meridian at 190 degrees east in the unwrapped frame is the line the
+// reader calls 170 west, and the label has to say so.
+TEST(GridOverlayProjected, AMeridianPastTheSeamIsLabelledByItsWrappedValue) {
+  EXPECT_EQ(fv::GraticuleLabelText(fv::NormalizeLon(190.0),
+                                   fv::GridAxis::kLongitude, 1.0),
+            "W 170\xc2\xb0");
+
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(800, 600).ok());
+  ASSERT_TRUE(proj.SetCenter({20.0, 180.0}).ok());
+  ASSERT_TRUE(proj.SetScale(60000000.0).ok());
+  fv::CpuCanvas canvas(800, 600);
+  canvas.SetDefaultFont(SystemFont());
+  fv::GridOverlay grid;
+  ASSERT_TRUE(grid.OnDraw(proj, canvas).ok());
+  // Meridians on both sides of the seam are drawn, and they get labels.
+  EXPECT_GT(grid.last_draw().meridians, 2);
+  if (!SystemFont().empty()) EXPECT_GT(grid.last_draw().labels_placed, 0);
+}
+
+// Orthographic hides half the earth, so a parallel runs off the limb. The walk
+// breaks the run there instead of stroking a chord across the hidden side.
+TEST(GridOverlayProjected, AnOrthographicParallelStopsAtTheLimb) {
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(600, 600).ok());
+  ASSERT_TRUE(proj.SetCenter({0.0, 0.0}).ok());
+  ASSERT_TRUE(proj.SetScale(60000000.0).ok());
+  ASSERT_TRUE(proj.SetProjectionType(fv::ProjectionType::kOrthographic).ok());
+
+  fv::CpuCanvas canvas(600, 600);
+  canvas.SetDefaultFont(SystemFont());
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::GridOverlay grid;
+  ASSERT_TRUE(
+      grid.SetProperty("show_labels", fv::app::PropertyValue::Bool(false)).ok());
+  ASSERT_TRUE(grid.OnDraw(proj, canvas).ok());
+  ASSERT_GT(grid.last_draw().parallels, 0);
+
+  // No ink outside the disc: every inked pixel projects back to a point that
+  // projects forward to itself.
+  int outside = 0, inside = 0;
+  for (int y = 0; y < 600; y += 3)
+    for (int x = 0; x < 600; x += 3) {
+      if (canvas.Buffer().Row(y)[4 * x + 0] <= 40) continue;
+      fv::GeoPoint g;
+      if (proj.SurfaceToGeo(x, y, &g).ok())
+        ++inside;
+      else
+        ++outside;
+    }
+  EXPECT_GT(inside, 100) << "nothing was drawn at all";
+  EXPECT_EQ(outside, 0) << outside << " inked samples fall off the globe";
 }
 
 // ---------------------------------------------------------------------------

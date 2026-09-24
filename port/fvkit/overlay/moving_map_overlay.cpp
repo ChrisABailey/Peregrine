@@ -12,6 +12,11 @@
 #include "fvkit/canvas/geo_draw.h"
 
 namespace fv {
+namespace {
+// vector/renderer.h's value, so a heading scaled here and a label sized there
+// agree about how long a degree of latitude is.
+constexpr double kMetersPerDegreeLat = 111319.49079327358;
+}  // namespace
 
 const char MovingMapOverlay::kTypeId[] = "fv.movingmap";
 
@@ -146,8 +151,44 @@ MovingMapTick MovingMapOverlay::Tick(const MapProjection& proj, double dt_s) {
   // the map is currently at — FalconView does exactly this from
   // `handle_mapscale_changes`, and doing it per tick means a zoom between two
   // fixes cannot leave a stale ratio behind.
-  if (proj.Ready())
-    heading_.SetDegPerPixel(proj.DegPerPixelLat(), proj.DegPerPixelLon());
+  //
+  // Off an affine projection the centre dpp is the wrong aspect at the ship and
+  // the meridian is no longer vertical, so both terms come from the projection
+  // AT THE SHIP instead (PJ5). `convergence_deg_` is MM2's third term, which
+  // was identically zero while Equal Arc was the only projection;
+  // screen_angle_deg already adds it.
+  if (proj.Ready()) {
+    MapProjection::LocalScale ls;
+    if (!proj.IsAffine() && has_fix_ &&
+        proj.LocalScaleAt(last_fix_.position(), &ls).ok() &&
+        ls.m_per_px_x > 0.0 && ls.m_per_px_y > 0.0) {
+      // The resolver divides RAW DEGREE deltas by what it is handed, so the
+      // local metres per pixel have to be converted per axis -- a degree of
+      // longitude is shorter than a degree of latitude by cos(lat), and
+      // handing the metres over unconverted would understate every eastward
+      // component by that factor.
+      const double m_per_deg_lon =
+          kMetersPerDegreeLat *
+          std::cos(last_fix_.lat * 3.14159265358979323846 / 180.0);
+      heading_.SetDegPerPixel(ls.m_per_px_y / kMetersPerDegreeLat,
+                              m_per_deg_lon > 1.0
+                                  ? ls.m_per_px_x / m_per_deg_lon
+                                  : proj.DegPerPixelLon());
+      // NEGATED, and the sign is the point. `LocalScaleAt` reports the angle
+      // from TRUE north to GRID north, clockwise; the screen angle of a true
+      // bearing is therefore the bearing LESS that angle (measured on a
+      // Lambert chart: true 62.38 at 60N/20E draws at 45.00, convergence
+      // 17.38). Both consumers -- `screen_angle_deg` and the camera's
+      // `point_angle` -- are MM2's ported `heading + map_rotation +
+      // convergence`, and their agreeing is the invariant, so the term is
+      // stored in the sense they add. Windows could not settle this: its
+      // `get_convergence` returns an absolute value, so there was no sign to
+      // preserve.
+      convergence_deg_ = -ls.convergence_deg;
+    } else {
+      heading_.SetDegPerPixel(proj.DegPerPixelLat(), proj.DegPerPixelLon());
+    }
+  }
 
   // Every fix reaches the resolver; only the last one reaches the camera.
   std::vector<PositionFix> fixes;

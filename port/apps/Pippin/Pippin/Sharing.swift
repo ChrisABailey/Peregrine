@@ -113,55 +113,27 @@ enum RideLibrary {
         return formatter
     }()
 
-    /// `ride-2026-08-21-1430.gpx`: sortable, readable, and free of the colons
-    /// an ISO time would put in a file name.
-    private static let fileNameFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd-HHmm"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter
-    }()
+    /// The rides directory, created if absent.
+    static func directory() -> URL? { DocumentFolder.directory(named: directoryName) }
 
-    /// The rides directory, created if absent. Nil only if Foundation cannot
-    /// name `Documents/`.
-    static func directory() -> URL? {
-        guard let documents = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
-        let directory = documents.appendingPathComponent(directoryName, isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory,
-                                                 withIntermediateDirectories: true)
-        return directory
-    }
-
-    /// Where the ride starting now should be written. A ride begun in the
-    /// same minute as an existing one gets a suffix rather than overwriting
-    /// it, which is what a stop-and-restart does.
+    /// Where the ride starting now should be written. `ride-2026-08-21-1430.gpx`.
     static func newRideURL(at date: Date = Date()) -> URL? {
         guard let directory = directory() else { return nil }
-        let stem = "ride-" + fileNameFormatter.string(from: date)
-        var candidate = directory.appendingPathComponent(stem + ".gpx")
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = directory.appendingPathComponent("\(stem)-\(counter).gpx")
-            counter += 1
-        }
-        return candidate
+        return DocumentFolder.uniqueURL(
+            in: directory,
+            stem: "ride-" + DocumentFolder.fileNameFormatter.string(from: date),
+            ext: "gpx")
     }
 
     /// Every recorded ride, newest first.
     static func rides() -> [RecordedRide] {
-        guard let directory = directory(),
-              let entries = try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.creationDateKey, .fileSizeKey],
-                options: [.skipsHiddenFiles]) else { return [] }
-        return entries
-            .filter { $0.pathExtension.lowercased() == "gpx" }
-            .map { url in
-                let values = try? url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
-                return RecordedRide(url: url,
-                                    recordedAt: values?.creationDate ?? .distantPast,
-                                    byteCount: values?.fileSize ?? 0)
+        DocumentFolder
+            .entries(in: directory(), ext: "gpx",
+                     keys: [.creationDateKey, .fileSizeKey])
+            .map { url, values in
+                RecordedRide(url: url,
+                             recordedAt: values?.creationDate ?? .distantPast,
+                             byteCount: values?.fileSize ?? 0)
             }
             .sorted { $0.recordedAt > $1.recordedAt }
     }
@@ -322,6 +294,62 @@ struct RideSheet: View {
     }
 }
 
+/// The file-library mechanics shared by the rides and the reports: where
+/// `Documents/` is, a named subdirectory of it, a file name that does not
+/// collide, and a listing with the resource values a row needs.
+enum DocumentFolder {
+    /// The app's `Documents/`. Nil only if Foundation cannot name it, in
+    /// which case nothing is persisted.
+    static var documents: URL? {
+        FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask).first
+    }
+
+    /// A subdirectory of `Documents/`, created if absent.
+    static func directory(named name: String) -> URL? {
+        guard let documents else { return nil }
+        let directory = documents.appendingPathComponent(name, isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory,
+                                                 withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// `stem.ext`, or `stem-2.ext`, `stem-3.ext`… when that name is taken.
+    /// Two files written in the same minute must not overwrite each other,
+    /// which is what a stop-and-restart does.
+    static func uniqueURL(in directory: URL, stem: String, ext: String) -> URL {
+        var candidate = directory.appendingPathComponent("\(stem).\(ext)")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(stem)-\(counter).\(ext)")
+            counter += 1
+        }
+        return candidate
+    }
+
+    /// The `ext` files in `directory`, each with the resource values `keys`
+    /// asks for. Order is the file system's; callers sort.
+    static func entries(in directory: URL?, ext: String,
+                        keys: [URLResourceKey]) -> [(URL, URLResourceValues?)] {
+        guard let directory,
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles]) else { return [] }
+        return urls
+            .filter { $0.pathExtension.lowercased() == ext }
+            .map { ($0, try? $0.resourceValues(forKeys: Set(keys))) }
+    }
+
+    /// `yyyy-MM-dd-HHmm`: sortable, readable, and free of the colons an ISO
+    /// time would put in a file name.
+    static let fileNameFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+}
+
 // MARK: - Problem reports
 
 /// One saved report on disk.
@@ -347,13 +375,6 @@ struct SavedReport: Identifiable, Hashable {
 enum ReportLibrary {
     static let directoryName = "reports"
 
-    private static let fileNameFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd-HHmm"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter
-    }()
-
     private static let stampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
@@ -361,14 +382,7 @@ enum ReportLibrary {
         return formatter
     }()
 
-    static func directory() -> URL? {
-        guard let documents = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
-        let directory = documents.appendingPathComponent(directoryName, isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory,
-                                                 withIntermediateDirectories: true)
-        return directory
-    }
+    static func directory() -> URL? { DocumentFolder.directory(named: directoryName) }
 
     /// Writes one report and returns it, or nil if the write failed. The
     /// version and the map centre are captured rather than asked for: they
@@ -379,13 +393,10 @@ enum ReportLibrary {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let directory = directory() else { return nil }
 
-        let stem = "report-" + fileNameFormatter.string(from: date)
-        var url = directory.appendingPathComponent(stem + ".txt")
-        var counter = 2
-        while FileManager.default.fileExists(atPath: url.path) {
-            url = directory.appendingPathComponent("\(stem)-\(counter).txt")
-            counter += 1
-        }
+        let url = DocumentFolder.uniqueURL(
+            in: directory,
+            stem: "report-" + DocumentFolder.fileNameFormatter.string(from: date),
+            ext: "txt")
 
         let contents = """
             \(AppName.display) problem report
@@ -403,18 +414,12 @@ enum ReportLibrary {
 
     /// Every saved report, newest first.
     static func reports() -> [SavedReport] {
-        guard let directory = directory(),
-              let entries = try? FileManager.default.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.creationDateKey],
-                options: [.skipsHiddenFiles]) else { return [] }
-        return entries
-            .filter { $0.pathExtension.lowercased() == "txt" }
-            .map { url in
-                let values = try? url.resourceValues(forKeys: [.creationDateKey])
-                return SavedReport(url: url,
-                                   savedAt: values?.creationDate ?? .distantPast,
-                                   summary: summary(of: url))
+        DocumentFolder
+            .entries(in: directory(), ext: "txt", keys: [.creationDateKey])
+            .map { url, values in
+                SavedReport(url: url,
+                            savedAt: values?.creationDate ?? .distantPast,
+                            summary: summary(of: url))
             }
             .sorted { $0.savedAt > $1.savedAt }
     }
@@ -451,12 +456,12 @@ enum ReportLibrary {
 /// binary. An unset key is handled: the sheet says so and offers the share
 /// sheet instead.
 enum ReportMail {
-    static var address: String? {
+    static let address: String? = {
         let value = Bundle.main
             .object(forInfoDictionaryKey: "PPReportAddress") as? String
         let trimmed = value?.trimmingCharacters(in: .whitespaces) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
+    }()
 
     /// A `mailto:` with the subject and whole report already filled in.
     ///

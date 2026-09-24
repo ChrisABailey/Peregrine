@@ -29,6 +29,11 @@
 // fill them. So the turned path leaves an unmapped pixel at alpha 0 and
 // DrawPixmap's blend drops it, which is what gives a turned frame straight
 // edges at the angle it was turned to.
+//
+// A NON-AFFINE projection (Mercator, Lambert, ...) takes a third path,
+// CompositeRowProjected: the adaptive bilinear warp of Windows'
+// projection_dc.cpp (fvkit/raster_warp.h), masked like the turned path. The
+// gate is MapProjection::IsAffine(), so equal-arc never reaches it.
 
 #pragma once
 
@@ -77,6 +82,10 @@ class MapEngine {
   // the projection, the base map because CompositeRow resamples through it.
   Status SetRotation(double degrees);
 
+  /// Selects the display projection (MapProjection::SetProjectionType). A
+  /// non-affine one puts the base map on the projected raster path.
+  Status SetProjectionType(ProjectionType type);
+
   const MapProjection& CurrentProj() const { return proj_; }
 
   // Composites all catalog coverage intersecting the viewport (restricted
@@ -92,18 +101,37 @@ class MapEngine {
   void SetElevationSource(std::shared_ptr<IElevationSource> src);
   Status GetElevation(const GeoPoint& p, float* elevation_meters);
 
+  /// Sends every frame through the non-affine path even when the projection
+  /// is affine, so that path can be tested against the affine ones.
+  void ForceProjectedPathForTest(bool on) { force_projected_ = on; }
+
  private:
   std::shared_ptr<IRasterSource> SourceFor(const CoverageRow& row, Status* s);
   Status CompositeRow(const CoverageRow& row, ICanvas& canvas);
-  // The turned blit (PR3). Takes the geographic overlap CompositeRow has
-  // already computed, in the same unwrapped longitude frame.
+  /// The unturned blit of one copy of a frame. The overlap is in the
+  /// longitude frame unwrapped around the centre; `frame` is the row's bounds.
+  Status CompositeRowStraight(IRasterSource& src, const ImageInfo& info,
+                              const GeoRect& frame, double o_top, double o_bot,
+                              double o_west, double o_east, ICanvas& canvas);
+  /// The turned blit (PR3). Same inputs as CompositeRowStraight.
   Status CompositeRowTurned(IRasterSource& src, const ImageInfo& info,
-                            double o_top, double o_bot, double o_west,
-                            double o_east, ICanvas& canvas);
+                            const GeoRect& frame, double o_top, double o_bot,
+                            double o_west, double o_east, ICanvas& canvas);
+  /// The non-affine blit: the target box is the bounds of the overlap's
+  /// projected edges, filled by AdaptiveWarp and masked to the frame.
+  Status CompositeRowProjected(IRasterSource& src, const ImageInfo& info,
+                               const GeoRect& frame, double o_top,
+                               double o_bot, double o_west, double o_east,
+                               ICanvas& canvas);
+  /// GeoToSurface for a longitude in the centre-unwrapped frame, which may
+  /// lie 180 degrees or more from the centre when the view wraps the world.
+  Status OverlapToSurface(double lat, double lon, double* sx,
+                          double* sy) const;
 
   std::shared_ptr<Catalog> catalog_;
   std::shared_ptr<IElevationSource> elevation_;
   MapProjection proj_;
+  bool force_projected_ = false;
 
   struct CacheEntry {
     std::string path;

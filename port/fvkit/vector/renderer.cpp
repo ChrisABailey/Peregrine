@@ -667,6 +667,28 @@ bool ProjectPart(const MapProjection& proj, const GeoPoint* pts, size_t n,
   return true;
 }
 
+// Ground metres per pixel where a feature actually sits, for labels sized in
+// ground units on a projection whose scale varies across the frame. Falls back
+// to the centre scale where the point has no image.
+double MetersPerPixelAt(const MapProjection& proj, const GeoPoint& at) {
+  MapProjection::LocalScale ls;
+  if (!proj.LocalScaleAt(at, &ls).ok())
+    return proj.DegPerPixelLat() * kMetersPerDegreeLat;
+  return ls.m_per_px_y;
+}
+
+// The clockwise screen angle of TRUE north at `at`: the chart's own turn, less
+// the projection's convergence there. A symbol authored against a real-world
+// bearing is turned by this, not by the chart rotation alone -- off a
+// cylindrical projection the two differ by degrees, and a north arrow drawn
+// with the wrong one points at nothing.
+double NorthOnChartAt(const MapProjection& proj, const GeoPoint& at,
+                      double chart_rotation_deg) {
+  MapProjection::LocalScale ls;
+  if (!proj.LocalScaleAt(at, &ls).ok()) return chart_rotation_deg;
+  return chart_rotation_deg - ls.convergence_deg;
+}
+
 // Smallest hit box a point symbol gets, whatever it actually inked. A 2-px
 // navaid dot is still something a user aims at.
 constexpr int kMinPickBox = 9;
@@ -730,13 +752,33 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   const GeoPoint pat_center = proj.Center();
   const PixelSize surface = proj.SurfaceSize();  // GeoToSurface's frame, not
                                                  // the canvas's, if they differ
-  const double pattern_seed_x =
-      (surface.width - 1) / 2.0 - pat_center.lon / proj.DegPerPixelLon();
-  const double pattern_seed_y =
-      (surface.height - 1) / 2.0 + pat_center.lat / proj.DegPerPixelLat();
+  double pattern_seed_x = (surface.width - 1) / 2.0;
+  double pattern_seed_y = (surface.height - 1) / 2.0;
+  if (proj.IsAffine()) {
+    pattern_seed_x -= pat_center.lon / proj.DegPerPixelLon();
+    pattern_seed_y += pat_center.lat / proj.DegPerPixelLat();
+  } else {
+    // No linear relation to write out, so ask the projection. The unwrap the
+    // affine branch avoids is accepted here: a seed that moves by a whole
+    // world as a pan crosses 180 degrees from the centre still lands on a
+    // lattice, and PatternAnchor keeps the lattice the first frame chose.
+    // A centre with no image (Orthographic looking at the far side) leaves
+    // the seed at the surface centre, which is a lattice like any other.
+    double sx = 0.0, sy = 0.0;
+    if (proj.GeoToSurface(GeoPoint{0.0, 0.0}, &sx, &sy).ok()) {
+      pattern_seed_x = sx;
+      pattern_seed_y = sy;
+    }
+  }
   // Ground metres per pixel, for labels sized in ground units. The latitude
   // axis, because it is the one an equal-arc projection keeps uniform.
+  //
+  // Off an affine projection the ground scale varies across the frame, so a
+  // ground-sized label is measured at its own anchor (PJ5) rather than at the
+  // centre. The affine branch keeps the centre value and the arithmetic that
+  // produced it: every pinned golden is equal-arc.
   const double meters_per_pixel = proj.DegPerPixelLat() * kMetersPerDegreeLat;
+  const bool affine = proj.IsAffine();
   // The product's own symbol grid, not the renderer's — a display list is
   // sized so that it comes out the same as the TILE of the same symbol, and
   // only the engine knows what grid its artists drew on (25.4 for GeoSym's
@@ -915,7 +957,11 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                   canvas, ResolveSymbol(style_.get(), sr.symbol.symbol_id),
                   a.x, a.y, px_per_himetric * sr.symbol.scale,
                   pixmap_scale * sr.symbol.scale,
-                  SymbolAngleOnChart(sr.symbol.rotation_deg, chart_rotation) *
+                  SymbolAngleOnChart(
+                      sr.symbol.rotation_deg,
+                      affine ? chart_rotation
+                             : NorthOnChartAt(proj, pts[begin],
+                                              chart_rotation)) *
                       kPi / 180.0,
                   pick_enabled_ ? &ink : nullptr)) {
             ++draws_emitted_;
@@ -943,7 +989,9 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
       if (sr.label.valid && !sr.label.text.empty()) {
         TextStyle ts = sr.label.style;
         ts.size = LabelPixelSize(sr.label, ctx.scale_denominator,
-                                 meters_per_pixel, label_ref_scale_);
+                                 affine ? meters_per_pixel
+                                        : MetersPerPixelAt(proj, pts[begin]),
+                                 label_ref_scale_);
         // Below the floor the text is illegible, and drawing it anyway is how
         // a zoomed-out chart fills with grey mush.
         const double halo_px = HaloPixels(sr.label, ts.size);

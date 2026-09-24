@@ -11,6 +11,7 @@
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
+#include "fvkit/overlay/scale_bar.h"
 #include "fvkit/overlay/ta_mask_overlay.h"
 
 namespace fv {
@@ -169,6 +170,17 @@ Status RegisterBuiltinOverlayTypes(OverlayTypeRegistry& registry) {
   tamask.default_display_order = 890;
   tamask.factory = [] { return std::make_shared<TAMaskOverlay>(); };
   s = registry.Register(std::move(tamask));
+  if (!s.ok()) return s;
+
+  // The scale bar. STATIC, and above everything chart-related at 990: it is
+  // map furniture pinned to the view's edges, not part of the chart.
+  OverlayTypeDesc scalebar;
+  scalebar.id = ScaleBarOverlay::kTypeId;
+  scalebar.display_name = "Map Scale Bar";
+  scalebar.icon = "scalebar";
+  scalebar.default_display_order = 990;
+  scalebar.factory = [] { return std::make_shared<ScaleBarOverlay>(); };
+  s = registry.Register(std::move(scalebar));
   if (!s.ok()) return s;
 
   // The moving map (MM4). STATIC, like the grid and for the same reason: there

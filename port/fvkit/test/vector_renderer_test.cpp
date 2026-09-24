@@ -873,6 +873,66 @@ TEST(VectorRenderer, DrawsAPointSymbolAnchoredAtTheFeature) {
   EXPECT_EQ(Px(canvas.Buffer(), 45, 32)[2], 0);
 }
 
+// PJ5: the chart rotation was the only turn taken out of a north-up symbol, so
+// on a conic a symbol authored against a real-world bearing pointed along the
+// grid instead of along its own meridian.
+TEST(VectorRenderer, ANorthUpSymbolFollowsTheMeridianOnAConic) {
+  const fv::GeoPoint at{60.0, 20.0};
+
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(800, 600).ok());
+  ASSERT_TRUE(proj.SetCenter({60.0, 0.0}).ok());
+  ASSERT_TRUE(proj.SetScale(30000000.0).ok());
+  ASSERT_TRUE(proj.SetProjectionType(fv::ProjectionType::kLambert).ok());
+
+  double ax = 0, ay = 0, nx = 0, ny = 0;
+  ASSERT_TRUE(proj.GeoToSurface(at, &ax, &ay).ok());
+  ASSERT_TRUE(proj.GeoToSurface({at.lat + 0.01, at.lon}, &nx, &ny).ok());
+  // The oracle: the screen direction of true north there, from two projected
+  // points and nothing the renderer touches.
+  const double north_deg = std::atan2(nx - ax, -(ny - ay)) * 180.0 / 3.14159265358979323846;
+  ASSERT_GT(std::fabs(north_deg), 5.0) << "the meridian barely leans here";
+
+  auto src = std::make_shared<StubSource>();
+  fv::VectorFeature pt;
+  pt.type = fv::VectorGeometryType::kPoint;
+  pt.style_key = "p";
+  pt.parts.push_back({at});
+  src->features.push_back(pt);
+
+  auto style = std::make_shared<StubStyle>();
+  style->emit_symbol = true;
+  // A long bar out along +y (up on screen), so the ink says which way it turned.
+  fv::SymbolPrimitive bar;
+  bar.type = fv::SymbolPrimitiveType::kPolygon;
+  bar.points = {{-40, 0}, {40, 0}, {40, 4000}, {-40, 4000}};
+  bar.has_fill = true;
+  bar.fill_color = fv::FvColor{0, 0, 255, 255};
+  style->symbol.primitives.push_back(bar);
+
+  fv::CpuCanvas canvas(800, 600);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(proj, &canvas).ok());
+  ASSERT_EQ(r.draws_emitted(), 1u);
+
+  double sx = 0, sy = 0;
+  long n = 0;
+  for (int y = 0; y < 600; ++y)
+    for (int x = 0; x < 800; ++x)
+      if (Px(canvas.Buffer(), x, y)[2] > 150) {
+        sx += x;
+        sy += y;
+        ++n;
+      }
+  ASSERT_GT(n, 200) << "the bar was not drawn long enough to read an angle";
+  const double drawn_deg =
+      std::atan2(sx / n - ax, -(sy / n - ay)) * 180.0 / 3.14159265358979323846;
+  EXPECT_NEAR(drawn_deg, north_deg, 1.5)
+      << "the bar was laid along the grid rather than along the meridian ("
+      << north_deg << ")";
+}
+
 // --- pixmap symbols (E6) ---------------------------------------------------
 //
 // The second symbol form at the seam. Everything here is synthetic: an engine

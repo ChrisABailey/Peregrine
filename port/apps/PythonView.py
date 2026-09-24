@@ -422,6 +422,41 @@ class TrackPointsOverlay(pyfvw.overlay.Overlay):
 # The application
 # ----------------------------------------------------------------------------
 
+# Menu label -> projection, in the order the menu shows them. The unported
+# ones are listed so the menu says what is coming; they are disabled below.
+PROJECTIONS = [
+    ("Equal Arc", pyfvw.engine.ProjectionType.EQUAL_ARC),
+    ("Mercator", pyfvw.engine.ProjectionType.MERCATOR),
+    ("Lambert Conformal Conic", pyfvw.engine.ProjectionType.LAMBERT),
+    ("Azimuthal Equidistant",
+     pyfvw.engine.ProjectionType.AZIMUTHAL_EQUIDISTANT),
+    ("Orthographic", pyfvw.engine.ProjectionType.ORTHOGRAPHIC),
+]
+
+# All five are ported; the set stays because _projection_from_name and the
+# menu both ask it, and a future value would land here first.
+PORTED_PROJECTIONS = {
+    pyfvw.engine.ProjectionType.EQUAL_ARC,
+    pyfvw.engine.ProjectionType.MERCATOR,
+    pyfvw.engine.ProjectionType.LAMBERT,
+    pyfvw.engine.ProjectionType.AZIMUTHAL_EQUIDISTANT,
+    pyfvw.engine.ProjectionType.ORTHOGRAPHIC,
+}
+
+
+def _projection_from_name(name):
+    """Resolves an ini spelling ("mercator", "Equal Arc") to a ProjectionType.
+
+    An unknown name gives Equal Arc, so a stale config file cannot stop the
+    application starting.
+    """
+    key = "".join(name.split()).lower()
+    for label, proj in PROJECTIONS:
+        if "".join(label.split()).lower() == key and proj in PORTED_PROJECTIONS:
+            return proj
+    return pyfvw.engine.ProjectionType.EQUAL_ARC
+
+
 class PythonView(pyfvw.app.AppShell):
     """Model + tk shell. The model half (catalog/engine/render_array) works
     headless for --shot and tests; run() adds the tk UI on top.
@@ -477,6 +512,12 @@ class PythonView(pyfvw.app.AppShell):
         # that writes it today; a user-facing "turn the chart" gesture would
         # write it the same way.
         self.rotation = 0.0
+        # The display projection, pushed into whichever projection is about to
+        # draw alongside the centre and the rotation. Only Equal Arc and
+        # Mercator exist; an unported name in the ini falls back to Equal Arc
+        # rather than refusing to start.
+        self.projection = _projection_from_name(
+            cfg.get("display.projection", "equalarc"))
         self.mm_per_pixel = cfg.get_float("display.mm_per_pixel",
                                           NATIVE_MM_PER_PIXEL)
         self.font = _find_host_font()
@@ -2163,6 +2204,9 @@ class PythonView(pyfvw.app.AppShell):
                 self.series.scale, self.series.scale_units, self.mm_per_pixel)
         else:  # dted-shaded: no chart scale; display at the chosen 1:N
             self.engine.set_physical_scale(self.fixed_denom, 0, self.mm_per_pixel)
+        # After the scale calls: selecting a projection re-derives that
+        # projection's own constants from the centre and the dpp.
+        self.engine.set_projection_type(self.projection)
         self.canvas.clear((24, 24, 24))
         self._frames = self.engine.render(self.canvas, self.series.id)
         self.mgr.draw_all(self.engine.proj, self.canvas)
@@ -2174,6 +2218,7 @@ class PythonView(pyfvw.app.AppShell):
         # Rotation is orthogonal to the scale calls and must follow them all
         # the same: set it last so it cannot be read as one of them.
         self.vproj.set_rotation(self.rotation)
+        self.vproj.set_projection_type(self.projection)
         self.vrenderer.set_symbol_scale(self.feature_scale)
         self.vrenderer.set_device_dpi(
             _dpi_for(self.mm_per_pixel) * self.feature_scale)
@@ -2505,6 +2550,15 @@ class PythonView(pyfvw.app.AppShell):
                            command=lambda: self._ui_feature(FEATURE_STEP))
         m_view.add_command(label="Smaller Features (vector)", accelerator="[",
                            command=lambda: self._ui_feature(1.0 / FEATURE_STEP))
+        m_view.add_separator()
+        m_proj = tk.Menu(m_view, tearoff=0)
+        self.var_projection = tk.StringVar(value=self._projection_label())
+        for label, proj in PROJECTIONS:
+            m_proj.add_radiobutton(
+                label=label, value=label, variable=self.var_projection,
+                state=("normal" if proj in PORTED_PROJECTIONS else "disabled"),
+                command=lambda p=proj: self._ui_projection(p))
+        m_view.add_cascade(label="Projection", menu=m_proj)
         m_view.add_separator()
         m_view.add_command(label="Find...", accelerator="Ctrl-F",
                            command=self._ui_find)
@@ -3198,6 +3252,28 @@ class PythonView(pyfvw.app.AppShell):
 
     def _ui_zoom(self, factor):
         self.zoom(factor)
+        self.refresh()
+
+    def _projection_label(self):
+        for label, proj in PROJECTIONS:
+            if proj == self.projection:
+                return label
+        return PROJECTIONS[0][0]
+
+    def _ui_projection(self, proj):
+        """Switches the display projection and redraws both paths.
+
+        A projection the port has not built yet is reported and the menu is put
+        back on the one still in force, rather than leaving the tick on a
+        projection nothing draws.
+        """
+        try:
+            self.vproj.set_projection_type(proj)
+        except pyfvw.FvError as e:
+            self.report_error("projection", str(e))
+            self.var_projection.set(self._projection_label())
+            return
+        self.projection = proj
         self.refresh()
 
     def _ui_feature(self, factor):
@@ -4490,6 +4566,86 @@ def run_selftest(app, outdir):
         print(f"  selftest: find box saw {found} in view, "
               f"{by_text} for 'ruddy'", flush=True)
     steps.append(step(find_box, "find_box"))
+
+    # S5. The projection menu, over whatever the walk left showing. A parallel
+    # spreads away from the standard parallel in Mercator, so a step north of
+    # the centre lands further up the surface than the same step in Equal Arc;
+    # the assertion is that relation and not a pixel, because the view here is
+    # whatever the steps above ended on.
+    def projection_menu():
+        def north_step_pixels():
+            c = app.engine.proj.center if app.mode != "vector" \
+                else app.vproj.center
+            proj = app.engine.proj if app.mode != "vector" else app.vproj
+            here = proj.geo_to_surface(pyfvw.geo.GeoPoint(c.lat, c.lon))
+            north = proj.geo_to_surface(
+                pyfvw.geo.GeoPoint(min(c.lat + 3.0, 70.0), c.lon))
+            return here[1] - north[1]
+
+        app._ui_projection(pyfvw.engine.ProjectionType.EQUAL_ARC)
+        app.refresh()
+        flat = north_step_pixels()
+        app._ui_projection(pyfvw.engine.ProjectionType.MERCATOR)
+        app.refresh()
+        if app.projection != pyfvw.engine.ProjectionType.MERCATOR:
+            raise AssertionError("the menu did not switch the projection")
+        if app.engine.proj.is_affine or app.vproj.is_affine:
+            raise AssertionError("a path stayed on the affine transform")
+        turned = north_step_pixels()
+        if not turned > flat:
+            raise AssertionError(
+                f"Mercator did not stretch north: {turned} vs {flat}")
+        # Lambert bends the meridians: a step north five degrees east of the
+        # centre leans, where in equal arc it is exactly vertical.
+        def north_lean_pixels():
+            c = app.engine.proj.center if app.mode != "vector" \
+                else app.vproj.center
+            proj = app.engine.proj if app.mode != "vector" else app.vproj
+            lon = c.lon + 5.0
+            here = proj.geo_to_surface(pyfvw.geo.GeoPoint(c.lat, lon))
+            north = proj.geo_to_surface(
+                pyfvw.geo.GeoPoint(min(c.lat + 1.0, 70.0), lon))
+            return abs(north[0] - here[0])
+
+        app._ui_projection(pyfvw.engine.ProjectionType.EQUAL_ARC)
+        app.refresh()
+        straight = north_lean_pixels()
+        app._ui_projection(pyfvw.engine.ProjectionType.LAMBERT)
+        app.refresh()
+        if app.projection != pyfvw.engine.ProjectionType.LAMBERT:
+            raise AssertionError("the menu did not switch to Lambert")
+        leaning = north_lean_pixels()
+        if not leaning > straight + 1.0:
+            raise AssertionError(
+                f"Lambert did not bend the meridian: {leaning} vs {straight}")
+        # Orthographic shows one hemisphere: a point on the far side has no
+        # image at all, which is the thing no earlier projection could say.
+        app._ui_projection(pyfvw.engine.ProjectionType.ORTHOGRAPHIC)
+        app.refresh()
+        if app.projection != pyfvw.engine.ProjectionType.ORTHOGRAPHIC:
+            raise AssertionError("the menu did not switch to Orthographic")
+        proj = app.engine.proj if app.mode != "vector" else app.vproj
+        c = proj.center
+        # The antipode of the centre: the far side wherever the walk has
+        # wandered to by now.
+        far = pyfvw.geo.GeoPoint(-c.lat, ((c.lon + 360.0) % 360.0) - 180.0)
+        try:
+            proj.geo_to_surface(far)
+            raise AssertionError("Orthographic projected the far hemisphere")
+        except pyfvw.FvError as e:
+            if e.code != pyfvw.NOT_PROJECTABLE:
+                raise AssertionError(f"wrong code for the far side: {e.code}")
+        # And an unrecognised ini spelling still starts, on Equal Arc.
+        if _projection_from_name("no such projection") != \
+                pyfvw.engine.ProjectionType.EQUAL_ARC:
+            raise AssertionError("an unknown projection name did not fall back")
+        app._ui_projection(pyfvw.engine.ProjectionType.EQUAL_ARC)
+        print(f"  selftest: projection north step {flat:.1f} px equal arc, "
+              f"{turned:.1f} px Mercator; meridian lean {straight:.1f} px "
+              f"equal arc, {leaning:.1f} px Lambert; Orthographic hides "
+              f"the antipode at {far.lat:.1f},{far.lon:.1f}", flush=True)
+    steps.append(step(projection_menu, "projection_menu"))
+
     # Resize needs a window-manager round-trip plus the 120 ms debounce.
     steps.append(step(lambda: app.tk.geometry("1200x820"), "resize_req",
                       settle_ms=900))
@@ -4552,6 +4708,10 @@ def main():
     ap.add_argument("--map-overlay", metavar="FMT/KEY", action="append",
                     help="draw this vector series as an OVERLAY over the base "
                          "map; repeatable")
+    ap.add_argument("--projection", metavar="NAME",
+                    help="display projection: equalarc, mercator, lambert, "
+                         "azimuthalequidistant or orthographic (overrides "
+                         "[display] projection)")
     ap.add_argument("--selftest", action="store_true",
                     help="scripted UI walk-through; exits non-zero on failure")
     ap.add_argument("--settings", metavar="INI",
@@ -4580,6 +4740,15 @@ def main():
 
     if args.mm:
         app.mm_per_pixel = args.mm
+    if args.projection:
+        app.projection = _projection_from_name(args.projection)
+        # _projection_from_name falls back rather than failing, so say when the
+        # fallback fired: a silent equal-arc render looks like the flag worked.
+        if "".join(app._projection_label().split()).lower() != \
+                "".join(args.projection.split()).lower():
+            print(f"--projection: {args.projection} is not a ported "
+                  f"projection; using {app._projection_label()}",
+                  file=sys.stderr)
     if args.series:
         app.set_series(_resolve_series(app, args.series, "--series"),
                        recenter=args.at is None)

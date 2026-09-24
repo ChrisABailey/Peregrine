@@ -13,6 +13,7 @@
 
 #include "fv_map_enums.h"  // MapScaleUnitsEnum
 #include "fvkit/formats/registry.h"
+#include "fvkit/raster_warp.h"
 
 namespace fv {
 
@@ -62,6 +63,10 @@ Status MapEngine::SetRotation(double degrees) {
   return proj_.SetRotation(degrees);
 }
 
+Status MapEngine::SetProjectionType(ProjectionType type) {
+  return proj_.SetProjectionType(type);
+}
+
 void MapEngine::SetElevationSource(std::shared_ptr<IElevationSource> src) {
   elevation_ = std::move(src);
 }
@@ -94,6 +99,29 @@ std::shared_ptr<IRasterSource> MapEngine::SourceFor(const CoverageRow& row,
   return src;
 }
 
+namespace {
+
+/// Returns `g` with its longitude moved to the frame's side of the
+/// antimeridian. SurfaceToGeo normalizes to (-180, 180], so a point on the
+/// west edge of a -180..0 frame can come back as +180; the source would read
+/// that as 360 degrees east of its origin. Frames that cross the antimeridian
+/// are passed through as before.
+GeoPoint SourceGeo(GeoPoint g, const GeoRect& frame) {
+  if (!frame.CrossesAntimeridian())
+    g.lon = UnwrapLonNear(g.lon, (frame.ll.lon + frame.ur.lon) / 2.0);
+  return g;
+}
+
+}  // namespace
+
+Status MapEngine::OverlapToSurface(double lat, double lon, double* sx,
+                                   double* sy) const {
+  const double ref = proj_.Center().lon;
+  if (lon - ref >= 180.0 || lon - ref <= -180.0)
+    return proj_.GeoToSurfaceUnwrapped({lat, lon}, sx, sy);
+  return proj_.GeoToSurface({lat, NormalizeLon(lon)}, sx, sy);
+}
+
 Status MapEngine::CompositeRow(const CoverageRow& row, ICanvas& canvas) {
   Status s;
   auto src = SourceFor(row, &s);
@@ -109,6 +137,15 @@ Status MapEngine::CompositeRow(const CoverageRow& row, ICanvas& canvas) {
   double v_west = UnwrapLonNear(view.ll.lon, ref);
   double v_east = UnwrapLonNear(view.ur.lon, ref);
   if (v_east < v_west) v_east += 360.0;  // view crossed the antimeridian
+  // A view 360 degrees wide or wider has lost its extent in VmapBounds'
+  // -180..180; take it unwrapped from the projection instead.
+  double uw_west = 0, uw_east = 0;
+  s = proj_.VmapLonRange(&uw_west, &uw_east);
+  if (!s.ok()) return s;
+  if (uw_east - uw_west >= 360.0) {
+    v_west = uw_west;
+    v_east = uw_east;
+  }
   // frame lon span: for a crossing frame the east edge unwraps to
   // ll.lon + width (e.g. ll=175, ur=-178 -> width 7, east edge 182)
   double f_west = UnwrapLonNear(row.bounds.ll.lon, ref);
@@ -119,21 +156,49 @@ Status MapEngine::CompositeRow(const CoverageRow& row, ICanvas& canvas) {
 
   double o_top = std::min(view.ur.lat, row.bounds.ur.lat);
   double o_bot = std::max(view.ll.lat, row.bounds.ll.lat);
-  double o_west = std::max(v_west, f_west);
-  double o_east = std::min(v_east, f_east);
-  if (o_top <= o_bot || o_east <= o_west) return Status::Ok();  // no overlap
+  if (o_top <= o_bot) return Status::Ok();  // no overlap
 
-  // A TURNED CHART IS ITS OWN PATH, and the gate is what keeps rotation 0
-  // byte-identical to the projection that had no rotation at all (PR1's
-  // rule, and every pinned raster golden is under it).
-  if (proj_.Rotation() != 0.0)
-    return CompositeRowTurned(*src, info, o_top, o_bot, o_west, o_east, canvas);
+  // The copy nearest the centre (k = 0) is drawn first, then any copy 360
+  // degrees away that the view also shows: a wide frame beside a wide view,
+  // or any frame when the view wraps the world.
+  const int k_lo = (int)std::floor((v_west - f_east) / 360.0);
+  const int k_hi = (int)std::ceil((v_east - f_west) / 360.0);
+  for (int pass = 0; pass <= k_hi - k_lo + 1; ++pass) {
+    const int k = pass == 0 ? 0 : k_lo + pass - 1;
+    if (pass > 0 && k == 0) continue;
+    const double shift = 360.0 * k;  // exactly 0.0 for k = 0
+    double o_west = std::max(v_west, f_west + shift);
+    double o_east = std::min(v_east, f_east + shift);
+    if (o_east <= o_west) continue;
+    // A TURNED CHART IS ITS OWN PATH, and the gate is what keeps rotation 0
+    // byte-identical to the projection that had no rotation at all (PR1's
+    // rule, and every pinned raster golden is under it).
+    if (force_projected_ || !proj_.IsAffine())
+      s = CompositeRowProjected(*src, info, row.bounds, o_top, o_bot, o_west,
+                                o_east, canvas);
+    else
+      s = proj_.Rotation() != 0.0
+              ? CompositeRowTurned(*src, info, row.bounds, o_top, o_bot,
+                                   o_west, o_east, canvas)
+              : CompositeRowStraight(*src, info, row.bounds, o_top, o_bot,
+                                     o_west, o_east, canvas);
+    if (!s.ok()) return s;
+  }
+  return Status::Ok();
+}
 
+Status MapEngine::CompositeRowStraight(IRasterSource& src_ref,
+                                       const ImageInfo& info,
+                                       const GeoRect& frame, double o_top,
+                                       double o_bot, double o_west,
+                                       double o_east, ICanvas& canvas) {
+  IRasterSource* src = &src_ref;
+  Status s;
   // target region on the surface (rounded overlap corners), clipped
   double sx0, sy0, sx1, sy1;
-  s = proj_.GeoToSurface({o_top, NormalizeLon(o_west)}, &sx0, &sy0);
+  s = OverlapToSurface(o_top, o_west, &sx0, &sy0);
   if (!s.ok()) return s;
-  s = proj_.GeoToSurface({o_bot, NormalizeLon(o_east)}, &sx1, &sy1);
+  s = OverlapToSurface(o_bot, o_east, &sx1, &sy1);
   if (!s.ok()) return s;
   PixelSize surf = proj_.SurfaceSize();
   int tx = std::max(0, (int)std::lround(sx0));
@@ -151,9 +216,9 @@ Status MapEngine::CompositeRow(const CoverageRow& row, ICanvas& canvas) {
   s = proj_.SurfaceToGeo(tx1, ty1, &se);
   if (!s.ok()) return s;
   double fx0, fy0, fx1, fy1;
-  s = src->GeoToPixel(nw, &fx0, &fy0);
+  s = src->GeoToPixel(SourceGeo(nw, frame), &fx0, &fy0);
   if (!s.ok()) return s;
-  s = src->GeoToPixel(se, &fx1, &fy1);
+  s = src->GeoToPixel(SourceGeo(se, frame), &fx1, &fy1);
   if (!s.ok()) return s;
 
   int rx = std::max(0, (int)std::floor(std::min(fx0, fx1)));
@@ -202,16 +267,15 @@ Status MapEngine::CompositeRow(const CoverageRow& row, ICanvas& canvas) {
 //      alpha 0 — PixelBuffer zero-fills, and DrawPixmap's src-over blend
 //      drops a fully transparent pixel — so the frame keeps its own edges.
 Status MapEngine::CompositeRowTurned(IRasterSource& src, const ImageInfo& info,
-                                     double o_top, double o_bot, double o_west,
+                                     const GeoRect& frame, double o_top,
+                                     double o_bot, double o_west,
                                      double o_east, ICanvas& canvas) {
-  const GeoPoint quad[4] = {{o_top, NormalizeLon(o_west)},
-                            {o_top, NormalizeLon(o_east)},
-                            {o_bot, NormalizeLon(o_west)},
-                            {o_bot, NormalizeLon(o_east)}};
+  const GeoPoint quad[4] = {
+      {o_top, o_west}, {o_top, o_east}, {o_bot, o_west}, {o_bot, o_east}};
   double lo_x = 0, lo_y = 0, hi_x = 0, hi_y = 0;
   for (int i = 0; i < 4; ++i) {
     double sx = 0, sy = 0;
-    Status s = proj_.GeoToSurface(quad[i], &sx, &sy);
+    Status s = OverlapToSurface(quad[i].lat, quad[i].lon, &sx, &sy);
     if (!s.ok()) return s;
     if (i == 0) {
       lo_x = hi_x = sx;
@@ -240,7 +304,7 @@ Status MapEngine::CompositeRowTurned(IRasterSource& src, const ImageInfo& info,
     GeoPoint g;
     Status s = proj_.SurfaceToGeo(dx, dy, &g);
     if (!s.ok()) return s;
-    return src.GeoToPixel(g, fx, fy);
+    return src.GeoToPixel(SourceGeo(g, frame), fx, fy);
   };
   double f00x, f00y, f10x, f10y, f01x, f01y;
   Status s = src_px(tx, ty, &f00x, &f00y);
@@ -288,6 +352,106 @@ Status MapEngine::CompositeRowTurned(IRasterSource& src, const ImageInfo& info,
       int sy = (int)std::lround(fy) - ry;
       if (sx < 0 || sy < 0 || sx >= rw || sy >= rh) continue;  // outside: mask
       std::memcpy(drow + 4 * x, block.Row(sy) + 4 * sx, 4);
+    }
+  }
+  return canvas.DrawPixmap(out, tx, ty);
+}
+
+Status MapEngine::CompositeRowProjected(IRasterSource& src,
+                                        const ImageInfo& info,
+                                        const GeoRect& frame, double o_top,
+                                        double o_bot, double o_west,
+                                        double o_east, ICanvas& canvas) {
+  // The box of the overlap's projected edges. A projected rectangle is not a
+  // quad, so each edge is walked; the one-pixel pad covers bulges between
+  // samples. An edge point with no image makes the box the whole surface.
+  constexpr int kEdgeSteps = 64;
+  const PixelSize surf = proj_.SurfaceSize();
+  double lo_x = 0, lo_y = 0, hi_x = 0, hi_y = 0;
+  bool first = true, whole = false;
+  for (int i = 0; i <= kEdgeSteps && !whole; ++i) {
+    const double t = (double)i / kEdgeSteps;
+    const double lat = o_bot + t * (o_top - o_bot);
+    const double lon = o_west + t * (o_east - o_west);
+    const GeoPoint edge[4] = {
+        {o_top, lon}, {o_bot, lon}, {lat, o_west}, {lat, o_east}};
+    for (const GeoPoint& g : edge) {
+      double sx = 0, sy = 0;
+      Status s = OverlapToSurface(g.lat, g.lon, &sx, &sy);
+      if (s.code == kNotProjectable) {
+        whole = true;
+        break;
+      }
+      if (!s.ok()) return s;
+      if (first) {
+        lo_x = hi_x = sx;
+        lo_y = hi_y = sy;
+        first = false;
+      } else {
+        lo_x = std::min(lo_x, sx);
+        hi_x = std::max(hi_x, sx);
+        lo_y = std::min(lo_y, sy);
+        hi_y = std::max(hi_y, sy);
+      }
+    }
+  }
+  // An interior point the projection blows up into an arc is not covered by
+  // the image of the boundary, so the box above misses everything it fills:
+  // the whole west hemisphere of an Azimuthal Equidistant world lies outside
+  // the image of its own two bounding meridians.
+  GeoPoint singular;
+  if (!whole && proj_.SingularPoint(&singular).ok()) {
+    const double lon = UnwrapLonNear(singular.lon, (o_west + o_east) / 2.0);
+    whole = singular.lat >= o_bot && singular.lat <= o_top && lon >= o_west &&
+            lon <= o_east;
+  }
+  int tx = 0, ty = 0, tx1 = surf.width - 1, ty1 = surf.height - 1;
+  if (!whole) {
+    tx = std::max(tx, (int)std::floor(lo_x) - 1);
+    ty = std::max(ty, (int)std::floor(lo_y) - 1);
+    tx1 = std::min(tx1, (int)std::ceil(hi_x) + 1);
+    ty1 = std::min(ty1, (int)std::ceil(hi_y) + 1);
+  }
+  const int tw = tx1 - tx + 1, th = ty1 - ty + 1;
+  if (tw <= 0 || th <= 0) return Status::Ok();
+
+  WarpIndex idx;
+  AdaptiveWarp(
+      tw, th,
+      [&](int x, int y, double* fx, double* fy) {
+        GeoPoint g;
+        if (!proj_.SurfaceToGeo(tx + x, ty + y, &g).ok()) return false;
+        return src.GeoToPixel(SourceGeo(g, frame), fx, fy).ok();
+      },
+      &idx);
+
+  // Mask to the frame image, and read only the block the kept samples need.
+  int rx = info.size.width, ry = info.size.height, rx1 = -1, ry1 = -1;
+  for (size_t k = 0; k < idx.sx.size(); ++k) {
+    const int sx = idx.sx[k], sy = idx.sy[k];
+    if (sx < 0 || sy < 0 || sx >= info.size.width || sy >= info.size.height) {
+      idx.sx[k] = kWarpUnmapped;
+      continue;
+    }
+    rx = std::min(rx, sx);
+    ry = std::min(ry, sy);
+    rx1 = std::max(rx1, sx);
+    ry1 = std::max(ry1, sy);
+  }
+  if (rx1 < rx || ry1 < ry) return Status::Ok();
+
+  PixelBuffer block;
+  Status s = src.ReadBlock({rx, ry, rx1 - rx + 1, ry1 - ry + 1}, &block);
+  if (!s.ok()) return s;
+
+  PixelBuffer out(tw, th);  // zero-filled: alpha 0 everywhere until written
+  size_t k = 0;
+  for (int y = 0; y < th; ++y) {
+    unsigned char* drow = out.Row(y);
+    for (int x = 0; x < tw; ++x, ++k) {
+      if (idx.sx[k] == kWarpUnmapped) continue;
+      std::memcpy(drow + 4 * x, block.Row(idx.sy[k] - ry) + 4 * (idx.sx[k] - rx),
+                  4);
     }
   }
   return canvas.DrawPixmap(out, tx, ty);

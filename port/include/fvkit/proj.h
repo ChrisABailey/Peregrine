@@ -3,30 +3,50 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// fvkit/proj.h — FvKit L3a map projection (equal-arc first, like the
-// original's default). Pure math: center + scale + surface size -> degrees
-// per pixel (via the ported MapScaleUtil, so dpp matches FalconView) and
-// linear geo<->surface transforms, plus (PR1) a ROTATION about the surface
-// centre. The virtual-surface variants of ISettableMapProj are deliberately
-// not here yet (plan: stubbed until a consumer needs them).
-//
-// Surface coords are doubles: x right, y down, origin at the surface's
-// top-left pixel center, per contracts D4.
-//
-// ROTATION (PR1). `SetRotation(deg)` turns the CHART CLOCKWISE on the screen
-// about the surface centre, which is the sense MM2's camera already answers
-// in: it reports 270 for a course of 090, and 270 clockwise puts everything
-// ahead of an eastbound ship at the top of the screen. It is a property of
-// the PROJECTION and of nothing else, so every consumer that already goes
-// through GeoToSurface/SurfaceToGeo — the contours, the renderer, the pick
-// index — turns with it and keeps agreeing with itself.
-//
-// ROTATION 0 IS THE EXACT IDENTITY. Not "close": the unrotated path executes
-// the same arithmetic in the same order it did before rotation existed, and
-// the tests assert bit-identical doubles, because every pinned golden in the
-// tree is at rotation 0. Multiples of 90 get their cos/sin from a table
-// rather than from <cmath>, so a cardinal turn is exact too (cos(pi/2) is
-// 6.1e-17, and that lands in a viewport's bounds).
+/** @file
+ * fvkit/proj.h — the map projection: centre + scale + surface size to
+ * degrees per pixel (via the ported MapScaleUtil, so dpp matches FalconView)
+ * and geo<->surface transforms, with an optional clockwise rotation about the
+ * surface centre.
+ *
+ * Surface coords are doubles: x right, y down, origin at the surface's
+ * top-left pixel centre (contracts D4).
+ *
+ * Rotation turns the chart clockwise on the screen, the sense the nav camera
+ * reports (270 for a course of 090). Rotation 0 runs the unrotated arithmetic
+ * in its original order, so its doubles are bit-identical to an unrotated
+ * build; every pinned golden depends on that. Multiples of 90 take cos/sin
+ * from a table so cardinal turns are exact.
+ *
+ * All five FalconView display projections are implemented. Equal Arc is
+ * tested first in every transform, ahead of any other arithmetic.
+ *
+ * Mercator is spherical, on a sphere of radius WGS84_a_METERS, with the
+ * standard parallel at the viewport centre and a hard limit of
+ * kMercatorMaxLat: a point beyond it reports kNotProjectable in both
+ * directions. The centre latitude used for the projection is not the
+ * requested one when the requested one would put the top (or bottom) edge
+ * past that limit; Center() still reports what the caller asked for.
+ *
+ * Lambert is spherical too, with two standard parallels derived from the
+ * viewport rather than set by the caller: centre latitude plus and minus a
+ * third of the surface height in degrees. A pan or zoom therefore re-derives
+ * the cone. Within one pixel of latitude of the equator the cone constant
+ * goes to zero, and the Mercator equations are used instead, as Windows
+ * does. It is the first projection where north is not up away from the
+ * centre meridian; LocalScaleAt reports that angle.
+ *
+ * Azimuthal Equidistant and Orthographic are the two azimuthal projections,
+ * both spherical and both centred on the viewport centre. They are the first
+ * projections whose image of the earth does not fill the plane: Azimuthal
+ * Equidistant maps the whole sphere into a disc of radius pi * R, with the
+ * antipode as its rim, and Orthographic shows one hemisphere as a disc of
+ * radius R. A surface pixel outside the disc, or a point on the far
+ * hemisphere in Orthographic, reports kNotProjectable. They are also the
+ * first projections that can put a pole, or both poles, inside the surface,
+ * which VmapBounds answers with a full circle of longitude; PoleOnSurface
+ * asks that question directly.
+ */
 
 #pragma once
 
@@ -39,6 +59,18 @@ namespace fv {
 // cartographic scale: at this pitch one source pixel maps to one screen pixel.
 // An Apple Cinema Display is ~4 px/mm; change this for a different panel.
 constexpr double kNativeDisplayMmPerPixel = 0.25;
+
+/// Latitude beyond which Mercator is not drawn (Windows MERCATOR_MAX_LAT).
+constexpr double kMercatorMaxLat = 80.0;
+
+/// The 2D display projections FalconView ships, in Windows ProjectionEnum order.
+enum class ProjectionType {
+  kEqualArc,
+  kMercator,
+  kLambert,
+  kAzimuthalEquidistant,
+  kOrthographic,
+};
 
 class MapProjection {
  public:
@@ -74,6 +106,14 @@ class MapProjection {
   Status SetRotation(double degrees);
   double Rotation() const { return rot_deg_; }
 
+  /// Selects the display projection. All five are implemented.
+  Status SetProjectionType(ProjectionType type);
+  ProjectionType Type() const { return type_; }
+
+  /// True when geo->surface is affine (Equal Arc at any rotation). Code that
+  /// relies on straight lines staying straight asks this, not the type.
+  bool IsAffine() const { return type_ == ProjectionType::kEqualArc; }
+
   bool Ready() const { return ready_; }
   PixelSize SurfaceSize() const { return {width_, height_}; }
   GeoPoint Center() const { return center_; }
@@ -90,14 +130,142 @@ class MapProjection {
   // with, so a turned frame reads more data than a straight one.
   GeoRect VmapBounds() const;
 
-  // Linear equal-arc transforms. Longitude deltas are taken the short way
-  // around relative to the center, so viewports spanning the antimeridian
-  // work without special-casing by callers.
+  /// Unwrapped longitude extent of the viewport box: west <= Center().lon <=
+  /// east, and east - west may exceed 360 when the view wraps the world.
+  /// VmapBounds cannot say that; the engine needs it to draw a frame more
+  /// than once. Unported projections return kUnsupported.
+  Status VmapLonRange(double* west, double* east) const;
+
+  /// The one point whose image is an arc rather than a point: the antipode of
+  /// an Azimuthal Equidistant centre, which the whole rim of the disc is.
+  /// kNotFound for every other projection. A caller that bounds a projected
+  /// region by the image of its boundary — the engine's raster path does —
+  /// must widen to the whole surface when the region contains this point,
+  /// because an interior singularity is not covered by the boundary's image.
+  Status SingularPoint(GeoPoint* p) const;
+
+  /// Whether each pole falls inside the surface. Only the azimuthal pair and
+  /// Lambert can hold one; the cylindrical projections never do. Callers that
+  /// walk a line of constant latitude need this, because a line that encloses
+  /// a pole has no left and right on the surface.
+  Status PoleOnSurface(bool* north, bool* south) const;
+
+  // Geo <-> surface in the current projection. Longitude deltas are taken the
+  // short way around relative to the center, so viewports spanning the
+  // antimeridian work without special-casing by callers. Mercator reports
+  // kNotProjectable beyond kMercatorMaxLat in either direction.
   Status GeoToSurface(const GeoPoint& p, double* sx, double* sy) const;
   Status SurfaceToGeo(double sx, double sy, GeoPoint* p) const;
 
+  /// GeoToSurface without the short-way unwrap: p.lon is taken as given, so
+  /// a longitude 200 degrees east of the centre lands 200 degrees east. For
+  /// callers that already work in an unwrapped frame wider than 360 degrees.
+  Status GeoToSurfaceUnwrapped(const GeoPoint& p, double* sx,
+                               double* sy) const;
+
+  /// Ground metres per surface pixel at one point, and the angle from grid
+  /// north to true north there. DegPerPixelLat/Lon are the centre scale
+  /// (contracts D6); this is the scale where the caller is working.
+  struct LocalScale {
+    double m_per_px_x = 0;
+    double m_per_px_y = 0;
+    /// Angle from true north to grid north, positive clockwise on the
+    /// surface. Zero for Equal Arc and Mercator, n * delta-lon for Lambert.
+    /// The chart rotation is not included: this is a projection property.
+    double convergence_deg = 0;
+  };
+  Status LocalScaleAt(const GeoPoint& p, LocalScale* out) const;
+
  private:
   Status Update();  // recompute dpp when center+scale are known
+
+  /// Per-viewport constants of the non-affine projectors, named after their
+  /// Windows members. Recomputed by Update() whenever centre, scale or surface
+  /// changes; Equal Arc reads none of them.
+  struct ProjectionConstants {
+    double center_lat_for_calculations = 0;  // centre after validate_center
+    double mosaic_m_per_px_lat = 0;          // ground metres per surface pixel
+    double mosaic_m_per_px_lon = 0;
+    double lambert_n = 0;                    // cone constant
+    double lambert_F = 0;
+    double lambert_rho_0 = 0;                // metres, at the centre latitude
+    bool lambert_uses_mercator = false;      // |centre lat| < one pixel
+    double std_parallel = 0;                 // Mercator, degrees
+    double cos_std_parallel = 1;             // cos of the above, precomputed
+    double mercator_y0 = 0;                  // projection-plane y of the centre
+    double sin_center_lat = 0;               // azimuthal, at the centre above
+    double cos_center_lat = 1;
+  };
+  Status UpdateProjectionConstants();
+  Status UpdateMercatorConstants();
+  Status UpdateLambertConstants();
+  Status UpdateAzimuthalConstants();
+
+  /// LocalScaleAt for the two azimuthal projections, the only ones whose
+  /// scale depends on the direction it is measured in.
+  Status AzimuthalLocalScaleAt(const GeoPoint& p, LocalScale* out) const;
+
+  /// Mercator forward/inverse about the surface centre, in surface-pixel
+  /// offsets, with no rotation and no kMercatorMaxLat check. The centre used
+  /// is pc_.center_lat_for_calculations, so the pair is self-consistent while
+  /// UpdateMercatorConstants is still iterating towards it.
+  void MercatorForwardRaw(double lat, double dlon, double* dx,
+                          double* dy) const;
+  void MercatorInverseRaw(double dx, double dy, double* lat,
+                          double* dlon) const;
+
+  /// Lambert forward/inverse about the surface centre, in surface-pixel
+  /// offsets, with no rotation. The inverse returns false where the Windows
+  /// projector reports FAILURE (a point on the cone apex, or a cone constant
+  /// of zero) or where the arithmetic leaves the real line.
+  void LambertForwardRaw(double lat, double dlon, double* dx,
+                         double* dy) const;
+  bool LambertInverseRaw(double dx, double dy, double* lat,
+                         double* dlon) const;
+
+  /// Azimuthal Equidistant forward/inverse about the surface centre, in
+  /// surface-pixel offsets, with no rotation. The forward returns false at
+  /// the antipode of the centre, whose image is the whole rim rather than a
+  /// point, and the inverse outside the disc of radius pi * R, which is where
+  /// the sphere runs out.
+  bool AzEqForwardRaw(double lat, double dlon, double* dx, double* dy) const;
+  bool AzEqInverseRaw(double dx, double dy, double* lat, double* dlon) const;
+
+  /// Orthographic forward/inverse about the surface centre, in surface-pixel
+  /// offsets, with no rotation. The forward returns false on the far
+  /// hemisphere and the inverse outside the disc of radius R; both still
+  /// write the plane point, so a caller drawing a clipped edge can use it.
+  bool OrthoForwardRaw(double lat, double dlon, double* dx, double* dy) const;
+  bool OrthoInverseRaw(double dx, double dy, double* lat, double* dlon) const;
+
+  /// Point `c_rad` of arc from the projection centre along azimuth `az_rad`,
+  /// as latitude and degrees east of the centre. Draws the limb of the
+  /// azimuthal projections, which is where their bounds are decided.
+  void PointAtAzimuth(double c_rad, double az_rad, double* lat,
+                      double* dlon) const;
+
+  /// Extremes of latitude and of unwrapped longitude over the surface
+  /// boundary, plus whether the near pole falls on the surface. Backs both
+  /// VmapBounds and VmapLonRange for the projections whose boundary is not
+  /// the box of its corners.
+  struct BoundarySweep {
+    double lat_min = 0, lat_max = 0;
+    double dlon_min = 0, dlon_max = 0;  // degrees east of the centre
+    bool pole_on_surface = false;  // Lambert: the pole its cone closes on
+    double pole_lat = 0;
+    bool north_pole_on_surface = false;
+    bool south_pole_on_surface = false;
+    /// The surface reaches every meridian: a pole is on it, or (Azimuthal
+    /// Equidistant) it extends past the rim, where all meridians meet.
+    bool all_longitudes = false;
+    bool valid = false;
+  };
+  BoundarySweep SweepProjectedBoundary() const;
+
+  /// Surface-pixel half-extents of the viewport box relative to its centre,
+  /// widened to the box of the turned corners under rotation.
+  void ViewportOffsets(double* x_min, double* x_max, double* y_min,
+                       double* y_max) const;
 
   // Surface offset (dx right, dy down, relative to the surface centre) turned
   // clockwise by the current rotation; RotateInverse undoes it. Both are the
@@ -119,6 +287,8 @@ class MapProjection {
   double rot_cos_ = 1, rot_sin_ = 0;
   bool have_center_ = false;
   Mode mode_ = Mode::kScale;
+  ProjectionType type_ = ProjectionType::kEqualArc;
+  ProjectionConstants pc_;
   bool ready_ = false;
 };
 

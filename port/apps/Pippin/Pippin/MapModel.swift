@@ -4,6 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 import Combine
+import CoreLocation
 import PippinKit
 import SwiftUI
 import UIKit
@@ -41,6 +42,12 @@ final class MapModel: ObservableObject {
     /// The last finished frame, and the viewport it was drawn at.
     @Published private(set) var frame: PPFrame?
     @Published private(set) var status: String = ""
+
+    #if DEBUG
+    /// `-PPShowStats YES`. Read once at launch, and consulted before the
+    /// per-frame readout is formatted at all: nothing draws it otherwise.
+    static let showsStats = UserDefaults.standard.bool(forKey: "PPShowStats")
+    #endif
     @Published private(set) var failure: String?
 
     /// Ownship position as of the last drawn frame (the render queue's answer).
@@ -67,10 +74,10 @@ final class MapModel: ObservableObject {
     @Published private(set) var isPlanning = false
     @Published private(set) var feedIsRunning = false
 
-    /// Whether the receiver is currently in its coarse (battery-saving) tier.
-    /// Shown on the `-PPShowStats` line; a tier change has no visible effect
-    /// otherwise.
-    @Published private(set) var receiverIsCoarse = false
+    /// Whether the receiver is currently in its coarse (battery-saving)
+    /// tier. Shown on the `-PPShowStats` line; a tier change has no visible
+    /// effect otherwise.
+    var receiverIsCoarse: Bool { locationPolicy.current == .coarse }
     @Published private(set) var locationAuthorization: PPLocationAuthorization =
         .notDetermined
 
@@ -184,9 +191,8 @@ final class MapModel: ObservableObject {
         // Restore the stored symbol size before the first frame so the launch
         // does not flash the pack's default. Clamped in case the pack's step
         // list has shrunk since it was stored.
-        symbolStep = max(0, min(UserDefaults.standard.integer(
-            forKey: Self.symbolStepKey), symbolZoomSteps.count - 1))
-        applySymbolZoom()
+        setSymbolStep(UserDefaults.standard.integer(forKey: Self.symbolStepKey),
+                      persist: false)
         startDisplayLink()
         // The cached base map is the only large allocation not currently
         // needed; dropping it costs one render.
@@ -265,25 +271,21 @@ final class MapModel: ObservableObject {
     /// is passed to a DEBUG build, otherwise the phone's receiver. Starting
     /// the feed does not make the map follow it; see `setGpsMode`.
     func startFeed() {
-        guard let renderer, !feedRequested else { return }
+        guard renderer != nil, !feedRequested else { return }
         feedRequested = true
         // Replay is DEBUG only. Release packs do not carry the recorded ride
         // (`stage_data.py --release`).
         #if DEBUG
         if UserDefaults.standard.bool(forKey: "PPDemoFeed") {
-            renderQueue.async { [weak self] in
-                let result = renderer.startDemoFeed()
-                Task { @MainActor in
-                    guard let self else { return }
-                    switch result {
-                    case .success:
-                        self.feedIsRunning = true
-                        self.startDemoTimer()
-                        self.setContentDirty()
-                    case .failure(let error):
-                        self.feedRequested = false
-                        self.failure = error.localizedDescription
-                    }
+            onRenderQueue({ $0.startDemoFeed() }) { model, result in
+                switch result {
+                case .success:
+                    model.feedIsRunning = true
+                    model.startDemoTimer()
+                    model.setContentDirty()
+                case .failure(let error):
+                    model.feedRequested = false
+                    model.failure = error.localizedDescription
                 }
             }
             return
@@ -482,11 +484,6 @@ final class MapModel: ObservableObject {
             following: gpsMode,
             recording: isRecording)
         source.accuracyMode = wanted == .coarse ? .coarse : .navigation
-        // Compare before assigning: a @Published assigned its own value still
-        // publishes, and this runs at gesture rate.
-        if receiverIsCoarse != (wanted == .coarse) {
-            receiverIsCoarse = wanted == .coarse
-        }
     }
 
     /// Forces navigation accuracy immediately. Called before entering GPS
@@ -495,7 +492,6 @@ final class MapModel: ObservableObject {
     private func demandFullAccuracy() {
         locationPolicy.demandNavigation()
         locationSource?.accuracyMode = .navigation
-        if receiverIsCoarse { receiverIsCoarse = false }
     }
 
     private func receive(_ authorization: PPLocationAuthorization) {
@@ -546,27 +542,61 @@ final class MapModel: ObservableObject {
     /// launch if the app never got to stop.
     private var recordingURL: URL?
 
+    // MARK: - Render-queue round trips
+
+    /// Runs `work` on the render queue and hands what it returns to `then` on
+    /// the main actor. The hop, the weak capture and the guard are the same
+    /// at every call site, so only the two closures are written out. `then`
+    /// takes the model rather than capturing it, which is what keeps the
+    /// escaping closure from holding it alive.
+    private func onRenderQueue<T>(
+        _ work: @escaping (Renderer) -> T,
+        then: @escaping @MainActor (MapModel, T) -> Void
+    ) {
+        guard let renderer else { return }
+        renderQueue.async { [weak self] in
+            let result = work(renderer)
+            Task { @MainActor in
+                guard let self else { return }
+                then(self, result)
+            }
+        }
+    }
+
+    /// The shape of the four route mutators: one renderer call returning the
+    /// new route, published with a redraw. `planning` brackets the round trip
+    /// with the sheet's spinner; `then` is for what a particular mutator does
+    /// once the route is on screen.
+    private func publishRoute(planning: Bool = false,
+                              _ body: @escaping (Renderer) -> PPRoute,
+                              then: (@MainActor (MapModel) -> Void)? = nil) {
+        guard renderer != nil else { return }
+        if planning { isPlanning = true }
+        onRenderQueue(body) { model, route in
+            if planning { model.isPlanning = false }
+            model.route = route
+            model.setContentDirty()
+            then?(model)
+        }
+    }
+
     // MARK: - Route
 
     /// Reads `Documents/current.fvrte` and replans it. Called once from the
     /// screen's `onAppear`. Runs on the render queue because the plan is not
     /// stored in the document.
     func loadSavedRoute() {
-        guard let renderer, !routeLoaded else { return }
+        guard renderer != nil, !routeLoaded else { return }
         routeLoaded = true
-        renderQueue.async { [weak self] in
-            let result = renderer.loadSavedRoute()
-            Task { @MainActor in
-                guard let self else { return }
-                switch result {
-                case .success(let route):
-                    // An empty route is a first launch, not an error.
-                    guard route.exists else { return }
-                    self.route = route
-                    self.setContentDirty()
-                case .failure(let error):
-                    self.status = error.localizedDescription
-                }
+        onRenderQueue({ $0.loadSavedRoute() }) { model, result in
+            switch result {
+            case .success(let route):
+                // An empty route is a first launch, not an error.
+                guard route.exists else { return }
+                model.route = route
+                model.setContentDirty()
+            case .failure(let error):
+                model.status = error.localizedDescription
             }
         }
     }
@@ -574,18 +604,9 @@ final class MapModel: ObservableObject {
     /// Replaces the waypoints, replans, and writes the document. `isPlanning`
     /// covers the round trip.
     func setRoute(waypoints: [PPWaypoint], profile: String) {
-        guard let renderer else { return }
-        isPlanning = true
-        renderQueue.async { [weak self] in
-            let route = renderer.setRoute(waypoints: waypoints, profile: profile)
-            Task { @MainActor in
-                guard let self else { return }
-                self.isPlanning = false
-                self.route = route
-                self.setContentDirty()
-                self.offerWaypointHint()
-            }
-        }
+        publishRoute(planning: true,
+                     { $0.setRoute(waypoints: waypoints, profile: profile) },
+                     then: { $0.offerWaypointHint() })
     }
 
     /// Offers the drag hint on a route the rider just planned. Not on the one
@@ -599,15 +620,7 @@ final class MapModel: ObservableObject {
     }
 
     func clearRoute() {
-        guard let renderer else { return }
-        renderQueue.async { [weak self] in
-            let route = renderer.clearRoute()
-            Task { @MainActor in
-                guard let self else { return }
-                self.route = route
-                self.setContentDirty()
-            }
-        }
+        publishRoute { $0.clearRoute() }
     }
 
     // MARK: - Dragging a route waypoint
@@ -632,21 +645,18 @@ final class MapModel: ObservableObject {
             return
         }
         let tolerance = renderer.routeWaypointHitTolerance
-        renderQueue.async { [weak self] in
-            var grabbed: String?
-            if let label = renderer.routeWaypointLabel(near: screenPoint,
-                                                       in: vp,
-                                                       tolerance: tolerance),
-               renderer.beginRouteWaypointDrag(label, at: screenPoint, in: vp) {
-                grabbed = label
-            }
-            Task { @MainActor in
-                guard let self else { return }
-                self.draggingWaypoint = grabbed
-                // Highlight halo; overlay-only pass.
-                if grabbed != nil { self.setContentDirty() }
-                handle(grabbed != nil)
-            }
+        onRenderQueue({ renderer -> String? in
+            guard let label = renderer.routeWaypointLabel(near: screenPoint,
+                                                          in: vp,
+                                                          tolerance: tolerance),
+                  renderer.beginRouteWaypointDrag(label, at: screenPoint, in: vp)
+            else { return nil }
+            return label
+        }) { model, grabbed in
+            model.draggingWaypoint = grabbed
+            // Highlight halo; overlay-only pass.
+            if grabbed != nil { model.setContentDirty() }
+            handle(grabbed != nil)
         }
     }
 
@@ -659,17 +669,13 @@ final class MapModel: ObservableObject {
 
     private func pumpWaypointDrag() {
         guard !dragHopInFlight, let point = pendingDragPoint,
-              let renderer, let vp = viewport else { return }
+              renderer != nil, let vp = viewport else { return }
         pendingDragPoint = nil
         dragHopInFlight = true
-        renderQueue.async { [weak self] in
-            renderer.dragRouteWaypoint(to: point, in: vp)
-            Task { @MainActor in
-                guard let self else { return }
-                self.dragHopInFlight = false
-                self.setContentDirty()
-                self.pumpWaypointDrag()
-            }
+        onRenderQueue({ $0.dragRouteWaypoint(to: point, in: vp) }) { model, _ in
+            model.dragHopInFlight = false
+            model.setContentDirty()
+            model.pumpWaypointDrag()
         }
     }
 
@@ -680,16 +686,9 @@ final class MapModel: ObservableObject {
         hints.waypointWasDragged()
         draggingWaypoint = nil
         pendingDragPoint = nil
-        guard let renderer, let vp = viewport else { return }
-        isPlanning = true
-        renderQueue.async { [weak self] in
-            let route = renderer.endRouteWaypointDrag(at: screenPoint, in: vp)
-            Task { @MainActor in
-                guard let self else { return }
-                self.isPlanning = false
-                self.route = route
-                self.setContentDirty()
-            }
+        guard let vp = viewport else { return }
+        publishRoute(planning: true) {
+            $0.endRouteWaypointDrag(at: screenPoint, in: vp)
         }
     }
 
@@ -699,15 +698,7 @@ final class MapModel: ObservableObject {
         guard draggingWaypoint != nil else { return }
         draggingWaypoint = nil
         pendingDragPoint = nil
-        guard let renderer else { return }
-        renderQueue.async { [weak self] in
-            let route = renderer.cancelRouteWaypointDrag()
-            Task { @MainActor in
-                guard let self else { return }
-                self.route = route
-                self.setContentDirty()
-            }
-        }
+        publishRoute { $0.cancelRouteWaypointDrag() }
     }
 
     // MARK: - Points
@@ -715,28 +706,26 @@ final class MapModel: ObservableObject {
     /// Reads the user's point set, seeding it from the pack on first launch.
     /// Called once from the screen's `onAppear`.
     func loadPoints() {
-        guard let renderer, !pointsLoaded else { return }
+        guard renderer != nil, !pointsLoaded else { return }
         pointsLoaded = true
-        renderQueue.async { [weak self] in
-            let result = renderer.loadPoints()
-            let snapshot = renderer.points()
-            let palette = renderer.pointSymbols()
-            let visible = renderer.pointsVisible()
-            let seeded = renderer.pointsWereSeeded()
-            Task { @MainActor in
-                guard let self else { return }
-                self.points = snapshot
-                self.pointSymbols = palette
-                self.pointsVisible = visible
-                if case .failure(let error) = result {
-                    self.post(error.localizedDescription)
-                } else if seeded && !snapshot.isEmpty {
-                    self.post("\(snapshot.count) pins came with the map — "
-                              + "tap one, or hold the Pins button to add "
-                              + "your own.")
-                }
-                self.setContentDirty()
+        onRenderQueue({ renderer in
+            (result: renderer.loadPoints(),
+             snapshot: renderer.points(),
+             palette: renderer.pointSymbols(),
+             visible: renderer.pointsVisible(),
+             seeded: renderer.pointsWereSeeded())
+        }) { model, loaded in
+            model.points = loaded.snapshot
+            model.pointSymbols = loaded.palette
+            model.pointsVisible = loaded.visible
+            if case .failure(let error) = loaded.result {
+                model.post(error.localizedDescription)
+            } else if loaded.seeded && !loaded.snapshot.isEmpty {
+                model.post("\(loaded.snapshot.count) pins came with the map — "
+                           + "tap one, or hold the Pins button to add "
+                           + "your own.")
             }
+            model.setContentDirty()
         }
     }
 
@@ -749,13 +738,12 @@ final class MapModel: ObservableObject {
     }
 
     func setPointsVisible(_ on: Bool) {
-        guard let renderer, on != pointsVisible else { return }
+        guard renderer != nil, on != pointsVisible else { return }
         pointsVisible = on
         // Hiding the set closes any sheet open on one of them.
         if !on { selectedPoint = nil }
-        renderQueue.async { [weak self] in
-            renderer.setPointsVisible(on)
-            Task { @MainActor in self?.setContentDirty() }
+        onRenderQueue({ $0.setPointsVisible(on) }) { model, _ in
+            model.setContentDirty()
         }
     }
 
@@ -763,27 +751,19 @@ final class MapModel: ObservableObject {
     /// viewport is passed rather than read on the other side so the answer is
     /// about the map the user saw when the finger landed.
     func point(under tap: CGPoint, then handle: @escaping (PPMapPoint?) -> Void) {
-        guard let renderer, pointsVisible, let vp = viewport else {
+        guard renderer != nil, pointsVisible, let vp = viewport else {
             handle(nil)
             return
         }
-        renderQueue.async { [weak self] in
-            let hit = renderer.point(near: tap, in: vp)
-            Task { @MainActor in
-                guard self != nil else { return }
-                handle(hit)
-            }
-        }
+        onRenderQueue({ $0.point(near: tap, in: vp) }) { _, hit in handle(hit) }
     }
 
     /// Highlights a point (or nothing) and opens/closes the sheet on it.
     func select(_ point: PPMapPoint?) {
         selectedPoint = point
-        guard let renderer else { return }
         let id = point?.pointId ?? 0
-        renderQueue.async { [weak self] in
-            renderer.setSelectedPoint(id)
-            Task { @MainActor in self?.setContentDirty() }
+        onRenderQueue({ $0.setSelectedPoint(id) }) { model, _ in
+            model.setContentDirty()
         }
     }
 
@@ -819,36 +799,42 @@ final class MapModel: ObservableObject {
         }
     }
 
-    /// Common shape for the three edits: run `body` on the render queue, use
-    /// its result as the id to select, re-read the whole set, and publish.
+    /// Common shape for the edits: run `body` on the render queue, use the id
+    /// it returns as the id to select, re-read the whole set, and publish.
     ///
     /// The set is re-read rather than patched because the document is the
     /// authority (it assigns ids and may refuse an edit). `then` runs on the
     /// main actor after the publish, for callers that must act on the screen
-    /// afterwards.
+    /// afterwards; `body`'s second return value crosses the hop with it, so
+    /// what the render queue learned does not need a shared mutable box.
+    private func mutatePoints<T>(_ body: @escaping (Renderer) -> (Int64, T),
+                                 then: (@MainActor (Int64, T) -> Void)? = nil) {
+        onRenderQueue({ renderer in
+            let (selectId, payload) = body(renderer)
+            renderer.setSelectedPoint(selectId)
+            return (selectId, payload, renderer.points(),
+                    renderer.pointWriteError())
+        }) { model, edit in
+            let (selectId, payload, snapshot, writeError) = edit
+            model.points = snapshot
+            model.selectedPoint =
+                selectId == 0 ? nil
+                              : snapshot.first { $0.pointId == selectId }
+            // A failed write is not a refused edit: the point is on screen
+            // and correct, so this is a notice, not an alert.
+            if !writeError.isEmpty {
+                model.post("Saved to the map but not to disk: \(writeError)")
+            }
+            model.setContentDirty()
+            then?(selectId, payload)
+        }
+    }
+
+    /// The common case: the edit has nothing to report beyond the id.
     private func mutatePoints(_ body: @escaping (Renderer) -> Int64,
                               then: (@MainActor (Int64) -> Void)? = nil) {
-        guard let renderer else { return }
-        renderQueue.async { [weak self] in
-            let selectId = body(renderer)
-            renderer.setSelectedPoint(selectId)
-            let snapshot = renderer.points()
-            let writeError = renderer.pointWriteError()
-            Task { @MainActor in
-                guard let self else { return }
-                self.points = snapshot
-                self.selectedPoint =
-                    selectId == 0 ? nil
-                                  : snapshot.first { $0.pointId == selectId }
-                // A failed write is not a refused edit: the point is on
-                // screen and correct, so this is a notice, not an alert.
-                if !writeError.isEmpty {
-                    self.post("Saved to the map but not to disk: \(writeError)")
-                }
-                self.setContentDirty()
-                then?(selectId)
-            }
-        }
+        mutatePoints({ (body($0), ()) },
+                     then: then.map { done in { id, _ in done(id) } })
     }
 
     // MARK: - Shared places
@@ -870,19 +856,15 @@ final class MapModel: ObservableObject {
 
         let coordinate = PPGeoPointMake(place.latitude, place.longitude)
         let name = place.displayName
-        // Written on the render queue, read on the main actor after the
-        // publish; the hop is the ordering.
-        let alreadyHere = Box()
 
-        mutatePoints({ renderer in
+        mutatePoints({ renderer -> (Int64, Bool) in
             let existing = renderer.points()
             // Sharing the same place twice must not stack two markers.
             // Fifteen metres is about the width of a building.
             if let near = existing.first(where: {
                 Self.metres(from: $0.coordinate, to: coordinate) < 15
             }) {
-                alreadyHere.value = true
-                return near.pointId
+                return (near.pointId, true)
             }
             let point = PPMapPoint(
                 pointId: 0,
@@ -898,11 +880,11 @@ final class MapModel: ObservableObject {
                 remarks: place.address,
                 phone: "",
                 url: "")
-            return renderer.add(point).pointId
-        }, then: { [weak self] id in
+            return (renderer.add(point).pointId, false)
+        }, then: { [weak self] id, wasAlreadyHere in
             guard let self else { return }
             self.showSharedPlace(id: id, at: coordinate, name: name,
-                                 wasAlreadyHere: alreadyHere.value)
+                                 wasAlreadyHere: wasAlreadyHere)
             then(id)
         })
     }
@@ -937,19 +919,11 @@ final class MapModel: ObservableObject {
         setNeedsRender()
     }
 
-    /// A mutable flag that crosses one queue hop in one direction. Not
-    /// general-purpose; see its single use above.
-    private final class Box: @unchecked Sendable {
-        var value = false
-    }
-
-    /// Approximate metres between two coordinates. Equirectangular, which is
-    /// exact enough over the tens of metres this is asked about.
+    /// Metres between two coordinates, on the WGS84 ellipsoid.
     private static func metres(from a: PPGeoPoint, to b: PPGeoPoint) -> Double {
-        let meanLatitude = (a.latitude + b.latitude) * 0.5 * .pi / 180
-        let dLat = (b.latitude - a.latitude) * 111_320
-        let dLon = (b.longitude - a.longitude) * 111_320 * cos(meanLatitude)
-        return (dLat * dLat + dLon * dLon).squareRoot()
+        CLLocation(latitude: a.latitude, longitude: a.longitude)
+            .distance(from: CLLocation(latitude: b.latitude,
+                                       longitude: b.longitude))
     }
 
     private static func contains(_ bounds: PPGeoBounds, _ point: PPGeoPoint) -> Bool {
@@ -968,7 +942,7 @@ final class MapModel: ObservableObject {
     /// Starts writing `Documents/trips/ride-<date>.gpx`. Requires a feed but
     /// not GPS mode: following and recording are independent.
     func startRecording() {
-        guard let renderer, !isRecording else { return }
+        guard renderer != nil, !isRecording else { return }
         // Before anything else, so GNSS warm-up starts now.
         demandFullAccuracy()
         guard feedIsRunning || locationAuthorization == .authorized else {
@@ -983,55 +957,49 @@ final class MapModel: ObservableObject {
         isRecording = true
         recordingURL = url
         recordedPointCount = 0
-        renderQueue.async { [weak self] in
-            let result = renderer.startRecording(to: url, name: name)
-            Task { @MainActor in
-                guard let self else { return }
-                if case .failure(let error) = result {
-                    // Roll back: the recorder never opened.
-                    self.isRecording = false
-                    self.recordingURL = nil
-                    self.post("Could not start recording: \(error.localizedDescription)")
-                } else {
-                    // Every time, not once: the cost of not knowing is a hole
-                    // in the ride. Auto-Lock is held off while recording, so
-                    // the ways to lose fixes are the deliberate ones — and
-                    // Low Power Mode, which overrides the idle timer. Delete
-                    // this sentence when fixes survive the background.
-                    self.post("Recording this ride. Locking the phone or "
-                              + "switching apps stops it.")
-                }
+        onRenderQueue({ $0.startRecording(to: url, name: name) }) { model, result in
+            if case .failure(let error) = result {
+                // Roll back: the recorder never opened.
+                model.isRecording = false
+                model.recordingURL = nil
+                model.post("Could not start recording: \(error.localizedDescription)")
+            } else {
+                // Every time, not once: the cost of not knowing is a hole in
+                // the ride. Auto-Lock is held off while recording, so the ways
+                // to lose fixes are the deliberate ones — and Low Power Mode,
+                // which overrides the idle timer. Delete this sentence when
+                // fixes survive the background.
+                model.post("Recording this ride. Locking the phone or "
+                           + "switching apps stops it.")
             }
         }
     }
 
     func stopRecording() {
-        guard let renderer, isRecording else { return }
+        guard renderer != nil, isRecording else { return }
         isRecording = false
-        renderQueue.async { [weak self] in
+        onRenderQueue({ renderer -> Int in
             let count = renderer.recordedPointCount()
             renderer.stopRecording()
-            Task { @MainActor in
-                guard let self else { return }
-                self.recordedPointCount = count
-                // Clear before listing, or the finished ride is filtered out.
-                self.recordingURL = nil
-                self.refreshRides()
-                self.post(count == 0
-                          ? "Nothing was recorded — no fixes arrived."
-                          : "Ride saved, \(count) points. Hold the record "
-                            + "button to share it.")
-            }
+            return count
+        }) { model, count in
+            model.recordedPointCount = count
+            // Clear before listing, or the finished ride is filtered out.
+            model.recordingURL = nil
+            model.refreshRides()
+            model.post(count == 0
+                       ? "Nothing was recorded — no fixes arrived."
+                       : "Ride saved, \(count) points. Hold the record "
+                         + "button to share it.")
         }
     }
 
     /// Fetches the recorder's count from the render queue. Called by the
     /// sheet while it is open, not per frame.
     func refreshRecordedCount() {
-        guard let renderer, isRecording else { return }
-        renderQueue.async { [weak self] in
-            let count = renderer.recordedPointCount()
-            Task { @MainActor in self?.recordedPointCount = count }
+        guard renderer != nil, isRecording else { return }
+        onRenderQueue({ $0.recordedPointCount() }) { model, count in
+            model.recordedPointCount = count
         }
     }
 
@@ -1071,24 +1039,27 @@ final class MapModel: ObservableObject {
 
     private static let symbolStepKey = "PPSymbolStep"
 
-    /// Sets the symbol size step, persists it, and redraws.
-    func setSymbolStep(_ step: Int) {
-        let steps = symbolZoomSteps
-        let clamped = max(0, min(step, steps.count - 1))
-        guard clamped != symbolStep else { return }
+    /// Sets the symbol size step, persists it, and redraws. The clamp lives
+    /// here so `symbolStep` is always a valid index; `persist` is false when
+    /// restoring a stored choice made against a pack whose steps have since
+    /// changed.
+    func setSymbolStep(_ step: Int, persist: Bool = true) {
+        let clamped = max(0, min(step, symbolZoomSteps.count - 1))
+        guard clamped != symbolStep || !persist else { return }
         symbolStep = clamped
-        UserDefaults.standard.set(clamped, forKey: Self.symbolStepKey)
+        if persist {
+            UserDefaults.standard.set(clamped, forKey: Self.symbolStepKey)
+        }
         applySymbolZoom()
     }
 
     /// Hands the current step's factor to the map. `PPMap` drops its cached
     /// base map on the set.
     private func applySymbolZoom() {
-        guard let renderer else { return }
-        let zoom = symbolZoomSteps[min(symbolStep, symbolZoomSteps.count - 1)]
-        renderQueue.async { [weak self] in
-            renderer.setSymbolZoom(zoom)
-            Task { @MainActor in self?.setContentDirty() }
+        guard renderer != nil else { return }
+        let zoom = symbolZoomSteps[symbolStep]
+        onRenderQueue({ $0.setSymbolZoom(zoom) }) { model, _ in
+            model.setContentDirty()
         }
     }
 
@@ -1150,26 +1121,23 @@ final class MapModel: ObservableObject {
         placeQueryInFlight = true
         // The crosshair is drawn at the surface centre, so the snap is asked
         // about that same pixel rather than a re-projected coordinate.
-        let size = vp.sizeInPoints
-        let centre = CGPoint(x: (size.width - 1) / 2, y: (size.height - 1) / 2)
+        let centre = Self.centrePoint(of: vp.sizeInPoints)
         let tolerance = renderer.snapTolerance
-        renderQueue.async { [weak self] in
-            let place = renderer.describePlace(at: coordinate, profile: profile,
-                                               remembering: true)
-            // Same hop as the place so the two answers land together.
-            let snap = renderer.snapTarget(near: centre, in: vp,
-                                           tolerance: tolerance)
-            Task { @MainActor in
-                guard let self else { return }
-                self.placeQueryInFlight = false
-                // The pick ended while this was in flight.
-                guard self.pickProfile != nil else { return }
-                self.pickPlace = place
-                self.pickSnap = snap
-                if self.placeQueryPending {
-                    self.placeQueryPending = false
-                    self.refreshPickPlace()
-                }
+        onRenderQueue({ renderer in
+            // One hop for both so the two answers land together.
+            (place: renderer.describePlace(at: coordinate, profile: profile,
+                                           remembering: true),
+             snap: renderer.snapTarget(near: centre, in: vp,
+                                       tolerance: tolerance))
+        }) { model, answer in
+            model.placeQueryInFlight = false
+            // The pick ended while this was in flight.
+            guard model.pickProfile != nil else { return }
+            model.pickPlace = answer.place
+            model.pickSnap = answer.snap
+            if model.placeQueryPending {
+                model.placeQueryPending = false
+                model.refreshPickPlace()
             }
         }
     }
@@ -1247,9 +1215,14 @@ final class MapModel: ObservableObject {
     /// `PPViewport` rather than approximating pixels-per-degree.
     var crosshairCoordinate: PPGeoPoint? {
         guard let vp = viewport, vp.hasSurface else { return nil }
-        let size = vp.sizeInPoints
-        return vp.geo(at: CGPoint(x: (size.width - 1) / 2,
-                                  y: (size.height - 1) / 2))
+        return vp.geo(at: Self.centrePoint(of: vp.sizeInPoints))
+    }
+
+    /// The centre pixel of a surface. The `- 1` matches the renderer's pixel
+    /// centre convention, so the label, the stored coordinate and the snap
+    /// query all ask about the same pixel.
+    private static func centrePoint(of size: CGSize) -> CGPoint {
+        CGPoint(x: (size.width - 1) / 2, y: (size.height - 1) / 2)
     }
 
     /// The coordinate a pick actually takes: the snap target if there is one,
@@ -1394,7 +1367,9 @@ final class MapModel: ObservableObject {
                     if !frame.guidanceEvents.isEmpty {
                         self.alerts.play(frame.guidanceEvents)
                     }
-                    self.status = self.describe(frame)
+                    #if DEBUG
+                    if Self.showsStats { self.status = self.describe(frame) }
+                    #endif
                     self.applyCamera(from: frame)
                 case .failure(let error):
                     self.failure = error.localizedDescription
@@ -1429,20 +1404,16 @@ final class MapModel: ObservableObject {
     /// `Documents/current.fvrte`. Nil only if Foundation cannot name the
     /// directory, in which case the route is simply not persisted.
     private static func routeDocumentURL() -> URL? {
-        FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("current.fvrte")
+        DocumentFolder.documents?.appendingPathComponent("current.fvrte")
     }
 
     /// `Documents/points.fvpoints`. The bundle copy is read-only; the point
     /// store seeds this file from it on first launch.
     private static func pointsDocumentURL() -> URL? {
-        FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("points.fvpoints")
+        DocumentFolder.documents?.appendingPathComponent("points.fvpoints")
     }
+
+    #if DEBUG
 
     /// The `-PPShowStats` line. `12/68 ms` is a 12 ms overlay pass over a base
     /// that cost 68; `3/– ms` is an overlay pass over a cached base. Feature
@@ -1466,6 +1437,8 @@ final class MapModel: ObservableObject {
         f.maximumFractionDigits = 0
         return f
     }()
+
+    #endif  // DEBUG
 }
 
 /// Wraps `PPMap` with the promise that only the render queue touches it.
@@ -1520,12 +1493,8 @@ private final class Renderer: @unchecked Sendable {
     /// Render queue only. See `PPMap.h` for `bandMargin` and `reuseBase`.
     func render(_ viewport: PPViewport, bandMargin: Double,
                 reuseBase: Bool) -> Result<PPFrame, Error> {
-        do {
-            return .success(try map.render(viewport, bandMargin: bandMargin,
-                                           reuseBase: reuseBase))
-        } catch {
-            return .failure(error)
-        }
+        Result { try map.render(viewport, bandMargin: bandMargin,
+                                reuseBase: reuseBase) }
     }
 
     /// Render queue only. Drops the cached base map; see `PPMap.symbolZoom`.
@@ -1565,12 +1534,7 @@ private final class Renderer: @unchecked Sendable {
 
     /// Render queue only.
     func startDemoFeed() -> Result<Void, Error> {
-        do {
-            try map.startDemoFeed()
-            return .success(())
-        } catch {
-            return .failure(error)
-        }
+        Result { try map.startDemoFeed() }
     }
 
     /// Render queue only. May load the road graph on first call.
@@ -1602,11 +1566,7 @@ private final class Renderer: @unchecked Sendable {
 
     /// A first launch is a route whose `exists` is false, not nil or an error.
     func loadSavedRoute() -> Result<PPRoute, Error> {
-        do {
-            return .success(try map.loadSavedRoute())
-        } catch {
-            return .failure(error)
-        }
+        Result { try map.loadSavedRoute() }
     }
 
     func setRoute(waypoints: [PPWaypoint], profile: String) -> PPRoute {
@@ -1651,12 +1611,7 @@ private final class Renderer: @unchecked Sendable {
     // MARK: Points (render queue only)
 
     func loadPoints() -> Result<Void, Error> {
-        do {
-            try map.loadPoints()
-            return .success(())
-        } catch {
-            return .failure(error)
-        }
+        Result { try map.loadPoints() }
     }
 
     func points() -> [PPMapPoint] { map.points }
@@ -1675,12 +1630,7 @@ private final class Renderer: @unchecked Sendable {
 
     /// Render queue only.
     func startRecording(to url: URL, name: String) -> Result<Void, Error> {
-        do {
-            try map.startRecording(to: url, name: name)
-            return .success(())
-        } catch {
-            return .failure(error)
-        }
+        Result { try map.startRecording(to: url, name: name) }
     }
 
     func stopRecording() { map.stopRecording() }

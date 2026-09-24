@@ -63,6 +63,32 @@ class AsHighlightPass {
   size_t emitted_was_;
 };
 
+// PJ5: the ground scale and the direction of true north both vary across a
+// non-affine frame, so a caller working in pixels asks about ITS pixel rather
+// than about the centre. Both fall back to the centre value where the pixel
+// has no geographic image.
+
+// Ground metres per pixel at a surface pixel.
+double MetersPerPixelAtPixel(const MapProjection& proj, double x, double y) {
+  const double centre = proj.DegPerPixelLat() * kMetersPerDegreeLat;
+  GeoPoint g;
+  MapProjection::LocalScale ls;
+  if (!proj.SurfaceToGeo(x, y, &g).ok()) return centre;
+  if (!proj.LocalScaleAt(g, &ls).ok()) return centre;
+  return ls.m_per_px_y;
+}
+
+// The clockwise screen angle of true north at a surface pixel: the chart's own
+// turn, less the projection's convergence there.
+double NorthOnChartAtPixel(const MapProjection& proj, double x, double y,
+                           double chart_rotation_deg) {
+  GeoPoint g;
+  MapProjection::LocalScale ls;
+  if (!proj.SurfaceToGeo(x, y, &g).ok()) return chart_rotation_deg;
+  if (!proj.LocalScaleAt(g, &ls).ok()) return chart_rotation_deg;
+  return chart_rotation_deg - ls.convergence_deg;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -482,7 +508,14 @@ Status GeoDraw::DrawSymbol(const GeoPoint& at, const std::string& symbol_id,
   double x = 0.0, y = 0.0;
   Status s = proj_.GeoToSurface(at, &x, &y);
   if (!s.ok()) return s;
-  return StampSymbol(x, y, symbol_id, style, proj_.Rotation());
+  // A geo-anchored symbol is authored against TRUE north at its own point, so
+  // the turn taken out of it is the chart's rotation less the projection's
+  // convergence there (PJ5). Equal Arc and Mercator have none, and the affine
+  // branch executes exactly the terms it did before this existed.
+  const double turn = proj_.IsAffine()
+                          ? proj_.Rotation()
+                          : NorthOnChartAtPixel(proj_, x, y, proj_.Rotation());
+  return StampSymbol(x, y, symbol_id, style, turn);
 }
 
 Status GeoDraw::DrawSymbolAtPixel(double x, double y,
@@ -505,9 +538,11 @@ Status GeoDraw::DrawLabelAtPixel(double x, double y, const std::string& text,
   // one is left exactly as authored (the ref_scale argument is the chart
   // renderer's and is deliberately not plumbed here — an overlay label that
   // wants to zoom says kMeters).
-  const double mpp = proj_.Ready()
-                         ? proj_.DegPerPixelLat() * kMetersPerDegreeLat
-                         : 0.0;
+  const double mpp =
+      !proj_.Ready() ? 0.0
+                     : proj_.IsAffine()
+                           ? proj_.DegPerPixelLat() * kMetersPerDegreeLat
+                           : MetersPerPixelAtPixel(proj_, x, y);
   ts.size = LabelPixelSize(style, proj_.Ready() ? proj_.Scale() : 0.0, mpp,
                            0.0);
   if (ts.size < kMinLabelPx) return Status::Ok();
@@ -587,9 +622,16 @@ Status GeoDraw::DrawLabelAlongPath(
   if (text.empty()) return Status::Ok();
 
   TextStyle ts = style.style;
-  const double mpp = proj_.Ready()
-                         ? proj_.DegPerPixelLat() * kMetersPerDegreeLat
-                         : 0.0;
+  // Measured at the start of the first run: a path label is one size along its
+  // whole length, and the alternative -- a different size per glyph -- is not a
+  // label.
+  const bool have_anchor = !paths.empty() && !paths.front().empty();
+  const double mpp =
+      !proj_.Ready() ? 0.0
+                     : (proj_.IsAffine() || !have_anchor)
+                           ? proj_.DegPerPixelLat() * kMetersPerDegreeLat
+                           : MetersPerPixelAtPixel(proj_, paths.front()[0].x,
+                                                   paths.front()[0].y);
   ts.size = LabelPixelSize(style, proj_.Ready() ? proj_.Scale() : 0.0, mpp,
                            0.0);
   if (ts.size < kMinLabelPx) return Status::Ok();

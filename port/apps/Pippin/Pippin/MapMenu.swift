@@ -93,6 +93,10 @@ struct MapMenuButton: View, Equatable {
         // puts the first item nearest the button, and this button is at the
         // bottom of the screen, so the menu opens upward.
         .menuOrder(.fixed)
+        // Same reason as the round buttons: the automatic style puts a tinted
+        // capsule behind the label, wider than the circle it sits under.
+        .menuStyle(.button)
+        .buttonStyle(.circleControl)
         .tint(.primary)
         .accessibilityLabel("Menu")
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)

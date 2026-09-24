@@ -709,6 +709,7 @@ PYBIND11_MODULE(pyfvw, m) {
   // progress callback that returns False cancels, and the cancel is the
   // only thing that raises it.
   m.attr("INTERRUPTED") = (int)fv::kInterrupted;
+  m.attr("NOT_PROJECTABLE") = (int)fv::kNotProjectable;
   m.attr("INTERNAL") = (int)fv::kInternal;
 
   // ---- pyfvw.geo ----------------------------------------------------------
@@ -2222,6 +2223,19 @@ PYBIND11_MODULE(pyfvw, m) {
 
   // Reference display pitch (mm/pixel) that defines "100%" for imagery.
   eng.attr("NATIVE_DISPLAY_MM_PER_PIXEL") = fv::kNativeDisplayMmPerPixel;
+  eng.attr("MERCATOR_MAX_LAT") = fv::kMercatorMaxLat;
+
+  py::enum_<fv::ProjectionType>(
+      eng, "ProjectionType",
+      "The 2D display projections, in Windows ProjectionEnum order. EQUAL_ARC "
+      "and MERCATOR are implemented; selecting any other raises (kUnsupported) "
+      "and leaves the projection alone.")
+      .value("EQUAL_ARC", fv::ProjectionType::kEqualArc)
+      .value("MERCATOR", fv::ProjectionType::kMercator)
+      .value("LAMBERT", fv::ProjectionType::kLambert)
+      .value("AZIMUTHAL_EQUIDISTANT",
+             fv::ProjectionType::kAzimuthalEquidistant)
+      .value("ORTHOGRAPHIC", fv::ProjectionType::kOrthographic);
 
   py::class_<fv::MapProjection>(eng, "MapProjection")
       // Constructable + configurable from Python so a vector viewer can drive
@@ -2273,6 +2287,27 @@ PYBIND11_MODULE(pyfvw, m) {
            "by (w sin + h cos), so a turned frame reads more data.")
       .def_property_readonly("rotation", &fv::MapProjection::Rotation,
                              "Clockwise chart rotation in degrees, [0, 360).")
+      .def("set_projection_type",
+           [](fv::MapProjection& p, fv::ProjectionType t) {
+             ThrowIfError(p.SetProjectionType(t));
+           },
+           "type"_a,
+           "Select the display projection; all five are implemented. "
+           "Orthogonal to the scale calls, but it re-derives the projection's "
+           "own constants, so set it AFTER them. Mercator raises "
+           "NOT_PROJECTABLE from geo_to_surface and surface_to_geo beyond "
+           "MERCATOR_MAX_LAT, and moves its working centre towards the "
+           "equator to keep the view inside that limit — `center` still "
+           "reports what you asked for. The two azimuthal projections raise "
+           "it as well: Orthographic for the far hemisphere and for a pixel "
+           "off its disc, Azimuthal Equidistant for the antipode of the "
+           "centre and for a pixel past the rim that antipode becomes.")
+      .def_property_readonly("projection_type", &fv::MapProjection::Type)
+      .def_property_readonly(
+          "is_affine", &fv::MapProjection::IsAffine,
+          "True when geo->surface is affine (Equal Arc at any rotation). Code "
+          "that relies on straight lines staying straight asks this rather "
+          "than testing the type.")
       .def_property_readonly("deg_per_pixel_lat", &fv::MapProjection::DegPerPixelLat)
       .def_property_readonly("deg_per_pixel_lon", &fv::MapProjection::DegPerPixelLon)
       .def_property_readonly("scale", &fv::MapProjection::Scale)
@@ -2344,6 +2379,15 @@ PYBIND11_MODULE(pyfvw, m) {
            "resampled through the turned projection, so the image turns with "
            "the vectors over it; 0 is the exact identity and is the blit the "
            "engine has always done.")
+      .def("set_projection_type",
+           [](fv::MapEngine& e, fv::ProjectionType t) {
+             ThrowIfError(e.SetProjectionType(t));
+           },
+           "type"_a,
+           "Select the display projection (PJ2). A non-affine one puts the "
+           "base map on the projected raster path: every screen pixel is "
+           "resampled through the inverse projection with adaptive "
+           "subdivision, which costs more than the affine blit.")
       .def_property_readonly("proj", &fv::MapEngine::CurrentProj,
                              py::return_value_policy::reference_internal)
       .def(

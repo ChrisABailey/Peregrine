@@ -33,6 +33,7 @@ enum StatusCode {
   kUnsupported = -4,
   kOutOfCoverage = -5,
   kInterrupted = -6,
+  kNotProjectable = -7,  // the point has no image in the display projection
   kInternal = -100,
 };
 

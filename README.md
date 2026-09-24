@@ -52,7 +52,8 @@ which is not distributed here (`ctest` reports a skipped test as passing; the
 | Route documents | A route as an editable document over that graph — waypoints, drag-to-reshape, undo/redo, and an overlay that draws the planned line and the road network behind it |
 | Search | "Where is X", asked of every source at once: a geographic box or radius, a text match on each source's own primary label, and a name index over OSM tiles — geo-space and on-demand, so it finds what is off screen |
 | Navigation | Moving-map camera (heading, slew, road snap), GPX and NMEA readers, a GPX recorder, and a trip computer — elapsed, speed, distance, distance remaining, ETA |
-| Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), equal-arc projection at true physical scale, a map engine that resamples frames into a viewport, and geographic drawing (great-circle lines, symbol libraries) |
+| Rendering | CPU canvas (scanline fill, lines, ellipses, blits, TrueType text), a map engine that resamples frames into a viewport at true physical scale, and geographic drawing (great-circle lines, symbol libraries) |
+| Projections | Equal Arc, Mercator, Lambert Conformal Conic, Azimuthal Equidistant and Orthographic — FalconView's projectors ported to standard C++, with an adaptive raster warp for the non-linear ones (see *Map projections* below) |
 | App layer | Overlay stack with a type registry, session save/restore, editors and click-to-pick — the shell an interactive map application needs, headless and testable |
 | File overlays | `.fvpoints` — a SQLite point document that carries its own PNG symbol artwork, so a file opens with its symbology anywhere |
 | Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays, vector sources, style engines, routing and the app layer |
@@ -103,6 +104,51 @@ rather than fixed. Read it before touching a module.
 - **Win32 idioms get one shared implementation.** File mapping, directory
   enumeration and Win32 path semantics (backslashes, case-insensitive lookup)
   are emulated once in `port/include/`, so legacy call sites compile unmodified.
+
+## Map projections
+
+The map engine draws in five projections, the same set FalconView offers:
+
+| Projection | Notes |
+|------------|-------|
+| Equal Arc | The default, and still the fast path: frames are resampled with an affine blit, bit-identical to the output from before projections existed |
+| Mercator | Limited to ±80° latitude, as in FalconView |
+| Lambert Conformal Conic | Standard parallels chosen per viewport; switches to the Mercator equations near the equator; north is no longer "up" away from the centre meridian |
+| Azimuthal Equidistant | A pole can be on screen, so map bounds open to the full longitude circle |
+| Orthographic | The far hemisphere is not projectable; everything outside the globe's disc is left transparent |
+
+Select one with `MapProjection::SetProjectionType()` in C++, or
+`pyfvw.engine.ProjectionType` from Python; PythonView has a projection menu.
+
+How it works:
+
+- **One seam.** `MapProjection` (`port/include/fvkit/proj.h`) carries the
+  projection type; `GeoToSurface`/`SurfaceToGeo` dispatch on it, and
+  `IsAffine()` tells callers whether the old linear shortcuts still hold.
+  Points on the far side of a projection report `kNotProjectable` rather than
+  an error.
+- **Adaptive raster warp.** Raster sources (CADRG, GeoTIFF, DTED, TIROS, …)
+  are reprojected by `raster_warp` — a port of FalconView's
+  `project_image_hlpr` that interpolates across a rectangle when the
+  interpolated mapping lands within half a pixel of the exact one (checked at
+  the centre and quarter points) and otherwise splits it into quadrants. Ties
+  round to even, as the Windows engine does. Tests compare it against a brute-force per-pixel
+  render in every projection, at rotation 0 and 30°.
+- **Consumers that assumed a linear map were audited.** Label sizes, symbol
+  orientation (grid convergence), the moving-map heading line and the
+  terrain-avoidance mask use the local scale and convergence at the point
+  being drawn (`LocalScaleAt`). The graticule is drawn as projected curves
+  and breaks correctly at the antimeridian.
+- **World scale works in every projection**, including views that wrap the
+  antimeridian.
+- The map scale bar overlay (`fv.scalebar`) measures geodesic distance along
+  the screen's centre row and column through `SurfaceToGeo`, so it stays
+  correct off Equal Arc.
+
+Pippin stays on Equal Arc. `port/projection-plan.md` has the design and the
+per-phase decisions.
+
+![Orthographic](Screenshots/Projection.png)
 
 ## PythonView (Python test App)
 

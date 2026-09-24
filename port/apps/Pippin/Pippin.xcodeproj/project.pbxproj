@@ -15,6 +15,10 @@
 		AA0100010000000000000006 /* PPPixelProbe.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000006 /* PPPixelProbe.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000007 /* PippinApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000007 /* PippinApp.swift */; };
 		AA0100010000000000000008 /* MapScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000008 /* MapScreen.swift */; };
+		AA0100010000000000000030 /* MapMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000039 /* MapMenu.swift */; };
+		AA0100010000000000000031 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003A /* PrivacyInfo.xcprivacy */; };
+		AA0100010000000000000032 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
+		AA0100010000000000000034 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
 		AA0100010000000000000009 /* MapModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000009 /* MapModel.swift */; };
 		AA010001000000000000000A /* PixelProbeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000000A /* PixelProbeScreen.swift */; };
 		AA010001000000000000000B /* Data in Resources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000000B /* Data */; };
@@ -32,9 +36,17 @@
 		AA0100010000000000000019 /* PPFix.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000019 /* PPFix.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA010001000000000000001A /* PPLocationSource.h in Headers */ = {isa = PBXBuildFile; fileRef = AA020001000000000000001A /* PPLocationSource.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA010001000000000000001B /* PPRoute.h in Headers */ = {isa = PBXBuildFile; fileRef = AA020001000000000000001D /* PPRoute.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA010001000000000000002D /* PPSearch.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000034 /* PPSearch.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA010001000000000000002E /* PPSearch.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000036 /* PPSearch.mm */; };
+		AA010001000000000000002F /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000038 /* SearchView.swift */; };
 		AA010001000000000000001C /* PPRoute.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000001F /* PPRoute.mm */; };
 		AA010001000000000000001D /* PPRouteStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000021 /* PPRouteStore.cpp */; };
 		AA010001000000000000001E /* RouteSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000022 /* RouteSheet.swift */; };
+		AA0100010000000000000035 /* PPGuidance.h in Headers */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003D /* PPGuidance.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA0100010000000000000036 /* PPGuidance.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003F /* PPGuidance.mm */; };
+		AA0100010000000000000038 /* AlertTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000041 /* AlertTone.swift */; };
+		AA0100010000000000000039 /* TurnAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000042 /* TurnAlerts.swift */; };
+		AA0100010000000000000037 /* DistanceUnits.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000040 /* DistanceUnits.swift */; };
 		AA010001000000000000001F /* PPTrip.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000024 /* PPTrip.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000020 /* PPTrip.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000026 /* PPTrip.mm */; };
 		AA0100010000000000000021 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000027 /* Assets.xcassets */; };
@@ -44,23 +56,11 @@
 		AA0100010000000000000025 /* PointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002D /* PointSheet.swift */; };
 		AA0100010000000000000026 /* Sharing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002E /* Sharing.swift */; };
 		AA0100010000000000000027 /* PlaceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002F /* PlaceLink.swift */; };
+		AA010001000000000000002B /* RenderGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000032 /* RenderGate.swift */; };
+		AA010001000000000000002C /* LocationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000033 /* LocationPolicy.swift */; };
 		AA0100010000000000000028 /* PlaceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002F /* PlaceLink.swift */; };
 		AA0100010000000000000029 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000030 /* ShareViewController.swift */; };
 		AA010001000000000000002A /* PippinShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000C /* PippinShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		AA010001000000000000002B /* RenderGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000032 /* RenderGate.swift */; };
-		AA010001000000000000002C /* LocationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000033 /* LocationPolicy.swift */; };
-		AA010001000000000000002D /* PPSearch.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000034 /* PPSearch.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		AA010001000000000000002E /* PPSearch.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000036 /* PPSearch.mm */; };
-		AA010001000000000000002F /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000038 /* SearchView.swift */; };
-		AA0100010000000000000030 /* MapMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000039 /* MapMenu.swift */; };
-		AA0100010000000000000031 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003A /* PrivacyInfo.xcprivacy */; };
-		AA0100010000000000000032 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
-		AA0100010000000000000034 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
-		AA0100010000000000000035 /* PPGuidance.h in Headers */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003D /* PPGuidance.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		AA0100010000000000000036 /* PPGuidance.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003F /* PPGuidance.mm */; };
-		AA0100010000000000000037 /* DistanceUnits.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000040 /* DistanceUnits.swift */; };
-		AA0100010000000000000038 /* AlertTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000041 /* AlertTone.swift */; };
-		AA0100010000000000000039 /* TurnAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000042 /* TurnAlerts.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -107,7 +107,6 @@
 
 /* Begin PBXFileReference section */
 		2AB49EFA3037AED100459DFF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		2AD20C6B3061D41200B16D53 /* kiawah_demo_2x_5s.gpx */ = {isa = PBXFileReference; lastKnownFileType = text.xml; name = kiawah_demo_2x_5s.gpx; path = ../../../../../../Downloads/kiawah_demo_2x_5s.gpx; sourceTree = "<group>"; };
 		AA0200010000000000000001 /* PPMap.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPMap.mm; sourceTree = "<group>"; };
 		AA0200010000000000000002 /* PPPixelBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPPixelBridge.mm; sourceTree = "<group>"; };
 		AA0200010000000000000003 /* PPPixelProbe.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPPixelProbe.mm; sourceTree = "<group>"; };
@@ -116,6 +115,10 @@
 		AA0200010000000000000006 /* PPPixelProbe.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPPixelProbe.h; sourceTree = "<group>"; };
 		AA0200010000000000000007 /* PippinApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PippinApp.swift; sourceTree = "<group>"; };
 		AA0200010000000000000008 /* MapScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapScreen.swift; sourceTree = "<group>"; };
+		AA0200010000000000000039 /* MapMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapMenu.swift; sourceTree = "<group>"; };
+		AA020001000000000000003A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		AA020001000000000000003B /* AppName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppName.swift; sourceTree = "<group>"; };
+		AA020001000000000000003C /* Pippin.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Pippin.xcconfig; sourceTree = "<group>"; };
 		AA0200010000000000000009 /* MapModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapModel.swift; sourceTree = "<group>"; };
 		AA020001000000000000000A /* PixelProbeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PixelProbeScreen.swift; sourceTree = "<group>"; };
 		AA020001000000000000000B /* Data */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Data; sourceTree = "<group>"; };
@@ -134,6 +137,11 @@
 		AA020001000000000000001A /* PPLocationSource.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPLocationSource.h; sourceTree = "<group>"; };
 		AA020001000000000000001B /* PPFix+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPFix+Internal.h"; sourceTree = "<group>"; };
 		AA020001000000000000001C /* PPLocationFix.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPLocationFix.h; sourceTree = "<group>"; };
+		AA0200010000000000000034 /* PPSearch.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPSearch.h; sourceTree = "<group>"; };
+		AA0200010000000000000035 /* PPSearch+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPSearch+Internal.h"; sourceTree = "<group>"; };
+		AA0200010000000000000036 /* PPSearch.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPSearch.mm; sourceTree = "<group>"; };
+		AA0200010000000000000037 /* PPSearchRules.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPSearchRules.h; sourceTree = "<group>"; };
+		AA0200010000000000000038 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
 		AA020001000000000000001D /* PPRoute.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPRoute.h; sourceTree = "<group>"; };
 		AA020001000000000000001E /* PPRoute+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPRoute+Internal.h"; sourceTree = "<group>"; };
 		AA020001000000000000001F /* PPRoute.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPRoute.mm; sourceTree = "<group>"; };
@@ -141,6 +149,12 @@
 		AA0200010000000000000021 /* PPRouteStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PPRouteStore.cpp; sourceTree = "<group>"; };
 		AA0200010000000000000022 /* RouteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteSheet.swift; sourceTree = "<group>"; };
 		AA0200010000000000000023 /* PPCameraFit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPCameraFit.h; sourceTree = "<group>"; };
+		AA020001000000000000003D /* PPGuidance.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPGuidance.h; sourceTree = "<group>"; };
+		AA020001000000000000003E /* PPGuidance+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPGuidance+Internal.h"; sourceTree = "<group>"; };
+		AA020001000000000000003F /* PPGuidance.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPGuidance.mm; sourceTree = "<group>"; };
+		AA0200010000000000000041 /* AlertTone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertTone.swift; sourceTree = "<group>"; };
+		AA0200010000000000000042 /* TurnAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnAlerts.swift; sourceTree = "<group>"; };
+		AA0200010000000000000040 /* DistanceUnits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistanceUnits.swift; sourceTree = "<group>"; };
 		AA0200010000000000000024 /* PPTrip.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPTrip.h; sourceTree = "<group>"; };
 		AA0200010000000000000025 /* PPTrip+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPTrip+Internal.h"; sourceTree = "<group>"; };
 		AA0200010000000000000026 /* PPTrip.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPTrip.mm; sourceTree = "<group>"; };
@@ -153,28 +167,13 @@
 		AA020001000000000000002D /* PointSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointSheet.swift; sourceTree = "<group>"; };
 		AA020001000000000000002E /* Sharing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sharing.swift; sourceTree = "<group>"; };
 		AA020001000000000000002F /* PlaceLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceLink.swift; sourceTree = "<group>"; };
-		AA0200010000000000000030 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
-		AA0200010000000000000031 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AA0200010000000000000032 /* RenderGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderGate.swift; sourceTree = "<group>"; };
 		AA0200010000000000000033 /* LocationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationPolicy.swift; sourceTree = "<group>"; };
-		AA0200010000000000000034 /* PPSearch.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPSearch.h; sourceTree = "<group>"; };
-		AA0200010000000000000035 /* PPSearch+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPSearch+Internal.h"; sourceTree = "<group>"; };
-		AA0200010000000000000036 /* PPSearch.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPSearch.mm; sourceTree = "<group>"; };
-		AA0200010000000000000037 /* PPSearchRules.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPSearchRules.h; sourceTree = "<group>"; };
-		AA0200010000000000000038 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
-		AA0200010000000000000039 /* MapMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapMenu.swift; sourceTree = "<group>"; };
-		AA020001000000000000003A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		AA020001000000000000003B /* AppName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppName.swift; sourceTree = "<group>"; };
-		AA020001000000000000003C /* Pippin.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Pippin.xcconfig; sourceTree = "<group>"; };
-		AA020001000000000000003D /* PPGuidance.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPGuidance.h; sourceTree = "<group>"; };
-		AA020001000000000000003E /* PPGuidance+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPGuidance+Internal.h"; sourceTree = "<group>"; };
-		AA020001000000000000003F /* PPGuidance.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPGuidance.mm; sourceTree = "<group>"; };
-		AA0200010000000000000040 /* DistanceUnits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistanceUnits.swift; sourceTree = "<group>"; };
-		AA0200010000000000000041 /* AlertTone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertTone.swift; sourceTree = "<group>"; };
-		AA0200010000000000000042 /* TurnAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnAlerts.swift; sourceTree = "<group>"; };
+		AA0200010000000000000030 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		AA0200010000000000000031 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AA030001000000000000000C /* PippinShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PippinShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA030001000000000000000A /* Pippin.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pippin.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA030001000000000000000B /* PippinKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PippinKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA030001000000000000000C /* PippinShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PippinShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -206,7 +205,6 @@
 		AA0500010000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				2AD20C6B3061D41200B16D53 /* kiawah_demo_2x_5s.gpx */,
 				AA0500010000000000000002 /* PippinKit */,
 				AA0500010000000000000003 /* Pippin */,
 				AA0500010000000000000006 /* PippinShare */,
@@ -300,15 +298,6 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		AA0500010000000000000005 /* Licensing */ = {
-			isa = PBXGroup;
-			children = (
-				AA020001000000000000000E /* COPYING */,
-				AA020001000000000000000F /* COPYING.LESSER */,
-			);
-			name = Licensing;
-			sourceTree = "<group>";
-		};
 		AA0500010000000000000006 /* PippinShare */ = {
 			isa = PBXGroup;
 			children = (
@@ -316,6 +305,15 @@
 				AA0200010000000000000030 /* ShareViewController.swift */,
 			);
 			path = PippinShare;
+			sourceTree = "<group>";
+		};
+		AA0500010000000000000005 /* Licensing */ = {
+			isa = PBXGroup;
+			children = (
+				AA020001000000000000000E /* COPYING */,
+				AA020001000000000000000F /* COPYING.LESSER */,
+			);
+			name = Licensing;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */

@@ -81,11 +81,9 @@ struct SharedPlace: Equatable {
 
     /// `name`, falling back to the street line and then to `fallbackName`.
     var displayName: String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        let street = address.split(separator: ",").first.map(String.init) ?? ""
-        let trimmedStreet = street.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedStreet.isEmpty ? Self.fallbackName : trimmedStreet
+        let street = address.split(separator: ",").first.map(String.init)
+        let chosen = PlaceLink.firstNonEmpty([name, street])
+        return chosen.isEmpty ? Self.fallbackName : chosen
     }
 }
 
@@ -537,7 +535,8 @@ enum PlaceLink {
         return value
     }
 
-    private static func firstNonEmpty(_ candidates: [String?]) -> String {
+    /// The first candidate with something in it, trimmed; "" when none has.
+    fileprivate static func firstNonEmpty(_ candidates: [String?]) -> String {
         for candidate in candidates {
             let trimmed = (candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }

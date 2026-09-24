@@ -59,8 +59,10 @@ adapter header.
 - `fv::Status{ int code; std::string message; }` with `ok() == (code == 0)`. Defined in
   `fvkit/geo.h`. Success is code 0, always.
 - FvKit-native error codes are a small negative enum (`kInvalidArg = -1, kNotFound = -2,
-  kIoError = -3, kUnsupported = -4, kOutOfCoverage = -5, kInterrupted = -6, kInternal =
-  -100`). When wrapping a legacy call, the legacy code (HRESULT, GeoidError, decoder int)
+  kIoError = -3, kUnsupported = -4, kOutOfCoverage = -5, kInterrupted = -6, kNotProjectable = -7, kInternal =
+  -100`). `kNotProjectable` means a point that has no image in the display projection
+  (orthographic far hemisphere, Mercator beyond its latitude limit): drawing callers skip
+  the vertex or pixel, picking callers treat it as a miss. When wrapping a legacy call, the legacy code (HRESULT, GeoidError, decoder int)
   is preserved **in the message text**, not in `code`.
 - Signature shape: fallible operations **return `Status`**; data comes back through
   pointer out-params (matches the ported modules' existing style, trivially bindable).

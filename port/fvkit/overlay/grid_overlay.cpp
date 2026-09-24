@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <functional>
 
 #include "fvkit/canvas/geo_draw.h"
 #include "fvkit/canvas/label_placer.h"
@@ -188,25 +189,122 @@ void AdjustPolarTickSpacing(double scale, double lat, double* major,
   else if (scale == 500000.0 && a >= 76.0) set(5.0 / 60.0, 0.0);
 }
 
-// A parallel or meridian as a chain of geographic points. Legs are kept under
-// 30 degrees so no single leg can be taken the wrong way round the earth by
-// the projection's short-way longitude rule.
-std::vector<GeoPoint> LinePoints(GridAxis axis, double value, double lo,
-                                 double hi) {
-  std::vector<GeoPoint> pts;
-  constexpr double kMaxLegDeg = 30.0;
+// The geographic point at parameter `t` along a parallel or a meridian.
+// Longitude is left UNWRAPPED: `t` (or `value`) may run past +/-180 because
+// the caller works in the viewport's unwrapped longitude frame.
+GeoPoint GridPointAt(GridAxis axis, double value, double t) {
+  return axis == GridAxis::kLatitude ? GeoPoint{value, t} : GeoPoint{t, value};
+}
+
+// A parallel or meridian as surface runs, subdivided until the drawn chord is
+// within half a pixel of the projected curve.
+//
+// Two things the earlier fixed 30-degree sampling got wrong off Equal Arc.
+// A parallel is a circular arc in Lambert and a curve in both azimuthal
+// projections, so a straight leg cuts a visible chord across it; the flatness
+// test is the same half-pixel one the raster warp uses (raster_warp.h). And
+// every sample used to be normalized and then projected through the short-way
+// unwrap, which put two samples either side of the antimeridian at opposite
+// ends of the surface; the walk now stays in the caller's unwrapped frame and
+// asks GeoToSurfaceUnwrapped, so a view wrapping the world draws each copy of
+// a line where it belongs.
+//
+// A run breaks where the projection refuses a point (past an Orthographic
+// limb) and where consecutive samples jump further than the surface diagonal,
+// which is the Azimuthal Equidistant rim: the antipode's image is the whole
+// rim, so a line crossing it leaves one edge of the disc and re-enters at the
+// opposite one.
+std::vector<std::vector<SurfacePoint>> ProjectedGridLine(
+    const MapProjection& proj, GridAxis axis, double value, double lo,
+    double hi) {
+  const PixelSize surf = proj.SurfaceSize();
+  const double diag =
+      std::sqrt(static_cast<double>(surf.width) * surf.width +
+                static_cast<double>(surf.height) * surf.height);
+  // Beyond this box a chord is off screen at both ends and its shape cannot be
+  // seen, so subdividing it only costs time.
+  const double far_x = surf.width * 2.0, far_y = surf.height * 2.0;
+  constexpr double kFlatnessPx = 0.5;
+  constexpr int kMaxDepth = 6;
+  // The coarse legs the adaptive pass refines. A midpoint test alone can be
+  // fooled by a curve symmetric about the leg's centre -- a meridian spanning
+  // both hemispheres in Mercator is one -- so the walk never starts with a leg
+  // wider than this.
+  constexpr double kCoarseLegDeg = 15.0;
+
+  auto project = [&](double t, SurfacePoint* p) {
+    double x = 0.0, y = 0.0;
+    if (!proj.GeoToSurfaceUnwrapped(GridPointAt(axis, value, t), &x, &y).ok())
+      return false;
+    *p = SurfacePoint{x, y};
+    return true;
+  };
+  auto offscreen = [&](const SurfacePoint& p) {
+    return p.x < -far_x || p.y < -far_y || p.x > surf.width + far_x ||
+           p.y > surf.height + far_y;
+  };
+
+  std::vector<std::vector<SurfacePoint>> runs;
+  std::vector<SurfacePoint> run;
+  auto flush = [&]() {
+    if (run.size() >= 2) runs.push_back(run);
+    run.clear();
+  };
+  // Appends `b`, having first placed whatever points the curve between `a` and
+  // `b` needs. `a` is already in the run.
+  std::function<void(double, const SurfacePoint&, double, const SurfacePoint&,
+                     int)>
+      refine = [&](double ta, const SurfacePoint& a, double tb,
+                   const SurfacePoint& b, int depth) {
+        if (depth < kMaxDepth && !(offscreen(a) && offscreen(b))) {
+          const double tm = 0.5 * (ta + tb);
+          SurfacePoint m;
+          if (!project(tm, &m)) {
+            flush();  // the curve leaves the projection between a and b
+            run.push_back(b);
+            return;
+          }
+          const double ex = m.x - 0.5 * (a.x + b.x);
+          const double ey = m.y - 0.5 * (a.y + b.y);
+          if (ex * ex + ey * ey > kFlatnessPx * kFlatnessPx) {
+            refine(ta, a, tm, m, depth + 1);
+            refine(tm, m, tb, b, depth + 1);
+            return;
+          }
+        }
+        const double dx = b.x - a.x, dy = b.y - a.y;
+        if (dx * dx + dy * dy > diag * diag) flush();
+        run.push_back(b);
+      };
+
   const double span = hi - lo;
-  int legs = static_cast<int>(std::ceil(span / kMaxLegDeg));
+  int legs = static_cast<int>(std::ceil(std::fabs(span) / kCoarseLegDeg));
   if (legs < 1) legs = 1;
-  pts.reserve(static_cast<size_t>(legs) + 1);
-  for (int i = 0; i <= legs; ++i) {
+
+  double t_prev = lo;
+  SurfacePoint prev;
+  bool have_prev = project(lo, &prev);
+  if (have_prev) run.push_back(prev);
+  for (int i = 1; i <= legs; ++i) {
     const double t = lo + span * (static_cast<double>(i) / legs);
-    if (axis == GridAxis::kLatitude)
-      pts.push_back({value, NormalizeLon(t)});   // a parallel: t is longitude
-    else
-      pts.push_back({t, NormalizeLon(value)});   // a meridian: t is latitude
+    SurfacePoint cur;
+    if (!project(t, &cur)) {
+      flush();
+      have_prev = false;
+      t_prev = t;
+      continue;
+    }
+    if (!have_prev) {
+      run.push_back(cur);
+    } else {
+      refine(t_prev, prev, t, cur, 0);
+    }
+    prev = cur;
+    t_prev = t;
+    have_prev = true;
   }
-  return pts;
+  flush();
+  return runs;
 }
 
 // The point at which a line crosses into the surface, scanning from `from`
@@ -224,11 +322,11 @@ std::vector<GeoPoint> LinePoints(GridAxis axis, double value, double lo,
 bool EntryPoint(const MapProjection& proj, GridAxis axis, double value,
                 double from, double to, SurfacePoint* out) {
   const PixelSize surf = proj.SurfaceSize();
+  // Unwrapped, for the same reason the line walk is: `from` and `to` come
+  // from the viewport's unwrapped longitude frame, and normalizing each
+  // sample would put the scan on the far side of the surface at the seam.
   auto project = [&](double t, double* sx, double* sy) {
-    const GeoPoint g = axis == GridAxis::kLatitude
-                           ? GeoPoint{value, NormalizeLon(t)}
-                           : GeoPoint{t, NormalizeLon(value)};
-    return proj.GeoToSurface(g, sx, sy).ok();
+    return proj.GeoToSurfaceUnwrapped(GridPointAt(axis, value, t), sx, sy).ok();
   };
   auto inside = [&](double sx, double sy) {
     return sx >= 0.0 && sy >= 0.0 && sx < surf.width && sy < surf.height;
@@ -335,7 +433,9 @@ Status DrawTicks(const MapProjection& proj, GeoDraw& gd, GridAxis line_axis,
 
   const PixelSize surf = proj.SurfaceSize();
   constexpr int kMaxTicks = 4096;
-  constexpr double kNudgeDeg = 1e-3;  // the transform is linear: any step does
+  // The nudge only supplies a DIRECTION, taken from the screen delta, so its
+  // size just has to be small enough that the projection is straight over it.
+  constexpr double kNudgeDeg = 1e-3;
   const long long first = static_cast<long long>(std::ceil(lo / spacing - 1e-9));
   Status first_err = Status::Ok();
 
@@ -343,27 +443,30 @@ Status DrawTicks(const MapProjection& proj, GeoDraw& gd, GridAxis line_axis,
     const double t = static_cast<double>(first + n) * spacing;
     if (t > hi + 1e-12) break;
 
+    // Geometry stays in the caller's unwrapped longitude frame; only the
+    // side the mark points to is decided from the wrapped value, since
+    // "away from the prime meridian" is a statement about it.
     GeoPoint at, toward;
     bool both_sides = false;
     if (line_axis == GridAxis::kLatitude) {
-      at = {line_value, NormalizeLon(t)};
+      at = {line_value, t};
       const double side = line_value >= 0.0 ? 1.0 : -1.0;
-      toward = {line_value + side * kNudgeDeg, at.lon};
+      toward = {line_value + side * kNudgeDeg, t};
       both_sides = line_value == 0.0;
     } else {
-      const double lon = NormalizeLon(line_value);
-      at = {t, lon};
-      const double side = lon >= 0.0 ? 1.0 : -1.0;
-      toward = {t, NormalizeLon(lon + side * kNudgeDeg)};
-      both_sides = lon == 0.0;
+      const double wrapped = NormalizeLon(line_value);
+      at = {t, line_value};
+      const double side = wrapped >= 0.0 ? 1.0 : -1.0;
+      toward = {t, line_value + side * kNudgeDeg};
+      both_sides = wrapped == 0.0;
     }
 
     double ax = 0.0, ay = 0.0, bx = 0.0, by = 0.0;
-    if (!proj.GeoToSurface(at, &ax, &ay).ok()) continue;
+    if (!proj.GeoToSurfaceUnwrapped(at, &ax, &ay).ok()) continue;
     // ~ map->geo_in_surface: a tick whose foot is off screen is not drawn, so
     // a line running off the edge does not sprout marks beyond it.
     if (ax < 0.0 || ay < 0.0 || ax >= surf.width || ay >= surf.height) continue;
-    if (!proj.GeoToSurface(toward, &bx, &by).ok()) continue;
+    if (!proj.GeoToSurfaceUnwrapped(toward, &bx, &by).ok()) continue;
 
     double dx = bx - ax, dy = by - ay;
     const double len = std::sqrt(dx * dx + dy * dy);
@@ -561,13 +664,15 @@ Status GridOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     if (!style.stroke.valid && !style.pattern.valid) return;
     for (const GridLineDef& d : parallels) {
       if (!d.major && !show_minor) continue;
-      note(gd.DrawGeoPolyline(LinePoints(GridAxis::kLatitude, d.value, west, east),
-                              LineKind::kSimple, style));
+      note(gd.DrawSurfacePath(
+          ProjectedGridLine(proj, GridAxis::kLatitude, d.value, west, east),
+          style));
     }
     for (const GridLineDef& d : meridians) {
       if (!d.major && !show_minor) continue;
-      note(gd.DrawGeoPolyline(LinePoints(GridAxis::kLongitude, d.value, south, north),
-                              LineKind::kSimple, style));
+      note(gd.DrawSurfacePath(
+          ProjectedGridLine(proj, GridAxis::kLongitude, d.value, south, north),
+          style));
     }
   };
   stroke_all(casing_only);
@@ -655,12 +760,17 @@ Status GridOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
         if (EntryPoint(proj, axis, d.value, to, from, &anchors[n])) ++n;
         if (n == 0) continue;
 
+        // A meridian's value is unwrapped, so 190 east is the line the
+        // reader calls 170 west.
+        const double labelled = axis == GridAxis::kLongitude
+                                    ? NormalizeLon(d.value)
+                                    : d.value;
         const std::string text =
-            GraticuleLabelText(d.value, axis, sp.minor_line_deg);
+            GraticuleLabelText(labelled, axis, sp.minor_line_deg);
 
         for (int i = 0; i < n; ++i) {
           const LabelStyle s =
-              EdgeAnchoredStyle(ls, anchors[i], surf, axis, d.value);
+              EdgeAnchoredStyle(ls, anchors[i], surf, axis, labelled);
           LabelInk ink;
           if (!placer.Place(canvas, anchors[i].x, anchors[i].y, text, s.style,
                             s, &ink))
