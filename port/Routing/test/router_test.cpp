@@ -1040,6 +1040,54 @@ TEST(Router, CycleOnlyRoutesTheSameOnAGeneralAndOnACycleOnlyGraph) {
 
 // Same argument as the bicycle: legs do not go faster because the street they
 // are on is posted at 35 km/h. A walking route is timed at walking pace.
+/// Boardwalk 29 to Boardwalk 41, both inland ends: along the sand when the
+/// graph has a beach, by road when it does not.
+TEST(Router, KiawahBoardwalkToBoardwalkRidesTheBeachWhenTheGraphHasOne) {
+  SKIP_WITHOUT_KIAWAH();
+  fv::routing::RoadGraphBuildOptions build;
+  RoadGraph plain, beach;
+  ASSERT_EQ(fv::routing::BuildRoadGraph(kiawah_inputs, build, &plain, nullptr).code, fv::kOk);
+  build.beaches = true;
+  ASSERT_EQ(fv::routing::BuildRoadGraph(kiawah_inputs, build, &beach, nullptr).code, fv::kOk);
+
+  const fv::GeoPoint boardwalk_29{32.602374, -80.0838337};
+  const fv::GeoPoint boardwalk_41{32.6100451, -80.045189};
+  RouteOptions walk;
+  walk.driving = false;
+  walk.beach = fv::routing::BeachUse::kToSaveTime;
+  auto uses_beach = [](const Route& r) {
+    for (const fv::routing::RouteLeg& leg : r.legs) {
+      if (leg.klass == "beach") return true;
+    }
+    return false;
+  };
+
+  Route by_road, by_beach;
+  ASSERT_EQ(Router(plain).Route(boardwalk_29, boardwalk_41, walk, &by_road).code, fv::kOk);
+  ASSERT_EQ(Router(beach).Route(boardwalk_29, boardwalk_41, walk, &by_beach).code, fv::kOk);
+  ASSERT_TRUE(by_road.found);
+  ASSERT_TRUE(by_beach.found);
+  EXPECT_FALSE(uses_beach(by_road));
+  EXPECT_TRUE(uses_beach(by_beach));
+  EXPECT_LT(by_beach.length_m, by_road.length_m);
+
+  // Not asked for, the beach graph routes like the plain one, with or without
+  // the builtin foot profile.
+  for (const bool with_profile : {false, true}) {
+    RouteOptions unasked;
+    unasked.driving = false;
+    if (with_profile)
+      ASSERT_EQ(fv::routing::SelectProfile(fv::routing::RouteRules::Builtin(), "foot", &unasked)
+                    .code,
+                fv::kOk);
+    Route r;
+    ASSERT_EQ(Router(beach).Route(boardwalk_29, boardwalk_41, unasked, &r).code, fv::kOk);
+    ASSERT_TRUE(r.found);
+    EXPECT_FALSE(uses_beach(r)) << "profile " << with_profile;
+    EXPECT_NEAR(r.length_m, by_road.length_m, 1.0) << "profile " << with_profile;
+  }
+}
+
 TEST(Router, WalkingReportsSecondsAtWalkingSpeedNotTheDrivingClock) {
   const RoadGraph g = BuildCycleFixture();
   const Router router(g);

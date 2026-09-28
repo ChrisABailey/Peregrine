@@ -5,6 +5,7 @@
 
 import SwiftUI
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// The map's touch surface: a bare `UIView` carrying pan, pinch, tap, rotate
 /// and long-press recognizers.
@@ -42,8 +43,16 @@ import UIKit
 /// map on every press that grabs nothing.
 struct MapGestureView: UIViewRepresentable {
     let onBegan: () -> Void
-    let onEnded: () -> Void
-    let onPan: (CGSize) -> Void
+    /// The last recognizer ended. The velocity is the pan's release velocity
+    /// in points per second, nil when the pan was not the last to end.
+    let onEnded: (CGVector?) -> Void
+    /// A coast is running, so a touch-down stops it.
+    let isCoasting: () -> Bool
+    /// A touch came down during a coast.
+    let onStopCoast: () -> Void
+    /// A drag since the last callback, and the finger's velocity in points
+    /// per second.
+    let onPan: (CGSize, CGVector) -> Void
     let onZoom: (CGFloat, CGPoint) -> Void
     /// A single finger down and up again without the map moving, in view
     /// points.
@@ -87,6 +96,17 @@ struct MapGestureView: UIViewRepresentable {
         tap.require(toFail: pan)
         tap.delegate = context.coordinator
 
+        // A touch that stops a coast is spent on stopping it: the tap and the
+        // hold wait for this to fail, which it does at once when nothing is
+        // coasting. The pan is left free, so the stopping finger can drag.
+        let stop = CoastStopRecognizer(target: context.coordinator,
+                                       action: #selector(Coordinator.handleStop(_:)))
+        stop.isCoasting = { [weak coordinator = context.coordinator] in
+            coordinator?.owner.isCoasting() ?? false
+        }
+        stop.delegate = context.coordinator
+        tap.require(toFail: stop)
+
         let rotate = UIRotationGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleRotate(_:)))
@@ -99,6 +119,7 @@ struct MapGestureView: UIViewRepresentable {
             target: context.coordinator,
             action: #selector(Coordinator.handleHold(_:)))
         hold.delegate = context.coordinator
+        hold.require(toFail: stop)
         // The hold's handler needs the pan, to cancel one already in flight
         // when a grab comes back late.
         context.coordinator.pan = pan
@@ -109,6 +130,7 @@ struct MapGestureView: UIViewRepresentable {
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(rotate)
         view.addGestureRecognizer(hold)
+        view.addGestureRecognizer(stop)
         return view
     }
 
@@ -133,6 +155,16 @@ struct MapGestureView: UIViewRepresentable {
         required init?(coder: NSCoder) { fatalError("not used") }
     }
 
+    /// Recognizes the moment a touch comes down while a coast is running, and
+    /// fails at once otherwise.
+    final class CoastStopRecognizer: UIGestureRecognizer {
+        var isCoasting: () -> Bool = { false }
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            state = isCoasting() ? .recognized : .failed
+        }
+    }
+
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var owner: MapGestureView
         /// How many recognizers are mid-gesture. A pinch that ends while a
@@ -146,14 +178,28 @@ struct MapGestureView: UIViewRepresentable {
 
         init(owner: MapGestureView) { self.owner = owner }
 
+        /// The pan's release velocity, handed to `onEnded` when the
+        /// pan is the last recognizer to end.
+        private var releaseVelocity: CGVector?
+
+        @objc func handleStop(_ g: CoastStopRecognizer) {
+            owner.onStopCoast()
+        }
+
         @objc func handlePan(_ g: UIPanGestureRecognizer) {
+            if g.state == .ended, active == 1, let view = g.view {
+                let v = g.velocity(in: view)
+                releaseVelocity = CGVector(dx: v.x, dy: v.y)
+            }
             track(g)
             guard g.state == .changed, let view = g.view else { return }
             let t = g.translation(in: view)
             // Reset to zero: the model wants the delta since the last
             // callback, not since the gesture began.
             g.setTranslation(.zero, in: view)
-            owner.onPan(CGSize(width: t.x, height: t.y))
+            let v = g.velocity(in: view)
+            owner.onPan(CGSize(width: t.x, height: t.y),
+                        CGVector(dx: v.x, dy: v.y))
         }
 
         @objc func handlePinch(_ g: UIPinchGestureRecognizer) {
@@ -276,7 +322,8 @@ struct MapGestureView: UIViewRepresentable {
                 if active == 1 { owner.onBegan() }
             case .ended, .cancelled, .failed:
                 active = max(0, active - 1)
-                if active == 0 { owner.onEnded() }
+                if active == 0 { owner.onEnded(releaseVelocity) }
+                releaseVelocity = nil
             default:
                 break
             }

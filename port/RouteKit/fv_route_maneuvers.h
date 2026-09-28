@@ -7,9 +7,9 @@
 //
 // The D6 seam between the two halves of GD1. `fvkit/nav/maneuver.h` derives
 // maneuvers from a line and its leg boundaries and knows nothing about a road
-// graph; `fv::routing::Route` is what the router produces. This is the six
-// lines that carry one into the other, and it lives in RouteKit for the
-// module's whole reason for existing: fvkit does not link port/Routing.
+// graph; `fv::routing::Route` is what the router produces. This carries one
+// into the other, and it lives in RouteKit for the module's whole reason for
+// existing: fvkit does not link port/Routing.
 
 #ifndef FV_ROUTE_MANEUVERS_H_
 #define FV_ROUTE_MANEUVERS_H_
@@ -22,7 +22,9 @@
 namespace fv {
 
 // `route` as the maneuver builder wants it. A route that was not found has no
-// geometry and yields an empty shape, which yields no maneuvers.
+// geometry and yields an empty shape, which yields no maneuvers. Beach-access
+// legs are folded into their neighbours, so the turns are onto the beach and
+// onto the named way off it rather than onto the unnamed connector.
 nav::RouteShape ManeuverShapeOf(const routing::Route& route);
 
 // The turn list, in travel order. Convenience over ManeuverShapeOf.

@@ -65,6 +65,7 @@ from route import RouteEditor  # the tool palette; the overlay is C++
 import points as points_mod  # noqa: E402  (the point overlay's palette)
 import analysis as analysis_mod  # noqa: E402  (AN6/AN7 — the analysis tools)
 import toolbar as toolbar_mod    # noqa: E402  (the palette, as buttons)
+import settings_file             # noqa: E402  (writes changed keys back)
 
 # ----------------------------------------------------------------------------
 # App-wide constants
@@ -94,6 +95,14 @@ MOVING_MAP_TYPE_ID = "fv.movingmap"
 # an elevation source has to be handed to the instance the toggle creates, and
 # again whenever the catalog changes under it (_attach_elevation).
 CONTOUR_TYPE_ID = "fv.contour"
+TAMASK_TYPE_ID = "fv.tamask"
+
+# The terrain avoidance keys the Terrain Avoidance dialog edits, in order:
+# (property / [tamask] key, label).
+TAMASK_FIELDS = (("altitude", "Altitude MSL"),
+                 ("warn_clearance", "Warning clearance"),
+                 ("caution_clearance", "Caution clearance"),
+                 ("ok_clearance", "OK clearance"))
 # AN6/AN7. The Range & Bearing and Intervisibility tools, written in Python
 # over `pyfvw.analysis` — the split is Chris's: the arithmetic is C++ in FvKit
 # and the picture, the gesture and the chart are here. Static, like the
@@ -444,6 +453,19 @@ PORTED_PROJECTIONS = {
 }
 
 
+def _parse_bands(text):
+    """DTED elevation breakpoints from "2500, 5000, ..." (feet): the first
+    five whole numbers, ascending. Anything unparsable is skipped; an empty
+    result means FalconView's defaults."""
+    feet = []
+    for part in text.replace(";", ",").split(","):
+        try:
+            feet.append(int(round(float(part))))
+        except ValueError:
+            pass
+    return sorted(feet)[:5]
+
+
 def _projection_from_name(name):
     """Resolves an ini spelling ("mercator", "Equal Arc") to a ProjectionType.
 
@@ -520,6 +542,8 @@ class PythonView(pyfvw.app.AppShell):
             cfg.get("display.projection", "equalarc"))
         self.mm_per_pixel = cfg.get_float("display.mm_per_pixel",
                                           NATIVE_MM_PER_PIXEL)
+        pyfvw.formats.set_dted_elevation_bands(
+            _parse_bands(cfg.get("dted.elevation_bands_ft", "")))
         self.font = _find_host_font()
 
         # Raster state.
@@ -1150,6 +1174,26 @@ class PythonView(pyfvw.app.AppShell):
             self.report_error(
                 0, "Contour lines need a DTED data source; there is none open.")
 
+    @property
+    def tamask(self):
+        """The terrain avoidance mask, or None when it is off."""
+        return self.mgr.first_of_type(TAMASK_TYPE_ID)
+
+    def _set_tamask(self, on):
+        """Toggles the mask and, on the transition to on, feeds it the
+        elevation source it needs to draw anything."""
+        was = self.tamask
+        self._set_static(TAMASK_TYPE_ID, on)
+        ovl = self.tamask
+        if ovl is None or was is not None:
+            return
+        src = self._elevation_source()
+        ovl.set_elevation_source(src)
+        if src is None:
+            self.report_error(
+                0, "The terrain avoidance mask needs a DTED data source; "
+                   "there is none open.")
+
     # --- the moving map (MM4) ----------------------------------------------
 
     @property
@@ -1580,6 +1624,34 @@ class PythonView(pyfvw.app.AppShell):
             # not, which is worse than the error alone.
             self.var_rg.set(False)
             ov.visible = False
+            return
+        self._apply_road_graph_view(ov)
+
+    def _road_graph_profiles(self):
+        """The rule file's profiles, for the Road Graph View menu; empty
+        without a planner or rules."""
+        try:
+            return list(self.route_planner.profile_names)
+        except (AttributeError, pyfvw.FvError):
+            return []
+
+    def _apply_road_graph_view(self, ov):
+        """Hands the Road Graph View menu's choices to the overlay.
+
+        The what-if needs a profile to judge usability by: the one whose
+        weights are shown, else the shell's routing profile, else foot.
+        """
+        if not hasattr(self, "var_rg_view"):
+            return
+        view = self.var_rg_view.get()
+        ov.coloring = "class" if view == "class" else "weight"
+        ov.weight_profile = view if view != "class" else (self.route_profile or "foot")
+        flags = 0
+        if self.var_rg_no_cart.get():
+            flags |= pyfvw.route.ARC_GOLF_CARTPATH
+        if self.var_rg_no_golfer.get():
+            flags |= pyfvw.route.ARC_GOLF_PATH
+        ov.what_if_removed_flags = flags
 
     def _overlay_display_name(self, overlay):
         """What the user calls it: the file name when it has one, else the
@@ -1841,9 +1913,9 @@ class PythonView(pyfvw.app.AppShell):
         # The contour overlay holds its own reference: it is asked for posts
         # outside anything the engine is drawing, and it outlives the engine
         # object, which _on_catalog_changed replaces wholesale.
-        ovl = self.contour
-        if ovl is not None:
-            ovl.set_elevation_source(src)
+        for ovl in (self.contour, self.tamask):
+            if ovl is not None:
+                ovl.set_elevation_source(src)
         # Same reasoning for the analysis overlay, plus the factory its
         # viewshed worker opens a source of its own with.
         ovl = self.analysis
@@ -2436,7 +2508,9 @@ class PythonView(pyfvw.app.AppShell):
 
         # Layout: status bar and identify panel claim the bottom; the map
         # frame takes everything else and drives the render surface size.
-        self.status = tk.Label(self.tk, anchor="w", font=("Menlo", 11))
+        # width=1: the label's requested width no longer follows its text, so
+        # a longer status line clips instead of widening the window.
+        self.status = tk.Label(self.tk, anchor="w", font=("Menlo", 11), width=1)
         self.status.pack(side="bottom", fill="x")
         self.info = tk.Text(self.tk, height=9, font=("Menlo", 10),
                             state="disabled", takefocus=0)
@@ -2573,6 +2647,12 @@ class PythonView(pyfvw.app.AppShell):
         self.var_tp = tk.BooleanVar(value=self.track_points is not None)
         self.var_rg = tk.BooleanVar(
             value=self.road_graph is not None and self.road_graph.visible)
+        # How the road graph is drawn: "class", or the name of a rule-file
+        # profile whose weights colour it. The two what-ifs remove golf ways
+        # and mark in magenta what only they connect.
+        self.var_rg_view = tk.StringVar(value="class")
+        self.var_rg_no_cart = tk.BooleanVar(value=False)
+        self.var_rg_no_golfer = tk.BooleanVar(value=False)
         m_ovl.add_checkbutton(label="Lat/Lon Grid", accelerator="g",
                               variable=self.var_grid, command=self._ui_apply_overlays)
         m_ovl.add_checkbutton(label="Crosshair", variable=self.var_cross,
@@ -2580,6 +2660,12 @@ class PythonView(pyfvw.app.AppShell):
         self.var_contour = tk.BooleanVar(value=self.contour is not None)
         m_ovl.add_checkbutton(label="Contour Lines", variable=self.var_contour,
                               command=self._ui_apply_overlays)
+        self.var_tamask = tk.BooleanVar(value=self.tamask is not None)
+        m_ovl.add_checkbutton(label="Terrain Avoidance Mask",
+                              variable=self.var_tamask,
+                              command=self._ui_apply_overlays)
+        m_ovl.add_command(label="Terrain Avoidance Settings...",
+                          command=self._ui_tamask_settings)
         # AN6/AN7. The mode button on the bar CREATES this overlay (a static
         # type's editor toggles one into existence); this is how it goes away
         # again, which the bar deliberately does not do — leaving the editor
@@ -2646,6 +2732,22 @@ class PythonView(pyfvw.app.AppShell):
         m_ovl.add_checkbutton(label="Road Graph (debug)",
                               variable=self.var_rg,
                               command=self._ui_apply_overlays)
+        m_rgv = tk.Menu(m_ovl, tearoff=0)
+        m_rgv.add_radiobutton(label="Colour by road class", value="class",
+                              variable=self.var_rg_view,
+                              command=self._ui_apply_overlays)
+        for name in self._road_graph_profiles():
+            m_rgv.add_radiobutton(label=f"Weights: {name}", value=name,
+                                  variable=self.var_rg_view,
+                                  command=self._ui_apply_overlays)
+        m_rgv.add_separator()
+        m_rgv.add_checkbutton(label="What-if: without golf cart paths",
+                              variable=self.var_rg_no_cart,
+                              command=self._ui_apply_overlays)
+        m_rgv.add_checkbutton(label="What-if: without golfer paths",
+                              variable=self.var_rg_no_golfer,
+                              command=self._ui_apply_overlays)
+        m_ovl.add_cascade(label="Road Graph View", menu=m_rgv)
         self.var_cov_fmt = {}
         m_cov = tk.Menu(m_ovl, tearoff=0)
         for fam, fmts in FAMILIES:
@@ -2755,6 +2857,8 @@ class PythonView(pyfvw.app.AppShell):
                                                       self.refresh()))
         m.add_separator()
         m.add_command(label="Options...", command=self._ui_options)
+        m.add_command(label="DTED Colour Breaks...",
+                      command=self._ui_dted_bands)
         m.add_command(label="Build Tile Pack (fvpack)...",
                       command=self._ui_fvpack_help)
 
@@ -3232,6 +3336,12 @@ class PythonView(pyfvw.app.AppShell):
                 print("    toll")
             if arc.ferry:
                 print("    ferry")
+            if arc.golf_cartpath:
+                print("    golf cart path (golf=cartpath)")
+            if arc.golf_path:
+                print("    golfer path (golf=path)")
+            if arc.flags & pyfvw.route.ARC_BICYCLE_DESIGNATED:
+                print("    bicycle=designated")
         else:
             print("  no arc within 8 px")
 
@@ -3335,6 +3445,7 @@ class PythonView(pyfvw.app.AppShell):
             self.var_grid.set(self.grid is not None)
             self.var_cross.set(self.cross is not None)
             self.var_contour.set(self.contour is not None)
+            self.var_tamask.set(self.tamask is not None)
             self.var_analysis.set(self.analysis is not None)
             self.var_cov.set(self.coverage is not None)
             self.var_mm.set(self.moving_map is not None)
@@ -3412,6 +3523,7 @@ class PythonView(pyfvw.app.AppShell):
         self._set_grid(self.var_grid.get())
         self._set_static(CROSSHAIR_TYPE_ID, self.var_cross.get())
         self._set_contour(self.var_contour.get())
+        self._set_tamask(self.var_tamask.get())
         self._set_static(ANALYSIS_TYPE_ID, self.var_analysis.get())
         self.mm_modes.auto_center = self.var_mm_center.get()
         self.mm_modes.auto_rotate = self.var_mm_rotate.get()
@@ -4026,6 +4138,21 @@ class PythonView(pyfvw.app.AppShell):
                  variable=v_c, length=140).grid(row=row, column=2)
         row += 1
 
+        def saved_options():
+            return {
+                "display.mm_per_pixel": self.mm_per_pixel,
+                "geosym.data_dir": self.geosym_dir,
+                "osm.style": self.osm_style_path,
+                "osm.overlay_style": self.osm_overlay_style_path,
+                "routing.rules": self.route_rules_path,
+                "routing.profile": self.route_profile,
+                "geosym.brightness": self.brightness,
+                "geosym.contrast": self.contrast,
+            }
+
+        # Only keys the dialog changed are written, so defaults stay unpinned.
+        before = saved_options()
+
         def apply_and_close():
             try:
                 self.mm_per_pixel = max(0.01, min(64.0, float(v_mm.get())))
@@ -4089,6 +4216,10 @@ class PythonView(pyfvw.app.AppShell):
                 if rerun and self.route.has_plan:
                     self.route.follow_roads()
 
+            after = saved_options()
+            self._persist_settings({k: v for k, v in after.items()
+                                    if before[k] != v})
+
             win.destroy()
             self.refresh()
 
@@ -4096,6 +4227,146 @@ class PythonView(pyfvw.app.AppShell):
             row=row, column=1, pady=8)
         tk.Button(win, text="Cancel", command=win.destroy).grid(
             row=row, column=2, pady=8)
+        # Closing the window saves, like Apply; only Cancel discards.
+        win.protocol("WM_DELETE_WINDOW", apply_and_close)
+
+    def _settings_write_path(self):
+        """The file changed settings are saved to: the one loaded at startup,
+        else the per-user settings file."""
+        if self.settings.path:
+            return self.settings.path
+        paths = [p for p in pyfvw.default_settings_paths()
+                 if os.path.basename(p) == "settings.ini"]
+        return paths[0] if paths else os.path.abspath("peregrine.ini")
+
+    def _persist_settings(self, values):
+        """Stores `values` ({"section.key": value}) in the live settings and
+        writes them to the settings file. A write failure is reported, not
+        raised; the in-memory values still apply for this run."""
+        if not values:
+            return
+        for key, value in values.items():
+            self.settings.set(key, settings_file.format_value(value).strip('"'))
+        path = self._settings_write_path()
+        try:
+            settings_file.save_keys(path, values)
+        except OSError as exc:
+            self.report_error(0, f"Could not save settings to {path}: {exc}")
+
+    def _ui_tamask_settings(self):
+        """Altitude, unit and band clearances for the terrain avoidance mask.
+        Applies to the live mask if one is on and is saved under [tamask]."""
+        tk = self._tkmod
+        win = tk.Toplevel(self.tk)
+        win.title("Terrain Avoidance")
+        ovl = self.tamask
+        probe = ovl if ovl is not None else pyfvw.overlay.TAMaskOverlay()
+        # A live mask shows its own values; a stand-in shows the saved ones.
+        for key in ("unit",) + tuple(k for k, _ in TAMASK_FIELDS):
+            if ovl is None and self.settings.has("tamask." + key):
+                try:
+                    probe.set_property(key, self._tamask_setting(key))
+                except pyfvw.FvError:
+                    pass
+
+        unit = probe.get_property("unit")
+        if isinstance(unit, int):  # a choice property reads back as its index
+            unit = ("feet", "meters")[unit]
+        v_unit = tk.StringVar(value=unit)
+        tk.Label(win, text="Unit:").grid(row=0, column=0, sticky="w",
+                                         padx=8, pady=4)
+        tk.OptionMenu(win, v_unit, "feet", "meters").grid(
+            row=0, column=1, sticky="w", padx=8)
+        fields = {}
+        for row, (key, label) in enumerate(TAMASK_FIELDS, start=1):
+            tk.Label(win, text=label + ":").grid(row=row, column=0,
+                                                 sticky="w", padx=8, pady=4)
+            v = tk.StringVar(value=f"{probe.get_property(key):g}")
+            tk.Entry(win, textvariable=v, width=10).grid(row=row, column=1,
+                                                         sticky="w", padx=8)
+            fields[key] = v
+        before = {"unit": unit}
+        before.update({k: v.get() for k, v in fields.items()})
+        v_err = tk.StringVar(value="")
+        row = len(TAMASK_FIELDS) + 1
+        tk.Label(win, textvariable=v_err, fg="#b00000").grid(
+            row=row, column=0, columnspan=3, sticky="w", padx=8)
+
+        def apply_and_close():
+            values = {"unit": v_unit.get()}
+            try:
+                for key, v in fields.items():
+                    values[key] = float(v.get())
+            except ValueError:
+                v_err.set("Every field must be a number.")
+                return
+            try:
+                for key, value in values.items():
+                    probe.set_property(key, value)
+            except pyfvw.FvError as exc:
+                v_err.set(exc.message)
+                return
+            changed = {k for k, v in fields.items() if v.get() != before[k]}
+            if v_unit.get() != before["unit"]:
+                changed.add("unit")
+            self._persist_settings(
+                {"tamask." + k: values[k] for k in changed})
+            win.destroy()
+            self.refresh()
+
+        tk.Button(win, text="Apply", command=apply_and_close).grid(
+            row=row + 1, column=1, pady=8)
+        tk.Button(win, text="Cancel", command=win.destroy).grid(
+            row=row + 1, column=2, pady=8)
+
+    def _tamask_setting(self, key):
+        if key == "unit":
+            return self.settings.get("tamask.unit", "feet")
+        return self.settings.get_float("tamask." + key, 0.0)
+
+    def _ui_dted_bands(self):
+        """Elevation colour breakpoints for DTED shaded relief, in feet.
+        Blank fields are unused; all blank restores FalconView's defaults."""
+        tk = self._tkmod
+        win = tk.Toplevel(self.tk)
+        win.title("DTED Colour Breaks")
+        current = list(pyfvw.formats.dted_elevation_bands()) or \
+            [2500, 5000, 7500, 10000, 12500]
+        tk.Label(win, text="Elevation breaks (feet, lowest first):").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+        vars_ = []
+        for i in range(5):
+            v = tk.StringVar(value=str(current[i]) if i < len(current) else "")
+            tk.Label(win, text=f"Break {i + 1}:").grid(row=i + 1, column=0,
+                                                       sticky="w", padx=8)
+            tk.Entry(win, textvariable=v, width=10).grid(row=i + 1, column=1,
+                                                         sticky="w", padx=8)
+            vars_.append(v)
+
+        def apply(feet):
+            pyfvw.formats.set_dted_elevation_bands(feet)
+            self._persist_settings(
+                {"dted.elevation_bands_ft": ",".join(str(f) for f in feet)})
+            # Shaded cells render once and are cached by the engine, so a
+            # new engine is what re-renders them with the new breaks.
+            if self.catalog is not None:
+                self.engine = pyfvw.engine.MapEngine(self.catalog)
+                self.engine.set_surface(self.W, self.H)
+                src = self._elevation_source()
+                if src is not None:
+                    self.engine.set_elevation_source(src)
+            win.destroy()
+            self.refresh()
+
+        n = len(vars_) + 1
+        tk.Button(win, text="Apply",
+                  command=lambda: apply(_parse_bands(
+                      ",".join(v.get() for v in vars_)))).grid(
+            row=n, column=0, pady=8)
+        tk.Button(win, text="Defaults", command=lambda: apply([])).grid(
+            row=n, column=1, pady=8)
+        tk.Button(win, text="Cancel", command=win.destroy).grid(
+            row=n, column=2, pady=8)
 
     def _ui_fvpack_help(self):
         from tkinter import messagebox
@@ -4208,6 +4479,8 @@ class PythonView(pyfvw.app.AppShell):
         self.refresh()
 
     def _update_status(self):
+        """Rebuilds the status line: cursor readout, chart and scale, then
+        whatever the editors, moving map and analysis tools report."""
         if self.tk is None:
             return
         if self.series is None:
@@ -4215,48 +4488,31 @@ class PythonView(pyfvw.app.AppShell):
             return
         s = self.series
         if self.mode == "vector":
-            lbl = "on" if (self.labels and self.font) else "off"
             product = {"enc": "ENC", "osm": "OSM"}.get(s.format, "DNC")
-            # Base-edition-only cells are a navigational caveat, not a parse
-            # problem: the reader does not apply the .001+ updates shipped
-            # beside these cells, so say so on the chart rather than letting
-            # a stale chart look current.
+            # The reader does not apply .001+ updates, so a base-edition cell
+            # may be stale.
             if s.format == "enc" and self.vsource.staleness_warning:
                 product += " (base ed.)"
-            # A pyramid stops at z14 while the display does not, and the
-            # difference is worth showing: past it the map is z14 geometry
-            # under z15+ rules, so nothing new appears however far you zoom.
+            # Past the pyramid's top level the map is over-zoomed geometry.
             if s.format == "osm":
                 product += f" z{self.vsource.last_query_zoom}"
                 if self.vsource.last_query_overzoom >= 1.0:
                     product += f"+{self.vsource.last_query_overzoom:.1f}"
-            txt = (f" {self.center.lat:+.5f} {self.center.lon:+.5f}   "
-                   f"{product}/{s.display_name}  1:{self.vscale:,.0f}   "
-                   f"features x{self.feature_scale:.2f}  labels:{lbl}   "
-                   f"{self._frames} feat/{self._ms:.0f}ms  {self.mouse_readout}")
+            txt = (f"{self.mouse_readout:<27}  "
+                   f"{product}/{s.display_name}  1:{self.vscale:,.0f}")
         else:
             try:
                 eff = self.engine.proj.scale
             except pyfvw.FvError:
                 eff = 0
-            zoom = NATIVE_MM_PER_PIXEL / self.mm_per_pixel
-            txt = (f" {self.center.lat:+.5f} {self.center.lon:+.5f}   "
-                   f"{s.format}/{s.display_name}  1:{eff:,.0f}   "
-                   f"{zoom:.2f}x @ {self.mm_per_pixel:.3f}mm/px   "
-                   f"{self._frames}files/{self._ms:.0f}ms  {self.mouse_readout}")
+            txt = (f"{self.mouse_readout:<27}  "
+                   f"{s.format}/{s.display_name}  1:{eff:,.0f}")
         if self.render_error:
             txt += f"   [render error: {self.render_error}]"
-        # The mode and the hover are what the APP LAYER has to say about the
-        # frame, and they belong at the end where the eye is not hunting for
-        # coordinates.
         mode = self.editors.current_mode if self.editors else ""
         if mode:
             desc = self.registry.find(mode)
             txt += f"   [editing {desc.display_name if desc else mode}]"
-        # MM5: which road the ship is on. It is the one thing the snapper
-        # produces that a user can check against the chart in front of them,
-        # and without it a snap that quietly went wrong looks like a snap that
-        # quietly went right.
         mm = self.moving_map
         if mm is not None and mm.snapping:
             snap = mm.last_snap
@@ -4265,27 +4521,22 @@ class PythonView(pyfvw.app.AppShell):
                 txt += f"   [on {road}{' (held)' if snap.held else ''}]"
             elif mm.has_fix:
                 txt += "   [off road]"
-        # MM7: WHICH FEED, and -- for a live one -- whether anything is
-        # arriving. "Receiving, but nothing parses" is the single most common
-        # thing to be wrong about an NMEA feed and it looks EXACTLY like
-        # silence unless the bytes and the sentences are shown next to the
-        # fixes, which is why NmeaLineSource counts all three.
         if mm is not None:
             txt += f"   [feed {self.feed_description()}"
             source = mm.source
             if isinstance(source, pyfvw.nav.NmeaLineSource):
                 a = source.assembler
                 got = getattr(source.transport, "bytes_received", 0)
-                txt += (f": {got}B {a.sentences_parsed}/{a.lines_seen} "
-                        f"sentences {source.fixes_emitted} fixes")
+                txt += f": {source.fixes_emitted} fixes"
+                # Bytes arriving with nothing parsed looks like silence
+                # unless it is called out.
+                if got and not a.sentences_parsed:
+                    txt += f" - {got}B, no NMEA parsed"
                 if source.error_message:
                     txt += f" - {source.error_message}"
                 elif source.at_end:
                     txt += " - closed"
             txt += "]"
-        # AN7's progress. The one computation in this application long enough
-        # to owe the user a number — and the reason AN5 releases the GIL, so
-        # this line moves while the map still repaints.
         ovl = self.analysis
         if ovl is not None:
             vs = ovl.status_line()

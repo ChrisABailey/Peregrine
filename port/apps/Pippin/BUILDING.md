@@ -441,6 +441,35 @@ ls build-xcode/Pippin.xcarchive/Products/Applications/Pippin.app/PrivacyInfo.xcp
 The privacy manifest is present and so are both licence texts — LGPL §4 wants them in the
 bundle, and the About screen's link should point at a **tag that matches this build**.
 
+## Measuring energy
+
+Every battery change (the BT steps in `port/pippin-plan.md`) is judged against the same three
+measurements.
+
+**The ride log** (Debug builds only). While following or recording, Pippin appends a row a minute to
+`Documents/trips/energy-<date>.csv`; it is listed and shared from the Rides sheet beside the
+GPX. Each row covers the minute before it: frames drawn, base redraws, cache hits, fixes, and
+process CPU seconds, with the battery level (5 % steps), charging state and thermal state at the
+row's time. The first row is the starting level with zero counts. Over USB the file is also in
+Finder's Files tab for the phone.
+
+**The baseline table.** Screen brightness fixed (Auto-Brightness off, ~50 %), unplugged, the same
+Kiawah loop: 30 minutes following, then 30 minutes recording with GPS mode off and the ship on
+screen. For each, percent per hour = (first level − last level) / hours, and CPU seconds per
+minute = mean `cpu_s`. BT2–BT4 and PV5 each re-run it and compare.
+
+**MetricKit** (Debug builds only). Payloads arrive about once a day and are saved as
+`Documents/metrics/metrics-<begin>--<end>.json` (crash and hang reports as `diagnostics-…`). The
+fields that matter: `cpuMetrics.cumulativeCPUTime`, `gpuMetrics.cumulativeGPUTime`,
+`locationActivityMetrics` by accuracy, and `displayMetrics.averagePixelLuminance`. With the app
+running on the phone under Xcode's debugger, **Debug → Simulate MetricKit Payloads** writes one
+immediately, which checks the plumbing.
+
+**Instruments.** For a single ride in detail: Xcode → Open Developer Tool → Instruments → Power
+Profiler, target the phone, record the ride (up to 20 minutes), then stop and read CPU, GPU,
+display and networking impact per process. For a quick look while debugging, Xcode's Debug
+navigator → Energy Impact gauge.
+
 ## When something goes wrong
 
 | What it says | What it is |

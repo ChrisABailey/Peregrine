@@ -40,6 +40,14 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// What the live screen shows under a frame's layers, best to worst. See
+/// `pippin::ScreenCoverage` in `PPBaseCoverage.h`.
+typedef NS_ENUM(NSInteger, PPScreenCover) {
+  PPScreenCoverSharp,       ///< the base map reaches every corner
+  PPScreenCoverUnderlay,    ///< some of the screen is the soft underlay
+  PPScreenCoverBackground,  ///< some of the screen is the background colour
+};
+
 /// `NS_SWIFT_SENDABLE` holds because every property is read-only, every
 /// derivation returns a new object, and nothing is mutated after `init`. That
 /// is what lets the main thread hand one to the render queue with no lock.
@@ -187,7 +195,8 @@ NS_SWIFT_SENDABLE
     NS_SWIFT_NAME(framing(_:minScaleDenominator:topBias:));
 
 /// The guard band: the same camera on a larger canvas, `margin` of the surface
-/// added on each side, so 0.25 is 2.25x the pixels.
+/// added on each side, so 0.25 is 2.25x the pixels. Grown by whole, equal
+/// device pixels on each side, so the band lands on the screen's pixels.
 ///
 /// Not `resized(to:displayScale:)`, and the difference is load-bearing. That
 /// method is for a screen changing, so it recomputes the zoom limits and
@@ -203,20 +212,51 @@ NS_SWIFT_SENDABLE
 - (PPViewport *)viewportGrownByMargin:(double)margin
     NS_SWIFT_NAME(grown(byMargin:));
 
+/// The same, and when `rotationSafe` each axis reaches the screen's diagonal
+/// plus half the margin, so the screen turned to any angle inside it keeps its
+/// corners covered. For a two-finger turn. See `pippin::GrownSurfacePixels`.
+- (PPViewport *)viewportGrownByMargin:(double)margin
+                         rotationSafe:(BOOL)rotationSafe
+    NS_SWIFT_NAME(grown(byMargin:rotationSafe:));
+
+/// True when a layer drawn at this viewport lands on `live`'s device pixels
+/// exactly and can be shown unfiltered. See `pippin::PixelAligned`.
+- (BOOL)isPixelAlignedToViewport:(PPViewport *)live
+    NS_SWIFT_NAME(isPixelAligned(to:));
+
+/// How far `live`'s corners are from this viewport's surface edge, in its
+/// device pixels; negative once past it. See `pippin::BandHeadroomPx`.
+- (double)bandHeadroomForViewport:(PPViewport *)live
+    NS_SWIFT_NAME(bandHeadroom(for:));
+
 /// The cache question, asked of a band: could a base map drawn for this
 /// viewport be composited for `other` without being drawn again?
 ///
 /// The arithmetic is `PPBaseCoverage.h` and `PPMap` asks it too. It is
-/// exposed so the shell can ask before deciding whether a frame is worth
-/// starting, which matters because of the live-render budget: the loop drops
-/// to the preview transform during a gesture when the last frame was slow,
-/// and the last frame is no longer a fair guess at the next one's cost. A
-/// frame the cache can serve is an overlay pass whatever the last one cost.
+/// exposed so the shell can decide during a gesture whether the next frame is
+/// an overlay pass over the cached band or a band redraw.
 ///
 /// `maxTurn` is the same quality limit `PPMap` uses
 /// (`display.base_cache_max_turn_deg`).
 - (BOOL)coversViewport:(PPViewport *)other maxTurnDegrees:(double)maxTurn
     NS_SWIFT_NAME(covers(_:maxTurnDegrees:));
+
+/// The camera the underlay is drawn at: this one two zoom levels out
+/// (`pippin::kUnderlayZoomOut`) on the same surface. The scale is not clamped
+/// to the zoom limits, so at the widest view the underlay still reaches past
+/// the screen; the limits are copied unchanged.
+- (PPViewport *)viewportForUnderlay NS_SWIFT_NAME(forUnderlay());
+
+/// True while an underlay drawn at this viewport is still good for `live`;
+/// false when it is due to be rebuilt. See `pippin::UnderlayServes`.
+- (BOOL)underlayServesViewport:(PPViewport *)live
+    NS_SWIFT_NAME(underlayServes(_:));
+
+/// Which of the base map (drawn at this viewport), the underlay and the
+/// background colour reach the corners of `live`, as the worst of the four.
+- (PPScreenCover)coverageOfViewport:(PPViewport *)live
+                           underlay:(nullable PPViewport *)underlay
+    NS_SWIFT_NAME(coverage(of:underlay:));
 
 /// Same camera and same surface, so nothing to redraw. Not `isEqual:`: this
 /// compares what a render depends on, and the limits are not part of that.
@@ -224,5 +264,11 @@ NS_SWIFT_SENDABLE
     NS_SWIFT_NAME(isEquivalent(to:));
 
 @end
+
+/// How far to draw the band ahead of a pan along one screen axis, in points:
+/// `velocity` (points per second) times `seconds`, capped at three quarters
+/// of `marginPoints`. See `pippin::BandLead`.
+FOUNDATION_EXPORT double PPBandLead(double velocity, double seconds,
+                                    double marginPoints);
 
 NS_ASSUME_NONNULL_END

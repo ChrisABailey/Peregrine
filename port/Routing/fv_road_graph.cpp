@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <unordered_map>
@@ -20,6 +21,7 @@
 #include <utility>
 
 #include "fv_osm_reader.h"
+#include "fv_road_graph_beach.h"
 
 namespace fv {
 namespace routing {
@@ -29,6 +31,11 @@ constexpr double kEarthRadiusMeters = 6371008.8;  // WGS-84 mean radius
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 constexpr uint32_t kNoIndex = 0xFFFFFFFFu;
 constexpr int32_t kNoCoord = std::numeric_limits<int32_t>::min();
+
+/// The per-mode `no` and `private` bits of an arc's flags.
+constexpr uint16_t kAccessBits = kArcNoBicycle | kArcNoFoot | kArcNoMotorVehicle |
+                                 kArcPrivateBicycle | kArcPrivateFoot |
+                                 kArcPrivateMotorVehicle;
 
 const char kMagic[8] = {'F', 'V', 'R', 'O', 'A', 'D', '0', '1'};
 // 1 = O4 (no turn restrictions). 2 = O5, which appends a restriction count to
@@ -60,6 +67,8 @@ const ClassInfo kClassInfo[] = {
     // speed its own crossing time implies. 20 km/h ~ 11 knots, a small
     // vehicle ferry.
     {"ferry", 20, true},
+    // Firm wet sand rides like a slow path; dry sand is walking the bike.
+    {"beach", 10, false},         {"beach_access", 4, false},
 };
 static_assert(sizeof(kClassInfo) / sizeof(kClassInfo[0]) ==
                   static_cast<size_t>(RoadClass::kCount),
@@ -206,6 +215,27 @@ struct BuiltEdge {
   uint16_t access_flags = 0;  // kArcNoBicycle / kArcNoFoot / kArcNoMotorVehicle
 };
 
+/// Beach polygons and coastline ways as pass 1 finds them, before any node is
+/// resolved.
+struct BeachWays {
+  struct Polygon {
+    std::vector<int64_t> refs;
+    uint32_t name = 0;
+  };
+  std::vector<Polygon> polygons;
+  std::vector<std::vector<int64_t>> coastlines;
+  std::unordered_set<int64_t> seen;  // way ids, for overlapping extracts
+};
+
+/// True for a closed way that is a beach: `natural=beach`, or `natural=sand`
+/// that is not a golf bunker.
+bool IsBeachPolygon(const OsmWay& w) {
+  const std::string* natural = w.Find("natural");
+  if (natural == nullptr) return false;
+  const bool sandy = *natural == "beach" || (*natural == "sand" && w.Find("golf") == nullptr);
+  return sandy && w.refs.size() >= 4 && w.refs.front() == w.refs.back();
+}
+
 // --- OSM access, per mode --------------------------------------------------
 // A generic `access` sets the default and a mode key overrides it. Getting
 // that precedence right is not academic: Kiawah's whole leisure-trail network
@@ -278,18 +308,25 @@ class WayPass : public OsmSink {
           std::vector<int64_t>* ref_uses, std::vector<std::string>* names,
           std::unordered_map<std::string, uint32_t>* name_index,
           std::unordered_set<int64_t>* seen_way_ids,
-          std::vector<PendingRestriction>* restrictions, RoadGraphBuildStats* stats)
+          std::vector<PendingRestriction>* restrictions, BeachWays* beach,
+          RoadGraphBuildStats* stats)
       : opts_(opts), ways_(ways), ref_uses_(ref_uses), names_(names),
         name_index_(name_index), seen_way_ids_(seen_way_ids),
-        restrictions_(restrictions), stats_(stats) {}
+        restrictions_(restrictions), beach_(beach), stats_(stats) {}
 
   bool WantNodes() const override { return false; }
-  bool WantRelations() const override { return opts_.honor_turn_restrictions; }
+  bool WantRelations() const override { return opts_.honor_turn_restrictions || opts_.beaches; }
   void Node(int64_t, double, double) override {}
 
   void Relation(const OsmRelation& r) override {
     const std::string* type = r.Find("type");
-    if (type == nullptr || *type != "restriction") return;
+    if (type == nullptr) return;
+    if (opts_.beaches && *type == "multipolygon") {
+      const std::string* natural = r.Find("natural");
+      if (natural != nullptr && *natural == "beach") ++stats_->beach_relations_skipped;
+      return;
+    }
+    if (!opts_.honor_turn_restrictions || *type != "restriction") return;
     // `restriction:hgv` and friends are lorry-only signage and do not bind a
     // car; the plain key is the one this router honours.
     const std::string* value = r.Find("restriction");
@@ -348,6 +385,7 @@ class WayPass : public OsmSink {
 
   void Way(const OsmWay& w) override {
     ++stats_->ways_seen;
+    if (beach_ != nullptr) CollectBeach(w);
     // `route=ferry` takes first refusal over `highway=*` (O5e). A few ferry
     // ways also carry a highway tag for the slipway at either end, and a way
     // that says it is a ferry line is a ferry line whatever else is on it.
@@ -394,6 +432,12 @@ class WayPass : public OsmSink {
     // forms (`toll:hgv`, `toll:N3`) are lorry signage and are left alone.
     const std::string* toll = w.Find("toll");
     if (toll != nullptr && IsTrue(*toll)) access_flags |= kArcToll;
+    if (const std::string* golf = w.Find("golf")) {
+      if (*golf == "cartpath") access_flags |= kArcGolfCartpath;
+      if (*golf == "path") access_flags |= kArcGolfPath;
+    }
+    const std::string* bicycle = w.Find("bicycle");
+    if (bicycle != nullptr && *bicycle == "designated") access_flags |= kArcBicycleDesignated;
 
     if (opts_.cycle_only) {
       if (!IsCycleable(klass) || (access_flags & kArcNoBicycle) != 0) return;
@@ -471,6 +515,22 @@ class WayPass : public OsmSink {
     return implied ? EdgeDir::kForward : EdgeDir::kBoth;
   }
 
+  void CollectBeach(const OsmWay& w) {
+    const std::string* natural = w.Find("natural");
+    if (natural == nullptr) return;
+    const bool coast = *natural == "coastline" && w.refs.size() >= 2;
+    const bool polygon = !coast && IsBeachPolygon(w);
+    if (!coast && !polygon) return;
+    if (!beach_->seen.insert(w.id).second) return;
+    if (coast) {
+      beach_->coastlines.push_back(w.refs);
+      ++stats_->coastline_ways;
+    } else {
+      beach_->polygons.push_back(BeachWays::Polygon{w.refs, InternName(w)});
+      ++stats_->beach_polygons;
+    }
+  }
+
   uint32_t InternName(const OsmWay& w) const {
     const std::string* name = w.Find("name");
     if (name == nullptr) name = w.Find("ref");  // "I 26" beats nothing
@@ -490,6 +550,7 @@ class WayPass : public OsmSink {
   std::unordered_map<std::string, uint32_t>* name_index_;
   std::unordered_set<int64_t>* seen_way_ids_;
   std::vector<PendingRestriction>* restrictions_;
+  BeachWays* beach_;
   RoadGraphBuildStats* stats_;
 };
 
@@ -516,6 +577,89 @@ class NodePass : public OsmSink {
   std::vector<int32_t>* coords_;
 };
 
+/// Adds the beach polygons' and coastlines' node ids to `needed` (sorted) so
+/// pass 2 resolves them. They are not road vertices and not road refs.
+void MergeBeachRefs(const BeachWays& beach, std::vector<int64_t>* needed,
+                    std::vector<uint8_t>* is_vertex, std::vector<uint8_t>* road_ref) {
+  std::vector<int64_t> extra;
+  for (const BeachWays::Polygon& p : beach.polygons)
+    extra.insert(extra.end(), p.refs.begin(), p.refs.end());
+  for (const auto& c : beach.coastlines) extra.insert(extra.end(), c.begin(), c.end());
+  std::sort(extra.begin(), extra.end());
+  extra.erase(std::unique(extra.begin(), extra.end()), extra.end());
+
+  std::vector<int64_t> ids;
+  std::vector<uint8_t> vertex, road;
+  ids.reserve(needed->size() + extra.size());
+  size_t i = 0, j = 0;
+  while (i < needed->size() || j < extra.size()) {
+    if (j == extra.size() || (i < needed->size() && (*needed)[i] <= extra[j])) {
+      if (j < extra.size() && (*needed)[i] == extra[j]) ++j;
+      ids.push_back((*needed)[i]);
+      vertex.push_back((*is_vertex)[i]);
+      road.push_back((*road_ref)[i]);
+      ++i;
+    } else {
+      ids.push_back(extra[j++]);
+      vertex.push_back(0);
+      road.push_back(0);
+    }
+  }
+  needed->swap(ids);
+  is_vertex->swap(vertex);
+  road_ref->swap(road);
+}
+
+/// Resolves the beach ways against pass 2's coordinates. A ring keeps its
+/// resolved points; a coastline is split wherever a node is missing.
+void ResolveBeachWays(const BeachWays& beach, const std::function<size_t(int64_t)>& index_of,
+                      const std::vector<int32_t>& coords, std::vector<beach::Ring>* rings,
+                      std::vector<beach::Line>* lines) {
+  auto point_of = [&](int64_t id, GeoPoint* out) {
+    const size_t ni = index_of(id);
+    if (ni == static_cast<size_t>(-1) || coords[2 * ni] == kNoCoord) return false;
+    *out = GeoPoint{coords[2 * ni] * 1e-7, coords[2 * ni + 1] * 1e-7};
+    return true;
+  };
+  for (const BeachWays::Polygon& poly : beach.polygons) {
+    beach::Ring ring;
+    ring.name = poly.name;
+    GeoPoint p;
+    for (int64_t id : poly.refs) {
+      if (!point_of(id, &p)) continue;
+      ring.ids.push_back(id);
+      ring.pts.push_back(p);
+    }
+    if (ring.pts.size() < 4) continue;
+    if (ring.ids.front() != ring.ids.back()) {
+      ring.ids.push_back(ring.ids.front());
+      ring.pts.push_back(ring.pts.front());
+    }
+    ring.box = GeoRect{{90.0, 180.0}, {-90.0, -180.0}};
+    for (const GeoPoint& q : ring.pts) {
+      ring.box.ll.lat = std::min(ring.box.ll.lat, q.lat);
+      ring.box.ll.lon = std::min(ring.box.ll.lon, q.lon);
+      ring.box.ur.lat = std::max(ring.box.ur.lat, q.lat);
+      ring.box.ur.lon = std::max(ring.box.ur.lon, q.lon);
+    }
+    rings->push_back(std::move(ring));
+  }
+  for (const auto& refs : beach.coastlines) {
+    beach::Line line;
+    GeoPoint p;
+    for (int64_t id : refs) {
+      if (point_of(id, &p)) {
+        line.ids.push_back(id);
+        line.pts.push_back(p);
+        continue;
+      }
+      if (line.pts.size() >= 2) lines->push_back(line);
+      line = beach::Line{};
+    }
+    if (line.pts.size() >= 2) lines->push_back(std::move(line));
+  }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -532,7 +676,11 @@ RoadClass RoadClassFromHighwayTag(const std::string& value) {
     // kFerry is deliberately not reachable from a highway tag: OSM has no
     // `highway=ferry`, and letting one through here would put a boat's speed
     // and access rules on whatever mistagged way carried it.
-    if (static_cast<RoadClass>(i) == RoadClass::kFerry) continue;
+    const RoadClass klass = static_cast<RoadClass>(i);
+    if (klass == RoadClass::kFerry || klass == RoadClass::kBeach ||
+        klass == RoadClass::kBeachAccess) {
+      continue;
+    }
     if (value == kClassInfo[i].tag) return static_cast<RoadClass>(i);
   }
   // `road` is OSM's "class unsurveyed" placeholder; it is still a road.
@@ -542,6 +690,8 @@ RoadClass RoadClassFromHighwayTag(const std::string& value) {
 
 RoadClass RoadClassFromName(const std::string& name) {
   if (name == "ferry") return RoadClass::kFerry;
+  if (name == "beach") return RoadClass::kBeach;
+  if (name == "beach_access") return RoadClass::kBeachAccess;
   return RoadClassFromHighwayTag(name);
 }
 
@@ -569,6 +719,9 @@ bool IsCycleable(RoadClass klass) {
     // Bicycles are carried on essentially every ferry that takes anything at
     // all; the ones that do not say so with `bicycle=no`, which is on the arc.
     case RoadClass::kFerry:
+      return true;
+    case RoadClass::kBeach:
+    case RoadClass::kBeachAccess:
       return true;
     default:
       // Motorway/trunk/primary and every _link off them: no bikes. Steps too
@@ -1242,9 +1395,11 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
   // is being merged: a single OSM file cannot contain a way twice.
   std::unordered_set<int64_t> seen_way_ids;
   std::vector<PendingRestriction> pending_restrictions;
+  BeachWays beach_ways;
   {
     WayPass pass(options, &ways, &ref_uses, &names, &name_index,
-                 inputs.size() > 1 ? &seen_way_ids : nullptr, &pending_restrictions, &st);
+                 inputs.size() > 1 ? &seen_way_ids : nullptr, &pending_restrictions,
+                 options.beaches ? &beach_ways : nullptr, &st);
     for (const std::string& path : inputs) {
       Status s = ReadOsmFile(path, &pass);
       if (!s.ok()) return s;
@@ -1267,6 +1422,8 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
     i = j;
   }
   std::vector<int64_t>().swap(ref_uses);
+  std::vector<uint8_t> road_ref(needed.size(), 1);  // used by a kept road way
+  if (options.beaches) MergeBeachRefs(beach_ways, &needed, &is_vertex, &road_ref);
   st.nodes_needed = static_cast<int64_t>(needed.size());
 
   // --- pass 2: nodes ------------------------------------------------------
@@ -1280,6 +1437,56 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
   }
   for (size_t i = 0; i < needed.size(); ++i) {
     if (coords[2 * i] != kNoCoord) ++st.nodes_resolved;
+  }
+
+  auto index_of = [&needed](int64_t id) -> size_t {
+    auto it = std::lower_bound(needed.begin(), needed.end(), id);
+    if (it == needed.end() || *it != id) return static_cast<size_t>(-1);
+    return static_cast<size_t>(it - needed.begin());
+  };
+
+  // Beach geometry, and the road nodes that lead onto it. Those are promoted
+  // to vertices here, before node numbering, so an access arc has a node to
+  // start from.
+  std::vector<beach::Ring> beach_rings;
+  std::vector<beach::Line> beach_lines;
+  std::unordered_map<size_t, uint16_t> access_at;  // needed index -> access flags
+  if (options.beaches) {
+    ResolveBeachWays(beach_ways, index_of, coords, &beach_rings, &beach_lines);
+    std::unordered_set<int64_t> ring_ids;
+    for (const beach::Ring& r : beach_rings) ring_ids.insert(r.ids.begin(), r.ids.end());
+    for (const KeptWay& w : ways) {
+      for (size_t k = 0; k < w.refs.size(); ++k) {
+        const bool end = k == 0 || k + 1 == w.refs.size();
+        if (!end && ring_ids.count(w.refs[k]) == 0) continue;
+        const size_t ni = index_of(w.refs[k]);
+        if (ni == static_cast<size_t>(-1) || coords[2 * ni] == kNoCoord) continue;
+        const GeoPoint p{coords[2 * ni] * 1e-7, coords[2 * ni + 1] * 1e-7};
+        if (ring_ids.count(w.refs[k]) == 0 &&
+            !beach::NearAnyRing(beach_rings, p, options.beach_access_snap_m)) {
+          continue;
+        }
+        // A node several ways reach is as open as the most open of them. Only
+        // the access bits carry onto the sand: a golf path's end does not make
+        // the dune crossing a golf path.
+        const uint16_t access = w.access_flags & kAccessBits;
+        auto it = access_at.find(ni);
+        if (it == access_at.end()) {
+          access_at.emplace(ni, access);
+        } else {
+          it->second &= access;
+        }
+        is_vertex[ni] = 1;
+      }
+    }
+    // A coastline node a road also uses becomes a vertex, so the run passes
+    // through the road's node rather than beside it.
+    for (const beach::Line& line : beach_lines) {
+      for (int64_t id : line.ids) {
+        const size_t ni = index_of(id);
+        if (ni != static_cast<size_t>(-1) && road_ref[ni]) is_vertex[ni] = 1;
+      }
+    }
   }
 
   // --- assign graph node indices to resolved vertices ---------------------
@@ -1300,12 +1507,6 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
   std::vector<int32_t>& geom = g.mutable_geometry();
   std::vector<BuiltEdge> edges;
   std::vector<int32_t> pending;  // interior geometry of the edge in progress
-
-  auto index_of = [&needed](int64_t id) -> size_t {
-    auto it = std::lower_bound(needed.begin(), needed.end(), id);
-    if (it == needed.end() || *it != id) return static_cast<size_t>(-1);
-    return static_cast<size_t>(it - needed.begin());
-  };
 
   for (const KeptWay& w : ways) {
     size_t start = static_cast<size_t>(-1);
@@ -1381,6 +1582,75 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
       const uint8_t speed = static_cast<uint8_t>(rounded < 1 ? 1 : (rounded > 255 ? 255 : rounded));
       for (size_t i = way_edge_begin; i < edges.size(); ++i) edges[i].speed_kph = speed;
     }
+  }
+
+  if (options.beaches) {
+    std::vector<beach::AccessCandidate> candidates;
+    for (const auto& a : access_at) {
+      if (node_of[a.first] == kNoIndex) continue;
+      candidates.push_back(beach::AccessCandidate{
+          node_of[a.first],
+          GeoPoint{coords[2 * a.first] * 1e-7, coords[2 * a.first + 1] * 1e-7}, a.second});
+    }
+    // access_at is unordered; the graph must not depend on hash order.
+    std::sort(candidates.begin(), candidates.end(),
+              [](const beach::AccessCandidate& a, const beach::AccessCandidate& b) {
+                return a.node < b.node;
+              });
+
+    uint32_t beach_name = 0;
+    auto found = name_index.find("Beach");
+    if (found != name_index.end()) {
+      beach_name = found->second;
+    } else {
+      beach_name = static_cast<uint32_t>(names.size());
+      names.push_back("Beach");
+      name_index.emplace("Beach", beach_name);
+    }
+
+    beach::Params params;
+    params.line_snap_m = options.beach_line_snap_m;
+    params.gap_m = options.beach_gap_m;
+    params.access_snap_m = options.beach_access_snap_m;
+    params.access_max_m = options.beach_access_max_m;
+    beach::Result synth;
+    beach::Synthesize(
+        beach_rings, beach_lines, candidates,
+        [&](int64_t id) -> uint32_t {
+          const size_t ni = index_of(id);
+          return ni == static_cast<size_t>(-1) ? kNoArc : node_of[ni];
+        },
+        static_cast<uint32_t>(gnodes.size()), beach_name, params, &synth);
+
+    for (const beach::NewNode& n : synth.nodes) {
+      RoadNode rn;
+      rn.lat_e7 = static_cast<int32_t>(std::lround(n.p.lat * 1e7));
+      rn.lon_e7 = static_cast<int32_t>(std::lround(n.p.lon * 1e7));
+      rn.osm_id = n.osm_id;
+      gnodes.push_back(rn);
+    }
+    for (const beach::NewEdge& ne : synth.edges) {
+      BuiltEdge e;
+      e.u = ne.u;
+      e.v = ne.v;
+      e.geom_begin = static_cast<uint32_t>(geom.size() / 2);
+      e.geom_count = static_cast<uint32_t>(ne.interior.size());
+      for (const GeoPoint& p : ne.interior) {
+        geom.push_back(static_cast<int32_t>(std::lround(p.lat * 1e7)));
+        geom.push_back(static_cast<int32_t>(std::lround(p.lon * 1e7)));
+      }
+      e.name = ne.name;
+      e.length_m = static_cast<float>(ne.length_m);
+      e.klass = ne.klass;
+      e.speed_kph = static_cast<uint8_t>(DefaultSpeedKph(ne.klass));
+      e.access_flags = ne.access_flags;
+      edges.push_back(e);
+      ++st.edges;
+    }
+    st.beach_runs = synth.runs;
+    st.beach_run_m = synth.run_m;
+    st.beach_access_arcs = synth.access_arcs;
+    st.beach_access_unreached = synth.access_unreached;
   }
 
   // --- CSR ----------------------------------------------------------------

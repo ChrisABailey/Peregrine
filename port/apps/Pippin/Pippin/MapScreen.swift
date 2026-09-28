@@ -54,6 +54,7 @@ struct MapScreen: View {
     @State private var ridesShown = false
     @State private var problemShown = false
     @State private var aboutShown = false
+    @State private var tidesShown = false
 
     /// The unit preference. `@ObservedObject` because this view does not own
     /// it; `DisplayUnits.shared` is also observed from views across sheet
@@ -67,11 +68,15 @@ struct MapScreen: View {
             let top = Self.topMargin(safeArea.top)
             let bottom = Self.bottomMargin(safeArea.bottom)
             ZStack {
-                mapLayer(size: geo.size)
+                // Everything that draws per-frame state reads it through a
+                // `LiveMapReader`, so a frame does not re-run this body.
+                LiveMapReader(model.live) { mapLayer(size: geo.size) }
                 MapGestureView(
                     onBegan: { model.gestureBegan() },
-                    onEnded: { model.gestureEnded() },
-                    onPan: { model.pan(by: $0) },
+                    onEnded: { model.gestureEnded(releaseVelocity: $0) },
+                    isCoasting: { model.isCoasting },
+                    onStopCoast: { model.stopCoast() },
+                    onPan: { model.pan(by: $0, velocity: $1) },
                     onZoom: { model.zoom(by: $0, about: $1) },
                     onTap: { handleTap(at: $0) },
                     onRotate: { model.rotate(by: $0, about: $1) },
@@ -89,13 +94,19 @@ struct MapScreen: View {
                 } else {
                     controls(top: top)
                 }
-                if model.gpsMode { rideBar(top: top) }
-                if let guidance = model.guidance {
-                    guidanceBanner(guidance, top: top)
+                if model.gpsMode {
+                    LiveMapReader(model.live) { rideBar(top: top) }
+                }
+                LiveMapReader(model.live) {
+                    if let guidance = model.guidance {
+                        guidanceBanner(guidance, top: top)
+                    }
                 }
                 if let notice = model.notice { noticeBanner(notice) }
                 #if DEBUG
-                if MapModel.showsStats { statsOverlay(top: top) }
+                if MapModel.showsStats {
+                    LiveMapReader(model.live) { statsOverlay(top: top) }
+                }
                 #endif
                 if let failure = model.failure { failureOverlay(failure) }
             }
@@ -149,6 +160,11 @@ struct MapScreen: View {
             .sheet(isPresented: $aboutShown) {
                 AboutSheet(onClose: { aboutShown = false })
             }
+            .sheet(isPresented: $tidesShown) {
+                if let tide = model.tide {
+                    TideCard(tide: tide, onClose: { tidesShown = false })
+                }
+            }
             .sheet(item: $editing) { draft in
                 pointEditSheet(draft)
                     .environment(\.describePlace, model.describePlace)
@@ -167,6 +183,8 @@ struct MapScreen: View {
             isPlanning: model.isPlanning,
             currentLocation: model.currentLocation,
             profileNames: model.routeProfileNames,
+            beachAvailable: model.beachAvailable,
+            tide: model.tide,
             search: model.search(for:),
             initialSearchText: model.lastSearchText,
             onSearched: { model.rememberSearch($0) },
@@ -178,7 +196,8 @@ struct MapScreen: View {
                 model.frame(result)
             },
             onSubmit: {
-                model.setRoute(waypoints: draft.waypoints(), profile: draft.profile)
+                model.setRoute(waypoints: draft.waypoints(), profile: draft.profile,
+                               beachUse: draft.beachUse)
                 sheetShown = false
             },
             // Walk/Cycle replans the live route's waypoints on the spot, not
@@ -187,6 +206,14 @@ struct MapScreen: View {
             onProfileChange: { profile in
                 guard let route = model.route, route.exists else { return }
                 model.setRoute(waypoints: route.waypoints, profile: profile)
+            },
+            // Replans the live route like the mode picker, and becomes the
+            // setting a new route starts with.
+            onBeachChange: { beachUse in
+                RouteDraft.lastBeachUse = beachUse
+                guard let route = model.route, route.exists else { return }
+                model.setRoute(waypoints: route.waypoints, profile: route.profile,
+                               beachUse: beachUse)
             },
             onClear: {
                 // The sheet stays up and returns to the search box on an
@@ -461,7 +488,7 @@ struct MapScreen: View {
         var dy: Double
         var size: CGSize
         var scale: CGFloat
-        /// The layer is already exactly where it belongs, pixel for pixel.
+        /// The layer's pixels land on the screen's, so it is shown unfiltered.
         var isLive: Bool
     }
 
@@ -475,15 +502,11 @@ struct MapScreen: View {
         let turn = live.rotationDegrees - drawn.rotationDegrees
         let dx = was.x - now.x
         let dy = was.y - now.y
-        // A layer larger than the screen is not live even at zero offset: its
-        // pixels land between the screen's. This is why the settle frame asks
-        // for no band.
-        let sameSize = drawn.sizeInPoints == live.sizeInPoints
-        let isLive = sameSize && abs(k - 1) < 1e-9 && abs(dx) < 0.01
-            && abs(dy) < 0.01 && abs(turn) < 1e-9
+        // A band grows by whole pixels on each side, so one drawn at the live
+        // camera, or panned from it by whole pixels, lands on the screen's.
         return Preview(k: k, turn: turn, dx: dx, dy: dy,
                        size: drawn.sizeInPoints, scale: drawn.displayScale,
-                       isLive: isLive)
+                       isLive: drawn.isPixelAligned(to: live))
     }
 
     @ViewBuilder
@@ -503,8 +526,10 @@ struct MapScreen: View {
     @ViewBuilder
     private func mapLayer(size: CGSize) -> some View {
         if let frame = model.frame, let live = model.viewport {
-            // Two layers with separate transforms: on a cache hit the base
-            // was drawn at an older camera than the overlay.
+            // Layers with separate transforms: on a cache hit the base was
+            // drawn at an older camera than the overlay, and the underlay at
+            // an older camera still, four times further out. Under them all
+            // the style's background, so nothing past the underlay is white.
             //
             // The stack is pinned to the screen size before clipping. A
             // ZStack takes the size of its largest child, and the base is a
@@ -512,6 +537,11 @@ struct MapScreen: View {
             // the oversized bounds and the GeometryReader's top-leading
             // alignment shifts the whole stack by a quarter of the surface.
             ZStack {
+                mapBackground
+                if let underlay = model.underlay {
+                    Self.layer(underlay.image,
+                               Self.preview(of: underlay.viewport, in: live))
+                }
                 Self.layer(frame.baseImage, Self.preview(of: frame.baseViewport,
                                                          in: live))
                 Self.layer(frame.overlayImage, Self.preview(of: frame.viewport,
@@ -521,29 +551,37 @@ struct MapScreen: View {
             .clipped()
         } else {
             // Placeholder for the moment before the first render.
-            Color(white: 0.92)
+            mapBackground
         }
+    }
+
+    /// The style's background once an underlay has reported it, and a neutral
+    /// grey before that.
+    private var mapBackground: Color {
+        model.mapBackground.map { Color(cgColor: $0) } ?? Color(white: 0.92)
     }
 
     // MARK: - Controls
 
     private func controls(top: CGFloat) -> some View {
         VStack {
-            // Top-right compass, shown only when the map is following or the
-            // chart is turned.
-            if compassShown {
-                HStack {
-                    Spacer()
-                    CompassButton(
-                        northAngleDegrees: model.northScreenAngleDegrees,
-                        isActive: model.gpsMode && model.courseUp,
-                        label: compassLabel) {
-                            model.toggleCompass()
-                        }
+            LiveMapReader(model.live) {
+                // Top-right compass, shown only when the map is following or
+                // the chart is turned.
+                if compassShown {
+                    HStack {
+                        Spacer()
+                        CompassButton(
+                            northAngleDegrees: model.northScreenAngleDegrees,
+                            isActive: model.gpsMode && model.courseUp,
+                            label: compassLabel) {
+                                model.toggleCompass()
+                            }
+                    }
+                    .padding(.horizontal, ControlMetrics.side)
+                    // Drops below the ride bar's right cluster when there is one.
+                    .padding(.top, Self.belowBars(top: top, rideBarTrailingHeight))
                 }
-                .padding(.horizontal, ControlMetrics.side)
-                // Drops below the ride bar's right cluster when there is one.
-                .padding(.top, Self.belowBars(top: top, rideBarTrailingHeight))
             }
             Spacer()
             // Bottom-aligned: both sides are columns of different heights.
@@ -560,6 +598,7 @@ struct MapScreen: View {
                             model.refreshRides()
                             ridesShown = true
                         },
+                        onTides: model.tide == nil ? nil : { tidesShown = true },
                         onAbout: { aboutShown = true },
                         onReportProblem: { problemShown = true })
                         .equatable()
@@ -1119,4 +1158,18 @@ struct CircleButton: View {
             button
         }
     }
+}
+
+/// Evaluates its content under an observation of the per-frame map state, so
+/// a new frame redraws the content without invalidating the view that holds it.
+struct LiveMapReader<Content: View>: View {
+    @ObservedObject private var live: LiveMapState
+    private let content: () -> Content
+
+    init(_ live: LiveMapState, @ViewBuilder content: @escaping () -> Content) {
+        self.live = live
+        self.content = content
+    }
+
+    var body: some View { content() }
 }

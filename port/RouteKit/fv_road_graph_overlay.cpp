@@ -9,8 +9,10 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 
+#include "fv_router.h"
 #include "fvkit/canvas/geo_draw.h"
 #include "fvkit/vector/feature_rows.h"
 
@@ -127,6 +129,58 @@ GeoPoint LineAnchor(const std::vector<GeoPoint>& line) {
   return line.back();
 }
 
+/// The casing an arc the what-if cuts off is drawn with.
+constexpr FvColor kCutOffColor{255, 0, 200, 255};
+
+/// The solid line under a golf way's dashes or dots, so the pattern reads
+/// against any class or weight colour and at island scale.
+constexpr FvColor kGolfRailColor{0, 110, 120, 255};
+
+/// Union-find over graph nodes, with path halving and union by size.
+class DisjointSets {
+ public:
+  explicit DisjointSets(uint32_t n) : parent_(n), size_(n, 1) {
+    for (uint32_t i = 0; i < n; ++i) parent_[i] = i;
+  }
+  uint32_t Find(uint32_t x) {
+    while (parent_[x] != x) {
+      parent_[x] = parent_[parent_[x]];
+      x = parent_[x];
+    }
+    return x;
+  }
+  void Unite(uint32_t a, uint32_t b) {
+    a = Find(a);
+    b = Find(b);
+    if (a == b) return;
+    if (size_[a] < size_[b]) std::swap(a, b);
+    parent_[b] = a;
+    size_[a] += size_[b];
+  }
+  uint32_t SizeOf(uint32_t x) { return size_[Find(x)]; }
+
+ private:
+  std::vector<uint32_t> parent_;
+  std::vector<uint32_t> size_;
+};
+
+/// The router's cost for `a` over what the same length costs at the
+/// profile's own speed on a class of weight 1. Infinity when unusable.
+double RelativeCost(const RoadArc& a, const routing::RouteOptions& o) {
+  if (!routing::ArcUsable(a, o)) return std::numeric_limits<double>::infinity();
+  const routing::RouteProfile& p = *o.profile;
+  double neutral = 0.0;
+  if (p.metric == routing::RouteMetric::kDistance) {
+    neutral = a.length_m;
+  } else if (p.speed_source == routing::SpeedSource::kFixed && p.fixed_kph > 0.0) {
+    neutral = a.length_m / (p.fixed_kph / 3.6);
+  } else {
+    neutral = a.travel_seconds();
+  }
+  if (!(neutral > 0.0)) return p.weight(a.klass);
+  return routing::ArcCost(a, o) / neutral;
+}
+
 GeoRect BoxOf(const std::vector<GeoPoint>& line) {
   GeoRect r{line.front(), line.front()};
   for (const GeoPoint& p : line) {
@@ -186,6 +240,8 @@ FvColor RoadClassColor(RoadClass klass) {
     case RoadClass::kSteps:         return FvColor{150,  60, 180, 255};
 
     case RoadClass::kFerry:         return FvColor{ 60, 210, 220, 255};
+    case RoadClass::kBeach:         return FvColor{230, 190, 110, 255};
+    case RoadClass::kBeachAccess:   return FvColor{200, 150,  80, 255};
 
     case RoadClass::kCount:
     case RoadClass::kNone:
@@ -194,6 +250,42 @@ FvColor RoadClassColor(RoadClass klass) {
   // Not a class this build knows — a `.fvroad` written by a later build that
   // appended one. Magenta, because it should look wrong rather than blend in.
   return FvColor{255, 0, 255, 255};
+}
+
+FvColor ProfileWeightColor(ProfileWeightBand band) {
+  switch (band) {
+    case ProfileWeightBand::kPreferred:   return FvColor{ 40, 200,  90, 255};
+    case ProfileWeightBand::kNeutral:     return FvColor{150, 155, 168, 255};
+    case ProfileWeightBand::kDiscouraged: return FvColor{245, 160,  40, 255};
+    case ProfileWeightBand::kAvoided:     return FvColor{220,  40,  40, 255};
+    case ProfileWeightBand::kUnusable:    return FvColor{ 20,  20,  20, 255};
+    case ProfileWeightBand::kCount:       break;
+  }
+  return FvColor{255, 0, 255, 255};
+}
+
+const char* ProfileWeightLabel(ProfileWeightBand band) {
+  switch (band) {
+    case ProfileWeightBand::kPreferred:   return "preferred (< 0.9)";
+    case ProfileWeightBand::kNeutral:     return "neutral (0.9 - 1.2)";
+    case ProfileWeightBand::kDiscouraged: return "discouraged (1.2 - 2)";
+    case ProfileWeightBand::kAvoided:     return "avoided (2 and over)";
+    case ProfileWeightBand::kUnusable:    return "not usable";
+    case ProfileWeightBand::kCount:       break;
+  }
+  return "";
+}
+
+ProfileWeightBand ProfileWeightBandOf(double relative_cost) {
+  if (!std::isfinite(relative_cost)) return ProfileWeightBand::kUnusable;
+  // Rounded first: a ratio that is exactly a boundary (bike beach, 0.75 at
+  // 10 of 12 km/h, is 0.9) comes out an ulp either side of it per arc, and
+  // identical arcs would split between two colours.
+  relative_cost = std::round(relative_cost * 1e6) / 1e6;
+  if (relative_cost < 0.9) return ProfileWeightBand::kPreferred;
+  if (relative_cost < 1.2) return ProfileWeightBand::kNeutral;
+  if (relative_cost < 2.0) return ProfileWeightBand::kDiscouraged;
+  return ProfileWeightBand::kAvoided;
 }
 
 int RoadClassWidth(RoadClass klass) {
@@ -272,6 +364,9 @@ std::string RoadArcInfo::Summary() const {
   else if (foot_private)         s += ", foot private";
   if (tolled)                    s += ", toll";
   if (ferry)                     s += ", ferry";
+  if (golf_cartpath)             s += ", golf cart path";
+  if (golf_path)                 s += ", golfer path";
+  if (flags & routing::kArcBicycleDesignated) s += ", bicycle=designated";
 
   s += "  [arc " + std::to_string(arc) + ": " + std::to_string(from_node) +
        " -> " + std::to_string(to_node) + "]";
@@ -298,7 +393,9 @@ std::string RoadNodeInfo::Summary() const {
 const char RoadGraphOverlay::kTypeId[] = "fv.roadgraph";
 
 RoadGraphOverlay::RoadGraphOverlay(std::string name)
-    : Overlay(std::move(name)), counts_(kClassCount, 0) {}
+    : Overlay(std::move(name)),
+      counts_(kClassCount, 0),
+      band_counts_(static_cast<size_t>(ProfileWeightBand::kCount), 0) {}
 
 RoadGraphOverlay::~RoadGraphOverlay() = default;
 
@@ -313,6 +410,81 @@ Status RoadGraphOverlay::EnsureGraph() {
   if (planner_ != nullptr) return planner_->EnsureGraph();
   if (graph_ != nullptr) return Status::Ok();
   return Status::Error(kInvalidArg, "road graph overlay: no graph and no planner");
+}
+
+void RoadGraphOverlay::SetWeightProfile(std::string profile) {
+  weight_profile_ = std::move(profile);
+}
+
+void RoadGraphOverlay::SetWhatIfRemovedFlags(uint16_t flags) {
+  what_if_flags_ = flags;
+}
+
+void RoadGraphOverlay::RefreshWhatIf(const RoadGraph& g,
+                                     const routing::RouteOptions* options) {
+  if (options == nullptr || what_if_flags_ == 0) {
+    cut_off_.clear();
+    what_if_graph_ = nullptr;
+    cut_off_edges_ = 0;
+    cut_off_m_ = 0.0;
+    return;
+  }
+  if (what_if_graph_ == &g && cut_off_.size() == g.arc_count() &&
+      what_if_profile_ == weight_profile_ && what_if_key_flags_ == what_if_flags_) {
+    return;
+  }
+  what_if_graph_ = &g;
+  what_if_profile_ = weight_profile_;
+  what_if_key_flags_ = what_if_flags_;
+  cut_off_.assign(g.arc_count(), 0);
+  cut_off_edges_ = 0;
+  cut_off_m_ = 0.0;
+
+  const uint32_t n = g.node_count();
+  std::vector<uint8_t> usable(g.arc_count(), 0);
+  DisjointSets before(n), after(n);
+  for (uint32_t u = 0; u < n; ++u) {
+    for (uint32_t ai = g.arc_begin(u); ai < g.arc_end(u); ++ai) {
+      const RoadArc& a = g.arc(ai);
+      if (!routing::ArcUsable(a, *options)) continue;
+      usable[ai] = 1;
+      before.Unite(u, a.target);
+      if ((a.flags & what_if_flags_) == 0) after.Unite(u, a.target);
+    }
+  }
+
+  // The main network is the largest component with every arc present; after
+  // the removal it is whichever component keeps most of that network's nodes.
+  uint32_t main_before = 0, best = 0;
+  for (uint32_t u = 0; u < n; ++u) {
+    const uint32_t size = before.SizeOf(u);
+    if (size > best) { best = size; main_before = before.Find(u); }
+  }
+  if (best < 2) return;
+  std::unordered_map<uint32_t, uint32_t> kept;
+  for (uint32_t u = 0; u < n; ++u) {
+    if (before.Find(u) == main_before) ++kept[after.Find(u)];
+  }
+  uint32_t main_after = 0;
+  best = 0;
+  for (const auto& k : kept) {
+    if (k.second > best) { best = k.second; main_after = k.first; }
+  }
+
+  for (uint32_t u = 0; u < n; ++u) {
+    if (before.Find(u) != main_before) continue;
+    for (uint32_t ai = g.arc_begin(u); ai < g.arc_end(u); ++ai) {
+      const RoadArc& a = g.arc(ai);
+      if (!usable[ai] || (a.flags & what_if_flags_) != 0) continue;
+      if (after.Find(u) == main_after && after.Find(a.target) == main_after) continue;
+      cut_off_[ai] = 1;
+      // Each edge is two arcs; count it once, from its lower endpoint.
+      if (u < a.target) {
+        ++cut_off_edges_;
+        cut_off_m_ += a.length_m;
+      }
+    }
+  }
 }
 
 void RoadGraphOverlay::SetClassFilter(std::vector<RoadClass> classes) {
@@ -353,9 +525,31 @@ Status RoadGraphOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   drawn_nodes_ = 0;
   budget_hit_ = false;
   std::fill(counts_.begin(), counts_.end(), 0u);
+  std::fill(band_counts_.begin(), band_counts_.end(), 0u);
+  golf_cartpath_drawn_ = 0;
+  golf_path_drawn_ = 0;
 
   const std::shared_ptr<const RoadGraph> g = graph();
   if (g == nullptr || g->node_count() == 0) return Status::Ok();
+
+  // The profile the weights and the what-if judge by, when one is wanted.
+  routing::RouteOptions options;
+  bool have_profile = false;
+  std::string profile_note;
+  if (coloring_ == RoadGraphColoring::kProfileWeight || what_if_flags_ != 0) {
+    if (planner_ == nullptr || weight_profile_.empty()) {
+      profile_note = "no weight profile set";
+    } else {
+      RoutePlanOptions in;
+      in.profile = weight_profile_;
+      in.beach = routing::BeachUse::kToSaveTime;
+      const Status ps = planner_->BuildOptions(in, &options);
+      have_profile = ps.ok() && options.profile != nullptr;
+      if (!have_profile) profile_note = weight_profile_ + ": " + ps.message;
+    }
+  }
+  RefreshWhatIf(*g, have_profile ? &options : nullptr);
+  const bool by_weight = coloring_ == RoadGraphColoring::kProfileWeight && have_profile;
 
   const GeoRect box = QueryRect(proj);
   // The nodes on screen, gathered once and used twice — for the arcs and for
@@ -395,12 +589,36 @@ Status RoadGraphOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
         if (!ClassShown(a.klass)) continue;
 
         const std::vector<GeoPoint> line = ArcLine(*g, u, a);
+        FvColor color = RoadClassColor(a.klass);
+        int width = RoadClassWidth(a.klass);
+        if (by_weight) {
+          const ProfileWeightBand band = ProfileWeightBandOf(RelativeCost(a, options));
+          color = ProfileWeightColor(band);
+          width = band == ProfileWeightBand::kUnusable ? 1 : 3;
+          ++band_counts_[static_cast<size_t>(band)];
+        }
         // kSimple: road geometry IS the road. A great circle between two
         // shape points twenty metres apart costs the geodesy and returns the
         // same line — the same argument RouteOverlay makes for a planned leg.
-        s = draw.DrawGeoPolyline(
-            line, LineKind::kSimple,
-            SolidGeoLine(RoadClassColor(a.klass), RoadClassWidth(a.klass)));
+        //
+        // Drawn bottom up: the what-if's casing, a golf way's rail, then the
+        // arc in its class or weight colour, dashed on a cart path and dotted
+        // on a golfer path.
+        if (!cut_off_.empty() && cut_off_[ai] != 0) {
+          s = draw.DrawGeoPolyline(line, LineKind::kSimple,
+                                   SolidGeoLine(kCutOffColor, width + 8));
+          if (!s.ok()) return s;
+        }
+        GeoLineStyle style = SolidGeoLine(color, width);
+        if (a.golf_cartpath() || a.golf_path()) {
+          s = draw.DrawGeoPolyline(line, LineKind::kSimple,
+                                   SolidGeoLine(kGolfRailColor, width + 2));
+          if (!s.ok()) return s;
+          style = PresetGeoLine(a.golf_cartpath() ? line_preset::kDash : line_preset::kDot,
+                                color, width);
+          ++(a.golf_cartpath() ? golf_cartpath_drawn_ : golf_path_drawn_);
+        }
+        s = draw.DrawGeoPolyline(line, LineKind::kSimple, style);
         if (!s.ok()) return s;
 
         ++drawn_arcs_;
@@ -452,53 +670,92 @@ Status RoadGraphOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   }
 
   if (show_legend_) {
-    // Straight on the canvas and not through GeoDraw: it is not on the earth.
-    // Only the classes actually drawn, so the legend is a statement about
-    // THIS view rather than a fixed key of twenty-two rows.
-    std::vector<int> present;
-    for (int i = 0; i < kClassCount; ++i) {
-      if (counts_[i] > 0) present.push_back(i);
-    }
-    const int rows = static_cast<int>(present.size()) + 1;  // + the total line
-    const int x = 10, y0 = 10, row_h = 16;
-    const int box_w = 232, box_h = 8 + row_h * rows;
-
-    const Brush panel{FvColor{0, 0, 0, 150}};
-    s = canvas.DrawRectangle(PixelRect{x - 4, y0 - 4, box_w, box_h}, &panel,
-                             nullptr);
-    if (!s.ok()) return s;
-
-    TextStyle text;
-    text.size = 11.0;
-    text.color = FvColor{255, 255, 255, 255};
-
-    int y = y0;
-    for (const int ci : present) {
-      const RoadClass k = static_cast<RoadClass>(ci);
-      const Brush swatch{RoadClassColor(k)};
-      const Pen edge{FvColor{255, 255, 255, 200}, 1, {}};
-      s = canvas.DrawRectangle(PixelRect{x, y + 3, 12, 9}, &swatch, &edge);
-      if (!s.ok()) return s;
-      const std::string label = std::string(routing::RoadClassName(k)) + "  " +
-                                std::to_string(counts_[ci]);
-      s = canvas.DrawTextString(label, x + 18, y + 12, text);
-      if (!s.ok()) return s;
-      y += row_h;
-    }
-
-    // The total, and the budget when it bit. A frame that stopped early SAYS
-    // so — silently drawing three quarters of the network would make the
-    // overlay lie about the thing it exists to show.
-    std::string total = std::to_string(drawn_arcs_) + " arcs, " +
-                        std::to_string(drawn_nodes_) + " nodes";
-    if (budget_hit_) total += "  (BUDGET HIT - zoom in)";
-    text.color = budget_hit_ ? FvColor{255, 180, 80, 255}
-                             : FvColor{200, 200, 200, 255};
-    s = canvas.DrawTextString(total, x, y + 12, text);
+    s = DrawLegend(canvas, profile_note);
     if (!s.ok()) return s;
   }
 
   return Status::Ok();
+}
+
+Status RoadGraphOverlay::DrawLegend(ICanvas& canvas, const std::string& profile_note) {
+  // Straight on the canvas and not through GeoDraw: it is not on the earth.
+  // Only what was actually drawn, so the legend describes this view.
+  struct Row {
+    std::string label;
+    FvColor color;
+    std::vector<double> dash;  // empty for a filled swatch
+  };
+  std::vector<Row> rows;
+  const bool by_weight = std::any_of(band_counts_.begin(), band_counts_.end(),
+                                     [](uint32_t c) { return c > 0; });
+  if (by_weight) {
+    rows.push_back({"weights: " + weight_profile_, FvColor{0, 0, 0, 0}, {}});
+    for (size_t b = 0; b < band_counts_.size(); ++b) {
+      if (band_counts_[b] == 0) continue;
+      const auto band = static_cast<ProfileWeightBand>(b);
+      rows.push_back({std::string(ProfileWeightLabel(band)) + "  " +
+                          std::to_string(band_counts_[b]),
+                      ProfileWeightColor(band), {}});
+    }
+  } else {
+    for (int i = 0; i < kClassCount; ++i) {
+      if (counts_[i] == 0) continue;
+      const RoadClass k = static_cast<RoadClass>(i);
+      rows.push_back({std::string(routing::RoadClassName(k)) + "  " +
+                          std::to_string(counts_[i]),
+                      RoadClassColor(k), {}});
+    }
+  }
+  const FvColor white{255, 255, 255, 255};
+  if (golf_cartpath_drawn_ > 0)
+    rows.push_back({"golf cart path  " + std::to_string(golf_cartpath_drawn_), white, {5, 3}});
+  if (golf_path_drawn_ > 0)
+    rows.push_back({"golfer path  " + std::to_string(golf_path_drawn_), white, {1.5, 3}});
+  if (what_if_flags_ != 0 && what_if_graph_ != nullptr) {
+    char buf[96];
+    if (cut_off_edges_ == 0) {
+      std::snprintf(buf, sizeof(buf), "what-if: nothing cut off");
+    } else {
+      std::snprintf(buf, sizeof(buf), "what-if cuts off %u edges, %.2f km",
+                    cut_off_edges_, cut_off_m_ / 1000.0);
+    }
+    rows.push_back({buf, kCutOffColor, {}});
+  }
+  if (!profile_note.empty()) rows.push_back({profile_note, FvColor{0, 0, 0, 0}, {}});
+
+  const int n = static_cast<int>(rows.size()) + 1;  // + the total line
+  const int x = 10, y0 = 10, row_h = 16;
+  const int box_w = 260, box_h = 8 + row_h * n;
+  const Brush panel{FvColor{0, 0, 0, 150}};
+  Status s = canvas.DrawRectangle(PixelRect{x - 4, y0 - 4, box_w, box_h}, &panel, nullptr);
+  if (!s.ok()) return s;
+
+  TextStyle text;
+  text.size = 11.0;
+  text.color = white;
+  int y = y0;
+  for (const Row& r : rows) {
+    if (!r.dash.empty()) {
+      s = canvas.DrawLines({{x, y + 7}, {x + 14, y + 7}}, Pen{kGolfRailColor, 5, {}});
+      if (s.ok()) s = canvas.DrawLines({{x, y + 7}, {x + 14, y + 7}}, Pen{r.color, 2, r.dash});
+    } else if (r.color.a != 0) {
+      const Brush swatch{r.color};
+      const Pen edge{FvColor{255, 255, 255, 200}, 1, {}};
+      s = canvas.DrawRectangle(PixelRect{x, y + 3, 12, 9}, &swatch, &edge);
+    }
+    if (!s.ok()) return s;
+    s = canvas.DrawTextString(r.label, x + 18, y + 12, text);
+    if (!s.ok()) return s;
+    y += row_h;
+  }
+
+  // The total, and the budget when it bit. A frame that stopped early says
+  // so rather than drawing part of the network silently.
+  std::string total = std::to_string(drawn_arcs_) + " arcs, " +
+                      std::to_string(drawn_nodes_) + " nodes";
+  if (budget_hit_) total += "  (BUDGET HIT - zoom in)";
+  text.color = budget_hit_ ? FvColor{255, 180, 80, 255} : FvColor{200, 200, 200, 255};
+  return canvas.DrawTextString(total, x, y + 12, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +799,8 @@ RoadArcInfo RoadGraphOverlay::ArcInfoFor(uint32_t arc) const {
   info.motor_vehicle_private = a.motor_vehicle_private();
   info.tolled = a.tolled();
   info.ferry = a.is_ferry();
+  info.golf_cartpath = a.golf_cartpath();
+  info.golf_path = a.golf_path();
   return info;
 }
 

@@ -43,6 +43,8 @@
 #import <PippinKit/PPTrip.h>
 #import <PippinKit/PPRoute.h>
 #import <PippinKit/PPSearch.h>
+#import <PippinKit/PPTide.h>
+#import <PippinKit/PPWind.h>
 #import <PippinKit/PPViewport.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -197,6 +199,42 @@ NS_SWIFT_SENDABLE
 
 @end
 
+/// The map two zoom levels out at screen size, shown under the base layer so
+/// the screen past the guard band is soft rather than blank. Built by
+/// `renderUnderlayForViewport:error:` when the loop is idle and kept by the
+/// shell; it carries no overlay.
+NS_SWIFT_SENDABLE
+@interface PPUnderlay : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+
+/// The map at `viewport`, opaque, screen-sized.
+@property(nonatomic, readonly) CGImageRef image;
+/// Where `image` was drawn: `PPViewport.forUnderlay()` of the camera asked for.
+@property(nonatomic, readonly) PPViewport *viewport;
+/// The style's background colour at the camera asked for, opaque. The shell
+/// paints it behind every layer, so the worst case is land-coloured.
+@property(nonatomic, readonly) CGColorRef backgroundColor;
+/// What the draw cost.
+@property(nonatomic, readonly) double renderMilliseconds;
+@end
+
+/// What a moving-map tick decided when no frame was drawn: the same camera
+/// answer, ownship and ride numbers a `PPFrame` carries, without the images.
+/// See `stepCameraAtViewport:`.
+@interface PPCameraStep : NSObject
+@property(nonatomic, readonly, nullable) PPOwnship *ownship;
+@property(nonatomic, readonly, nullable) PPTrip *trip;
+@property(nonatomic, readonly, nullable) PPGuidance *guidance;
+@property(nonatomic, readonly) NSArray<PPGuidanceEvent *> *guidanceEvents;
+@property(nonatomic, readonly) BOOL hasCameraUpdate;
+@property(nonatomic, readonly) PPGeoPoint cameraCenter;
+@property(nonatomic, readonly) double cameraRotationDegrees;
+@property(nonatomic, readonly) BOOL cameraIsAnimating;
+/// The tick consumed a fix, so the ownship on screen is out of date and the
+/// next frame has to be drawn.
+@property(nonatomic, readonly) BOOL sawNewFix;
+@end
+
 @interface PPMap : NSObject
 
 /// Opens the bundled data pack: the directory holding `pippin.ini` and
@@ -223,8 +261,13 @@ NS_SWIFT_SENDABLE
 ///
 /// The shell reads it once and passes it back per frame, because which frames
 /// should pay for a band is the shell's question. See
-/// `renderViewport:bandMargin:reuseBase:error:`.
+/// `renderViewport:band:reuseBase:error:`.
 @property(nonatomic, readonly) double baseCacheBandMargin;
+
+/// During a gesture the band is redrawn early once the screen, predicted one
+/// draw ahead, comes within this fraction of the band margin of its edge.
+/// `display.band_refresh_fraction`, 0.5 by default.
+@property(nonatomic, readonly) double baseCacheRefreshFraction;
 
 /// How far the chart may turn under a composited base map before it is drawn
 /// again, in degrees. `display.base_cache_max_turn_deg`, 2.5 by default. The
@@ -232,8 +275,32 @@ NS_SWIFT_SENDABLE
 /// sides ask the same question with the same number.
 @property(nonatomic, readonly) double baseCacheMaxTurnDegrees;
 
+/// Release speed below which a drag stops rather than coasting, in points per
+/// second. `display.fling_min_speed_pt`, 200 by default.
+@property(nonatomic, readonly) double flingMinSpeedPoints;
+
+/// The fling's deceleration as the speed kept per millisecond, UIKit's unit.
+/// `display.fling_deceleration`, 0.998 (`DecelerationRate.normal`) by default.
+@property(nonatomic, readonly) double flingDecelerationRate;
+
+/// Frames per second while following with no gesture, from
+/// `display.follow_fps` (20). Unclamped; `FramePolicy` clamps it.
+@property(nonatomic, readonly) double followFramesPerSecond;
+
+/// Smallest camera movement in points that earns a follow frame, from
+/// `display.min_move_pt` (0.25).
+@property(nonatomic, readonly) double followMinMovePoints;
+
 /// The bundled data's own extent, from `pippin.home_bounds`.
 @property(nonatomic, readonly) PPGeoBounds homeBounds;
+
+/// The pack's tide table and rideable threshold (`[tides]`, `[beach]`), or
+/// nil when the pack carries none or it would not load.
+@property(nonatomic, readonly, nullable) PPTide *tide;
+
+/// Where to ask for the wind and what to warn at (`[wind]`, and `[beach]
+/// faces_deg`), or nil when the pack names no forecast point.
+@property(nonatomic, readonly, nullable) PPWindSettings *wind;
 
 /// Draws `viewport` and hands back a frame the caller owns.
 ///
@@ -246,25 +313,41 @@ NS_SWIFT_SENDABLE
 
 /// The same, with the base cache's two knobs.
 ///
-/// `bandMargin` is how much larger than the screen to draw the base map when
-/// it has to be drawn at all. It is the caller's to choose per frame: a band
-/// is paid for on every miss and earns its keep only on hits, so the shell
-/// asks for one when hits are possible and for none when every frame will
-/// miss. The case that matters is a pinch, where the scale moves so no cached
-/// base can serve it (`PPBaseCoverage.h`) and 2.25x per frame would make the
-/// most expensive gesture in the app half as fast for nothing.
+/// `band` is the viewport the base map is drawn at when it has to be drawn at
+/// all: normally the live camera grown by `baseCacheBandMargin`
+/// (`PPViewport.grown(byMargin:)`), and nil for the screen itself. It is the
+/// caller's to choose per frame: a band is paid for on every miss and earns
+/// its keep only on hits, so the shell asks for none during a pinch, where
+/// the scale moves so no cached base can serve it (`PPBaseCoverage.h`). It
+/// may be centred ahead of the live camera, and it may be rotation-safe; it
+/// must share the live scale and rotation.
 ///
 /// `reuseBase` NO forces the base map to be drawn even when the cache would
-/// have served. The shell uses it for the settle frame, which is what keeps
-/// the cache from costing any sharpness: a composited base is resampled
-/// whenever the transform is not the identity, so the band carries motion and
-/// the moment the map rests it is redrawn exactly. Callers outside the loop
-/// pass NO too, since none of them knows what the cache holds.
+/// have served. The shell uses it for the settle frame and for a band
+/// refreshed early during a gesture. Callers outside the loop pass NO too,
+/// since none of them knows what the cache holds.
 - (nullable PPFrame *)renderViewport:(PPViewport *)viewport
-                          bandMargin:(double)bandMargin
+                                band:(nullable PPViewport *)band
                            reuseBase:(BOOL)reuseBase
                                error:(NSError **)error
-    NS_SWIFT_NAME(render(_:bandMargin:reuseBase:));
+    NS_SWIFT_NAME(render(_:band:reuseBase:));
+
+/// Advances the moving map at `viewport` without drawing: polls the demo
+/// feed, consumes queued fixes, feeds the trip and guidance, and moves the
+/// slew. The shell calls it instead of `render:` for a follow frame whose
+/// camera would move the picture too little to redraw, and keeps its last
+/// frame on screen under the preview transform. Render queue only. Nil when
+/// the viewport has no surface.
+- (nullable PPCameraStep *)stepCameraAtViewport:(PPViewport *)viewport
+    NS_SWIFT_NAME(stepCamera(at:));
+
+/// Draws the underlay for `viewport`: the map at `viewport.forUnderlay()`,
+/// through a renderer of its own so the base map's retained scene survives.
+/// Render queue only, like everything else here; nil with `error` filled
+/// when the viewport has no surface or the renderer refuses.
+- (nullable PPUnderlay *)renderUnderlayForViewport:(PPViewport *)viewport
+                                             error:(NSError **)error
+    NS_SWIFT_NAME(renderUnderlay(for:));
 
 /// Drops the cached base map. Nothing in the normal path needs it: this is
 /// for a memory warning and for a test that wants to force a draw.
@@ -442,6 +525,22 @@ NS_SWIFT_SENDABLE
 - (PPRoute *)setRouteWaypoints:(NSArray<PPWaypoint *> *)waypoints
                        profile:(NSString *)profile
     NS_SWIFT_NAME(setRoute(waypoints:profile:));
+
+/// As above, also setting the route's beach use. The tide, when the pack has
+/// a table, is judged for a departure now; without one, or past its end, the
+/// beach is kept and each stretch's verdict is unknown.
+- (PPRoute *)setRouteWaypoints:(NSArray<PPWaypoint *> *)waypoints
+                       profile:(NSString *)profile
+                      beachUse:(PPBeachUse)beachUse
+    NS_SWIFT_NAME(setRoute(waypoints:profile:beachUse:));
+
+/// The departure time the tide is judged for, epoch seconds; NaN (the
+/// default) means the system clock. For debugging at a chosen tide.
+@property(nonatomic) NSTimeInterval routeDepartureOverride;
+
+/// The road graph has a beach to ride, so the sheet offers "Use beach:".
+/// Loads the graph on first call; call it on the render queue.
+@property(nonatomic, readonly) BOOL beachAvailable;
 
 /// No route, and no document on disk either. Clear Route in the sheet.
 - (PPRoute *)clearRoute;

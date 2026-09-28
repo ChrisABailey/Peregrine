@@ -20,6 +20,15 @@ const char kRouteFormat[] = "peregrine-route";
 const char kRouteTypeId[] = "fv.route";
 const char kRouteExtension[] = "fvrte";
 
+const char* RouteBeachKey(RouteBeach v) {
+  switch (v) {
+    case RouteBeach::kToSaveTime: return "time";
+    case RouteBeach::kWheneverPossible: return "prefer";
+    case RouteBeach::kNever: break;
+  }
+  return "";
+}
+
 namespace {
 
 using json = nlohmann::json;
@@ -198,12 +207,14 @@ void RouteDoc::Reset() {
   name_.clear();
   color_ = FvColor{220, 30, 30, 255};
   profile_.clear();
+  beach_ = RouteBeach::kNever;
   waypoints_.clear();
 }
 
 std::string RouteDoc::ToJson() const {
   // Key order is route.py's dict INSERTION order, which is what json.dump
-  // preserves: format, version, name, color, profile, waypoints.
+  // preserves: format, version, name, color, profile, options, waypoints.
+  // `options` is present only when one of its keys is.
   std::string s;
   s += "{\n";
   s += "  \"format\": ";
@@ -224,6 +235,13 @@ std::string RouteDoc::ToJson() const {
   s += "  \"profile\": ";
   AppendJsonString(profile_, &s);
   s += ",\n";
+  if (beach_ != RouteBeach::kNever) {
+    s += "  \"options\": {\n";
+    s += "    \"beach\": ";
+    AppendJsonString(RouteBeachKey(beach_), &s);
+    s += "\n";
+    s += "  },\n";
+  }
   if (waypoints_.empty()) {
     // json.dump writes an EMPTY container on one line: there is nothing to
     // indent, so `[]` it is. Getting this wrong is invisible until a shell
@@ -327,10 +345,28 @@ Status RouteDoc::Parse(const std::string& text, const std::string& origin) {
   const auto pf = doc.find("profile");
   if (pf != doc.end() && pf->is_string()) profile = pf->get<std::string>();
 
+  // Unlike name and profile, an absent beach key has a meaning (never), so it
+  // resets rather than keeping the current value. An unknown spelling also
+  // reads as never: the safe reading of a value this build cannot interpret.
+  RouteBeach beach = RouteBeach::kNever;
+  const auto opts = doc.find("options");
+  if (opts != doc.end() && opts->is_object()) {
+    const auto b = opts->find("beach");
+    if (b != opts->end() && b->is_string()) {
+      const std::string v = b->get<std::string>();
+      if (v == RouteBeachKey(RouteBeach::kToSaveTime)) {
+        beach = RouteBeach::kToSaveTime;
+      } else if (v == RouteBeachKey(RouteBeach::kWheneverPossible)) {
+        beach = RouteBeach::kWheneverPossible;
+      }
+    }
+  }
+
   waypoints_ = std::move(waypoints);
   color_ = color;
   name_ = std::move(name);
   profile_ = std::move(profile);
+  beach_ = beach;
   return Status::Ok();
 }
 

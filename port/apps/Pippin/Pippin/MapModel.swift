@@ -9,6 +9,26 @@ import PippinKit
 import SwiftUI
 import UIKit
 
+/// The state that changes on every frame or camera step: the camera, the
+/// frame, and the readouts drawn from it. Written only by `MapModel`.
+///
+/// Kept off `MapModel`'s own publisher because a presented `Menu` or sheet is
+/// rebuilt whenever the view holding it is invalidated. Were these on
+/// `MapModel`, every GPS step would re-run `MapScreen.body` and replace the
+/// rows under a finger mid-tap. Views that draw this state read it through
+/// `LiveMapReader`.
+@MainActor
+final class LiveMapState: ObservableObject {
+    @Published fileprivate(set) var viewport: PPViewport?
+    @Published fileprivate(set) var frame: PPFrame?
+    @Published fileprivate(set) var underlay: PPUnderlay?
+    @Published fileprivate(set) var mapBackground: CGColor?
+    @Published fileprivate(set) var status: String = ""
+    @Published fileprivate(set) var ownship: PPOwnship?
+    @Published fileprivate(set) var trip: PPTrip?
+    @Published fileprivate(set) var guidance: PPGuidance?
+}
+
 /// View model for the map screen: the camera, the last rendered frame, and
 /// the render loop between them.
 ///
@@ -25,23 +45,52 @@ import UIKit
 /// (ownship fix, route edit, mode change). The "same viewport, skip the render"
 /// shortcut is only valid when `contentDirty` is clear.
 ///
-/// Rendering also happens during a gesture whenever the queue is idle and the
-/// last base draw came in under `liveRenderBudgetMs`; otherwise the preview
-/// transform in `MapScreen` carries the gesture until settle.
+/// The base map is drawn into a guard band larger than the screen and kept at
+/// rest, so a drag starts covered. During a pan or turn the band is redrawn
+/// early, ahead of the finger, when the screen predicted one draw ahead nears
+/// its edge; during a pinch a base draw over `liveRenderBudgetMs` hands the
+/// gesture to the preview transform in `MapScreen` until settle.
 @MainActor
 final class MapModel: ObservableObject {
+    /// The per-frame state, published separately so a frame redraws only the
+    /// views that read it. See `LiveMapState`.
+    let live = LiveMapState()
+
     /// The camera. Every writer (pan, pinch, twist, resize, moving-map answer)
     /// goes through this property, so the crosshair label and the location
-    /// accuracy policy are refreshed from one `didSet` rather than at each site.
-    @Published private(set) var viewport: PPViewport? {
-        didSet {
+    /// accuracy policy are refreshed from one setter rather than at each site.
+    private(set) var viewport: PPViewport? {
+        get { live.viewport }
+        set {
+            live.viewport = newValue
             if pickProfile != nil { refreshPickPlace() }
             reconsiderLocationAccuracy()
         }
     }
     /// The last finished frame, and the viewport it was drawn at.
-    @Published private(set) var frame: PPFrame?
-    @Published private(set) var status: String = ""
+    private(set) var frame: PPFrame? {
+        get { live.frame }
+        set { live.frame = newValue }
+    }
+
+    /// The map two zoom levels out, shown under the base so the screen past
+    /// the guard band is soft rather than blank. Built when the loop is idle;
+    /// see `pauseOrBuildUnderlay`.
+    private(set) var underlay: PPUnderlay? {
+        get { live.underlay }
+        set { live.underlay = newValue }
+    }
+
+    /// The style's background colour, painted behind every layer. Kept when
+    /// the underlay is dropped: a colour costs nothing to hold.
+    private(set) var mapBackground: CGColor? {
+        get { live.mapBackground }
+        set { live.mapBackground = newValue }
+    }
+    private(set) var status: String {
+        get { live.status }
+        set { live.status = newValue }
+    }
 
     #if DEBUG
     /// `-PPShowStats YES`. Read once at launch, and consulted before the
@@ -51,17 +100,26 @@ final class MapModel: ObservableObject {
     @Published private(set) var failure: String?
 
     /// Ownship position as of the last drawn frame (the render queue's answer).
-    @Published private(set) var ownship: PPOwnship?
+    private(set) var ownship: PPOwnship? {
+        get { live.ownship }
+        set { live.ownship = newValue }
+    }
 
     /// Trip computer readout as of the last frame, or nil outside GPS mode.
     /// Arrives on the frame because the trip computer is fed on the render queue.
-    @Published private(set) var trip: PPTrip?
+    private(set) var trip: PPTrip? {
+        get { live.trip }
+        set { live.trip = newValue }
+    }
 
     /// The next turn, or nil when there is no banner to draw: outside GPS
     /// mode, with no planned route, or past the destination. Arrives on the
     /// frame for the trip's reason — the state machine is fed on the render
     /// queue, where both feeds have already become one stream.
-    @Published private(set) var guidance: PPGuidance?
+    private(set) var guidance: PPGuidance? {
+        get { live.guidance }
+        set { live.guidance = newValue }
+    }
 
     /// What the guidance says, out loud and in the hand (GD4). Not published:
     /// the alerts are an effect of a frame arriving, not state a view draws.
@@ -83,7 +141,7 @@ final class MapModel: ObservableObject {
 
     /// GPS mode: the map follows the ship and the road snapper is on. Whether
     /// the chart also turns with the rider is `courseUp`.
-    @Published private(set) var gpsMode = false { didSet { updateIdleTimer() } }
+    @Published private(set) var gpsMode = false { didSet { ridingDidChange() } }
 
     /// Course-up: the chart turns so the way ahead is up the screen, and the
     /// map recentres continuously. Remembered outside GPS mode so the next
@@ -115,12 +173,16 @@ final class MapModel: ObservableObject {
     @Published private(set) var notice: MapNotice?
     private var noticeTask: Task<Void, Never>?
 
-    /// A base draw slower than this stops live rendering during a gesture and
+    /// A base draw slower than this stops live rendering during a pinch and
     /// leaves the preview transform to carry it until settle. 40 ms is two
-    /// frames at 60 Hz.
+    /// frames at 60 Hz. Pans and turns are governed by the band instead.
     private let liveRenderBudgetMs = 40.0
 
     private let renderer: Renderer?
+
+    /// The pack's tide table, or nil when it carries none.
+    var tide: PPTide? { renderer?.tide }
+
     private let renderQueue = DispatchQueue(
         label: "org.peregrine.Pippin.render", qos: .userInitiated)
 
@@ -140,6 +202,14 @@ final class MapModel: ObservableObject {
 
     /// Decides how hard the receiver should work. Stateful like `renderGate`.
     private var locationPolicy = LocationPolicy()
+
+    /// The display link's rate by mode and the follow-frame threshold.
+    private lazy var framePolicy = FramePolicy(
+        followFPS: renderer?.followFramesPerSecond ?? FramePolicy.defaultFollowFPS,
+        minMovePoints: renderer?.followMinMovePoints ?? FramePolicy.defaultMinMovePoints)
+
+    /// The rate last handed to the display link, so it is set on a change only.
+    private var appliedFrameRate: FramePolicy.Rate?
 
     /// The ownship symbol's reach in points; a launch-time constant from the pack.
     private var ownshipSymbolRadius: Double { renderer?.ownshipSymbolRadius ?? 0 }
@@ -180,6 +250,7 @@ final class MapModel: ObservableObject {
             map.setPointsDocumentURL(Self.pointsDocumentURL())
             renderer = Renderer(map: map)
             alerts.amplitude = map.alertAmplitude
+            WindFeed.shared.configure(map.wind)
             courseUp = renderer?.initialCourseUp ?? true
             // Centred on the pack with its zoom limits applied; no surface
             // until the view reports one.
@@ -201,6 +272,7 @@ final class MapModel: ObservableObject {
             object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let renderer = self.renderer else { return }
+                    self.dropUnderlay()
                     self.renderQueue.async { renderer.invalidateBaseLayer() }
                 }
             }
@@ -231,18 +303,77 @@ final class MapModel: ObservableObject {
     // MARK: - Gestures (arithmetic is in PPViewport)
 
     func gestureBegan() {
+        coast = nil
         gestureActive = true
         baseDrawsThisGesture = 0
+        panVelocity = .zero
+        turningThisGesture = false
+        applyFrameRate()
     }
 
-    func gestureEnded() {
+    /// The last finger lifted. A release faster than the pack's
+    /// `fling_min_speed_pt` starts a coast, and the gesture lasts until it
+    /// ends; there is no fling while following, where the next fix would pull
+    /// the map straight back.
+    func gestureEnded(releaseVelocity: CGVector? = nil) {
+        if let v = releaseVelocity, !gpsMode, let renderer,
+           let momentum = Momentum(velocity: v,
+                                   decelerationRate: renderer.flingDecelerationRate,
+                                   minSpeed: renderer.flingMinSpeedPoints) {
+            coast = Coast(momentum, start: CACurrentMediaTime())
+            turningThisGesture = false
+            setNeedsRender()
+            return
+        }
+        endGesture()
+    }
+
+    /// True while a fling is coasting.
+    var isCoasting: Bool { coast != nil }
+
+    /// Stops a coast where it is. The touch that called this is spent on
+    /// stopping; see `MapGestureView.CoastStopRecognizer`.
+    func stopCoast() {
+        guard coast != nil else { return }
+        coast = nil
+        endGesture()
+    }
+
+    private func endGesture() {
         gestureActive = false
+        panVelocity = .zero
+        turningThisGesture = false
+        applyFrameRate()
         // Settle frame: replace whatever the preview transform was showing.
         setNeedsRender()
     }
 
-    /// Pans the content by `translation` in points.
-    func pan(by translation: CGSize) {
+    /// Moves a running coast to the display link's time. Each step is a pan,
+    /// so it is rotation-aware and leads the band like a drag. Stops when the
+    /// speed has decayed or the centre clamp at the pack's edge bites.
+    private func advanceCoast() {
+        guard var running = coast else { return }
+        guard !gpsMode, let before = viewport else { stopCoast(); return }
+        let step = running.step(at: CACurrentMediaTime())
+        coast = running
+        pan(by: CGSize(width: step.delta.dx, height: step.delta.dy),
+            velocity: step.velocity)
+        if let after = viewport {
+            let was = after.point(forGeo: before.center)
+            let now = after.point(forGeo: after.center)
+            let applied = CGVector(dx: was.x - now.x, dy: was.y - now.y)
+            if Momentum.clampBit(requested: step.delta, applied: applied) {
+                stopCoast()
+                return
+            }
+        }
+        if step.finished { stopCoast() }
+    }
+
+    /// Pans the content by `translation` in points. `velocity` is the finger's,
+    /// in points per second; the band is drawn ahead of it.
+    func pan(by translation: CGSize, velocity: CGVector = .zero) {
+        panVelocity = velocity
         guard let current = viewport else { return }
         viewport = current.panned(
             by: CGVector(dx: translation.width, dy: translation.height))
@@ -262,6 +393,7 @@ final class MapModel: ObservableObject {
     func rotate(by degrees: CGFloat, about anchor: CGPoint) {
         guard !gpsMode, let current = viewport else { return }
         viewport = current.rotated(by: Double(degrees), about: anchor)
+        if gestureActive { turningThisGesture = true }
         setNeedsRender()
     }
 
@@ -322,6 +454,7 @@ final class MapModel: ObservableObject {
     func setGpsMode(_ on: Bool) {
         guard let renderer, on != gpsMode else { return }
         if on {
+            stopCoast()
             // Request full accuracy first: the receiver may have been idling
             // coarse, and GNSS warm-up starts from this call.
             demandFullAccuracy()
@@ -338,6 +471,29 @@ final class MapModel: ObservableObject {
         // Mode change without a camera move.
         setContentDirty()
     }
+
+    // MARK: - Riding state
+
+    /// Following or recording started or stopped.
+    private func ridingDidChange() {
+        updateIdleTimer()
+        applyFrameRate()
+        #if DEBUG
+        energy.update(following: gpsMode, recording: isRecording)
+        #endif
+    }
+
+    #if DEBUG
+    /// The per-ride energy log, Debug builds only. Frames are the render
+    /// loop's own counters; see `EnergyRecorder`.
+    private lazy var energy = EnergyRecorder { [weak self] in
+        guard let self else { return EnergyCounters() }
+        return EnergyCounters(frames: self.baseDraws + self.baseHits,
+                              baseDraws: self.baseDraws,
+                              cacheHits: self.baseHits,
+                              fixes: self.fixCount)
+    }
+    #endif
 
     // MARK: - Auto-Lock
 
@@ -443,6 +599,7 @@ final class MapModel: ObservableObject {
         // Every fix is forwarded: the heading resolver, trip computer and
         // recorder all need the full history. Only the frame is gated.
         renderQueue.async { renderer.push(fix) }
+        fixCount += 1
         if renderIsWorthIt(for: fix) { setContentDirty() }
         reconsiderLocationAccuracy(for: fix)
     }
@@ -528,7 +685,7 @@ final class MapModel: ObservableObject {
 
     /// Whether a ride is being written. The model's copy drives the UI and is
     /// set before the queue hop; `PPMap`'s copy drives the file.
-    @Published private(set) var isRecording = false { didSet { updateIdleTimer() } }
+    @Published private(set) var isRecording = false { didSet { ridingDidChange() } }
 
     /// Points written so far, refreshed while the sheet is open.
     @Published private(set) var recordedPointCount = 0
@@ -606,6 +763,14 @@ final class MapModel: ObservableObject {
     func setRoute(waypoints: [PPWaypoint], profile: String) {
         publishRoute(planning: true,
                      { $0.setRoute(waypoints: waypoints, profile: profile) },
+                     then: { $0.offerWaypointHint() })
+    }
+
+    /// As above, also setting the route's beach use.
+    func setRoute(waypoints: [PPWaypoint], profile: String, beachUse: PPBeachUse) {
+        publishRoute(planning: true,
+                     { $0.setRoute(waypoints: waypoints, profile: profile,
+                                   beachUse: beachUse) },
                      then: { $0.offerWaypointHint() })
     }
 
@@ -839,9 +1004,13 @@ final class MapModel: ObservableObject {
 
     // MARK: - Shared places
 
+    /// The palette icon a shared place wears: the teardrop pin.
+    private static let sharedPlaceSymbol = "marker"
+
     /// Adds a place shared in from another app as a point and reports the id
-    /// it ended up on (0 on refusal). The point gets the default marker, the
-    /// "Shared" category, and the address as remarks. No editor is shown; the
+    /// it ended up on (0 on refusal). The point gets a yellow pin badge, the
+    /// "Shared" category, and the address as remarks (with a warning line
+    /// when the position is a search result). No editor is shown; the
     /// info sheet opens on it instead.
     func acceptSharedPlace(_ place: SharedPlace,
                            then: @escaping @MainActor (Int64) -> Void) {
@@ -856,6 +1025,7 @@ final class MapModel: ObservableObject {
 
         let coordinate = PPGeoPointMake(place.latitude, place.longitude)
         let name = place.displayName
+        let remarks = Self.sharedPlaceRemarks(place)
 
         mutatePoints({ renderer -> (Int64, Bool) in
             let existing = renderer.points()
@@ -866,6 +1036,9 @@ final class MapModel: ObservableObject {
             }) {
                 return (near.pointId, true)
             }
+            // Looked up by name: ids differ between documents, and a
+            // document without the icon falls back to a plain yellow circle.
+            let pin = renderer.pointSymbols().first { $0.name == Self.sharedPlaceSymbol }
             let point = PPMapPoint(
                 pointId: 0,
                 name: name,
@@ -873,11 +1046,11 @@ final class MapModel: ObservableObject {
                 shape: PPPointShapeCircle,
                 // Match the size the set already uses; same rule as PointDraft.
                 sizePx: existing.first?.sizePx ?? 22,
-                colorHex: PointPalette.swatches[0].hex,
-                symbolId: 0,
+                colorHex: PointPalette.yellowHex,
+                symbolId: pin?.symbolId ?? 0,
                 category: "Shared",
                 elevationFt: 0,
-                remarks: place.address,
+                remarks: remarks,
                 phone: "",
                 url: "")
             return (renderer.add(point).pointId, false)
@@ -887,6 +1060,14 @@ final class MapModel: ObservableObject {
                                  wasAlreadyHere: wasAlreadyHere)
             then(id)
         })
+    }
+
+    /// The remarks for a shared point: the address, preceded by a warning
+    /// line when the position came from a search rather than the link.
+    private static func sharedPlaceRemarks(_ place: SharedPlace) -> String {
+        guard place.isApproximate else { return place.address }
+        let warning = "Position from Apple's search for '\(place.searchQuery)' — check it"
+        return place.address.isEmpty ? warning : warning + "\n" + place.address
     }
 
     /// Posts the notice for a shared point and, when not following, centres
@@ -913,6 +1094,7 @@ final class MapModel: ObservableObject {
 
         // In GPS mode the camera owns the centre; do not move the rider's view.
         guard !gpsMode, let current = viewport else { return }
+        stopCoast()
         viewport = current.moved(toCenter: coordinate,
                                  scaleDenominator: current.scaleDenominator,
                                  rotationDegrees: current.rotationDegrees)
@@ -1026,6 +1208,9 @@ final class MapModel: ObservableObject {
     }
 
     var routeProfileNames: [String] { renderer?.routeProfileNames ?? [] }
+
+    /// The road graph has a beach, so the route sheet offers "Use beach:".
+    var beachAvailable: Bool { renderer?.beachAvailable ?? false }
     var routeDefaultProfile: String { renderer?.routeDefaultProfile ?? "bicycle" }
 
     // MARK: - Symbol size
@@ -1058,6 +1243,7 @@ final class MapModel: ObservableObject {
     private func applySymbolZoom() {
         guard renderer != nil else { return }
         let zoom = symbolZoomSteps[symbolStep]
+        dropUnderlay()
         onRenderQueue({ $0.setSymbolZoom(zoom) }) { model, _ in
             model.setContentDirty()
         }
@@ -1204,6 +1390,7 @@ final class MapModel: ObservableObject {
     func frame(_ result: PPSearchResult) {
         guard !gpsMode, let current = viewport, current.hasSurface,
               let renderer else { return }
+        stopCoast()
         viewport = current.framing(result.bounds,
                                    minScaleDenominator: renderer.searchFrameMinScale,
                                    topBias: renderer.searchFrameTopBias)
@@ -1244,6 +1431,22 @@ final class MapModel: ObservableObject {
         link.add(to: .main, forMode: .common)
         link.isPaused = true
         self.link = link
+        applyFrameRate()
+    }
+
+    /// Hands the display link the rate `framePolicy` gives the current mode.
+    private func applyFrameRate() {
+        guard let link else { return }
+        let rate = framePolicy.rate(gesture: gestureActive, following: gpsMode)
+        guard rate != appliedFrameRate else { return }
+        appliedFrameRate = rate
+        switch rate {
+        case .system:
+            link.preferredFrameRateRange = .default
+        case .fixed(let fps):
+            link.preferredFrameRateRange =
+                CAFrameRateRange(minimum: fps, maximum: fps, preferred: fps)
+        }
     }
 
     private func setNeedsRender() {
@@ -1263,83 +1466,281 @@ final class MapModel: ObservableObject {
     private var baseDraws = 0
     private var lastHitMs = 0.0
 
+    /// Fixes received since launch, for the energy log.
+    private var fixCount = 0
+
+    /// Follow frames advanced without drawing, since launch.
+    private var cameraSteps = 0
+
+    /// The camera has been stepped away from the drawn frame, so one drawn
+    /// frame is owed before the loop pauses.
+    private var stepLeftFrameBehind = false
+
     /// Cost of the last base draw, kept apart from the frame time: a cached
     /// frame reports only its overlay pass.
     private var lastBaseDrawMs = 0.0
 
-    /// Base maps drawn during the current gesture. The first is always
+    /// Base maps drawn during the current gesture. A pinch's first is always
     /// allowed; see `tick()`.
     private var baseDrawsThisGesture = 0
 
-    /// The last frame was served from the cached base under a non-identity
-    /// transform, so one exact frame is owed when the map stops. See `settle`.
-    private var baseIsResampled = false
+    /// The finger's last velocity in points per second, for the band's lead.
+    private var panVelocity = CGVector.zero
 
-    /// Guard-band margin for this frame. Zero when the scale changed since the
-    /// last frame (no cached base can serve a zoom, so the band would be paid
-    /// for and never used) and on the first frame (no cache yet).
-    private func bandMargin(for vp: PPViewport) -> Double {
-        guard let renderer, let last = frame else { return 0 }
-        if last.viewport.scaleDenominator != vp.scaleDenominator { return 0 }
-        return renderer.bandMargin
+    /// The fling in progress. `gestureActive` stays true while it runs.
+    private var coast: Coast?
+
+    /// The chart has been turned by two fingers during this gesture, so the
+    /// band is drawn rotation-safe.
+    private var turningThisGesture = false
+
+    /// The last frame's base is resampled on screen, or is not the resting
+    /// band, so one exact banded frame is owed when the map stops. See
+    /// `settle`.
+    private var settleOwed = false
+
+    /// The underlay camera last asked for, drawn or failed. A build is started
+    /// only when this no longer serves the live camera, so a failure is not
+    /// retried every tick.
+    private var underlayKey: PPViewport?
+
+    /// Bumped whenever the underlay is dropped, so a build already on the
+    /// render queue cannot bring back pixels drawn under the old settings.
+    private var underlayGeneration = 0
+
+    /// Soft and blank frames since launch, for `-PPShowStats`: frames on which
+    /// some of the screen was the underlay, or the background colour.
+    private var softFrames = 0
+    private var blankFrames = 0
+    private var lastCountedViewport: PPViewport?
+
+    /// Drops the underlay; the next idle loop builds a new one.
+    private func dropUnderlay() {
+        underlay = nil
+        underlayKey = nil
+        underlayGeneration += 1
+    }
+
+    /// Called where the loop has nothing to draw. Starts an underlay build
+    /// when the current one no longer serves the camera, and otherwise pauses
+    /// the display link. The render queue is serial, so the build runs only
+    /// here, never ahead of a frame that is already waiting.
+    private func pauseOrBuildUnderlay(_ vp: PPViewport?) {
+        guard !gestureActive, let renderer, let vp, vp.hasSurface, frame != nil,
+              !(underlayKey?.underlayServes(vp) ?? false) else {
+            link?.isPaused = true
+            return
+        }
+        underlayKey = vp.forUnderlay()
+        renderInFlight = true
+        let generation = underlayGeneration
+        renderQueue.async { [weak self] in
+            let result = renderer.renderUnderlay(for: vp)
+            Task { @MainActor in
+                guard let self else { return }
+                self.renderInFlight = false
+                if generation == self.underlayGeneration,
+                   case .success(let underlay) = result {
+                    self.underlay = underlay
+                    self.mapBackground = underlay.backgroundColor
+                }
+                // The next tick pauses if nothing else is due.
+                self.link?.isPaused = false
+            }
+        }
+    }
+
+    #if DEBUG
+    /// Counts the displayed frame as soft or blank when the base does not
+    /// reach the whole live screen. Only frames on which the camera moved are
+    /// counted, so an idle display link adds nothing.
+    private func countCoverage(_ vp: PPViewport) {
+        guard Self.showsStats, let frame,
+              lastCountedViewport.map({ !vp.isEquivalent(to: $0) }) ?? true
+        else { return }
+        lastCountedViewport = vp
+        switch frame.baseViewport.coverage(of: vp, underlay: underlay?.viewport) {
+        case .sharp: break
+        case .underlay: softFrames += 1
+        case .background: blankFrames += 1
+        @unknown default: break
+        }
+    }
+    #endif
+
+    /// The band to draw the base at for `vp`, or nil for the screen itself.
+    /// None when the scale changed since the last frame (no cached base can
+    /// serve a zoom, so the band would be paid for and never used) and on the
+    /// first frame (no cache yet). `lead` shifts it ahead of a pan, in points.
+    private func band(for vp: PPViewport, lead: CGVector = .zero) -> PPViewport? {
+        guard let renderer, let last = frame, renderer.bandMargin > 0 else { return nil }
+        if last.viewport.scaleDenominator != vp.scaleDenominator { return nil }
+        let centre = lead == .zero
+            ? vp : vp.panned(by: lead)
+        return centre.grown(byMargin: renderer.bandMargin,
+                            rotationSafe: gestureActive && turningThisGesture)
+    }
+
+    /// Where the pan will have carried the camera `seconds` from now, in
+    /// points of content movement, capped inside the band's margin.
+    private func lead(for vp: PPViewport, seconds: Double) -> CGVector {
+        guard let renderer, panVelocity != .zero else { return .zero }
+        let m = renderer.bandMargin
+        return CGVector(
+            dx: PPBandLead(Double(panVelocity.dx), seconds,
+                           m * vp.sizeInPoints.width),
+            dy: PPBandLead(Double(panVelocity.dy), seconds,
+                           m * vp.sizeInPoints.height))
+    }
+
+    /// During a same-scale gesture: true when the base must be drawn now,
+    /// because it no longer covers the live camera or because the screen,
+    /// predicted one base draw ahead, is within `bandRefreshFraction` of the
+    /// band margin of its edge.
+    private func bandRefreshDue(_ vp: PPViewport, base: PPViewport,
+                                renderer: Renderer) -> Bool {
+        if !base.covers(vp, maxTurnDegrees: renderer.baseMaxTurnDegrees) { return true }
+        let ahead = lead(for: vp, seconds: lastBaseDrawMs / 1000)
+        let predicted = ahead == .zero
+            ? vp : vp.panned(by: ahead)
+        let shortSide = min(vp.sizeInPoints.width, vp.sizeInPoints.height)
+        let marginPx = renderer.bandMargin * Double(shortSide * vp.displayScale)
+        return base.bandHeadroom(for: predicted)
+            < renderer.bandRefreshFraction * marginPx
     }
 
     private func tick() {
+        advanceCoast()
+        #if DEBUG
+        if let vp = viewport, vp.hasSurface { countCoverage(vp) }
+        #endif
         guard !renderInFlight else { return }
         guard needsRender, let renderer, let vp = viewport, vp.hasSurface else {
+            // A stepped camera at rest is shown through a sub-point preview
+            // transform; draw it once exactly before pausing.
+            if stepLeftFrameBehind, let renderer, let vp = viewport, vp.hasSurface {
+                draw(vp, renderer: renderer, band: band(for: vp), reuseBase: true)
+                return
+            }
             // Nothing to draw: pause, unless a settle frame is owed.
             if !settle(renderer: renderer, viewport: viewport) {
-                link?.isPaused = true
+                pauseOrBuildUnderlay(viewport)
             }
             return
         }
-        // During a gesture, skip the frame when the base would have to be
-        // redrawn and the last base draw was over budget. The gesture's first
-        // base draw is always allowed because it builds the band later frames
-        // are served from; a frame the cache can serve is only an overlay
-        // pass and always runs.
-        let servedByCache = frame.map {
-            $0.baseViewport.covers(vp, maxTurnDegrees: renderer.baseMaxTurnDegrees)
-        } ?? false
-        if gestureActive, !servedByCache, baseDrawsThisGesture > 0,
-           lastBaseDrawMs > liveRenderBudgetMs {
-            return
+        var reuseBase = true
+        var drawBand = band(for: vp)
+        if gestureActive, let last = frame {
+            if last.baseViewport.scaleDenominator != vp.scaleDenominator {
+                // A pinch misses every frame. After its first draw, a slow
+                // base leaves the preview transform to carry it.
+                if baseDrawsThisGesture > 0, lastBaseDrawMs > liveRenderBudgetMs {
+                    return
+                }
+            } else if bandRefreshDue(vp, base: last.baseViewport, renderer: renderer) {
+                reuseBase = false
+                drawBand = band(for: vp, lead: lead(for: vp, seconds: lastBaseDrawMs / 1000))
+            }
         }
         // Already showing this viewport and nothing else changed.
-        if !contentDirty, let last = frame, vp.isEquivalent(to: last.viewport) {
+        if reuseBase, !contentDirty, let last = frame, vp.isEquivalent(to: last.viewport) {
             needsRender = false
             if !settle(renderer: renderer, viewport: vp) {
-                link?.isPaused = true
+                pauseOrBuildUnderlay(vp)
             }
+            return
+        }
+        if gpsMode, !gestureActive, !contentDirty, let last = frame,
+           let moved = followMovement(from: last.viewport, to: vp),
+           !framePolicy.drawsFollowFrame(movement: moved) {
+            needsRender = false
+            step(vp, renderer: renderer)
             return
         }
 
         needsRender = false
         contentDirty = false
-        draw(vp, renderer: renderer, bandMargin: bandMargin(for: vp),
-             reuseBase: true)
+        draw(vp, renderer: renderer, band: drawBand, reuseBase: reuseBase)
     }
 
-    /// Draws one exact frame when the loop is about to pause with a resampled
-    /// base on screen. The cache is refused and no band is requested, so the
-    /// result is the same size as the screen at zero offset and `MapScreen`
-    /// can display it unfiltered. Returns true when a settle was started.
+    /// How far the picture moves from the drawn camera to the live one, in
+    /// points, or nil when they differ in anything but centre and rotation.
+    private func followMovement(from drawn: PPViewport, to live: PPViewport) -> CGFloat? {
+        guard drawn.scaleDenominator == live.scaleDenominator,
+              drawn.sizeInPoints == live.sizeInPoints,
+              drawn.displayScale == live.displayScale,
+              drawn.mmPerPixel == live.mmPerPixel else { return nil }
+        let old = live.point(forGeo: drawn.center)
+        let now = live.point(forGeo: live.center)
+        return FramePolicy.movement(
+            centerShift: CGVector(dx: old.x - now.x, dy: old.y - now.y),
+            rotationDelta: live.rotationDegrees - drawn.rotationDegrees,
+            surface: live.sizeInPoints)
+    }
+
+    /// Advances the moving map without drawing. The last frame stays on
+    /// screen and `MapScreen`'s preview transform carries the sub-point move.
+    private func step(_ vp: PPViewport, renderer: Renderer) {
+        renderInFlight = true
+        renderQueue.async { [weak self] in
+            let step = renderer.stepCamera(at: vp)
+            Task { @MainActor in
+                guard let self else { return }
+                self.renderInFlight = false
+                if let step {
+                    self.cameraSteps += 1
+                    self.stepLeftFrameBehind = true
+                    self.ownship = step.ownship
+                    self.trip = step.trip
+                    self.guidance = step.guidance
+                    if !step.guidanceEvents.isEmpty {
+                        self.alerts.play(step.guidanceEvents)
+                    }
+                    self.applyCamera(hasUpdate: step.hasCameraUpdate,
+                                     center: step.cameraCenter,
+                                     rotation: step.cameraRotationDegrees,
+                                     animating: step.cameraIsAnimating)
+                    // The ownship moved; the next frame is drawn.
+                    if step.sawNewFix { self.setContentDirty() }
+                }
+                self.link?.isPaused = false
+            }
+        }
+    }
+
+    /// Draws the resting band when the loop is about to pause with a
+    /// resampled base on screen, or with a base that is not the resting band
+    /// (none after a pinch, led or rotation-safe after a drag or turn). The
+    /// band is drawn at the live camera and lands on the screen's pixels, so
+    /// `MapScreen` displays it unfiltered and the next drag starts covered.
+    /// Returns true when a settle was started.
     @discardableResult
     private func settle(renderer: Renderer?, viewport vp: PPViewport?) -> Bool {
-        guard baseIsResampled, let renderer, let vp, vp.hasSurface,
+        guard settleOwed, let renderer, let vp, vp.hasSurface,
               !gestureActive else { return false }
         needsRender = false
         contentDirty = false
-        draw(vp, renderer: renderer, bandMargin: 0, reuseBase: false)
+        let resting = vp.grown(byMargin: renderer.bandMargin)
+        draw(vp, renderer: renderer, band: resting, reuseBase: false)
         return true
     }
 
+    /// True when `frame` needs a settle: its base is not on the screen's
+    /// pixels, or is not the size of the resting band.
+    private func owesSettle(_ frame: PPFrame) -> Bool {
+        guard let renderer else { return false }
+        let base = frame.baseViewport
+        if !base.isPixelAligned(to: frame.viewport) { return true }
+        let resting = frame.viewport.grown(byMargin: renderer.bandMargin)
+        return base.sizeInPoints != resting.sizeInPoints
+    }
+
     private func draw(_ vp: PPViewport, renderer: Renderer,
-                      bandMargin: Double, reuseBase: Bool) {
+                      band: PPViewport?, reuseBase: Bool) {
         renderInFlight = true
+        stepLeftFrameBehind = false
         renderQueue.async { [weak self] in
-            let result = renderer.render(vp, bandMargin: bandMargin,
-                                         reuseBase: reuseBase)
+            let result = renderer.render(vp, band: band, reuseBase: reuseBase)
             Task { @MainActor in
                 guard let self else { return }
                 self.renderInFlight = false
@@ -1354,11 +1755,7 @@ final class MapModel: ObservableObject {
                         self.baseHits += 1
                         self.lastHitMs = frame.renderMilliseconds
                     }
-                    // A drawn base is exact; a served one is exact only when
-                    // drawn for this same camera and surface.
-                    self.baseIsResampled =
-                        !frame.baseWasDrawn
-                        && !frame.baseViewport.isEquivalent(to: frame.viewport)
+                    self.settleOwed = self.owesSettle(frame)
                     self.ownship = frame.ownship
                     self.trip = frame.trip
                     self.guidance = frame.guidance
@@ -1370,11 +1767,14 @@ final class MapModel: ObservableObject {
                     #if DEBUG
                     if Self.showsStats { self.status = self.describe(frame) }
                     #endif
-                    self.applyCamera(from: frame)
+                    self.applyCamera(hasUpdate: frame.hasCameraUpdate,
+                                     center: frame.cameraCenter,
+                                     rotation: frame.cameraRotationDegrees,
+                                     animating: frame.cameraIsAnimating)
                 case .failure(let error):
                     self.failure = error.localizedDescription
                     // Do not retry a failed settle on every tick.
-                    self.baseIsResampled = false
+                    self.settleOwed = false
                 }
                 // The next tick pauses the loop if nothing is dirty.
                 self.link?.isPaused = false
@@ -1382,18 +1782,19 @@ final class MapModel: ObservableObject {
         }
     }
 
-    /// Applies the moving-map camera's answer from a frame. The scale is left
-    /// alone (the camera has no opinion on it), and a live gesture wins
-    /// outright: the next tick re-bases from wherever the finger left off.
-    private func applyCamera(from frame: PPFrame) {
-        if frame.hasCameraUpdate, !gestureActive, let vp = viewport {
-            viewport = vp.moved(
-                toCenter: frame.cameraCenter,
-                scaleDenominator: vp.scaleDenominator,
-                rotationDegrees: frame.cameraRotationDegrees)
+    /// Applies the moving-map camera's answer from a frame or a step. The
+    /// scale is left alone (the camera has no opinion on it), and a live
+    /// gesture wins outright: the next tick re-bases from wherever the finger
+    /// left off.
+    private func applyCamera(hasUpdate: Bool, center: PPGeoPoint,
+                             rotation: Double, animating: Bool) {
+        if hasUpdate, !gestureActive, let vp = viewport {
+            viewport = vp.moved(toCenter: center,
+                                scaleDenominator: vp.scaleDenominator,
+                                rotationDegrees: rotation)
         }
         // Keep the loop awake for the rest of a slew.
-        if frame.cameraIsAnimating { setNeedsRender() }
+        if animating { setNeedsRender() }
     }
 
     // MARK: - Misc
@@ -1418,15 +1819,18 @@ final class MapModel: ObservableObject {
     /// The `-PPShowStats` line. `12/68 ms` is a 12 ms overlay pass over a base
     /// that cost 68; `3/– ms` is an overlay pass over a cached base. Feature
     /// and draw counts belong to the base, so on a hit they are the cached
-    /// frame's.
+    /// frame's. `soft` and `blank` count moving frames on which the base fell
+    /// short of the screen; `under` is the last underlay's draw time.
     private func describe(_ frame: PPFrame) -> String {
         let base = frame.baseWasDrawn
             ? String(format: "%.0f", frame.baseMilliseconds) : "–"
         return String(
-            format: "z%ld · %lu features · %lu draws · %.0f/%@ ms · %d/%d cached @%.0f · 1:%@",
+            format: "z%ld · %lu features · %lu draws · %.0f/%@ ms · %d/%d cached @%.0f · %d stepped · %d soft %d blank · under %@ · 1:%@",
             frame.queryZoom, frame.featuresQueried, frame.drawsEmitted,
             frame.renderMilliseconds - frame.baseMilliseconds, base,
-            baseHits, baseHits + baseDraws, lastHitMs,
+            baseHits, baseHits + baseDraws, lastHitMs, cameraSteps,
+            softFrames, blankFrames,
+            underlay.map { String(format: "%.0f ms", $0.renderMilliseconds) } ?? "–",
             Self.scaleFormatter.string(from: NSNumber(value: frame.viewport.scaleDenominator))
                 ?? "?")
     }
@@ -1449,6 +1853,8 @@ private final class Renderer: @unchecked Sendable {
     let styleName: String
     let hasLabelFont: Bool
     let routeProfileNames: [String]
+    /// The graph has beach arcs. Fixed for the pack.
+    let beachAvailable: Bool
     let routeDefaultProfile: String
     let pointHitTolerance: Double
     /// The ownship symbol's reach in points; the render gate's margin.
@@ -1459,6 +1865,9 @@ private final class Renderer: @unchecked Sendable {
     let homeBounds: PPGeoBounds
     /// Base-cache guard band, from `display.base_cache_band_margin`.
     let bandMargin: Double
+    /// `display.band_refresh_fraction`: how close to the band's edge a
+    /// gesture may predict the screen before the band is redrawn.
+    let bandRefreshFraction: Double
     /// Base-cache rotation tolerance; must match what `PPMap` uses.
     let baseMaxTurnDegrees: Double
     /// Search framing: the closest scale a result is framed at, and how far
@@ -1469,6 +1878,14 @@ private final class Renderer: @unchecked Sendable {
     let searchInitialText: String
     /// The pack's symbol-size steps.
     let symbolZoomSteps: [Double]
+    /// `display.fling_min_speed_pt` and `display.fling_deceleration`.
+    let flingMinSpeedPoints: Double
+    let flingDecelerationRate: Double
+    /// `display.follow_fps` and `display.min_move_pt`, for `FramePolicy`.
+    let followFramesPerSecond: Double
+    let followMinMovePoints: Double
+    /// The pack's tide table, or nil. Immutable, so read from any thread.
+    let tide: PPTide?
 
     init(map: PPMap) {
         self.map = map
@@ -1477,24 +1894,36 @@ private final class Renderer: @unchecked Sendable {
         styleName = map.styleName
         hasLabelFont = map.hasLabelFont
         routeProfileNames = map.routeProfileNames
+        beachAvailable = map.beachAvailable
+        if let depart = TideClock.override { map.routeDepartureOverride = depart }
         routeDefaultProfile = map.routeDefaultProfile
         pointHitTolerance = map.pointHitTolerance
         ownshipSymbolRadius = map.ownshipSymbolRadiusInPoints
         initialCourseUp = map.isCourseUpEnabled
         homeBounds = map.homeBounds
         bandMargin = map.baseCacheBandMargin
+        bandRefreshFraction = map.baseCacheRefreshFraction
         baseMaxTurnDegrees = map.baseCacheMaxTurnDegrees
         searchFrameMinScale = map.searchFrameMinScale
         searchFrameTopBias = map.searchFrameTopBias
         searchInitialText = map.searchInitialText
         symbolZoomSteps = map.symbolZoomSteps.map(\.doubleValue)
+        flingMinSpeedPoints = map.flingMinSpeedPoints
+        flingDecelerationRate = map.flingDecelerationRate
+        followFramesPerSecond = map.followFramesPerSecond
+        followMinMovePoints = map.followMinMovePoints
+        tide = map.tide
     }
 
-    /// Render queue only. See `PPMap.h` for `bandMargin` and `reuseBase`.
-    func render(_ viewport: PPViewport, bandMargin: Double,
+    /// Render queue only. See `PPMap.h` for `band` and `reuseBase`.
+    func render(_ viewport: PPViewport, band: PPViewport?,
                 reuseBase: Bool) -> Result<PPFrame, Error> {
-        Result { try map.render(viewport, bandMargin: bandMargin,
-                                reuseBase: reuseBase) }
+        Result { try map.render(viewport, band: band, reuseBase: reuseBase) }
+    }
+
+    /// Render queue only. See `PPMap.stepCameraAtViewport:`.
+    func stepCamera(at viewport: PPViewport) -> PPCameraStep? {
+        map.stepCamera(at: viewport)
     }
 
     /// Render queue only. Drops the cached base map; see `PPMap.symbolZoom`.
@@ -1505,6 +1934,11 @@ private final class Renderer: @unchecked Sendable {
     /// Render queue only. Drops the cached base map.
     func invalidateBaseLayer() {
         map.invalidateBaseLayer()
+    }
+
+    /// Render queue only. See `PPMap.renderUnderlayForViewport:`.
+    func renderUnderlay(for viewport: PPViewport) -> Result<PPUnderlay, Error> {
+        Result { try map.renderUnderlay(for: viewport) }
     }
 
     /// Render queue only.
@@ -1571,6 +2005,11 @@ private final class Renderer: @unchecked Sendable {
 
     func setRoute(waypoints: [PPWaypoint], profile: String) -> PPRoute {
         map.setRoute(waypoints: waypoints, profile: profile)
+    }
+
+    func setRoute(waypoints: [PPWaypoint], profile: String,
+                  beachUse: PPBeachUse) -> PPRoute {
+        map.setRoute(waypoints: waypoints, profile: profile, beachUse: beachUse)
     }
 
     func clearRoute() -> PPRoute {

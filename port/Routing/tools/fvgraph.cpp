@@ -40,6 +40,7 @@ int Usage() {
                "  fvgraph build -o OUT.fvroad INPUT.osm[.pbf] [INPUT ...]\n"
                "                [--drive-only] [--cycle-only] [--no-oneway]\n"
                "                [--ignore-access] [--ignore-turns] [--no-ferries]\n"
+               "                [--beach]\n"
                "  fvgraph info  GRAPH.fvroad\n"
                "  fvgraph route GRAPH.fvroad LAT1 LON1 LAT2 LON2\n"
                "                [--via LAT LON ...] [--u-turns]\n"
@@ -48,6 +49,7 @@ int Usage() {
                "                [--snap-nodes]\n"
                "                [--avoid-toll] [--avoid-ferry]\n"
                "                [--toll-penalty X] [--ferry-penalty X]\n"
+               "                [--beach never|time|prefer]\n"
                "                [--rules FILE] [--profile NAME] [--geojson OUT.json]\n"
                "  fvgraph profiles [RULES.json]\n"
                "\n"
@@ -63,6 +65,9 @@ int Usage() {
                "  --ferry-penalty X merely price them up (1.0 = no preference).\n"
                "  Any of the four overrides what --profile asked for, whatever\n"
                "  order they are written in.\n"
+               "  --beach admits the beach arcs a --beach graph holds: at their\n"
+               "  true cost (time) or discounted (prefer). The default is the\n"
+               "  profile's beach_penalty, which excludes them.\n"
                "  An end is snapped onto the ROAD, so a route begins where it was\n"
                "  asked to rather than at the nearest junction; --snap-nodes is\n"
                "  the old behaviour, for seeing what the snap was moving.\n");
@@ -95,6 +100,8 @@ int Build(int argc, char** argv) {
       options.honor_turn_restrictions = false;
     } else if (a == "--no-ferries") {
       options.include_ferries = false;
+    } else if (a == "--beach") {
+      options.beaches = true;
     } else if (!a.empty() && a[0] == '-') {
       return Usage();
     } else {
@@ -143,6 +150,16 @@ int Build(int argc, char** argv) {
               static_cast<long long>(stats.ferries_timed),
               static_cast<long long>(stats.arcs_ferry),
               static_cast<long long>(stats.arcs_toll));
+  if (options.beaches) {
+    std::printf("  beach            %lld polygons (%lld multipolygons skipped), %lld coastline ways\n",
+                static_cast<long long>(stats.beach_polygons),
+                static_cast<long long>(stats.beach_relations_skipped),
+                static_cast<long long>(stats.coastline_ways));
+    std::printf("                   %lld runs, %.2f km, %lld access arcs (%lld out of reach)\n",
+                static_cast<long long>(stats.beach_runs), stats.beach_run_m / 1000.0,
+                static_cast<long long>(stats.beach_access_arcs),
+                static_cast<long long>(stats.beach_access_unreached));
+  }
   std::printf("  graph            %u nodes, %u arcs, %u shape points\n", graph.node_count(),
               graph.arc_count(), graph.geometry_count());
   return 0;
@@ -173,8 +190,13 @@ int Info(int argc, char** argv) {
   int barred[3] = {0, 0, 0}, priv[3] = {0, 0, 0}, usable_car = 0;
   int ferry_arcs = 0, toll_arcs = 0;
   double ferry_km = 0.0;
+  double beach_km = 0.0;
+  std::vector<float> access_m;  // one per undirected access arc
   for (uint32_t a = 0; a < graph.arc_count(); ++a) {
     const fv::routing::RoadArc& arc = graph.arc(a);
+    if (arc.klass == fv::routing::RoadClass::kBeach) beach_km += arc.length_m / 2000.0;
+    if (arc.klass == fv::routing::RoadClass::kBeachAccess && !(arc.flags & fv::routing::kArcGeomReversed))
+      access_m.push_back(arc.length_m);
     if (arc.is_ferry()) {
       ++ferry_arcs;
       ferry_km += arc.length_m / 2000.0;  // two arcs per edge, as above
@@ -194,6 +216,16 @@ int Info(int argc, char** argv) {
   std::printf("  driveable arcs a car may use: %d\n", usable_car);
   std::printf("  ferry / toll     %d ferry arcs (%.1f km of crossing), %d tolled arcs\n",
               ferry_arcs, ferry_km, toll_arcs);
+  if (beach_km > 0.0 || !access_m.empty()) {
+    std::sort(access_m.begin(), access_m.end());
+    std::printf("  beach            %.2f km along the water, %zu access arcs",
+                beach_km, access_m.size());
+    if (!access_m.empty()) {
+      std::printf(" (median %.0f m, longest %.0f m)", access_m[access_m.size() / 2],
+                  access_m.back());
+    }
+    std::printf("\n");
+  }
 
   uint32_t only_turns = 0;
   for (uint32_t i = 0; i < graph.restriction_count(); ++i) {
@@ -312,6 +344,12 @@ int Route(int argc, char** argv) {
     } else if (a == "--ferry-penalty" && i + 1 < argc) {
       if (!penalty(argv[++i], &ferry)) return Usage();
       have_ferry = true;
+    } else if (a == "--beach" && i + 1 < argc) {
+      const std::string v = argv[++i];
+      if (v == "never") options.beach = fv::routing::BeachUse::kNever;
+      else if (v == "time") options.beach = fv::routing::BeachUse::kToSaveTime;
+      else if (v == "prefer") options.beach = fv::routing::BeachUse::kWheneverPossible;
+      else return Usage();
     } else if (a == "--snap" && i + 1 < argc) {
       options.snap_meters = std::atof(argv[++i]);
     } else if (a == "--snap-nodes") {
@@ -429,8 +467,12 @@ int Profiles(int argc, char** argv) {
       std::snprintf(buf, sizeof(buf), "x%.2f", v);
       return std::string(buf);
     };
-    std::printf("  toll %s, ferry %s\n", avoidance(p.toll_penalty).c_str(),
-                avoidance(p.ferry_penalty).c_str());
+    std::printf("  toll %s, ferry %s, beach %s (prefer x%.2f)\n",
+                avoidance(p.toll_penalty).c_str(), avoidance(p.ferry_penalty).c_str(),
+                avoidance(p.beach_penalty).c_str(), p.beach_prefer_factor);
+    std::printf("  golf cart path %s, golfer path %s\n",
+                avoidance(p.golf_cartpath_penalty).c_str(),
+                avoidance(p.golf_path_penalty).c_str());
     std::printf("  classes:");
     for (size_t i = 0; i < static_cast<size_t>(fv::routing::RoadClass::kCount); ++i) {
       const auto klass = static_cast<fv::routing::RoadClass>(i);

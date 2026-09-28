@@ -27,11 +27,14 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <limits>
+#include <unistd.h>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "fv_route_planner.h"
 #include "fvkit/canvas/cpu_canvas.h"
 
 namespace {
@@ -386,6 +389,175 @@ TEST(RoadGraphOverlayDraw, InkIsActuallyPutOnTheCanvas) {
 // ---------------------------------------------------------------------------
 // Click to inspect
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Weights, golf ways and the what-if
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A triangle of streets with spurs:
+//
+//   0 --residential-- 1 --residential-- 2 --residential-- 0
+//   2 --path, golf=path-- 3 --footway-- 4   (4 is reached only past 3)
+//   1 --secondary-- 5
+//   0 --path, golf=cartpath-- 6
+//
+// Saved to a file so a RoutePlanner with the shipped rules can load it. With
+// `designated` the golf path is also tagged bicycle=designated.
+std::string SaveGolfGraph(bool designated = false) {
+  const std::vector<RoadNode> nodes = {
+      {E7(32.5980), E7(-80.1140), 2001}, {E7(32.5990), E7(-80.1130), 2002},
+      {E7(32.5980), E7(-80.1120), 2003}, {E7(32.5970), E7(-80.1110), 2004},
+      {E7(32.5960), E7(-80.1100), 2005}, {E7(32.6000), E7(-80.1120), 2006},
+      {E7(32.5990), E7(-80.1150), 2007},
+  };
+  std::vector<Edge> edges;
+  edges.push_back(Edge{0, 1, RoadClass::kResidential});
+  edges.push_back(Edge{1, 2, RoadClass::kResidential});
+  edges.push_back(Edge{2, 0, RoadClass::kResidential});
+  edges.push_back(Edge{2, 3, RoadClass::kPath, 0,
+                       static_cast<uint16_t>(fv::routing::kArcGolfPath |
+                                             (designated ? fv::routing::kArcBicycleDesignated : 0))});
+  edges.push_back(Edge{3, 4, RoadClass::kFootway});
+  edges.push_back(Edge{1, 5, RoadClass::kSecondary});
+  edges.push_back(Edge{0, 6, RoadClass::kPath, 0, fv::routing::kArcGolfCartpath});
+  const std::shared_ptr<RoadGraph> g = MakeGraph(nodes, edges, {}, {""});
+  const std::string path =
+      (std::filesystem::temp_directory_path() /
+       ("golf_graph_" + std::to_string(::getpid()) + (designated ? "_d" : "") + ".fvroad"))
+          .string();
+  EXPECT_TRUE(g->Save(path).ok());
+  return path;
+}
+
+size_t Band(fv::ProfileWeightBand b) { return static_cast<size_t>(b); }
+
+}  // namespace
+
+TEST(RoadGraphWeights, BandsFollowTheRelativeCost) {
+  EXPECT_EQ(fv::ProfileWeightBandOf(0.7), fv::ProfileWeightBand::kPreferred);
+  EXPECT_EQ(fv::ProfileWeightBandOf(1.0), fv::ProfileWeightBand::kNeutral);
+  EXPECT_EQ(fv::ProfileWeightBandOf(1.5), fv::ProfileWeightBand::kDiscouraged);
+  EXPECT_EQ(fv::ProfileWeightBandOf(3.0), fv::ProfileWeightBand::kAvoided);
+  EXPECT_EQ(fv::ProfileWeightBandOf(std::numeric_limits<double>::infinity()),
+            fv::ProfileWeightBand::kUnusable);
+  // A ratio on a boundary lands in one band whichever side it rounded to.
+  EXPECT_EQ(fv::ProfileWeightBandOf(0.8999999999999999), fv::ProfileWeightBand::kNeutral);
+  EXPECT_EQ(fv::ProfileWeightBandOf(0.9000000000000001), fv::ProfileWeightBand::kNeutral);
+}
+
+TEST(RoadGraphWeights, WalkingColoursTheSecondaryAsAvoided) {
+  const std::string path = SaveGolfGraph();
+  fv::RoutePlanner planner(path, FV_ROUTE_RULES_FILE);
+  RoadGraphOverlay ov;
+  ov.SetPlanner(&planner);
+  ASSERT_TRUE(ov.EnsureGraph().ok());
+  ov.SetColoring(fv::RoadGraphColoring::kProfileWeight);
+  ov.SetWeightProfile("foot");
+
+  const auto canvas = MakeCanvas(800, 600);
+  ASSERT_TRUE(ov.OnDraw(YProj(800, 600, 40000.0), *canvas).ok());
+  const std::vector<uint32_t>& b = ov.band_counts();
+  // Three residential streets, the footway and the golfer path are neutral
+  // on foot; the secondary is weighted 3 and the cart path is excluded.
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kNeutral)], 5u);
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kAvoided)], 1u);
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kUnusable)], 1u);
+  std::filesystem::remove(path);
+}
+
+TEST(RoadGraphWeights, CyclingDiscouragesTheFootway) {
+  const std::string path = SaveGolfGraph();
+  fv::RoutePlanner planner(path, FV_ROUTE_RULES_FILE);
+  RoadGraphOverlay ov;
+  ov.SetPlanner(&planner);
+  ASSERT_TRUE(ov.EnsureGraph().ok());
+  ov.SetColoring(fv::RoadGraphColoring::kProfileWeight);
+  ov.SetWeightProfile("bicycle");
+
+  const auto canvas = MakeCanvas(800, 600);
+  ASSERT_TRUE(ov.OnDraw(YProj(800, 600, 40000.0), *canvas).ok());
+  const std::vector<uint32_t>& b = ov.band_counts();
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kDiscouraged)], 1u);  // footway, 1.5
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kAvoided)], 2u);      // secondary 3, golfer path 7.5
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kPreferred)], 3u);    // residential
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kUnusable)], 1u);     // cart path
+  std::filesystem::remove(path);
+}
+
+TEST(RoadGraphWeights, BicycleDesignatedLiftsTheGolferPathPenalty) {
+  const std::string path = SaveGolfGraph(/*designated=*/true);
+  fv::RoutePlanner planner(path, FV_ROUTE_RULES_FILE);
+  RoadGraphOverlay ov;
+  ov.SetPlanner(&planner);
+  ASSERT_TRUE(ov.EnsureGraph().ok());
+  ov.SetColoring(fv::RoadGraphColoring::kProfileWeight);
+  ov.SetWeightProfile("bicycle");
+
+  const auto canvas = MakeCanvas(800, 600);
+  ASSERT_TRUE(ov.OnDraw(YProj(800, 600, 40000.0), *canvas).ok());
+  const std::vector<uint32_t>& b = ov.band_counts();
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kPreferred)], 4u);  // the golfer path is a path again
+  EXPECT_EQ(b[Band(fv::ProfileWeightBand::kAvoided)], 1u);    // secondary only
+  std::filesystem::remove(path);
+}
+
+TEST(RoadGraphWhatIf, RemovingGolferPathsStrandsWhatOnlyTheyReach) {
+  const std::string path = SaveGolfGraph();
+  fv::RoutePlanner planner(path, FV_ROUTE_RULES_FILE);
+  RoadGraphOverlay ov;
+  ov.SetPlanner(&planner);
+  ASSERT_TRUE(ov.EnsureGraph().ok());
+  ov.SetWeightProfile("foot");
+  ov.SetWhatIfRemovedFlags(fv::routing::kArcGolfPath);
+
+  const auto canvas = MakeCanvas(800, 600);
+  ASSERT_TRUE(ov.OnDraw(YProj(800, 600, 40000.0), *canvas).ok());
+  // The footway 3-4 is stranded; the golfer path itself is the thing removed.
+  EXPECT_EQ(ov.cut_off_edges(), 1u);
+  EXPECT_GT(ov.cut_off_meters(), 100.0);
+
+  // The cart path is already excluded on foot, so removing it changes nothing.
+  ov.SetWhatIfRemovedFlags(fv::routing::kArcGolfCartpath);
+  ASSERT_TRUE(ov.OnDraw(YProj(800, 600, 40000.0), *canvas).ok());
+  EXPECT_EQ(ov.cut_off_edges(), 0u);
+
+  ov.SetWhatIfRemovedFlags(0);
+  ASSERT_TRUE(ov.OnDraw(YProj(800, 600, 40000.0), *canvas).ok());
+  EXPECT_EQ(ov.cut_off_edges(), 0u);
+  std::filesystem::remove(path);
+}
+
+TEST(RoadGraphWhatIf, NeedsAProfile) {
+  RoadGraphOverlay ov;
+  ov.SetGraph(MakeY());
+  ov.SetWhatIfRemovedFlags(fv::routing::kArcGolfCartpath);
+  const auto canvas = MakeCanvas(800, 600);
+  ASSERT_TRUE(ov.OnDraw(YProj(), *canvas).ok());
+  EXPECT_EQ(ov.cut_off_edges(), 0u);
+  EXPECT_EQ(ov.drawn_arcs(), 3u);
+}
+
+TEST(RoadGraphOverlayPick, GolfWaysSaySo) {
+  const std::string path = SaveGolfGraph();
+  auto g = std::make_shared<RoadGraph>();
+  ASSERT_TRUE(RoadGraph::Load(path, g.get()).ok());
+  RoadGraphOverlay ov;
+  ov.SetGraph(g);
+  bool cart = false, golfer = false;
+  for (uint32_t a = 0; a < g->arc_count(); ++a) {
+    const RoadArcInfo info = ov.ArcInfoFor(a);
+    if (info.golf_cartpath) {
+      cart = true;
+      EXPECT_NE(info.Summary().find("golf cart path"), std::string::npos);
+    }
+    if (info.golf_path) golfer = true;
+  }
+  EXPECT_TRUE(cart);
+  EXPECT_TRUE(golfer);
+  std::filesystem::remove(path);
+}
 
 TEST(RoadGraphOverlayPick, ClickOnANodeAnswersTheNode) {
   const std::shared_ptr<RoadGraph> g = MakeY();

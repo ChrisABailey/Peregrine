@@ -123,6 +123,8 @@ struct RoadArcInfo {
   bool motor_vehicle_private = false;
   bool tolled = false;
   bool ferry = false;
+  bool golf_cartpath = false;  // `golf=cartpath`
+  bool golf_path = false;      // `golf=path`, the golfers' footpath
 
   double distance_px = 0.0;  // how far the click was from the drawn line
 
@@ -151,6 +153,29 @@ struct RoadNodeInfo {
 // ---------------------------------------------------------------------------
 // The overlay
 // ---------------------------------------------------------------------------
+
+/// What the arcs are coloured by.
+enum class RoadGraphColoring {
+  kClass,          ///< road class, the palette above
+  kProfileWeight,  ///< how much one profile's router dislikes each metre
+};
+
+/// Buckets of RoadGraphOverlay's profile weight, in legend order.
+enum class ProfileWeightBand {
+  kPreferred,    ///< relative cost under 0.9
+  kNeutral,      ///< 0.9 to 1.2
+  kDiscouraged,  ///< 1.2 to 2.0
+  kAvoided,      ///< 2.0 and over
+  kUnusable,     ///< the profile may not use the arc at all
+  kCount,
+};
+
+/// The colour a band is drawn in, and its legend label.
+FvColor ProfileWeightColor(ProfileWeightBand band);
+const char* ProfileWeightLabel(ProfileWeightBand band);
+
+/// The band a relative cost falls in; NaN or infinity is kUnusable.
+ProfileWeightBand ProfileWeightBandOf(double relative_cost);
 
 class RoadGraphOverlay : public Overlay,
                          public app::HitTest,
@@ -227,6 +252,36 @@ class RoadGraphOverlay : public Overlay,
   void SetNodeSizePx(int px) { node_px_ = px < 1 ? 1 : px; }
   int node_size_px() const { return node_px_; }
 
+  /// What the arcs are coloured by. kProfileWeight needs a planner with rules
+  /// and a profile it defines; without them the class palette is used and
+  /// the legend says why.
+  void SetColoring(RoadGraphColoring c) { coloring_ = c; }
+  RoadGraphColoring coloring() const { return coloring_; }
+
+  /// The rule-file profile ("foot", "bicycle") that kProfileWeight colours
+  /// by and the what-if below judges with.
+  ///
+  /// Relative cost is the router's own ArcCost for the arc divided by the
+  /// time the same length takes at the profile's flat speed, so class
+  /// weight, private penalty and a slower surface speed all show. The beach
+  /// is judged as "To Save Time" admits it.
+  void SetWeightProfile(std::string profile);
+  const std::string& weight_profile() const { return weight_profile_; }
+
+  /// Arcs carrying any of these flags (routing::kArcGolfCartpath, ...) are
+  /// treated as removed. Arcs the profile could use that then lose their
+  /// connection to the largest connected part of the network are drawn with
+  /// a wide magenta casing and counted. Direction is ignored: the question is
+  /// what a rule would strand, and bike and foot profiles ride both ways.
+  /// Zero turns it off. Needs a weight profile.
+  void SetWhatIfRemovedFlags(uint16_t flags);
+  uint16_t what_if_removed_flags() const { return what_if_flags_; }
+
+  /// Arcs and edge metres the what-if cuts off, over the whole graph rather
+  /// than the view. Zero when it is off.
+  uint32_t cut_off_edges() const { return cut_off_edges_; }
+  double cut_off_meters() const { return cut_off_m_; }
+
   // --- what the last frame contained ---------------------------------------
   // Counters, for a test and for the legend. All reset at the top of OnDraw.
 
@@ -237,6 +292,9 @@ class RoadGraphOverlay : public Overlay,
   // Arcs drawn of each class last frame, indexed by `RoadClass`. Sized
   // kCount, so `counts()[int(RoadClass::kCycleway)]` is a legal read.
   const std::vector<uint32_t>& counts() const { return counts_; }
+
+  /// Arcs drawn in each ProfileWeightBand last frame, under kProfileWeight.
+  const std::vector<uint32_t>& band_counts() const { return band_counts_; }
 
   Status OnDraw(const MapProjection& proj, ICanvas& canvas) override;
 
@@ -359,6 +417,12 @@ class RoadGraphOverlay : public Overlay,
   std::vector<GeoPoint> ArcLine(const routing::RoadGraph& g, uint32_t from,
                                const routing::RoadArc& a) const;
 
+  /// Recomputes `cut_off_` when the graph, profile or flags changed.
+  void RefreshWhatIf(const routing::RoadGraph& g, const routing::RouteOptions* options);
+
+  /// Draws the legend's rows for the current coloring.
+  Status DrawLegend(ICanvas& canvas, const std::string& profile_note);
+
   const RoutePlanner* planner_ = nullptr;
   std::shared_ptr<const routing::RoadGraph> graph_;
 
@@ -373,6 +437,21 @@ class RoadGraphOverlay : public Overlay,
   uint32_t drawn_nodes_ = 0;
   bool budget_hit_ = false;
   std::vector<uint32_t> counts_;
+  std::vector<uint32_t> band_counts_;
+  uint32_t golf_cartpath_drawn_ = 0;
+  uint32_t golf_path_drawn_ = 0;
+
+  RoadGraphColoring coloring_ = RoadGraphColoring::kClass;
+  std::string weight_profile_;
+  uint16_t what_if_flags_ = 0;
+
+  /// Per arc index: 1 when the what-if cuts it off. Valid for `what_if_key_`.
+  std::vector<uint8_t> cut_off_;
+  const routing::RoadGraph* what_if_graph_ = nullptr;
+  std::string what_if_profile_;
+  uint16_t what_if_key_flags_ = 0;
+  uint32_t cut_off_edges_ = 0;
+  double cut_off_m_ = 0.0;
 
   MapProjection last_proj_;
   bool have_proj_ = false;

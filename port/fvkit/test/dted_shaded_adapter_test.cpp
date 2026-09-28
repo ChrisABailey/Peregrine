@@ -101,3 +101,26 @@ TEST(DtedShadedAdapter, RendererForConfigRetintsBeforeFirstRead) {
 }
 
 }  // namespace
+
+/// A source opened after SetDtedShadedElevationBands renders with those
+/// breakpoints; clearing them restores the default picture.
+TEST(DtedShadedAdapter, ElevationBandDefaultsApplyToNewlyOpenedSources) {
+  const std::string path = CellPath();
+  if (path.empty()) GTEST_SKIP() << "TestData DTED cell not present";
+
+  auto read = [&path]() {
+    auto src = std::make_shared<fv::DtedShadedRasterSource>();
+    EXPECT_TRUE(src->Open(path).ok());
+    fv::PixelBuffer px;
+    EXPECT_TRUE(src->ReadBlock(fv::PixelRect{0, 0, 1200, 1200}, &px).ok());
+    return std::vector<unsigned char>(px.Row(0), px.Row(0) + 1200 * 1200 * 4);
+  };
+  const auto base = read();
+  fv::SetDtedShadedElevationBands({50, 100, 150, 200, 250});
+  EXPECT_EQ(fv::DtedShadedElevationBands().size(), 5u);
+  const auto banded = read();
+  fv::SetDtedShadedElevationBands({});
+  const auto restored = read();
+  EXPECT_NE(base, banded);
+  EXPECT_EQ(base, restored);
+}

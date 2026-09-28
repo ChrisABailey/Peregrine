@@ -7,6 +7,7 @@
 
 #import "PPRoute+Internal.h"
 
+#include <cmath>
 #include <string>
 
 namespace {
@@ -41,6 +42,35 @@ std::string Cxx(NSString* _Nullable s) {
 
 @end
 
+@implementation PPBeachStretch
+
+- (instancetype)initWithStretch:(const fv::RouteBeachStretch*)stretch
+                        verdict:(const fv::nav::BeachStretchVerdict&)v
+                 headingDegrees:(double)headingDegrees {
+  self = [super init];
+  if (self == nil) return nil;
+  _headingDegrees = headingDegrees;
+  _startMeters = stretch != nullptr ? stretch->start_m : NAN;
+  _lengthMeters = stretch != nullptr ? stretch->length_m : NAN;
+  _enterTime = v.enter_at_s;
+  _exitTime = v.exit_at_s;
+  switch (v.verdict) {
+    case fv::nav::BeachVerdict::kGood: _verdict = PPBeachVerdictGood; break;
+    case fv::nav::BeachVerdict::kMarginal: _verdict = PPBeachVerdictMarginal; break;
+    case fv::nav::BeachVerdict::kPoor: _verdict = PPBeachVerdictPoor; break;
+    case fv::nav::BeachVerdict::kUnknown: _verdict = PPBeachVerdictUnknown; break;
+  }
+  _enterHeightMeters = v.enter_height_m;
+  _peakMeters = v.peak_m;
+  _peakTime = v.peak_at_s;
+  _coveredTime = v.covered_at_s;
+  _passableFrom = v.passable_from_s;
+  _goodFrom = v.good_from_s;
+  return self;
+}
+
+@end
+
 @implementation PPRoute
 
 - (instancetype)initWithSnapshot:(const pippin::RouteSnapshot&)snapshot
@@ -60,6 +90,44 @@ std::string Cxx(NSString* _Nullable s) {
   _exists = snapshot.exists ? YES : NO;
   _waypoints = [points copy];
   _profile = Str(snapshot.profile);
+  switch (snapshot.beach) {
+    case fv::RouteBeach::kToSaveTime: _beachUse = PPBeachUseToSaveTime; break;
+    case fv::RouteBeach::kWheneverPossible: _beachUse = PPBeachUseWheneverPossible; break;
+    case fv::RouteBeach::kNever: _beachUse = PPBeachUseNever; break;
+  }
+  NSMutableArray<PPBeachStretch*>* stretches =
+      [NSMutableArray arrayWithCapacity:snapshot.beach_stretches.size()];
+  double beachMeters = 0.0;
+  for (std::size_t i = 0; i < snapshot.beach_stretches.size(); ++i) {
+    const fv::RouteBeachStretch& b = snapshot.beach_stretches[i];
+    fv::nav::BeachStretchVerdict v;
+    if (i < snapshot.beach_verdicts.size()) {
+      v = snapshot.beach_verdicts[i];
+    } else {
+      v.enter_at_s = snapshot.depart_s + b.enter_s;
+      v.exit_at_s = snapshot.depart_s + b.exit_s;
+    }
+    const double heading =
+        i < snapshot.beach_headings_deg.size() ? snapshot.beach_headings_deg[i] : NAN;
+    [stretches addObject:[[PPBeachStretch alloc] initWithStretch:&b
+                                                         verdict:v
+                                                  headingDegrees:heading]];
+    beachMeters += b.length_m;
+  }
+  _beachStretches = [stretches copy];
+  _beachMeters = beachMeters;
+  switch (snapshot.beach_dropped) {
+    case fv::BeachDropped::kNone: _beachDropped = PPBeachDroppedNone; break;
+    case fv::BeachDropped::kHigh: _beachDropped = PPBeachDroppedHigh; break;
+    case fv::BeachDropped::kRising: _beachDropped = PPBeachDroppedRising; break;
+    case fv::BeachDropped::kNoTable: _beachDropped = PPBeachDroppedNoTable; break;
+  }
+  if (_beachDropped != PPBeachDroppedNone) {
+    _droppedStretch = [[PPBeachStretch alloc] initWithStretch:nullptr
+                                                      verdict:snapshot.beach_dropped_verdict
+                                               headingDegrees:NAN];
+  }
+  _departTime = snapshot.depart_s;
   _isCalculated = snapshot.calculated ? YES : NO;
   _isComplete = snapshot.complete ? YES : NO;
   _straightLegs = (NSInteger)snapshot.straight_legs;

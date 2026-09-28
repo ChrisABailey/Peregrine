@@ -14,11 +14,10 @@
 //
 // or, since it is wired into ctest:  ctest --test-dir build -R place_link
 //
-// Nothing here touches the network. `PlaceLink.resolve` is the one part that
-// does, and it is deliberately untested: it depends on somebody else's
-// redirect chain, so a test over it would test Apple's servers and fail on a
-// train. What is tested is `mayBeShortened`, which decides whether the
-// network is reached at all, and the parse of every hop it would see.
+// Nothing here touches the network. `PlaceLink.resolve` fetches; its decision
+// over what came back is `PlaceLink.classify`, which is tested here against
+// captured redirect chains replayed as plain URLs. So is `mayBeShortened`,
+// which decides whether the network is reached at all.
 
 import Foundation
 
@@ -171,6 +170,141 @@ expectNothing("https://www.kiawahresort.com/dining")
 // Three numbers that are not a coordinate and a zoom.
 expectNothing("https://example.com/?q=1,2,3")
 
+// MARK: - The resolve decision
+
+let original0 = SharedPlace(latitude: 32.60841, longitude: -80.07213)!
+
+let named = URL(string: "https://maps.google.com/?q=Kiawah+Island+Golf+Resort,+1+Sanctuary+Beach+Dr,+Kiawah+Island,+SC+29455")!
+// Captured from the mac 2026-09-25 with `resolve`'s user agent: two hops, no
+// coordinate in either, and a 200 page whose search runs in JavaScript.
+let namedHops = [
+    URL(string: "https://maps.google.com/maps?q=Kiawah+Island+Golf+Resort,+1+Sanctuary+Beach+Dr,+Kiawah+Island,+SC+29455")!,
+    URL(string: "https://www.google.com/maps?q=Kiawah+Island+Golf+Resort,+1+Sanctuary+Beach+Dr,+Kiawah+Island,+SC+29455")!,
+]
+// The body of that page carries the REQUESTER's IP location (north Georgia
+// for the probe), in both shapes below. Neither may become the place.
+let ipLocationBody = """
+<meta content="https://maps.google.com/maps/api/staticmap?center=34.1384%2C-84.2367&amp;zoom=12">
+<script>window.APP_INITIALIZATION_STATE=[[[123456.7,-84.2367,34.1384],[0,0,0],[1024,768],13.1]];</script>
+<a href="/maps/@34.1384,-84.2367,12z">
+"""
+check(PlaceLink.classify(start: named, hops: namedHops, found: nil,
+                         body: ipLocationBody, failure: nil)
+        == .noCoordinate(lastHop: namedHops[1],
+                         query: "Kiawah Island Golf Resort, 1 Sanctuary Beach Dr, Kiawah Island, SC 29455"),
+      "a named Google place is no coordinate plus its query, whatever the body says")
+
+// A real Google short link, followed 2026-09-25 with `PlaceLink.userAgent`:
+// the first hop is the place, and the `!3d/!4d` pair wins over the camera.
+let saltCreekHop = URL(string: "https://www.google.com/maps/place/Salt+Creek+Beach+Bluff+Park/@33.4767032,-117.7229774,17z/data=!3m1!4b1!4m6!3m5!1s0x80dcf1f4fb6b2b4d:0x4e5aa3eaf342a120!8m2!3d33.4766988!4d-117.7204025!16s%2Fg%2F11pl801bt9?authuser=0&entry=tts&g_ep=EgoyMDI1MDYwMS4wIPu8ASoASAFQAw%3D%3D&skid=1287a7ca-f5b7-4b7b-a4a6-dcdefdd8555d")!
+if case .place(let p) = PlaceLink.classify(start: URL(string: "https://maps.app.goo.gl/qyPwDBM8KQb32MV89")!,
+                                           hops: [saltCreekHop], found: nil,
+                                           body: nil, failure: .cancelled) {
+    check(abs(p.latitude - 33.4766988) < 1e-7 && abs(p.longitude + 117.7204025) < 1e-7,
+          "the Google hop's place pair, not its camera")
+    check(p.name == "Salt Creek Beach Bluff Park", "the Google hop's name")
+} else {
+    check(false, "a real Google short-link hop should resolve to a place")
+}
+// Chris's dropped pin on Kiawah, shared from Google Maps on the phone
+// 2026-09-25: the first hop's `q=` is the coordinate.
+let pinShare = URL(string: "https://maps.app.goo.gl/VRGAiFK5bhKpWrfUA?g_st=ic")!
+check(PlaceLink.mayBeShortened(pinShare), "the pin's short link is worth resolving")
+let pinFirstHop = URL(string: "https://maps.google.com?q=32.5869379,-80.1306942&entry=gps&shh=CAE&g_ep=CAISEjI2LjM4LjEuOTgwODE1NDQ1MBgAIIgnKmcsOTQyOTc2OTksOTQyMzExODgsOTQyODA1NjgsMTAwODIxNTU5LDQ3MDcxNzA0LDk0MjE4NjQxLDk0MjgyMTM0LDEwMDgzNTY5NCw5NDI4Njg2OSwxMDA4MjAyNDcsMTAwODIyNTA0QgJVUw%3D%3D&skid=1b613ce9-5bf4-474b-a673-5363a41fa430&g_st=ic&g_st=ic")!
+if case .place(let p) = PlaceLink.classify(start: pinShare, hops: [pinFirstHop], found: nil,
+                                           body: nil, failure: .cancelled) {
+    check(abs(p.latitude - 32.5869379) < 1e-7 && abs(p.longitude + 80.1306942) < 1e-7,
+          "the dropped pin lands exactly")
+    check(!p.isApproximate, "a dropped pin is exact")
+} else {
+    check(false, "the dropped pin's first hop should resolve to a place")
+}
+
+// Chris's share of Beachwalker Park picked from a Google search, 2026-09-25:
+// three hops, a name, an address and an `ftid`, and no coordinate.
+let searchedShare = URL(string: "https://maps.app.goo.gl/kQhNJDGkrNNGkKPV6?g_st=ic")!
+let searchedHops = [
+    "https://maps.google.com?q=Kiawah+Beachwalker+Park+Parking+Lot,+8+Beachwalker+Dr,+Kiawah+Island,+SC+29455&ftid=0x88fc2dc755f6d78d:0x3600bdeb7cb8b49a&entry=gps&shh=CAE&skid=bb674181-5a85-4fb2-9924-18c40263a052&g_st=ic&g_st=ic",
+    "https://maps.google.com/maps?q=Kiawah+Beachwalker+Park+Parking+Lot,+8+Beachwalker+Dr,+Kiawah+Island,+SC+29455&ftid=0x88fc2dc755f6d78d:0x3600bdeb7cb8b49a&entry=gps&shh=CAE&skid=bb674181-5a85-4fb2-9924-18c40263a052&g_st=ic&g_st=ic",
+    "https://www.google.com/maps?q=Kiawah+Beachwalker+Park+Parking+Lot,+8+Beachwalker+Dr,+Kiawah+Island,+SC+29455&ftid=0x88fc2dc755f6d78d:0x3600bdeb7cb8b49a&entry=gps&shh=CAE&skid=bb674181-5a85-4fb2-9924-18c40263a052&g_st=ic&g_st=ic",
+].map { URL(string: $0)! }
+let searchedQuery = "Kiawah Beachwalker Park Parking Lot, 8 Beachwalker Dr, Kiawah Island, SC 29455"
+check(PlaceLink.classify(start: searchedShare, hops: searchedHops, found: nil,
+                         body: nil, failure: nil)
+        == .noCoordinate(lastHop: searchedHops[2], query: searchedQuery),
+      "a place picked from a Google search is a name for Apple's search")
+check(PlaceLink.namePart(of: searchedQuery) == "Kiawah Beachwalker Park Parking Lot",
+      "the marker name is the query's name part")
+check(PlaceLink.namePart(of: "Beachwalker Park") == "Beachwalker Park", "no comma, all name")
+// What Apple's address search returned for it from the mac (40 m from the pin).
+check(PlaceLink.searchResultMatches(query: searchedQuery, name: "8 Beachwalker Dr",
+                                    address: "8 Beachwalker Dr, Johns Island, SC  29455, United States"),
+      "Apple's address result for the searched share is accepted")
+
+// A pin dropped on the beach, away from any road: no address, but the
+// first hop still carries the coordinate.
+let beachHop = URL(string: "https://maps.google.com?q=32.5876340,-80.1273267&entry=gps&shh=CAE&g_st=ic&g_st=ic")!
+if case .place(let p) = PlaceLink.classify(start: URL(string: "https://maps.app.goo.gl/sdk6UqCRuxJikyHB7?g_st=ic")!,
+                                           hops: [beachHop], found: nil,
+                                           body: nil, failure: .cancelled) {
+    check(abs(p.latitude - 32.587634) < 1e-7 && abs(p.longitude + 80.1273267) < 1e-7,
+          "a beach pin lands exactly")
+} else {
+    check(false, "a beach pin's first hop should resolve to a place")
+}
+
+// Desktop Safari gets Google's JavaScript page and no redirect; this pins
+// the agent to mobile Safari.
+check(PlaceLink.userAgent.contains("iPhone") && PlaceLink.userAgent.contains("Mobile"),
+      "resolve must send a mobile Safari agent")
+
+// The same chain with no signal: offline wins over "no coordinate", since
+// the chain never finished.
+for code in [URLError.Code.notConnectedToInternet, .networkConnectionLost, .timedOut,
+             .cannotFindHost, .dataNotAllowed, .internationalRoamingOff] {
+    check(PlaceLink.classify(start: URL(string: "https://maps.app.goo.gl/aBcDeFgHiJkLmN")!,
+                             hops: [], found: nil, body: nil, failure: code)
+            == .offline(code),
+          "URLError \(code.rawValue) should read as offline")
+}
+// A server error is not a missing signal.
+check(PlaceLink.classify(start: URL(string: "https://maps.app.goo.gl/aBcDeFgHiJkLmN")!,
+                         hops: [], found: nil, body: nil, failure: .badServerResponse)
+        == .noCoordinate(lastHop: URL(string: "https://maps.app.goo.gl/aBcDeFgHiJkLmN")!, query: nil),
+      "a bad response is no coordinate, not offline")
+
+// A hop that parses wins even when the fetch then died: the sniffer's cancel.
+let pinHop = URL(string: "https://maps.google.com/?q=32.60841,-80.07213")!
+if case .place(let p) = PlaceLink.classify(start: URL(string: "https://maps.app.goo.gl/x")!,
+                                           hops: [pinHop], found: nil,
+                                           body: nil, failure: .cancelled) {
+    check(abs(p.latitude - 32.60841) < 1e-7 && abs(p.longitude + 80.07213) < 1e-7,
+          "a dropped pin's hop carries its coordinate")
+} else {
+    check(false, "a dropped pin's hop should resolve to a place")
+}
+
+// The page body still counts when it carries the place pair itself.
+if case .place(let p) = PlaceLink.classify(
+        start: URL(string: "https://maps.app.goo.gl/y")!, hops: [], found: nil,
+        body: "<a href=\"/maps/place/Beachwalker+Park/@34.1,-84.2,12z/data=!3d32.60841!4d-80.07213\">",
+        failure: nil) {
+    check(abs(p.latitude - 32.60841) < 1e-7, "the body's !3d/!4d is the place, not its @ camera")
+    check(p.name == "Beachwalker Park", "the body's place name")
+} else {
+    check(false, "a body carrying !3d/!4d should resolve to a place")
+}
+
+// Three outcomes, three different sentences.
+let messages = [
+    PlaceLink.failureMessage(for: .offline(.notConnectedToInternet)),
+    PlaceLink.failureMessage(for: .noCoordinate(lastHop: nil, query: nil)),
+    PlaceLink.failureMessage(for: .noCoordinate(lastHop: nil, query: "Beachwalker Park")),
+]
+check(Set(messages.compactMap { $0 }).count == 3, "each failure says something different")
+check(messages[2]?.hasSuffix("Beachwalker Park") == true, "the name Google sent is shown")
+check(PlaceLink.failureMessage(for: .place(original0)) == nil, "a place is not a failure")
+
 // MARK: - The handoff round trip
 
 let original = SharedPlace(latitude: 32.60841, longitude: -80.07213,
@@ -188,6 +322,49 @@ if let callback = PlaceLink.callbackURL(for: original),
 // Somebody else's scheme is not ours, whatever it says.
 check(PlaceLink.place(inCallback: URL(string: "other://place?lat=1&lon=2")!) == nil,
       "a foreign scheme must not be accepted as a callback")
+
+// MARK: - Search results
+
+let resort = "Kiawah Island Golf Resort, 1 Sanctuary Beach Dr, Kiawah Island, SC 29455"
+check(PlaceLink.searchResultMatches(query: resort, name: "The Sanctuary at Kiawah Island Golf Resort",
+                                    address: "1 Sanctuary Beach Dr, Kiawah Island, SC 29455, United States"),
+      "the resort itself matches")
+check(PlaceLink.searchResultMatches(query: "Beachwalker Park", name: "",
+                                    address: "8 Beachwalker Dr, Kiawah Island, SC"),
+      "an address-only result matches through its street")
+// The rule is deliberately loose: one shared word, even a generic one, is
+// enough. It guards against a result that has nothing to do with the query;
+// the approximate remark covers the rest.
+check(PlaceLink.searchResultMatches(query: "Beachwalker Park", name: "Folly Beach County Park",
+                                    address: "1100 W Ashley Ave, Folly Beach, SC"),
+      "a generic shared word ('park') is accepted")
+check(!PlaceLink.searchResultMatches(query: "Café Rhett, 8 Dr", name: "Pizza Hut",
+                                     address: "12 Main St, Atlanta, GA"),
+      "a result with no word in common is refused")
+check(!PlaceLink.searchResultMatches(query: "The Dr", name: "The Dr", address: ""),
+      "stop words alone do not make a match")
+check(PlaceLink.searchResultMatches(query: "CAFÉ RHETT", name: "Cafe Rhett", address: ""),
+      "case and accents fold")
+check(PlaceLink.addressPart(of: resort) == "1 Sanctuary Beach Dr, Kiawah Island, SC 29455",
+      "the address is everything after the first comma")
+check(PlaceLink.addressPart(of: "Beachwalker Park") == nil, "no comma, no address")
+check(PlaceLink.addressPart(of: "Beachwalker Park, ") == nil, "an empty tail is no address")
+
+// An approximate place keeps its query through the callback; an exact one
+// carries no `approx` at all.
+var searched = SharedPlace(latitude: 32.60841, longitude: -80.07213, name: "Beachwalker Park")!
+searched.searchQuery = "Beachwalker Park, 8 Beachwalker Dr"
+if let url = PlaceLink.callbackURL(for: searched), let back = PlaceLink.place(inCallback: url) {
+    check(back.isApproximate && back.searchQuery == searched.searchQuery,
+          "the search query survives the callback")
+} else {
+    check(false, "an approximate callback did not round trip")
+}
+check(PlaceLink.callbackURL(for: original0)?.absoluteString.contains("approx") == false,
+      "an exact place's callback says nothing about approximation")
+check(PlaceLink.place(inCallback: URL(string: "pippin://place?lat=32.6&lon=-80.07&query=x")!)?
+        .isApproximate == false,
+      "a query without approx=1 does not make a place approximate")
 
 // MARK: - The fallback name
 

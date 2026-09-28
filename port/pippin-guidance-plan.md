@@ -1,7 +1,7 @@
 # Pippin guidance plan (GD1–GD4, BG1–BG5) — turn alerts, then screen-off tracking
 
 **Status: THE GD HALF IS BUILT, 2026-09-09, on Chris's word lifting the 2026-09-04 deferral.
-GD1–GD4 are done; BG1–BG5 are open.**
+GD1–GD4 are done; BG1–BG5 are open, refined 2026-09-25 with sizes and an optional BG6.**
 
 **The order is Chris's and it is fixed**: guidance first, with the phone on and the screen lit —
 an arrow saying left/right/straight with a countdown to the turn — and background location
@@ -217,45 +217,93 @@ Ridden in the simulator, `kiawah_cycle.gpx` replayed against a route planned bet
 `heads up 239 m`, `act now 62 m`, `at 12 m`, `passed` — the 30 s, 8 s and 1.5 s rings at 8 m/s,
 each exactly once and in order.
 
-## BG — background, phone in a pocket
+## BG — background, phone in a pocket (refined 2026-09-25)
 
-### BG1 — scene-phase gating in `MapModel`
-Observe `scenePhase`, pause the `CADisplayLink`, and suppress draws when not active, while the
-ingest path keeps running. **Correct on its own merits and worth landing whether or not the rest
-of BG happens** — it is also the step where getting it loosely wrong means an occasional
-hard-to-reproduce app kill, so it goes first and alone.
+Sizes: BG1, BG2, BG3 and BG4 are small; BG5 is a session; BG6 is optional. The order is fixed:
+BG1 stands alone, and **BG2 without BG3 is a battery regression** (see BG2). The battery baseline
+BG3 is judged against is BT1 in `port/pippin-plan.md` ("After 1.1"), which should land first.
 
-### BG2 — the capability
-`UIBackgroundModes = location`; `allowsBackgroundLocationUpdates` and
-`showsBackgroundLocationIndicator` in `PPLocationSource`, set for recording and following rather
-than always. The usage string lives in `project.pbxproj` as
-`INFOPLIST_KEY_NSLocationWhenInUseUsageDescription`, not in `Info.plist`, and must say that
-recording continues with the screen off. `PrivacyInfo.xcprivacy` gets a look in the same session.
-Watch the interaction with coarse mode's `pausesLocationUpdatesAutomatically = YES`: a run paused
-in the background cannot be resumed by a user who is not looking at the screen.
+### BG1 — scene-phase gating in `MapModel` (S)
+Correct on its own merits and worth landing whether or not the rest of BG happens. Getting it
+loosely wrong means an occasional hard-to-reproduce app kill, so it goes first and alone.
+- `MapScreen` observes `scenePhase` and forwards it to `MapModel.setSceneActive(_:)`.
+- Background: pause the `CADisplayLink`; `tick()` and `draw` refuse; a frame already on the
+  render queue may finish, but its `PPFrame` is not published. The ingest path —
+  `receive(_ fix:)` → `pushFix:` → `consumeRawFix:` → trip computer, recorder, guidance — keeps
+  running.
+- `.inactive` (Control Centre, a call banner) is not background: the screen is still visible and
+  drawing continues.
+- Back to active: one exact frame with no band (P18's settle rule), and the follow camera jumps to
+  the current fix rather than animating from where the map was minutes ago.
+- The decision is a small CoreGraphics-only value, `ScenePolicy`, with a ctest table like
+  `RenderGate`: phase × following × recording → draw, keep the feed, run the link.
+- Acceptance on the simulator with `-PPShowStats`: background the app during a demo ride; the
+  frame counter freezes while fixes keep arriving; no CoreAnimation or GPU warnings in the log.
 
-### BG3 — `LocationPolicy` learns about the dark
-A third input — backgrounded — and the rule that goes with it: recording means navigation accuracy
-whatever the viewport says; neither recording nor following means coarse, or a full stop. Then
-relax `updateIdleTimer` so recording no longer pins the screen awake (following still should). A
-lit screen inside a pocket costs more than the receiver does. The existing `location_policy` test
-target takes the new cases.
+### BG2 — the capability (S)
+- `UIBackgroundModes = location`. In `PPLocationSource`, `allowsBackgroundLocationUpdates` and
+  `showsBackgroundLocationIndicator` are YES only while following or recording.
+- **The hazard.** Today a backgrounded Pippin costs nothing: iOS suspends it and the receiver
+  stops with it (P15). Once background updates are allowed, a manager left running keeps the app
+  alive and the receiver powered. So on entering the background with neither following nor
+  recording, stop updates, and restart them on return. P17's `stopFeed()`, which has had no call
+  site, gets its first real one.
+- The coarse configuration's `pausesLocationUpdatesAutomatically = YES` must never be in force in
+  the background: a paused run cannot be resumed by a rider who is not looking. Background with
+  following or recording is always the navigation configuration.
+- The usage string (`INFOPLIST_KEY_NSLocationWhenInUseUsageDescription` in `project.pbxproj`, not
+  `Info.plist`) says recording and turn alerts continue with the screen off.
+  `PrivacyInfo.xcprivacy` is reviewed in the same step.
+- Stay on `CLLocationManager`'s delegate API. The newer `CLLocationUpdate` /
+  `CLBackgroundActivitySession` / `CLServiceSession` family is an alternative, not a requirement,
+  and the two models should not be mixed in one step.
+- Acceptance on the phone: record, lock, ride five minutes, unlock — the GPX has no gap, and the
+  location indicator showed while locked. With GPS off and not recording, backgrounding shows no
+  indicator.
 
-### BG4 — the ride that outlived the app
+### BG3 — `LocationPolicy` learns about the dark (S)
+- A third input, `isBackground`. Background with recording or following → navigation accuracy
+  whatever the viewport says; background with neither → stopped. BG2's stop rule is then decided
+  here, by the tested policy, rather than inline in `MapModel`.
+- Relax `updateIdleTimer`: recording alone no longer pins the screen awake; following still does.
+  A lit screen in a pocket costs more than the receiver.
+- The `location_policy` ctest gains the rows.
+
+### BG4 — the ride that outlived the app (S)
 `recordingURL` is main-actor state that does not survive a jetsam kill, and under When-In-Use the
 app is not relaunched, so the ride file is left valid but orphaned and the app forgets it was
-recording. Decide and implement one of: notice the unfinished ride at launch, or let it appear in
-the rides list as an ordinary ride. Either is defensible; silence is not.
+recording.
+- Recommended: `startRecording` writes `Documents/recording.inflight` (the GPX path and start
+  time) and `stopRecording` removes it. At launch, a surviving marker means the ride is kept as an
+  ordinary ride named "<start> (interrupted)" — `GpxRecorder` has already left a valid file — and
+  a one-time banner says so. No resume: appending means seeking behind a closed GPX's footer, and
+  a second ride is the honest record.
+- The marker logic is a pure function tested on the mac; the acceptance is killing the app from
+  Xcode mid-recording on the simulator.
 
-### BG5 — the events reach a pocket or a wrist
-GD2's alert events become `UNUserNotificationCenter` requests with a time-sensitive interruption
-level while the app is backgrounded, suppressed while it is frontmost (GD4 has that case). The
-mirror to a paired watch is the system's, not ours.
+### BG5 — the events reach a pocket or a wrist (M)
+- GD2's events become `UNUserNotificationCenter` requests while the app is backgrounded, and are
+  suppressed while it is frontmost (GD4 plays those). The mirror to a paired watch is the
+  system's.
+- The time-sensitive interruption level needs the Time Sensitive Notifications capability
+  (`com.apple.developer.usernotifications.time-sensitive`) on the app ID; without it a Focus mode
+  can hold the alert.
+- Permission is asked the first time GPS mode starts with a route, not at launch.
+- One notification per maneuver, replaced as it moves from heads-up to act-now (same identifier)
+  rather than stacked; arrival clears the rest.
+- Acceptance: the simulator's lock screen during a `simctl location` ride, then a real ride with
+  a paired watch.
+
+### BG6 — a Live Activity (optional, M)
+The next turn and its countdown on the lock screen, the Always-On display and the Dynamic Island,
+so a rider can glance without lighting the whole screen — the battery answer on an iPhone with an
+Always-On display. A widget extension target and ActivityKit; `Activity.update` from the app on
+each GD2 event and every ~10 s of countdown. Revisit after BG5 has been ridden.
 
 ## Deliberately not in this plan
 
 - A watchOS app, a complication, or WatchConnectivity.
-- A Live Activity / Dynamic Island presentation (noted above as the likely successor to GD3).
+- A Live Activity as a required step: it is BG6, optional, after BG5 has been ridden.
 - Automatic re-routing when the rider leaves the route. GD2 falls silent and says so; recomputing
   is a separate decision with its own battery and correctness story.
 - `Always` authorization, significant-location change, and region monitoring.

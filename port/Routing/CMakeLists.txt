@@ -17,6 +17,7 @@
 add_library(fv_routing STATIC
   fv_osm_reader.cpp
   fv_road_graph.cpp
+  fv_road_graph_beach.cpp
   fv_road_network.cpp
   fv_route_rules.cpp
   fv_router.cpp

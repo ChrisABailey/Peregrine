@@ -21,6 +21,10 @@ is a canvas clear; and it drops the opaque ground fills (landcover, landuse, par
 down to `fill-opacity` 0.35 and leaves buildings as an outline — a `fill` layer with a
 `fill-outline-color` and no `fill-color` draws its edge and no brush.
 
+`kiawah-trails.json` is Pippin's base map: bike network first, walking second, golf courses
+drawn down to tees and bunkers. It reads the extra golf, crossing and boardwalk attributes the
+peregrine tilemaker profile writes, and degrades to tag heuristics on tiles without them.
+
 ## The one rule that shapes everything else
 
 **Anything outside the subset FAILS THE LOAD, naming the layer and the property.** It is never
@@ -90,7 +94,8 @@ prevent.
 
 Icon half: `icon-image`, `icon-size`, `icon-rotate`.
 Text half: `text-field`, `text-size`, `text-color`, `text-opacity`, `text-halo-color`,
-`text-halo-width`, `symbol-placement`, `symbol-spacing`, `text-max-angle`, `text-offset`.
+`text-halo-width`, `symbol-placement`, `symbol-spacing`, `text-max-angle`, `text-offset`,
+`text-anchor`.
 
 The two halves are **independent**. A layer may carry an icon and no text (a shield), text and
 no icon (a place name), or both (a POI). The application's label switch turns off the text and
@@ -104,6 +109,10 @@ placement on a point feature is harmless — it falls back to point placement.
 placement: the placer offsets *across* the path, and an along-axis offset has no meaning once
 the run is centred on the geometry. GL's `+y` is down; the placer's positive offset is left of
 travel, so the sign is flipped on the way in.
+
+A `point` placement honours both components of `text-offset` (ems times the text size, `+y`
+down) and a constant `text-anchor` (`center`, the GL default, or any of the eight sides and
+corners), which names the side of the label box that sits on the point.
 
 A line-placed label is **centred on its line** — the cap-height box straddles the geometry, as
 GL draws it — and `text-offset` is then measured from there.

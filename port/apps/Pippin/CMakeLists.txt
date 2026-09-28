@@ -96,11 +96,26 @@ if(NOT FVW_IOS)
         add_test(NAME pippin_place_link
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_place_link_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_tide_text
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_tide_text_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_wind_text
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_wind_text_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_render_gate
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_render_gate_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_location_policy
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_location_policy_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_frame_policy
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_frame_policy_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_energy_log
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_energy_log_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_momentum
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_momentum_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
       endif()
     endif()

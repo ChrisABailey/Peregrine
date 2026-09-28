@@ -180,9 +180,13 @@ render straight to a PNG.
 
 Pippin is an offline cycling map for iPhone built on the same core: a SwiftUI
 shell over `PippinKit`, an Objective-C++ layer that wraps FvKit. It does moving
-map with GPS, course-up follow, road-snapped routing, a point overlay, search,
-a trip computer and GPX ride recording — all against a bundled data pack, with
-no network at run time.
+map with GPS, course-up follow, road-snapped routing with turn guidance, a
+point overlay, search, a trip computer and GPX ride recording, plus NOAA tide
+predictions, sunrise and sunset, and routes that ride or walk the beach when the
+tide allows — all against a bundled data pack. The network is used for two
+things only: the wind forecast from api.weather.gov for a fixed point on the
+pack's beach, and resolving a place link shared in from Apple or Google Maps.
+See `port/apps/Pippin/TIDES_AND_WEATHER.md`.
 
 The source is complete here but you currently need to provide your own data pack so
 a clone builds and tests Pippin's C++ out of the box and needs its own data

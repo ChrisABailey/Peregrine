@@ -66,6 +66,21 @@ py::tuple FromColor(const fv::FvColor& c) {
   return py::make_tuple(c.r, c.g, c.b);
 }
 
+/// A document beach setting from its Python spelling: "never", "time" or
+/// "prefer" (the `.fvrte` keys, with "never" named rather than absent).
+fv::RouteBeach BeachFromString(const std::string& v) {
+  if (v == "never") return fv::RouteBeach::kNever;
+  if (v == fv::RouteBeachKey(fv::RouteBeach::kToSaveTime)) return fv::RouteBeach::kToSaveTime;
+  if (v == fv::RouteBeachKey(fv::RouteBeach::kWheneverPossible)) {
+    return fv::RouteBeach::kWheneverPossible;
+  }
+  throw py::value_error("beach must be 'never', 'time' or 'prefer', not '" + v + "'");
+}
+
+std::string BeachToString(fv::RouteBeach v) {
+  return v == fv::RouteBeach::kNever ? "never" : fv::RouteBeachKey(v);
+}
+
 }  // namespace
 
 void BindRoute(py::module_& m) {
@@ -119,7 +134,18 @@ void BindRoute(py::module_& m) {
                     "Priced as a bicycle route, which is why the line is "
                     "drawn dashed.")
       .def_readonly("status", &fv::RoutePlan::status,
-                    "The one line of map a route gets to explain itself on.");
+                    "The one line of map a route gets to explain itself on.")
+      .def_readonly("beach", &fv::RoutePlan::beach,
+                    "The stretches along the sand, in travel order. Through "
+                    "routes only.");
+
+  py::class_<fv::RouteBeachStretch>(route, "RouteBeachStretch")
+      .def_readonly("geometry_begin", &fv::RouteBeachStretch::geometry_begin)
+      .def_readonly("geometry_end", &fv::RouteBeachStretch::geometry_end)
+      .def_readonly("start_m", &fv::RouteBeachStretch::start_m)
+      .def_readonly("length_m", &fv::RouteBeachStretch::length_m)
+      .def_readonly("enter_s", &fv::RouteBeachStretch::enter_s)
+      .def_readonly("exit_s", &fv::RouteBeachStretch::exit_s);
 
   py::class_<fv::RoutePlanOptions>(route, "RoutePlanOptions")
       .def(py::init<>())
@@ -130,7 +156,24 @@ void BindRoute(py::module_& m) {
       .def_readwrite("profile", &fv::RoutePlanOptions::profile)
       .def_readwrite("cycle_only", &fv::RoutePlanOptions::cycle_only)
       .def_readwrite("avoid_tolls", &fv::RoutePlanOptions::avoid_tolls)
-      .def_readwrite("avoid_ferries", &fv::RoutePlanOptions::avoid_ferries);
+      .def_readwrite("avoid_ferries", &fv::RoutePlanOptions::avoid_ferries)
+      .def_property(
+          "beach",
+          [](const fv::RoutePlanOptions& o) -> std::string {
+            switch (o.beach) {
+              case fv::routing::BeachUse::kNever: return "never";
+              case fv::routing::BeachUse::kToSaveTime: return "time";
+              case fv::routing::BeachUse::kWheneverPossible: return "prefer";
+              case fv::routing::BeachUse::kProfileDefault: break;
+            }
+            return "";
+          },
+          [](fv::RoutePlanOptions& o, const std::string& v) {
+            o.beach = v.empty() ? fv::routing::BeachUse::kProfileDefault
+                                : fv::ToBeachUse(BeachFromString(v));
+          },
+          "'never', 'time' or 'prefer'; '' (the default) takes the route's "
+          "own setting.");
 
   route.def("is_bicycle_request", &fv::IsBicycleRequest, "profile"_a,
             "cycle_only"_a = false,
@@ -301,6 +344,12 @@ void BindRoute(py::module_& m) {
                     &fv::RouteOverlay::SetProfile,
                     "The rule-file profile this route is priced with. A "
                     "document field, so it saves and it dirties.")
+      .def_property(
+          "beach",
+          [](const fv::RouteOverlay& o) { return BeachToString(o.beach()); },
+          [](fv::RouteOverlay& o, const std::string& v) { o.SetBeach(BeachFromString(v)); },
+          "'never', 'time' or 'prefer': whether the route may use the beach. "
+          "A document field, saved as options.beach.")
       .def_property("selected", &fv::RouteOverlay::selected,
                     &fv::RouteOverlay::SetSelected,
                     "The selected waypoint's LABEL, or ''. Not a document "
@@ -428,6 +477,10 @@ void BindRoute(py::module_& m) {
   // RouteKit exists for. `pyfvw.routing` is the graph and the search; this is
   // the picture of them.
 
+  route.attr("ARC_GOLF_CARTPATH") = static_cast<int>(fv::routing::kArcGolfCartpath);
+  route.attr("ARC_GOLF_PATH") = static_cast<int>(fv::routing::kArcGolfPath);
+  route.attr("ARC_BICYCLE_DESIGNATED") = static_cast<int>(fv::routing::kArcBicycleDesignated);
+
   py::class_<fv::RoadArcInfo>(route, "RoadArcInfo",
       "One arc, unpacked into the answers a person debugging a route asks. "
       "Every field is read off the graph -- what this says is what the ROUTER "
@@ -460,6 +513,10 @@ void BindRoute(py::module_& m) {
                     &fv::RoadArcInfo::motor_vehicle_private)
       .def_readonly("tolled", &fv::RoadArcInfo::tolled)
       .def_readonly("ferry", &fv::RoadArcInfo::ferry)
+      .def_readonly("golf_cartpath", &fv::RoadArcInfo::golf_cartpath,
+                    "The way is tagged golf=cartpath.")
+      .def_readonly("golf_path", &fv::RoadArcInfo::golf_path,
+                    "The way is tagged golf=path, the golfers' footpath.")
       .def_readonly("distance_px", &fv::RoadArcInfo::distance_px)
       .def("summary", &fv::RoadArcInfo::Summary,
            "One line for a status bar. Empty when `valid` is False.")
@@ -584,6 +641,53 @@ void BindRoute(py::module_& m) {
           "too -- a node kept only by a hidden class is not part of the "
           "network being looked at.")
 
+      .def_property(
+          "coloring",
+          [](const fv::RoadGraphOverlay& o) {
+            return o.coloring() == fv::RoadGraphColoring::kProfileWeight
+                       ? std::string("weight")
+                       : std::string("class");
+          },
+          [](fv::RoadGraphOverlay& o, const std::string& v) {
+            if (v == "weight") {
+              o.SetColoring(fv::RoadGraphColoring::kProfileWeight);
+            } else if (v == "class") {
+              o.SetColoring(fv::RoadGraphColoring::kClass);
+            } else {
+              throw py::value_error("coloring is 'class' or 'weight'");
+            }
+          },
+          "'class' colours arcs by road class; 'weight' by how much "
+          "`weight_profile`'s router dislikes each metre (green preferred, "
+          "grey neutral, orange discouraged, red avoided, thin dark grey not "
+          "usable). Golf cart paths are dashed and golfer paths dotted in "
+          "either.")
+      .def_property("weight_profile", &fv::RoadGraphOverlay::weight_profile,
+                    &fv::RoadGraphOverlay::SetWeightProfile,
+                    "The rule-file profile ('foot', 'bicycle') the weight "
+                    "coloring and the what-if judge by.")
+      .def_property("what_if_removed_flags",
+                    &fv::RoadGraphOverlay::what_if_removed_flags,
+                    &fv::RoadGraphOverlay::SetWhatIfRemovedFlags,
+                    "Arc flags (ARC_GOLF_CARTPATH | ARC_GOLF_PATH) to treat as "
+                    "removed. Usable arcs that then lose their connection to "
+                    "the main network get a magenta casing. 0 is off.")
+      .def_property_readonly("cut_off_edges", &fv::RoadGraphOverlay::cut_off_edges,
+                             "Edges the what-if cuts off, over the whole graph.")
+      .def_property_readonly("cut_off_meters", &fv::RoadGraphOverlay::cut_off_meters)
+      .def_property_readonly(
+          "band_counts",
+          [](const fv::RoadGraphOverlay& o) {
+            py::dict out;
+            const std::vector<uint32_t>& c = o.band_counts();
+            for (size_t i = 0; i < c.size(); ++i) {
+              if (c[i] == 0) continue;
+              out[py::str(fv::ProfileWeightLabel(static_cast<fv::ProfileWeightBand>(i)))] =
+                  c[i];
+            }
+            return out;
+          },
+          "Arcs drawn in each weight band last frame, by legend label.")
       .def_property_readonly("drawn_arcs", &fv::RoadGraphOverlay::drawn_arcs)
       .def_property_readonly("drawn_nodes", &fv::RoadGraphOverlay::drawn_nodes)
       .def_property_readonly("budget_hit", &fv::RoadGraphOverlay::budget_hit)

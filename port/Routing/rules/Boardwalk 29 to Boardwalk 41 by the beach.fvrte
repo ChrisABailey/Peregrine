@@ -1,0 +1,26 @@
+{
+  "format": "peregrine-route",
+  "version": 1,
+  "name": "Boardwalk 29 to Boardwalk 41 by the beach",
+  "color": [
+    220,
+    30,
+    30
+  ],
+  "profile": "bicycle",
+  "options": {
+    "beach": "prefer"
+  },
+  "waypoints": [
+    {
+      "label": "BW29",
+      "lat": 32.602374,
+      "lon": -80.0838337
+    },
+    {
+      "label": "BW41",
+      "lat": 32.6100451,
+      "lon": -80.045189
+    }
+  ]
+}

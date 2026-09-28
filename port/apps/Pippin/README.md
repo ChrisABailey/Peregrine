@@ -19,6 +19,9 @@ If you want to help on the project, proving out cycle routes and fixing issues i
 > the shape it is — the reference for when something behaves oddly, and the place the build
 > sections at the end of this file explain themselves in.
 
+> **Tides, sunrise/sunset and wind** — the tide card, the beach verdict, and how to point
+> them at another beach or country — are in [TIDES_AND_WEATHER.md](TIDES_AND_WEATHER.md).
+
 **Built so far: P1 (the data pack and the cross-build), P2 (the app, PippinKit, and a
 styled OSM map on screen), P3 (a map you can touch), P4 (a ship on it), P5 (the route,
 moved to C++), P6 (the route on the phone) and P7 (GPS mode, where the map follows
@@ -718,10 +721,9 @@ into a `UIImage` per cell" and treated that as the reason not to build one. **Th
 the document stores PNG *bytes* and `UIImage(data:)` takes exactly those, so nothing is
 rasterised, nothing is re-encoded, and UIKit caches the decode.
 
-**What P9 still owes**, listed in `port/pippin-plan.md`: the route sheet gaining a **Point name**
-picker so a chosen point snaps a waypoint exactly. The document is in the app and
-`MapModel.points` is already published, so it is a picker and a coordinate with no C++ under it.
-Also still true, and now the only artwork gap: **no way to get NEW artwork into a document from
+P9 owes nothing: a route-sheet **Point name** picker was planned and dropped in favour of P19's
+overlay snap, which already lands a waypoint on a point's surveyed coordinate.
+The only artwork gap: **no way to get NEW artwork into a document from
 the app.** `fv::PointOverlay::AddSymbolFromPngFile` is bound and only `WriteSampleFile` and
 `stage_data.py` put icons in a file, so the palette a document ships with is the palette it has —
 the editor chooses among those icons and cannot add a forty-fourth.
@@ -1893,7 +1895,7 @@ the failure mode a phone reports as a blank map at 3 pm on a bike.
 | In the pack | Made by |
 |---|---|
 | `kiawah.mbtiles` (1.9 MB, 119 tiles, z0–z14) | `port/tools/mbtiles_cut.py`, a bbox cut of `testdata/OSM/mbtiles/us-south.mbtiles` |
-| `kiawah.fvroad` (206 KB) | `fvgraph build` over the four `testdata/OSM/map*.osm` extracts, **honouring access** |
+| `kiawah.fvroad` (418 KB) | `fvgraph build --beach` over `kiawah-260906.osm.pbf` (a Kiawah cut of the us-south extract), **honouring access**; the beach arcs are excluded unless a route asks for them |
 | `style.json` + `symbols/osm-liberty-topo.{png,json}` | `port/Osm/styles/`, CyclOSM and the sheet its `sprite` names |
 | `peregrine-osm.json` | `port/Osm/styles/`, the port's own plainer look |
 | `route-weights.json` | `port/Routing/rules/`, where `foot` and `bicycle` come from |

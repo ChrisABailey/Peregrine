@@ -33,6 +33,7 @@ namespace {
 
 using fv::routing::RoadClass;
 using fv::routing::RoadGraph;
+using fv::routing::RoadNode;
 
 std::string TestDataDir() {
   const char* env = std::getenv("FVW_TESTDATA_DIR");
@@ -1265,6 +1266,266 @@ TEST(RoadGraphFormat, FerryClassAndTollBitSurviveTheRoundTrip) {
   // the arc word's spare byte, so no field moved to make room for it.
   EXPECT_EQ(ferries, stats.arcs_ferry);
   EXPECT_EQ(tolled, stats.arcs_toll);
+}
+
+// ---------------------------------------------------------------------------
+// Beaches
+// ---------------------------------------------------------------------------
+
+/// A beach polygon whose seaward edge is the coastline's nodes 91-93, a path
+/// ending 11 m inside it, and a path ending 33 m outside it inside a golf
+/// bunker. Coastline node 90 lies 94 m west of the beach.
+///
+///   201                203
+///    |                  |
+///    |          (bunker around 204)
+///   95 ---202---------- 96          beach polygon 95-96-93-92-91
+///    |                   |
+///   90 -- 91 ---- 92 ---- 93 -- 94  coastline
+std::string BeachOsm(const std::string& path_a_tags = "") {
+  return R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="90" lat="32.6000000" lon="-80.0000000"/>
+ <node id="91" lat="32.6000000" lon="-79.9990000"/>
+ <node id="92" lat="32.6000000" lon="-79.9980000"/>
+ <node id="93" lat="32.6000000" lon="-79.9970000"/>
+ <node id="94" lat="32.6000000" lon="-79.9960000"/>
+ <node id="95" lat="32.6010000" lon="-79.9990000"/>
+ <node id="96" lat="32.6010000" lon="-79.9970000"/>
+ <node id="201" lat="32.6030000" lon="-79.9982000"/>
+ <node id="202" lat="32.6009000" lon="-79.9982000"/>
+ <node id="203" lat="32.6040000" lon="-79.9975000"/>
+ <node id="204" lat="32.6013000" lon="-79.9975000"/>
+ <node id="401" lat="32.6012000" lon="-79.9977000"/>
+ <node id="402" lat="32.6012000" lon="-79.9973000"/>
+ <node id="403" lat="32.6015000" lon="-79.9973000"/>
+ <node id="404" lat="32.6015000" lon="-79.9977000"/>
+ <way id="900">
+  <nd ref="90"/><nd ref="91"/><nd ref="92"/><nd ref="93"/><nd ref="94"/>
+  <tag k="natural" v="coastline"/>
+ </way>
+ <way id="901">
+  <nd ref="91"/><nd ref="95"/><nd ref="96"/><nd ref="93"/><nd ref="92"/><nd ref="91"/>
+  <tag k="natural" v="beach"/>
+ </way>
+ <way id="400">
+  <nd ref="401"/><nd ref="402"/><nd ref="403"/><nd ref="404"/><nd ref="401"/>
+  <tag k="natural" v="sand"/><tag k="golf" v="bunker"/>
+ </way>
+ <way id="301">
+  <nd ref="201"/><nd ref="202"/>
+  <tag k="highway" v="path"/><tag k="name" v="Boardwalk A"/>)" +
+         path_a_tags + R"(
+ </way>
+ <way id="302">
+  <nd ref="203"/><nd ref="204"/>
+  <tag k="highway" v="path"/><tag k="name" v="Boardwalk B"/>
+ </way>
+</osm>
+)";
+}
+
+std::string WriteBeachOsm(const std::string& path_a_tags = "") {
+  const fs::path path = ScratchDir() / "beach.osm";
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << BeachOsm(path_a_tags);
+  out.close();
+  return path.string();
+}
+
+fv::routing::RoadGraphBuildOptions BeachOptions() {
+  fv::routing::RoadGraphBuildOptions options;
+  options.beaches = true;
+  return options;
+}
+
+int CountClass(const RoadGraph& g, RoadClass klass) {
+  int n = 0;
+  for (uint32_t i = 0; i < g.arc_count(); ++i) n += g.arc(i).klass == klass ? 1 : 0;
+  return n;
+}
+
+TEST(RoadGraphBeach, OneRunAlongTheCoastlineAndOneAccessArc) {
+  RoadGraph g;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteBeachOsm()}, BeachOptions(), &g, &stats).code,
+            fv::kOk);
+
+  EXPECT_EQ(stats.beach_polygons, 1);  // the bunker is not a beach
+  EXPECT_EQ(stats.coastline_ways, 1);
+  EXPECT_EQ(stats.beach_runs, 1);
+  EXPECT_EQ(stats.beach_access_arcs, 1);  // Boardwalk B ends 33 m out
+  EXPECT_EQ(stats.beach_access_unreached, 0);
+  // 91 -> 93 only: 90 and 94 are 94 m from the polygon.
+  EXPECT_NEAR(stats.beach_run_m, 187.5, 1.0);
+
+  // The access split cuts the run in two: 91 -> split and split -> 93.
+  EXPECT_EQ(CountClass(g, RoadClass::kBeach), 4);
+  EXPECT_EQ(CountClass(g, RoadClass::kBeachAccess), 2);
+
+  const uint32_t n202 = NodeForOsmId(g, 202);
+  const fv::routing::RoadArc* access = nullptr;
+  for (uint32_t a = g.arc_begin(n202); a < g.arc_end(n202); ++a) {
+    if (g.arc(a).klass == RoadClass::kBeachAccess) access = &g.arc(a);
+  }
+  ASSERT_NE(access, nullptr);
+  EXPECT_NEAR(access->length_m, 100.1, 0.5);
+  EXPECT_TRUE(access->forward());
+  EXPECT_TRUE(access->backward());
+  EXPECT_EQ(access->name, 0u);
+
+  // The split point is a new node on the water's edge, with a negative id.
+  const RoadNode& split = g.node(access->target);
+  EXPECT_LT(split.osm_id, 0);
+  EXPECT_NEAR(split.lat_e7 * 1e-7, 32.6000, 1e-7);
+  EXPECT_NEAR(split.lon_e7 * 1e-7, -79.9982, 1e-7);
+
+  const fv::routing::RoadArc* run = nullptr;
+  for (uint32_t a = g.arc_begin(access->target); a < g.arc_end(access->target); ++a) {
+    if (g.arc(a).klass == RoadClass::kBeach) run = &g.arc(a);
+  }
+  ASSERT_NE(run, nullptr);
+  EXPECT_EQ(g.name(run->name), "Beach");
+  EXPECT_EQ(run->speed_kph, fv::routing::DefaultSpeedKph(RoadClass::kBeach));
+
+  EXPECT_TRUE(fv::routing::IsCycleable(RoadClass::kBeach));
+  EXPECT_TRUE(fv::routing::IsCycleable(RoadClass::kBeachAccess));
+  EXPECT_FALSE(fv::routing::IsDriveable(RoadClass::kBeach));
+  EXPECT_FALSE(fv::routing::IsDriveable(RoadClass::kBeachAccess));
+  EXPECT_EQ(fv::routing::RoadClassFromName("beach"), RoadClass::kBeach);
+  EXPECT_EQ(fv::routing::RoadClassFromName("beach_access"), RoadClass::kBeachAccess);
+  EXPECT_EQ(fv::routing::RoadClassFromHighwayTag("beach"), RoadClass::kNone);
+  EXPECT_STREQ(fv::routing::RoadClassName(RoadClass::kBeachAccess), "beach_access");
+}
+
+TEST(RoadGraphBeach, OffByDefault) {
+  RoadGraph g;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteBeachOsm()}, {}, &g, &stats).code, fv::kOk);
+  EXPECT_EQ(stats.beach_polygons, 0);
+  EXPECT_EQ(CountClass(g, RoadClass::kBeach), 0);
+  EXPECT_EQ(CountClass(g, RoadClass::kBeachAccess), 0);
+  EXPECT_EQ(g.node_count(), 4u);  // the two paths' ends
+}
+
+TEST(RoadGraphBeach, AccessArcCarriesTheWaysAccessBits) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteBeachOsm(R"(<tag k="access" v="private"/>)")},
+                                        BeachOptions(), &g, nullptr)
+                .code,
+            fv::kOk);
+  int access_arcs = 0;
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    const fv::routing::RoadArc& a = g.arc(i);
+    if (a.klass == RoadClass::kBeachAccess) {
+      ++access_arcs;
+      EXPECT_TRUE(a.foot_private());
+      EXPECT_TRUE(a.bicycle_private());
+    }
+    if (a.klass == RoadClass::kBeach) EXPECT_FALSE(a.foot_private());
+  }
+  EXPECT_EQ(access_arcs, 2);
+}
+
+TEST(RoadGraphBeach, AShortBreakIsBridgedAndAnInletIsNot) {
+  // Two beaches on one coastline, 56 m apart along it.
+  const fs::path path = ScratchDir() / "inlet.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="32.6000000" lon="-80.0000000"/>
+ <node id="2" lat="32.6000000" lon="-79.9997000"/>
+ <node id="3" lat="32.6000000" lon="-79.9994000"/>
+ <node id="4" lat="32.6000000" lon="-79.9991000"/>
+ <node id="5" lat="32.6000000" lon="-79.9988000"/>
+ <node id="6" lat="32.6000000" lon="-79.9985000"/>
+ <node id="7" lat="32.6000000" lon="-79.9982000"/>
+ <node id="11" lat="32.6005000" lon="-80.0000000"/>
+ <node id="13" lat="32.6005000" lon="-79.9994000"/>
+ <node id="15" lat="32.6005000" lon="-79.9988000"/>
+ <node id="17" lat="32.6005000" lon="-79.9982000"/>
+ <node id="21" lat="32.6020000" lon="-79.9997000"/>
+ <node id="22" lat="32.6020000" lon="-79.9985000"/>
+ <way id="50">
+  <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="5"/><nd ref="6"/><nd ref="7"/>
+  <tag k="natural" v="coastline"/>
+ </way>
+ <way id="51">
+  <nd ref="1"/><nd ref="11"/><nd ref="13"/><nd ref="3"/><nd ref="2"/><nd ref="1"/>
+  <tag k="natural" v="beach"/>
+ </way>
+ <way id="52">
+  <nd ref="5"/><nd ref="15"/><nd ref="17"/><nd ref="7"/><nd ref="6"/><nd ref="5"/>
+  <tag k="natural" v="beach"/>
+ </way>
+ <way id="60">
+  <nd ref="21"/><nd ref="22"/>
+  <tag k="highway" v="path"/>
+ </way>
+</osm>
+)";
+  }
+  RoadGraph g;
+  fv::routing::RoadGraphBuildStats stats;
+  fv::routing::RoadGraphBuildOptions options = BeachOptions();
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, options, &g, &stats).code, fv::kOk);
+  EXPECT_EQ(stats.beach_runs, 1);
+  EXPECT_NEAR(stats.beach_run_m, 168.8, 1.0);
+
+  options.beach_gap_m = 40.0;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, options, &g, &stats).code, fv::kOk);
+  EXPECT_EQ(stats.beach_runs, 2);
+  EXPECT_NEAR(stats.beach_run_m, 112.5, 1.0);
+}
+
+TEST(RoadGraphFormat, BeachClassesAndSyntheticNodesSurviveTheRoundTrip) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteBeachOsm()}, BeachOptions(), &g, nullptr).code,
+            fv::kOk);
+  const fs::path path = ScratchDir() / "beach.fvroad";
+  ASSERT_EQ(g.Save(path.string()).code, fv::kOk);
+  RoadGraph back;
+  ASSERT_EQ(RoadGraph::Load(path.string(), &back).code, fv::kOk);
+  ASSERT_EQ(back.node_count(), g.node_count());
+  ASSERT_EQ(back.arc_count(), g.arc_count());
+  for (uint32_t i = 0; i < g.node_count(); ++i) EXPECT_EQ(back.node(i).osm_id, g.node(i).osm_id);
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    EXPECT_EQ(back.arc(i).klass, g.arc(i).klass) << "arc " << i;
+    EXPECT_EQ(back.arc(i).flags, g.arc(i).flags) << "arc " << i;
+  }
+}
+
+TEST(RoadGraphBeach, KiawahGetsARunAlongTheSurfAndLeavesTheRoadsAlone) {
+  SKIP_WITHOUT_KIAWAH();
+  RoadGraph plain, beach;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph(kiawah_inputs, {}, &plain, nullptr).code, fv::kOk);
+  ASSERT_EQ(fv::routing::BuildRoadGraph(kiawah_inputs, BeachOptions(), &beach, &stats).code,
+            fv::kOk);
+
+  EXPECT_GE(stats.beach_runs, 1);
+  EXPECT_GT(stats.beach_run_m, 10000.0);
+  EXPECT_GT(stats.beach_access_arcs, 20);
+  EXPECT_EQ(stats.beach_relations_skipped, 0);
+
+  // Access arcs split road ways at new vertices; the road centreline itself
+  // does not change.
+  auto road_km = [](const RoadGraph& g) {
+    double m = 0.0;
+    for (uint32_t i = 0; i < g.arc_count(); ++i) {
+      const RoadClass k = g.arc(i).klass;
+      if (k != RoadClass::kBeach && k != RoadClass::kBeachAccess) m += g.arc(i).length_m;
+    }
+    return m / 1000.0;
+  };
+  EXPECT_NEAR(road_km(beach), road_km(plain), 0.01);
+
+  for (uint32_t i = 0; i < beach.arc_count(); ++i) {
+    if (beach.arc(i).klass == RoadClass::kBeachAccess) {
+      EXPECT_LE(beach.arc(i).length_m, 200.5f);
+    }
+  }
 }
 
 TEST(RoadGraphBuild, EmptyAndMissingInputsAreErrors) {

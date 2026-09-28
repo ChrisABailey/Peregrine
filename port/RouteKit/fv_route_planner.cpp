@@ -20,6 +20,55 @@ bool IsBicycleRequest(const std::string& profile, bool cycle_only) {
          lower.find("cycle") != std::string::npos;
 }
 
+routing::BeachUse ToBeachUse(RouteBeach v) {
+  switch (v) {
+    case RouteBeach::kToSaveTime: return routing::BeachUse::kToSaveTime;
+    case RouteBeach::kWheneverPossible: return routing::BeachUse::kWheneverPossible;
+    case RouteBeach::kNever: break;
+  }
+  return routing::BeachUse::kNever;
+}
+
+namespace {
+
+/// The kBeach runs of `route`, merged across leg boundaries: the router splits
+/// legs on name as well as class, and two differently named beaches that meet
+/// are one stretch of sand.
+std::vector<RouteBeachStretch> BeachStretchesOf(const routing::Route& route) {
+  static const std::string kBeachClass = routing::RoadClassName(routing::RoadClass::kBeach);
+  std::vector<RouteBeachStretch> out;
+  const uint32_t last = route.geometry.empty()
+                            ? 0u
+                            : static_cast<uint32_t>(route.geometry.size()) - 1u;
+  double at_m = 0.0, at_s = 0.0;
+  bool open = false;
+  for (size_t i = 0; i < route.legs.size(); ++i) {
+    const routing::RouteLeg& leg = route.legs[i];
+    const uint32_t end = i + 1 < route.legs.size() ? route.legs[i + 1].geometry_begin : last;
+    if (leg.klass == kBeachClass) {
+      if (!open) {
+        RouteBeachStretch b;
+        b.geometry_begin = leg.geometry_begin;
+        b.start_m = at_m;
+        b.enter_s = at_s;
+        out.push_back(b);
+        open = true;
+      }
+      RouteBeachStretch& b = out.back();
+      b.geometry_end = end;
+      b.length_m += leg.length_m;
+      b.exit_s = at_s + leg.seconds;
+    } else {
+      open = false;
+    }
+    at_m += leg.length_m;
+    at_s += leg.seconds;
+  }
+  return out;
+}
+
+}  // namespace
+
 RoutePlanner::RoutePlanner(std::string graph_path, std::string rules_path)
     : graph_path_(std::move(graph_path)), rules_path_(std::move(rules_path)) {}
 
@@ -90,6 +139,7 @@ Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
   // journey say "this profile, but no ferries today".
   if (in.avoid_tolls) out->toll_penalty = routing::kAvoidExcluded;
   if (in.avoid_ferries) out->ferry_penalty = routing::kAvoidExcluded;
+  out->beach = in.beach;
   return Status::Ok();
 }
 
@@ -151,6 +201,37 @@ RoutePlan RoutePlanner::PlanPerPair(const std::vector<GeoPoint>& stops,
 
 RoutePlan RoutePlanner::Plan(const std::vector<GeoPoint>& stops,
                              const RoutePlanOptions& in) const {
+  RoutePlan plan = PlanOnce(stops, in);
+  if (!in.tide.enabled || plan.beach.empty()) return plan;
+
+  std::vector<nav::BeachStretchTiming> timings;
+  for (const RouteBeachStretch& b : plan.beach) timings.push_back({b.enter_s, b.exit_s});
+  const nav::BeachTideLimits& limits =
+      plan.is_foot && in.tide.foot_limits ? *in.tide.foot_limits : in.tide.limits;
+  plan.beach_verdicts = nav::BeachTideVerdicts(timings, in.tide.table, in.tide.depart_s, limits);
+
+  for (const nav::BeachStretchVerdict& v : plan.beach_verdicts) {
+    const bool unknown = v.verdict == nav::BeachVerdict::kUnknown;
+    if (v.verdict != nav::BeachVerdict::kPoor && !(unknown && !in.tide.keep_unknown))
+      continue;
+    RoutePlanOptions without = in;
+    without.beach = routing::BeachUse::kNever;
+    without.tide.enabled = false;
+    RoutePlan dry = PlanOnce(stops, without);
+    if (v.verdict == nav::BeachVerdict::kUnknown)
+      dry.beach_dropped = BeachDropped::kNoTable;
+    else if (v.enter_height_m > limits.rideable_below_m)
+      dry.beach_dropped = BeachDropped::kHigh;
+    else
+      dry.beach_dropped = BeachDropped::kRising;
+    dry.beach_dropped_verdict = v;
+    return dry;
+  }
+  return plan;
+}
+
+RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
+                                 const RoutePlanOptions& in) const {
   RoutePlan plan;
   plan.is_bicycle = IsBicycleRequest(in.profile, in.cycle_only);
 
@@ -175,6 +256,7 @@ RoutePlan RoutePlanner::Plan(const std::vector<GeoPoint>& stops,
     plan.error = s;
     return plan;
   }
+  plan.is_foot = options.profile && options.profile->mode == routing::TravelMode::kFoot;
 
   routing::Route through;
   bool have_through = false;
@@ -212,6 +294,7 @@ RoutePlan RoutePlanner::Plan(const std::vector<GeoPoint>& stops,
     // duplicate vertices a joiner drops are zero-length segments that no
     // cumulative distance counted in the first place.
     plan.maneuvers = ManeuversOf(through);
+    plan.beach = BeachStretchesOf(through);
     std::string turned;
     if (!through.u_turn_stops.empty()) {
       turned = " (turned round at " +
@@ -230,6 +313,7 @@ RoutePlan RoutePlanner::Plan(const std::vector<GeoPoint>& stops,
   }
   RoutePlan pairs = PlanPerPair(stops, options);
   pairs.is_bicycle = plan.is_bicycle;
+  pairs.is_foot = plan.is_foot;
   if (have_through) pairs.unreachable_leg = through.unreachable_leg;
   if (pairs.legs.empty()) {
     // PlanPerPair only comes back empty on a request-level failure, and it has

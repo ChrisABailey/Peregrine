@@ -83,15 +83,28 @@ final class ShareViewController: UIViewController {
 
         show(title: "Looking up the link…",
              detail: url.host ?? "", busy: true)
-        if let place = await PlaceLink.resolve(url) {
+        let outcome = await PlaceLink.resolve(url)
+        if case .place(let place) = outcome {
             PippinLog.share.notice(
                 "extension: resolved -> \(place.latitude, privacy: .public),\(place.longitude, privacy: .public) \(place.displayName, privacy: .public)")
             await hand(over: place)
+        } else if case .noCoordinate(_, let query?) = outcome {
+            await search(for: query)
+        } else if let message = PlaceLink.failureMessage(for: outcome) {
+            fail(message)
+        }
+    }
+
+    /// The link named a place but gave no position: ask Apple's search, and
+    /// hand over an approximate place or say what came back.
+    private func search(for query: String) async {
+        show(title: "Searching for the place…", detail: query, busy: true)
+        if let place = await PlaceGeocoder.place(for: query) {
+            PippinLog.share.notice(
+                "extension: searched -> \(place.latitude, privacy: .public),\(place.longitude, privacy: .public) \(place.displayName, privacy: .public)")
+            await hand(over: place)
         } else {
-            // Distinct from "no position in that link": this one is worth
-            // retrying with a signal.
-            fail("Couldn't get a position out of that link. "
-                 + "Short links have to be looked up, and that needs a signal.")
+            fail("Apple's search found nothing matching \(query).")
         }
     }
 

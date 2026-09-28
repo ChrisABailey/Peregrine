@@ -19,6 +19,11 @@ ships. Requirements:
 `port/apps/Pippin_requirements.md`. One session per P-step, the FVW session protocol applies
 (ledger first, compiler-driven, commit per step, no subagents).
 
+**Next, planned 2026-09-25**: the share fix (SH), battery and the night chart (BT), dragging
+without blank edges and with a fling (DR), tides (TD), beach routing (BR), elevation over an
+Atlanta pack (EL) and the 2.5D view (PV) are in **"After 1.1"** at the end of this file. Screen-off
+tracking stays BG1–BG5 in `port/pippin-guidance-plan.md`, refined the same day.
+
 **Goal**: an iOS app — offline cycling and walking navigation on Kiawah Island — built as the
 **third shell** over the Peregrine core, after PythonView and the CLIs. The pitch of this plan is
 that almost everything Pippin needs ALREADY EXISTS headless and tested: the moving map is MM1–MM7,
@@ -555,10 +560,8 @@ as a drag moves its centre.
 Pack keys added: `movingmap.course_up`, `slew_s`, `follow_slew_s`, `follow_slew_min_s`,
 `follow_slew_max_s`.
 
-- **The snap-points half of the original P9 is still open**: the route sheet's rows gaining a **Point
-  name** picker, so a chosen point snaps the waypoint exactly (the requirement's own example).
-  The document is now in the app and `MapModel.points` is already published, so this is a picker
-  and a coordinate — a sitting's worth of Swift with no C++ under it.
+- **The route-sheet Point-name picker is dropped** (Chris, 2026-09-24): P19's overlay snap already
+  lands a waypoint on a point's surveyed coordinate, and that is the behaviour he wants.
 - **The embedded ARTWORK went in the same day** (Chris asked whether `symbol_id` could point at
   the maki set). It could not, and that IS the design: `symbol_id` is a foreign key into the
   document's OWN `symbols` table, not a path into an icon directory — schema 2 put the artwork
@@ -1413,6 +1416,1202 @@ listed twice, and the chart and the graph agreeing silently. "marsh obs" (token 
 it to the one row. Choosing it framed the map behind the sheet, filled End with the name and Start
 from the receiver's own fix, and OK planned — reporting *stops 1 and 2 are not connected*, which
 is the honest answer for an observation tower across the marsh.
+
+## After 1.1 — planned 2026-09-25
+
+Chris, 2026-09-25: beach routing, tide information, elevation in the router, the Google Maps
+share failure, background GPS, battery, and (stretch) a 2.5D view. Later the same day: dragging
+without the blank edges that show as the map slides and turns, and a fling that coasts to a stop
+the way Apple's scroll views do (DR); the night chart approved (BT4); and Atlanta, the next place
+to map, as the hilly test pack (EL5). This section records what the
+survey found and cuts the work into steps of one session or less. Background GPS was already
+planned as BG1–BG5 in `port/pippin-guidance-plan.md`; that section was refined in place the same
+day and is only summarised here. The session protocol is unchanged: one step per session, mac
+tests first where the code allows, a simulator or phone artifact where it does not, commit per
+step, ledger row after.
+
+### Order, size, dependencies
+
+| # | Step | Size | Needs | Proved on |
+|---|---|---|---|---|
+| 1 | SH1 the share chain made visible, the message made honest | S | — | mac `place_link` + phone |
+| 2 | SH2 a named Google place through Apple's search | S–M | SH1 | phone |
+| 3 | BT1 measure before optimising | S | — | phone |
+| 4 | BT2 a frame budget while following | S | BT1 | sim + phone |
+| 5 | DR1 an underlay, so the edge is never blank | M | — | sim |
+| 6 | DR2 the band ready before the finger moves, and ahead of it | M | DR1 | sim + phone |
+| 7 | DR3 the fling | S–M | DR1, BT2 | sim + phone |
+| 8 | BG1–BG5 screen-off tracking (guidance plan) | S–M each | BT1 for BG3's numbers | sim + phone |
+| 9 | TD1 the tide table | M | — | mac |
+| 10 | TD2 the tide card | S | TD1 | sim |
+| 11 | BR1 the beach in the graph | M–L | — | mac |
+| 12 | BR2 the beach in the rules | M | BR1 | mac |
+| 13 | BR3 the beach in the document and the plan | M | BR2 | mac |
+| 14 | TD3 the beach verdict | S | TD1, BR3 | mac |
+| 15 | BR4 the beach in the route sheet | M | BR3, TD3 | sim |
+| 16 | BR5 riding the beach | M | BR4 | sim + phone |
+| 17 | BT3 the ownship leaves the canvas | M–L | BT2's numbers | sim + phone |
+| 18 | BT4 the night chart (approved) | M | — | sim + phone |
+| 19 | EL1–EL4 elevation | M each | — | mac, then sim |
+| 20 | EL5 the Atlanta pack | M | EL1–EL4; Chris's DTED2 | data + sim |
+| 21 | PV1–PV5 the 2.5D view | M each | BT4 before PV2, DR1 before PV5, BT3 before PV4 | mac, then sim |
+| — | TD4, BG6, RG1 | optional | | |
+
+S is well under a session, M is a session, L is a full session with no slack. The beach was the
+one feature that would not fit, so it is five steps.
+
+Why this order: SH is a defect in a shipped feature. Measurement comes before BG because BG3 is a
+battery trade (a lit screen against a pocket), and before BT3 because that is only worth its cost
+if the numbers say so. DR follows BT2 because both change the render loop's pacing, and the fling
+only makes blank edges worse until the underlay exists. The tide table lands before the beach
+toggle so the toggle never ships without the information that makes it usable. The night chart
+comes before the 2.5D view because the sky and the distance fade take their colours from the
+active style.
+
+### SH — the Google Maps share (item 4)
+
+**What the survey found.**
+
+- The sentence Chris saw is Pippin's own. `ShareViewController.run()` shows *"Couldn't get a
+  position out of that link. Short links have to be looked up, and that needs a signal."*
+  whenever `PlaceLink.resolve` returns nil, for any reason. `resolve` catches the `URLSession`
+  error and discards it (`catch { body = nil }`), so "no network" and "the chain carried no
+  coordinate" print the same sentence. Blaming the signal is a guess. That part is certainly a
+  bug.
+- The Google path has never seen a real Google link. P14 was proven on the phone with Apple Maps
+  only; `test/place_link_test.swift` holds hand-written `google.com/maps/place/…` URLs and one
+  `expectNothing("https://maps.app.goo.gl/aBcDeFgHiJkLmN")`, never a captured redirect chain.
+- A probe from the mac, 2026-09-25, with `resolve`'s own Safari user agent:
+  `https://maps.google.com/?q=Kiawah+Island+Golf+Resort,+1+Sanctuary+Beach+Dr,…` follows two
+  redirects to `https://www.google.com/maps?q=…` (200, 210 KB). No hop carries a coordinate. The
+  page body does — `center=34.138…%2C-84.236…` and `APP_INITIALIZATION_STATE=[[[…,-84.2367,34.1384]`
+  — but it is **the requester's own IP location** (north Georgia), not the place: the search runs
+  in JavaScript. Today's regexes happen not to match either shape. SH must not be "fixed" by
+  teaching the body scrape them; that would drop the marker in the rider's own town.
+- The likely failing case, to be confirmed by SH1's capture rather than assumed: a Google Maps
+  share of a *named* place redirects `maps.app.goo.gl/<id>?g_st=…` to
+  `maps.google.com/?q=<name>,+<address>&ftid=0x…:0x…&…` — a name and an address, no coordinate.
+  A dropped pin shares `q=<lat>,<lon>`, which `place(in:)` already reads. The `ftid` is a Google
+  feature id; resolving it needs the Places API and a key, which is not an option.
+
+#### SH1 — the chain made visible, the message made honest (S)
+
+**ACCEPTED on Chris's iPhone, 2026-09-25.**
+The real cause of the Google share failure was not the signal: `maps.app.goo.gl` answers a
+**desktop** Safari user agent with a 200 "DurableDeepLinkUi" page that redirects in JavaScript, so
+`resolve()` saw no hops. Every other agent gets a 302. The fix is `PlaceLink.userAgent`, a mobile
+Safari agent; Apple's `maps.apple` short links redirect with either agent. On the phone: a dropped
+pin (on a road or on the beach) shares `q=<lat>,<lon>` in the first hop and lands exactly. A place
+picked from a Google search shares `q=<name>, <address>&ftid=…` with no coordinate in any of its
+three hops, and goes to SH2. A "pin has no address" message was added on the wrong premise (that a
+dropped pin could resolve to no coordinate) and reverted once the user-agent fix made that case
+moot; the message for a query-less no-coordinate outcome is "That link doesn't carry a position."
+`PlaceLink.resolve` now returns `ResolveOutcome { place, offline(URLError.Code),
+noCoordinate(lastHop:, query:) }` with the plan's six offline codes; `RedirectSniffer` logs every
+hop at `.notice`/`.public` and records the chain. The pure `PlaceLink.classify(start:hops:found:
+body:failure:)` holds the decision so a captured chain replays on the mac, and
+`PlaceLink.failureMessage(for:)` gives the three sentences — the query one reads *"That link sent
+a name, not a position: <query>"* (not "Google", since any host can send `q=`) as SH1's stand-in
+until SH2. Decision: the body scrape accepts only Google's `!3d/!4d` place pair, never the
+`@lat,lon` camera or `center=`, because those are the requester's own IP location; `q=` values are
+form-decoded (`+` → space). `test/place_link_test.swift` is 70 checks green, including a
+2026-09-25 mac-captured chain (`maps.google.com/?q=…` → `maps.google.com/maps?q=…` →
+`www.google.com/maps?q=…`, no coordinate anywhere), a pinned IP-location body negative, the six
+offline codes, a dropped-pin hop, and the three messages. iOS sim build green on iPhone 17. Still
+open before SH1 counts as accepted: the three phone shares from Google Maps (named place, dropped
+pin, airplane mode) with their captured hops added as fixtures.
+
+- `RedirectSniffer` logs every hop at `.notice`, `privacy: .public`. Today only the start and the
+  outcome are logged.
+- `resolve` says why it failed: `enum ResolveOutcome { case place(SharedPlace), offline(URLError.Code),
+  noCoordinate(lastHop: URL?, query: String?) }`. Offline is `.notConnectedToInternet`,
+  `.networkConnectionLost`, `.timedOut`, `.cannotFindHost`, `.dataNotAllowed`,
+  `.internationalRoamingOff`. `query` is the `q=` text of the last hop that had one and did not
+  parse as a coordinate.
+- The extension says three different things: offline → needs a signal; no coordinate and no
+  query → "That link doesn't carry a position"; no coordinate with a query → SH2's path (until SH2
+  lands: "Google sent a name, not a position: <query>").
+- On the phone, from Google Maps: share a named place, a dropped pin, and a named place in
+  airplane mode. Read the `org.peregrine.Pippin` / `share` log. Every captured hop URL becomes an
+  offline fixture in `test/place_link_test.swift` (the fixtures are URLs; the test never touches
+  the network). Add a pinned negative: a body with `center=…%2C…` and `APP_INITIALIZATION_STATE`
+  yields no coordinate.
+- Acceptance: three shares, three different and true messages; `ctest -R place_link` green.
+  Confirmed on the phone 2026-09-25: a dropped pin (road or beach) resolves exactly, a Google
+  search share carries a name with no coordinate and hands off to SH2, and offline shows the
+  signal message.
+
+#### SH2 — a named place through Apple's search (S–M)
+
+**ACCEPTED on Chris's iPhone, 2026-09-25.**
+On the phone, "Kiawah Beachwalker Park Parking Lot, 8 Beachwalker Dr…" gets no POI result from
+Apple (Apple has no POI called "…Parking Lot"). The address fallback lands 40 m from the park;
+an address-fallback result now takes the query's name part (`PlaceLink.namePart`) rather than its
+street line, so the marker keeps the park's name. Shared places now get a yellow badge
+(`PointPalette.yellowHex`, "#f5c518", added to the palette) with the document's "marker" teardrop
+icon, looked up by name. Known weakness, not fixed: an address fallback whose address has no
+street (e.g. "Kiawah Island, SC") lands on the town centroid and still passes the one-shared-word
+match; only the "check it" remark warns.
+The location usage string is unchanged: it promises the rider's position is never sent, and that still holds (the extension has no location permission and sends only the shared name). Rewording App Store-facing text is Chris's call. MapKit only, no `CLGeocoder`.
+
+- When SH1's outcome is "no coordinate, with a query", the extension asks Apple: `MKLocalSearch`
+  with the query as `naturalLanguageQuery` (a POI search, so "Kiawah Island Golf Resort, 1
+  Sanctuary Beach Dr" lands on the resort, not a street centreline), falling back to address
+  geocoding of the part after the first comma. If the iOS 26 SDK marks `CLGeocoder` deprecated,
+  use MapKit's replacement; the deployment target stays 17.
+- `PlaceLink.swift` stays Foundation-only (it runs under a bare `swift` on the mac). The search
+  lives in a new extension-only `PlaceGeocoder.swift`. Its one decision — accept a result only
+  when its name or postal address shares a word with the query — is a pure function tested on
+  the mac.
+- A searched place is approximate and says so: the callback URL gains `approx=1`, and
+  `MapModel.acceptSharedPlace` writes "Position from Apple's search for '<query>' — check it"
+  into the remarks. Same default marker as any shared point (P14's reasoning).
+- Privacy: this is Pippin's second network use and the first to a company that did not mint the
+  link. `allowsNetworkLookup`'s comment and the location usage wording change to say so; review
+  `PrivacyInfo.xcprivacy`.
+- `place_link` is 82 checks green (mac); the iPhone 17 Pro simulator build is green with
+  `PlaceGeocoder.swift` added to the PippinShare target.
+- Acceptance on the phone, confirmed 2026-09-25: sharing Beachwalker Park from Google Maps gives
+  a yellow-pinned point near the park named for the park (not its street line), remarks marked
+  approximate; a dropped pin is exact, no remark; airplane mode says it needs a signal.
+- Fixtures in `test/place_link_test.swift`: Chris's dropped pin, beach pin and searched place,
+  plus a named-place hop captured from the web; 93 checks, all green.
+- Build note: after Xcode moved to the iOS 27.0 SDK, `build-ios` needed `cmake --fresh --preset
+  ios` (a stale SQLite3 path pointed at the 26.5 SDK). `build-ios-sim` will need the same.
+
+### BT — battery (item 6)
+
+**Where the energy goes, by state.** Qualitative until BT1 puts numbers on it.
+
+| State | Display | GNSS | CPU | Today |
+|---|---|---|---|---|
+| Following, screen on | lit, pinned (P15) | navigation (P17) | the display link never pauses: the follow slew retargets on every fix. Each frame is an overlay raster (8–11 ms on the simulator); about one in nine redraws the base (25–33 ms) | the expensive state, and where a ride spends its time |
+| Recording, screen on | lit, pinned | navigation | draws only when the ship is visible or followed (P16) | |
+| Browsing, ship off screen | lit until Auto-Lock | coarse (P17) | no render per fix (P16) | done |
+| Backgrounded, neither following nor recording | off | off (suspended) | none | zero; BG2 must keep it zero |
+| Backgrounded, following or recording (after BG) | off | navigation | per-fix work, no drawing (BG1) | the target for a long ride |
+
+Three facts set the priorities:
+
+1. The display is the largest single draw while it is lit, and an OLED panel (Chris's iPhone 14
+   Pro) spends power roughly in proportion to pixel luminance. Pippin's chart is a light style.
+   The two levers are not lighting the screen at all (BG, BG5, optionally BG6) and a dark chart
+   when it is lit (BT4).
+2. Nothing sets `preferredFrameRateRange` on the `CADisplayLink`, and the follow slew keeps it
+   running. The app runs at 60 Hz only because `Info.plist` does not set
+   `CADisableMinimumFrameDurationOnPhone`. A map that slides at a rider's speed does not need 60
+   frames a second (BT2).
+3. The receiver's cost is roughly fixed while it runs at navigation accuracy; `desiredAccuracy`
+   is a hint (P17). The idle saving is built. What remains is a `distanceFilter`, so a stopped
+   rider generates no fixes and therefore no frames (BT2).
+
+#### BT1 — measure before optimising (S)
+
+- A ride energy log: once a minute while following or recording, append `time, batteryLevel,
+  batteryState, thermalState, frames drawn, base draws, cache hits, fixes` to
+  `Documents/energy-<ride>.csv` beside the GPX. Battery monitoring is enabled only while riding.
+  Exported with the ride, the way P22 exports a track.
+- MetricKit: an `MXMetricManagerSubscriber` saves each payload as JSON under
+  `Documents/metrics/`. The fields that matter are cumulative CPU and GPU time, location activity
+  time by accuracy tier, and `MXDisplayMetric`'s average pixel luminance (the direct measure of
+  what BT4 would save). Payloads arrive about daily, so this is the long-run record; the CSV is
+  the per-ride one.
+- `BUILDING.md` gains the procedure: Instruments' Power Profiler (Xcode 26) recording on the
+  phone for a 20-minute ride; the Xcode energy gauge for a quick look.
+- The acceptance artifact is a baseline table at fixed brightness over the same Kiawah loop: 30
+  minutes following, 30 minutes recording with the map visible, as percent per hour. BT2–BT4 and
+  PV5 each re-run it.
+
+**DONE 2026-09-25** (built, installed on Chris's iPhone 14 Pro, baseline recorded the same day).
+
+- `Pippin/EnergyLog.swift` (Foundation-only): `EnergyMode`, `EnergyCounters` with process CPU via
+  `getrusage`, `EnergyMeter` differencing, `EnergySample`'s CSV row. Tested on the mac by
+  `test/energy_log_test.swift` via `run_energy_log_test.sh`, ctest `pippin_energy_log`, 18 checks
+  green.
+- `Pippin/EnergyRecorder.swift`: `EnergyRecorder`, owned by `MapModel`; a session is
+  following || recording; writes `Documents/trips/energy-<yyyy-MM-dd-HHmm>.csv` — a zero row at
+  start, one row per 60 s, an early row on a mode change and at the end; battery monitoring runs
+  only during a session. Columns: `time,mode,battery_level,battery_state,thermal_state,frames,
+  base_draws,cache_hits,fixes,cpu_s` — two beyond the plan (`mode`, `cpu_s`) because BT2's
+  acceptance is CPU time per minute. `MetricsArchive` (an `MXMetricManagerSubscriber` started in
+  `PippinApp.init`) saves metric and diagnostic payloads to
+  `Documents/metrics/<kind>-<begin>--<end>.json`, deduplicated by name.
+- Energy logs are listed in the Rides sheet beside the GPX files ("Energy log, <date>"), shared
+  and deleted the same way. `fixes` counts live-feed fixes only; the demo feed is polled in C++
+  and shows 0.
+- First numbers, simulator (iPhone 17 Pro sim, following at 8 m/s): ~46 frames/s (2763 and 2966
+  frames/min, ~5–7% base redraws), 60 fixes/min, 55–67 CPU-seconds per minute. Simulator only, not
+  a phone number, but it confirms BT2's premise that following runs near 60 Hz.
+- `BUILDING.md` gains "Measuring energy": the ride log, the baseline-table procedure, MetricKit,
+  Instruments' Power Profiler.
+- **Baseline, 2026-09-25**, iPhone 14 Pro, Release build, on the bench, unplugged, fixed half
+  brightness, Pippin open throughout. The GPS came from `xcrun devicectl device simulate location
+  route` over Wi-Fi (no debugger): `kiawah_full_1x` out and back, 12.2 km at 3.58 m/s, fixes at
+  1 Hz. Raw log: `port/apps/Pippin/docs/bt1-baseline-2026-09-25.csv`.
+
+  | State | Minutes | Frames | Base draws/min | CPU s/min | Battery | Thermal |
+  |---|---|---|---|---|---|---|
+  | Following (GPS mode) | 39 | 58 /s | 31 | 43.5 (35–66) | 95→75 % in 25 min, **~48 %/h** | serious from minute 12 |
+  | Recording, ship on screen | 27 | 1.5 /s | 60 | 5.4 | 75→70 %, **~10 %/h** (5 % steps) | back to nominal in 8 min |
+
+  The screen was lit in both, so the ~5x difference is the 60 Hz follow loop, not the display.
+  Following also ran into `serious` thermal state, and its CPU rose as it did. Recording shows
+  one base draw per fix: 60 of its 90 frames a minute redraw the base, although the camera does
+  not move. BT2 re-runs this table; the recording row's base draws are a BT2/BT3 question.
+
+#### BT2 — a frame budget while following (S)
+
+- `FramePolicy.swift`, a CoreGraphics-only value with a ctest table like `RenderGate`: a gesture →
+  up to 60 Hz; following with no gesture → `[display] follow_fps` (start at 20, range 15–30);
+  idle → paused, as today. Applied through `link.preferredFrameRateRange` when the state changes,
+  not every frame.
+- Skip a frame whose camera moved less than `[display] min_move_pt` (0.25 pt) with no content
+  change. A rider stopped at a junction otherwise redraws the same picture while the slew
+  converges.
+- `distanceFilter = 2 m` in the navigation configuration (`PPLocationSource.mm`). Check that
+  P17's paused-run restart still fires.
+- The slew's duration is the measured fix interval (`PPFollowCadence.h`); a lower frame rate
+  samples the same motion less often, so it stays continuous. If the ship visibly steps at 20 Hz
+  on the phone, use 30.
+- Acceptance: BT1's table re-run, CPU time per minute of following at least halved (the
+  prediction is a third at 20 Hz), no judder on the phone.
+
+**BUILT 2026-09-25** (simulator; phone acceptance pending).
+
+- `Pippin/FramePolicy.swift` (CoreGraphics-only): gesture or not-following → system rate;
+  following, no gesture → `[display] follow_fps` (default 20, clamped 15–30) via
+  `CADisplayLink.preferredFrameRateRange`, applied on a mode change only (gesture began/ended,
+  riding change, link creation). ctest `pippin_frame_policy`, 28 checks.
+- The min-move skip is a camera STEP, not a dropped frame: the slew is advanced inside the
+  render, so skipping a render would freeze it. New `PPMap stepCameraAtViewport:` →
+  `PPCameraStep` ticks the moving map (feed poll, fixes, trip, guidance, slew) without drawing;
+  `MapModel.tick()` steps when following, no gesture, no content change, same scale/surface, and
+  the picture would move < `[display] min_move_pt` (0.25) since the last drawn frame (centre
+  shift + rotation arc at the half-diagonal). MapScreen's preview transform carries the
+  sub-point move; a step that consumed a fix marks content dirty; one exact frame is drawn
+  before the loop pauses after steps. `-PPShowStats` shows "N stepped".
+- `distanceFilter = 2 m` in navigation mode (`PPLocationSource.mm`). P17's paused-run restart is
+  keyed on the mode change back to navigation and on `pausesLocationUpdatesAutomatically`, which
+  is NO in navigation, so it is unaffected.
+- Simulator numbers (iPhone 17 Pro sim, simctl location route at 8 m/s, zoomed out to
+  1:96,161): 496 and 408 frames drawn/min (vs BT1's ~2,900), ~20 Hz total ticks (947 drawn +
+  1403 stepped in ~2 min), 19.3 and 20.6 CPU s/min (vs BT1 sim 55–67) — about a third. With the
+  location cleared: 0 frames and 0.003 CPU s the next minute.
+- **ACCEPTED on the phone 2026-09-26.** BT1's procedure: iPhone 14 Pro, bench, unplugged,
+  half brightness, `devicectl simulate location route` over Wi-Fi (`kiawah_full_1x` out, back
+  and out, 3.58 m/s, 1 Hz). Raw log: `port/apps/Pippin/docs/bt2-phone-2026-09-26.csv`.
+
+  | State | Minutes | Frames | Base draws/min | CPU s/min | Battery | Thermal |
+  |---|---|---|---|---|---|---|
+  | Following, BT2 | 32 | 4.7 /s | 23 | **14.4** (9.5–24) vs BT1 43.5 | 97→95 % | nominal throughout |
+  | Recording, BT2 | 40 | 0.9 /s | 3.8 | **1.5** vs BT1 5.4 | 95→90 % at minute 12 | nominal |
+
+  Whole session: 97 % → 90–94 % in 72 minutes, roughly 3–6 %/h across both states, against
+  BT1's ~48 %/h following and ~10 %/h recording. The 5 % battery steps are too coarse to split
+  the two halves. Following CPU rose to 16–24 s/min in its last minutes because Chris zoomed in
+  (more ticks cross `min_move_pt` and draw). Fixes ran 30–40/min against BT1's 60, probably
+  the 2 m distance filter on the simulated track. No judder at 20 Hz; `follow_fps` stays 20.
+  Recording's base draws fell from 60/min to ~0 after the first minute, which answers BT1's
+  one-base-draw-per-fix question. BT3 is optional on these numbers.
+
+#### BT3 — the ownship leaves the canvas (M–L; only if BT2 leaves CPU worth chasing)
+
+- Every follow frame re-rasterises the whole overlay (route, points, ship) because the ship
+  moved. Split P18's overlay layer in two: a static overlay (route, points, waypoint diamonds)
+  drawn with the base's band and camera and cached like the base — invalidated by the content
+  epoch, never by the camera — and the ship as a SwiftUI/`CALayer` sprite placed by
+  `viewport.point(forGeo:)` and turned by the resolved heading. A follow frame with no content
+  change becomes composite-only.
+- The ship's artwork is still the core's (`fv.north`/`fv.ownship`), rendered once per size and
+  colour into a `CGImage` by `PPMap`, likewise its halo.
+- P18's settle rule applies to the static overlay too: at rest it must be exact.
+- This sprite is PV4's billboard layer, which is why BT3 comes first.
+
+#### BT4 — the night chart (M; approved by Chris 2026-09-25)
+
+Chris wants it for its own sake and for the 2.5D view, so it is a feature rather than a
+battery experiment, and it does not wait on BT1's numbers.
+
+- A dark variant of the pack style (`style-dark.json` beside `style.json`, the CyclOSM-derived
+  sheet the pack draws with: same sources and layers; dark land and water, light roads and
+  text, halos inverted), inside the supported GL subset (`port/Osm/styles/style-readme.md`).
+  Sprites that are dark-on-transparent get light twins or a tint; `ignored_icons()` must stay as
+  it is for the day sheet.
+- The pack names both (`[osm] style` and `style_dark`); `stage_data.py` stages and checks both.
+- It follows the system appearance, with a map-menu override: Auto / Light / Dark. A switch
+  invalidates the base cache and DR1's underlay. The route red, the ship, the pick ring and the
+  guidance banner are checked against both; the SwiftUI controls already adapt (system
+  materials).
+- Each style also names the colours the 2.5D view needs (sky, horizon fade), read from the
+  style's `background` layer or a small `metadata` block, so PV2 draws a night sky over a night
+  chart without a second source of truth.
+- It relaxes this plan's "the map itself has one look in v1", which was a v1 scope rule.
+- Acceptance: screenshots of the same view in both; MetricKit's pixel luminance (BT1) falls on a
+  night ride.
+
+Screen-off riding is not a BT step: it is BG1–BG5 (optionally BG6), and it is the largest saving
+on this list.
+
+### DR — dragging without blank edges, and a fling (added 2026-09-25)
+
+Chris, 2026-09-25: the blank edges that show as the map slides and turns, and no inertia — a
+fast drag and release should keep scrolling and slow to a stop, as Apple's own apps do.
+
+**What the code does today** (read 2026-09-25, not yet measured on the phone):
+
+- Nothing sits behind the two map layers (`MapScreen.mapLayer`: base, overlay, clipped), so
+  whatever the base does not cover shows the window background.
+- **At rest there is no band.** When the map stops under a resampled frame, `MapModel.settle`
+  redraws the base with `bandMargin: 0` — pixel-exact, and it hands the band's memory back
+  (P18). So every drag starts with a base exactly the size of the screen, and the first point of
+  movement uncovers an edge until the gesture's first band draw returns (25–33 ms at riding
+  zooms, 44–74 ms at wide views).
+- **During a drag the band is thin and stops being rebuilt.** A 0.25 margin is about 98 pt
+  left and right and 213 pt top and bottom on a 393×852 pt screen; a flick crosses 98 pt in
+  about 50 ms. And `tick()`'s live-render budget refuses every base draw after the gesture's
+  first when the last one took over `liveRenderBudgetMs` (40 ms), so at a wide view a long drag
+  never rebuilds the band and slides into blank until the finger lifts.
+- **Turning uncovers the corners.** The band is the screen grown on each side, and a turned
+  screen's corners reach out to the half-diagonal (about 469 pt). With this band they come out
+  after about 14° of turn. Both the two-finger rotate (after its 12° dead zone) and course-up
+  follow turn the chart, and `base_cache_max_turn_deg = 2.5` forces redraws the gesture budget
+  then refuses.
+- **No inertia.** `MapGestureView.handlePan` forwards deltas while `.changed` and ignores the
+  recognizer's velocity at `.ended`.
+
+#### DR1 — an underlay, so the edge is never blank (M, sim)
+
+- The style's background colour (land) is painted behind everything, so even the worst case is
+  land-coloured rather than white or black.
+- A third layer under the base: the map drawn two zoom levels out (scale ×4) at screen size —
+  one screen of pixels covering four screens of ground in each axis — under its own preview
+  transform, exactly as the base and overlay layers are (`MapScreen.preview(of:in:)`). Where it
+  shows it is soft, but it is the map, correctly placed. It covers any rotation (four screen
+  widths is more than the diagonal) and about a screen and a half of pan in any direction.
+- Built at low priority when the loop is idle (after the settle), never ahead of a live frame:
+  the render queue is serial and a 50–70 ms wide render must not delay a gesture's first frame.
+  Rebuilt when the camera leaves its middle half or the scale moves more than 2× from its key;
+  invalidated by a style switch (BT4) or a symbol-size change (P22); dropped on a memory
+  warning. Memory: one screen (about 12 MB at 1206×2622).
+- The coverage rule joins `PPBaseCoverage.h` (mac-tested): which of sharp base, underlay or
+  background colour covers each corner of the live screen.
+- `-PPShowStats` gains a "soft frames" count: frames where some of the screen was served by the
+  underlay rather than the sharp base. It is the number DR2 drives down.
+- Acceptance: a screen recording of a fast drag at a wide view and a two-finger turn shows no
+  blank; the soft-frame count is recorded as DR2's baseline.
+- This underlay is also the two-tier far field PV5 needs for the 2.5D view.
+
+**Built 2026-09-25** (simulator; phone acceptance pending).
+
+- `PPBaseCoverage.h`: `kUnderlayZoomOut = 4`, `LayerReaches`, `ScreenCover
+  {kSharp,kUnderlay,kBackground}`, `ScreenCoverage(base, underlay*, live)` (corner test, worst of
+  four; scale/turn not refused, unlike `BaseCovers`), `UnderlayServes(underlay, live)` (stale when
+  the live centre leaves the underlay's middle half, the scale moves >2x from its key, or the
+  surface or pitch changes; rotation never stales it). 9 new mac gtests in
+  `test/base_coverage_test.cpp`; `fv_pippin_test` 128/128 green.
+- `PPViewport`: `viewportForUnderlay` (scale x4, NOT clamped to zoom limits), `underlayServes(_:)`,
+  `coverage(of:underlay:)` returning `PPScreenCover`.
+- `PPMap`: `PPUnderlay` (image, viewport, background colour at the live scale, render
+  milliseconds); `renderUnderlay(for:)` draws through a second `VectorRenderer`
+  (`_underlayRenderer`, scene margin 0) over the shared source and style so the base renderer's
+  retained scene is not evicted; a local `CpuCanvas` per build so only one screen (~12 MB image)
+  is held at rest; symbology drawn at DPI / 4 so after the x4 magnification lines and labels match
+  the sharp map's size (first sim run at full DPI showed labels 4x oversized).
+- `MapModel`: `underlay` + `mapBackground` published; `pauseOrBuildUnderlay` replaces the two
+  `link.isPaused = true` sites in `tick()` — builds only where the loop would otherwise pause,
+  never during a gesture, one-at-a-time; `underlayKey` stops a failed build retrying every tick;
+  `underlayGeneration` discards a build that finishes after a drop; dropped on memory warning and
+  on a symbol-size change. `-PPShowStats` gains "N soft M blank · under X ms".
+- `MapScreen`: the style background colour behind all layers, replacing the grey placeholder;
+  underlay layer under the base with the same `preview(of:in:)` transform.
+- Sim results (iPhone 17 Pro sim, Kiawah pack, at 1:96,161, near the widest view): underlay draw
+  21–31 ms; fast drags gave 1–5 soft frames and 0 blank; the sea beyond the pack's data edge is
+  the style background, drawn identically by the sharp base, so it is not a blank. Known trade:
+  the render queue is serial, so a gesture that starts during an underlay build waits up to that
+  build's time (~20–30 ms sim) for its first frame.
+- Still open: the acceptance screen recording of a fast wide drag and a two-finger turn (the
+  simulator's synthesized two-finger path registered as a pinch, not a rotate), a phone check, and
+  DR2's soft-frame baseline to be recorded on the phone.
+
+#### DR2 — the band ready before the finger moves, and ahead of it (M, sim + phone)
+
+- **Keep the band at rest.** A band whose margin is a whole number of device pixels, drawn at
+  the live camera, should composite pixel-exact at zero offset. P18 assumed it could not ("its
+  pixels land between the screen's"); measure it with `PPPixelProbe` and `-PPViewportProbe`. If
+  it holds, the settle draws with the band, `isLive` accepts a band at an integral offset, and
+  every drag starts covered. The price is the band's memory held at rest (2.25× the screen),
+  which reverses P18's choice deliberately; the memory-warning drop stays.
+- **Lead the finger.** During a pan, draw the band for where the camera will be when the draw
+  lands (the current centre plus the pan velocity times the last base-draw time), not where it
+  is now. `covers` is unchanged: it is still a band.
+- **Replace the gesture budget.** Instead of refusing base draws after the first, start one
+  whenever the screen, predicted one draw-time ahead, comes within `[display]
+  band_refresh_fraction` of the band's edge. Still at most one in flight.
+- **A rotation-safe band** while the chart is turned or turning (the rotate gesture, course-up
+  follow): a square whose side is the screen's diagonal plus the margin — about 2.6× the
+  screen's pixels against 2.25× today — so a turn up to `base_cache_max_turn_deg` never shows a
+  corner.
+- Acceptance: DR1's soft-frame count reaches zero for drags and turns at riding zooms and is
+  brief at the widest view; BT1's energy table shows no regression.
+
+**Built 2026-09-25** (simulator; phone acceptance pending).
+
+- `PPBaseCoverage.h`: `GrownSurfaceSize` replaced by `GrownSurfacePixels(w,h,margin,rotation_safe)`
+  — grows by whole, equal device pixels per side (the old band was 1769 px wide, 1179×1.5
+  rounded, a half-pixel off-centre, which is why P18 believed a band could not be shown
+  unfiltered). `PixelAligned(base, live)` (0.1 px tolerance: the projection's x scale follows the
+  centre latitude, so a N-S pan drifts ~0.002 px per 40 px at riding scale; a 600 px N-S pan at
+  1:96,161 exceeds it and is refused, so the settle redraws). `BandHeadroomPx(base, live)`.
+  `BandLead(v, seconds, margin_pt, 0.75)`. 8 new mac gtests; `fv_pippin_test` 135/135.
+- `PPViewport`: `grown(byMargin:rotationSafe:)`, `isPixelAligned(to:)`, `bandHeadroom(for:)`, C
+  function `PPBandLead`.
+- `PPMap`: `render(_:bandMargin:reuseBase:)` replaced by `render(_:band:reuseBase:)` — the shell
+  passes the band viewport (possibly led, possibly rotation-safe, nil = screen); the style is
+  prepared for the band's own centre. New `baseCacheRefreshFraction` from `[display]
+  band_refresh_fraction` (0.5, added to `pippin.ini`).
+- `MapModel`: settle now draws the resting band at the live camera (not `bandMargin` 0);
+  `settleOwed` (replacing `baseIsResampled`) = base not pixel-aligned OR not the resting band's
+  size (covers the first frame, after a pinch, led and rotation-safe bands). During a same-scale
+  gesture a base redraw starts when the cached band no longer covers the live camera, or the
+  camera predicted one base-draw ahead (pan velocity × `lastBaseDrawMs`) has headroom less than
+  `fraction × margin × short side px`; the redraw is centred ahead by `BandLead`. The 40 ms
+  live-render budget now applies to pinches only. Pan velocity comes from
+  `UIPanGestureRecognizer.velocity(in:)` via `MapGestureView.onPan`.
+- `MapScreen`: a layer is shown unfiltered when `isPixelAligned(to:)` (was: same size and zero
+  offset).
+- Decisions, deviating from the plan text above: (a) the rotation-safe band is each axis reaching
+  the diagonal plus HALF the short-side margin — about 3.2x screen pixels, not the plan's 2.6x,
+  because the diagonal alone leaves 43 pt of vertical headroom, under the 49 pt refresh threshold;
+  (b) it is used only during a two-finger turn, not in course-up follow — follow redraws at the
+  live rotation every 2.5°, so its relative turn stays a few degrees and the normal band covers
+  it, and a 3.2x band on every follow redraw would regress BT1's energy.
+- Sim measurements (iPhone 17 Pro sim, Kiawah): resting frame vs. the pre-DR2 build at the home
+  view — 4,636 of 3,162,132 px differ (0.15%), all at the screen's outer edge (the screen-sized
+  canvas used to clip these, now whole from the band) plus the status-bar clock; the interior is
+  bit-identical, so the band composites pixel-exact at rest. A 500 pt/s 580 ms drag at 1:28,538: 0
+  soft, 0 blank. Flicks at ~1,500–5,000 pt/s: soft (underlay) frames, 0 blank (base draw on sim
+  97–112 ms at 1:28,538, 47 ms at 1:96,161). A ~80° two-finger turn in 0.5 s (the sim registered
+  it as a rotate this time): 0 blank, 7 soft ticks; the rotation-safe band costs 232 ms per draw
+  on the sim.
+- Still open: phone acceptance (soft-frame count to zero at riding zooms, BT1 energy table no
+  regression, the rotation-safe draw time on the phone); a pinch out from 1:1,614 to 1:28,538
+  produced 4 blank frames — the underlay (DR1) is stale during a fast pinch-out, DR1's layer, not
+  the band; the held band is still retained by the displayed `PPFrame` after a memory-warning
+  drop (pre-existing from P18).
+
+#### DR3 — the fling (S–M, sim + phone)
+
+- On pan `.ended`, read `velocity(in:)`. Above `[display] fling_min_speed_pt` (about 200 pt/s),
+  start a coast that decays the way `UIScrollView` does: `v(t) = v0·e^(−t/τ)`, with `τ` from
+  `[display] fling_deceleration` given in UIKit's own unit (0.998 per millisecond,
+  `DecelerationRate.normal`, so τ ≈ 0.5 s and a fling travels about `v0 × 0.5 s`).
+- The position is the closed form `v0·τ·(1 − e^(−t/τ))`, and each display-link frame pans by
+  the difference since the last one — frame-rate independent, so BT2's pacing cannot change how
+  far a fling goes. The coast ends when the speed drops below 10 pt/s, or when the centre clamp
+  at the pack's edge bites (it stops; there is no rubber band).
+- Pans go through `MapModel.pan(by:)` as a drag does, so they are rotation-aware for free.
+- A touch stops the coast dead, and that touch is spent on stopping it: it does not also select
+  a marker or start a hold. This is what Apple's scroll views do, and a stopping tap that
+  opened a point sheet would be a bug.
+- The coast is part of the gesture: `gestureActive` stays true until it ends, so DR2's band
+  rules and BT2's gesture frame rate apply, and the settle waits for it.
+- **No fling while following.** In GPS mode a drag is honoured and the next fix pulls the map
+  back (the slew re-bases; see "The map is asked where it is" in the README), so a coast would
+  only fight the follow camera for a second.
+- Optional in the same step, off by default: a short zoom coast after a pinch and a rotation
+  coast after a turn, each with its own key.
+- The math is `Momentum.swift`, CoreGraphics-only, with `test/momentum_test.swift` under the
+  swiftc harness: the total distance is `v0·τ`; 60 Hz, 20 Hz and jittered frames reach the same
+  position at the same time; the stop threshold; the clamp.
+- Acceptance on the phone: a flick coasts and eases to a stop like Maps; a tap stops it without
+  selecting anything; the edges stay filled during a coast at riding zoom.
+
+**Built 2026-09-25** (simulator; phone acceptance pending).
+
+- `Momentum.swift` (CoreGraphics-only): `Momentum(velocity:decelerationRate:minSpeed:)` — nil
+  below `minSpeed` (never below the 10 pt/s stop speed); τ = −0.001/ln(rate) (0.998/ms → τ ≈
+  0.4995 s); a rate outside (0,1) falls back to 0.998; `offset(at:)` = v0·τ·(1−e^(−t/τ)),
+  `velocity(at:)`, `duration` = τ·ln(v0/10), `limit` = v0·τ, `clampBit(requested:applied:)` (>0.5 pt
+  short = the pack-edge centre clamp bit). `Coast` steps it per display frame from the closed
+  form, so the sum of the steps equals the curve at any frame rate.
+- `test/momentum_test.swift` + `run_momentum_test.sh`, ctest `pippin_momentum`: 27 checks —
+  threshold, curve (v0·τ total, 1−1/e at τ), UIKit `.fast` rate, stop at 10 pt/s, 60 Hz / 20 Hz /
+  jittered frames reach the same position (1e-6 pt), repeated timestamp, clamp.
+- `MapGestureView`: `onEnded` now carries the pan's release velocity (`velocity(in:)` at
+  `.ended`, only when the pan is the last recognizer to end); `CoastStopRecognizer` recognizes at
+  touch-down during a coast and fails at once otherwise; the tap and the long press
+  `require(toFail:)` it, so a stopping touch neither selects a marker nor starts a hold; the pan
+  is left free so the stopping finger can drag.
+- `MapModel`: `gestureEnded(releaseVelocity:)` starts a `Coast` (not in GPS mode) and keeps
+  `gestureActive` true, so DR2's band rules/lead and BT2's gesture frame rate apply and the
+  settle waits; `advanceCoast()` at the top of `tick()` pans by each step with the decaying
+  velocity as the band's lead; stops on finish, clamp bite, GPS mode, `stopCoast()` from a touch,
+  a new gesture, a shared-place move, or a search framing.
+- `pippin.ini [display]`: `fling_min_speed_pt = 200`, `fling_deceleration = 0.998`; PPMap
+  `flingMinSpeedPoints`, `flingDecelerationRate`.
+- Not built: the optional zoom coast after a pinch and rotation coast after a turn (plan said
+  optional, off by default) — left for later.
+- Sim results (iPhone 17 Pro): after a flick the map kept moving (1.26 M px changed in the 0.4 s
+  after release) and was still afterwards; a tap during a coast stopped it (0 px change over 0.5 s
+  after the tap, where an unstopped coast would still be at ~140 pt/s); a tap on a marker at rest
+  still opens its sheet (Retts Bluff); three coasts at 1:96,161 counted 0 soft 0 blank.
+- Still open: phone acceptance — the flick eases to a stop like Maps; a tap stops it without
+  selecting anything (the tap-on-a-marker-during-a-coast case was not exercised on the sim); edges
+  stay filled during a coast at riding zoom.
+
+### TD — tides (item 2)
+
+**What exists.**
+
+- Every NOAA tide-prediction station within 14 km of Kiawah is a *subordinate* station of
+  Charleston, Cooper River Entrance (8665530): Kiawah River Bridge 8667062 (5.8 km; high +14 min
+  ×1.07, low +6 min ×0.89), Snake Island 8666767, the Bohicket Creek stations, Folly River Bridge
+  and others. A subordinate station has high and low predictions only, made by applying those
+  offsets to the reference station's extremes. Charleston's 37 harmonic constituents are
+  published (metres, GMT phases) by the CO-OPS metadata API.
+- Libraries: XTide is GPL-3.0, so linking it into the LGPL framework would make the combined work
+  GPL, and it is far more than this needs. pytides and UTide are MIT but Python — good test
+  oracles, not shippable. Neither CoreLocation nor MapKit publishes tides.
+- The harmonic method itself is public domain (Schureman, *Manual of Harmonic Analysis and
+  Prediction of Tides*, USC&GS SP-98), about 600 lines with node factors. A US pack does not
+  need it.
+
+**Decided here: the pack carries NOAA's own predictions**, fetched when the pack is staged. The
+network is used at build time only and the app stays offline. A semidiurnal station has about
+1,400 extremes a year; five years is about 7,000 rows. Heights between extremes use NOAA's cosine
+interpolation, which is how NOAA draws a subordinate station's curve. There is no astronomy code,
+and the numbers are NOAA's by construction. The cost is that the table ends: the pack records
+`valid_until`, and the app says so rather than extrapolating. A harmonic engine is TD5, optional,
+for a pack NOAA does not cover.
+
+Predictions are astronomical only; onshore wind and storms raise the water above them. The card
+says so once, in small type.
+
+#### TD1 — the table (M, mac)
+
+- `port/tools/fetch_tides.py <station> <years> <out>`: CO-OPS `datagetter` with
+  `product=predictions&interval=hilo&datum=MLLW&time_zone=gmt&units=metric`, one request per
+  year; station metadata (name, position, reference station, offsets) from `mdapi`. Writes
+  `tides.json`: a station block, `datum`, `units`, `valid_from`/`valid_until`, and
+  `extremes: [[unix_s, height_m, "H"|"L"], …]`. `stage_data.py` stages it; `pippin.ini` gains
+  `[tides] file` and `station`, and `[beach] rideable_below_m`.
+- `port/include/fvkit/nav/tide.h` + `port/fvkit/nav/tide.cpp`: `fv::nav::TideTable` — `Load`,
+  `HeightAt(t)`, `Trend(t)` (rising or falling, and the rate), `Extremes(t0, t1)`,
+  `WindowsBelow(threshold, t0, t1)` solved on each half-cycle rather than sampled, `ValidUntil()`.
+  Times are Unix seconds; the C++ knows no time zones (the shell formats).
+- Tests: the curve passes exactly through every extreme; `WindowsBelow` agrees with 1-second
+  sampling; a time outside the table is `kOutOfRange`, never a clamp; the interpolation error
+  against NOAA's 6-minute Charleston predictions over one month (fetched once, committed as a
+  fixture) is measured and pinned — expect about 0.1 m at mid-tide.
+
+**BUILT 2026-09-25.** `fetch_tides.py`, `fvkit/nav/tide.h`/`.cpp`, and the `pippin.ini`/
+`stage_data.py` wiring built as specified above, with two departures: outside
+`[valid_from, valid_until)` the table returns the existing `kOutOfCoverage` rather than a new
+`kOutOfRange` (no status code was added), and the measured interpolation error against the
+committed Charleston March-2026 fixture came in at max 0.137 m / RMS 0.051 m (pinned in
+`nav_tide_test.cpp`) against the ~0.1 m expected above. `testdata/tides/8667062.json`
+(git-ignored, Kiawah River Bridge, 2026–2030, 7072 extremes) is the working table. 13 new
+gtests, all green. Full detail in `port/PORTING.md`'s pippin-plan row.
+
+#### TD2 — the tide card (S, sim)
+
+- `PPTide` over `TideTable`, and `TideCard.swift`: a Swift Charts curve from three hours back to
+  a day ahead with a "now" mark, the next two extremes as text ("Low 2:14 pm, 0.2 ft"), the
+  rideable band shaded, units from `DisplayUnits`, times in the device's zone. Opened from the
+  map menu ("Tides") and, after BR4, from the route sheet's beach row.
+- Within 60 days of `valid_until` the card says when the table ends; past it, the card says the
+  table has ended and TD3's verdict is "unknown", never a guess.
+- Acceptance: a screenshot whose times match NOAA's published table for the day.
+
+**BUILT 2026-09-26.** `PPTide`/`PPTide+Internal.h`/`PPTide.mm` (station id/name, datum,
+validFrom/validUntil, rideableBelowMeters, `height(at:)` NaN outside coverage, `extremesFrom:to:`,
+`windowsBelow:from:to:` clipped to the valid span) over `TideTable`; `PPMap.tide` (nullable)
+loaded at init from `[tides] file` and `[beach] rideable_below_m` — a named table that fails to
+load is logged and leaves `tide` nil rather than failing the pack. `TideText.swift` (Foundation-
+only formatting: heights ft to 0.1 / m to 0.01, clock in the device zone with weekday for another
+day, "Low 2:14 pm, 0.2 ft", the beach line, and the coverage notice within 60 days of
+`valid_until` and after it) and `TideCard.swift` (Swift Charts curve three hours back to a day
+ahead, now mark, rideable band shaded, next two extremes, beach line, NOAA/astronomical-only
+footnote). Menu gains "Tides" (hidden when the pack has no table); sheet opens from MapScreen.
+Departure from plan: the route-sheet entry point still waits on BR4 as planned, but TD3's verdict
+does not exist yet, so the "ended" notice says the beach verdict is unknown rather than naming it.
+Station name shows as NOAA publishes it (upper case). one new mac ctest (`pippin_tide_text`, 18 checks),
+green; full ctest green serially — `OsmNameIndex.*` (6 tests) fail only under `-j8`, a pre-existing
+parallel-fixture clash unrelated to TD2. Acceptance screenshot
+`port/apps/Pippin/docs/td2-tide-card.png` matches NOAA's table for 8667062. Next is TD3, the
+beach verdict.
+
+#### TD3 — the beach verdict (S, mac)
+
+- Beside TD1: `BeachTideVerdict(stretches, table, depart_s, threshold)` → for each beach stretch,
+  the highest water over [depart + enter, depart + exit] and a verdict — good, marginal (within
+  `[beach] marginal_band_m`), poor, or unknown — plus the next window that would make it good.
+  The stretches come from BR3.
+- The gate (revised 2026-09-26, see BR "Decided here"): `RoutePlanner::Plan` takes the table and
+  a departure time; a stretch that is poor or unknown triggers the second, beach-excluded plan.
+  `RoutePlan` gains `beach_dropped`: `none`, `high` (water above the threshold when the rider
+  would reach the stretch), `rising` (below it on arrival, above it before the stretch ends plus
+  `exit_margin_s`), or `no_table` (outside the table's coverage). With it, the time the beach next
+  becomes passable, from `WindowsBelow`.
+- Tests on synthetic tables and on the real one: the same two stops at low water keep the beach,
+  at high water drop it with `high`, and just before the flood with `rising`; Never never runs
+  the second plan.
+
+**BUILT 2026-09-26.** `fv::nav::BeachTideVerdicts(stretches, table, depart_s, limits)` in
+`fvkit/nav/beach.h`/`.cpp`, beside `tide.h` but not in it — fvkit does not link RouteKit, so it
+takes plain `BeachStretchTiming`. Verdict good/marginal/poor/unknown over
+`[enter, exit + exit_margin_s]`; each carries enter/exit times, `enter_height_m`,
+`peak_m`/`peak_at_s` (the peak falls at an endpoint or a high water, since each half-cycle is
+monotonic), `covered_at_s` (rising case), and `passable_from_s`/`good_from_s` (earliest entry at
+or after arrival with a long enough window, searched within `search_horizon_s`, 48 h default; NaN
+means none). `BeachTideLimits` defaults `rideable_below_m` 0.5, `marginal_band_m` 0.15,
+`exit_margin_s` 600; `pippin.ini`'s `[beach]` gains `marginal_band_m` and `exit_margin_s` as
+placeholder numbers for Chris to set — PPMap doesn't read them yet, that's BR4.
+`RoutePlanOptions::tide` (`BeachTideGate {enabled, table, depart_s, limits}`) is off by default;
+`Plan` is `PlanOnce` plus the gate, and a poor or unknown stretch triggers a second plan with
+`BeachUse::kNever`. `RoutePlan` gains `beach_verdicts` (parallel to `beach`), `beach_dropped`
+(`kNone`/`kHigh`/`kRising`/`kNoTable`), and `beach_dropped_verdict`. Gate enabled with a null
+table drops the beach as `kNoTable`; gate disabled skips the check, leaving fvgraph and older
+callers unchanged — BR4 still has to decide whether a pack with a beach but no tide table turns
+the gate on (decided in BR4: see below). A marginal stretch is kept; the status line is unchanged.
+8 new gtests in `nav_beach_test.cpp` (a synthetic closed-form table plus the Kiawah table), 6 new in
+`route_planner_test.cpp` (low water keeps the beach, high water gives `kHigh`, just before the
+flood gives `kRising` at 7200 s, no table and past the table's end give `kNoTable`, Never isn't
+gated, the Kiawah table at low and high), all green.
+
+#### Optional
+
+- **TD4, "leave at"**: a departure time in the route sheet that re-runs TD3, and "best times
+  today" in the card.
+- **TD5, the harmonic engine — SKIPPED 2026-09-26 (Chris).** Kiawah River Bridge is a
+  subordinate station: NOAA publishes only its highs and lows and draws the curve between them
+  with the same cosine interpolation TD1 uses, so a harmonic engine would reproduce the table's
+  extremes at best (±3 cm, ±3 min) and still interpolate between them. The error it could remove
+  is TD1's measured cosine-vs-harmonic gap at Charleston, max 0.137 m / RMS 0.051 m, which at the
+  ~0.5 m/h mid-tide rate moves a ride-window edge ~6 min typically and ~16 min at worst — inside
+  `exit_margin_s` (600 s) and below wind set-up (0.1–0.3 m). Worth building only for a pack NOAA
+  does not predict.
+- **SUN, sunrise and sunset on the tide card — BUILT 2026-09-26.** `fvkit/nav/sun.{h,cpp}`:
+  `SunEvents(lat, lon, t0, t1)`, NOAA's solar-calculator method refined once at each event, zenith
+  90.833°, nothing on a polar day or night. Offline, so it never expires and works for any pack.
+  `nav_sun_test.cpp` (5 tests) pins it against the US Naval Observatory's rise/set API (fetched
+  2026-09-26): Kiawah at both equinoxes and solstices, Fairbanks at midsummer, Sydney at
+  midsummer — every case within 44 s of USNO's minute-rounded times. `PPTide.sunEvents(from:to:)`
+  answers at the tide station's position (5.8 km from the island centre: seconds of difference)
+  and is not clipped to the table's span. The card gains "Sunset 7:11 pm · Sunrise Sun 7:12 am"
+  under the next high and low, and the chart shades each night grey
+  (`docs/sun-tide-card.png`); the wording and night spans are `TideText.sun`/`TideText.nights`,
+  covered in `tide_text_test.swift`. Not done: darkness in the beach verdict or the route sheet
+  (a rideable window that falls entirely at night reads the same as a daytime one).
+- **WX, wind — BUILT 2026-09-26** (Chris chose api.weather.gov, and the card line plus the
+  route-sheet warning; the wind does not change the plan). `fvkit/nav/wind.{h,cpp}`:
+  `WindForecast::Parse` reads a gridpoint document's `windSpeed`/`windGust`/`windDirection`
+  series (km/h or m/s, ISO 8601 intervals, null hours as gaps), `At(t)`, and the components
+  `TailwindComponent`, `OnshoreComponent`, `SeawardOf` (the perpendicular nearer the beach's
+  facing, so a curving beach keeps the sea on the right side) and `TrueBearingDeg`. 8 gtests on
+  a committed, trimmed real response (`nav/test/data/nws-chs-82-68-2026-09-26.json`).
+  `pippin::RouteSnapshot::beach_headings_deg` gives each stretch's net heading start to end;
+  `PPBeachStretch.headingDegrees`, `PPWindForecast`/`PPWindSample`/`PPWindSettings` in
+  `PippinKit/PPWind.{h,mm}`. `pippin.ini`: `[beach] faces_deg = 167` (the graph keeps no
+  coastline side), `[wind] lat/lon` — a fixed point on the beach, never the rider's position —
+  `onshore_warn_mps = 7`, `headwind_warn_mps = 5`. `WindFeed` (Swift) fetches `/points` once
+  (the grid URL is remembered), then the grid, with the User-Agent NWS requires; kept an hour,
+  cached on disk and used offline, on demand only when the tide card or the route sheet of a
+  beach pack opens. Tide card: "Wind 7 mph, gusts 12, from the NW, across the beach" (within 60°
+  of square to the beach is "across", else "a tailwind heading east/west"), the onshore warning,
+  and "Wind: National Weather Service forecast, updated …" in the footnote. Route sheet: the
+  worst headwind at each stretch's entry time if it reaches the limit, else the best tailwind,
+  plus the onshore warning. `WindText` wording covered by `wind_text_test.swift`
+  (`pippin_wind_text`). Sim, live NWS: card and cache verified against the raw response
+  (11.1 km/h from 320° = 7 mph across); Boardwalk 29→41 departing 2026-09-27 15:02 EDT read
+  "Tailwind on the beach, 12 mph, gusts 17." — 250° at 12 mph, 5.11 m/s along 077
+  (`docs/wx-route-sheet.png`). Not done: the onshore warning has not been seen live (unit-tested
+  only); wind does not change the ETA or the tide verdict.
+
+### BR — the beach as a route (item 1)
+
+**What the data says** (the four `testdata/OSM/map*.osm` extracts, measured 2026-09-25):
+
+- The beach is seven `natural=beach` closed ways (1087613906, 945874155, 1087613640–46, 114127800
+  "Kiawah Beachwalker Park", …) plus several `natural=sand` closed ways with no `golf` tag. About
+  170 other `natural=sand` ways are golf bunkers (`golf=bunker`) and must be left out. No beach is
+  a multipolygon relation.
+- The water line is `natural=coastline` (128740584, 23.5 km; 191636480, 5.1 km), which OSM maps
+  at mean high water. The beach polygons share 88 nodes with it: the seaward edge of the beach is
+  the coastline way.
+- Access: 14 highway ways share a node with a beach polygon, all `highway=path` and mostly the
+  numbered boardwalks ("Boardwalk 29", "30", "31", "33", "35", "39", "40", "41"); about 40 more
+  path and footway ends lie within 20 m. Some carry `bicycle=yes`; Boardwalk 38 is
+  `access=private`.
+- The graph admits `highway=*` ways and `route=ferry`. `natural=*` never reaches it, and the
+  router has no notion of an area.
+
+**Decided here.**
+
+- **Synthesise ways; don't route areas.** General area routing (a visibility graph over the
+  polygon, as OpenTripPlanner does for plazas) solves a harder problem than this one. The ride
+  runs along the water's edge, and that line is already in the data as the coastline. The
+  builder turns "coastline where it borders a beach" into arcs, and joins each boardwalk end to
+  it with a short straight arc across the dry sand.
+- **Two classes, appended** to `RoadClass` after `kFerry`, so older files read unchanged:
+  `kBeach`, the firm sand along the coastline, and `kBeachAccess`, the dry-sand crossing from
+  where a path ends. They differ in the two things a class decides: speed (firm sand at low tide
+  rides like a path; dry sand is walking the bike) and whether the tide matters (only the run
+  along the water is tide-gated).
+- **Excluded unless asked for**, in the ferry's shape: `RouteProfile::beach_penalty` defaults to
+  exclude, `RouteOptions::beach_penalty` is the per-query override, `SelectProfile` mirrors it.
+  The default has to live on the penalty and not in the class lists: `foot` has
+  `"unlisted_classes": 1.0`, so as soon as beach arcs exist every walking route would take the
+  sand if exclusion were left to the class table.
+- **Revised 2026-09-26 (Chris): a three-position preference, not a toggle.** "Use beach:" is
+  **Never** / **To Save Time** / **Whenever Possible**. The preference is a reluctance on the beach
+  arcs' time cost: Never excludes them (the default), To Save Time costs them at their true
+  seconds (×1.0, so the beach is taken only when it is faster), Whenever Possible discounts them
+  (×`beach_prefer_factor`, starting at 0.5, so a detour of up to ~2× stays on the sand). Chris
+  sets the numbers from scenarios; they live in `route-weights.json`, not in code. The tide is
+  never part of the preference: it decides whether a beach stretch is passable (a hard gate no
+  setting overrides) and, later, how fast it rides. Wind, if WX ever lands, is a speed term, not a
+  second control. Precedents: Valhalla's `use_ferry`/`use_trails` (0–1 preferences) and
+  OpenTripPlanner's `bikeReluctance`.
+- **The tide gate is a second plan, not a time-dependent search.** Plan with the beach admitted;
+  TD3 times each beach stretch from the route's own per-arc seconds; if any stretch is not
+  passable (above `rideable_below_m`, or rising through it before the stretch ends, with
+  `[beach] exit_margin_s` of slack), plan again with the beach excluded and keep that route. The
+  result carries *why* the beach was dropped, and the sheet says so (BR4). A time-dependent
+  Dijkstra (arc cost evaluated at arrival time) would find a beach route that a different
+  approach makes passable; that is optional and only worth it if riding shows the two-plan answer
+  missing good routes.
+- **The choice is saved in the document.** `.fvrte` gains `"options": {"beach": "time"}`
+  (`"time"` or `"prefer"`; absent means never), written
+  only when set, so every existing document stays byte-identical to route.py's output (P5's
+  claim); route.py learns to read and write it in the same step. The rejected alternative is
+  profile variants (`bicycle_beach` via `extends`): no format change, but every later option
+  (EL4's "avoid hills") doubles the profile list, and the sheet would be mapping a grid of
+  toggles onto names.
+
+#### BR1 — the beach in the graph (M–L, mac)
+
+- `RoadGraphBuildOptions::beaches`, off by default; `fvgraph build --beach`. Collect closed ways
+  tagged `natural=beach`, or `natural=sand` with no `golf=*`, and every `natural=coastline` way.
+  Check what the builder's passes retain today: these ways' node coordinates must survive to the
+  synthesis step, and they are not road nodes.
+- Runs: walk each coastline way. A node is on the beach when it is shared with a beach polygon or
+  within `beach_line_snap_m` (15 m) of one's boundary; consecutive on-beach nodes form a run.
+  Bridge a gap between runs on the same coastline shorter than `beach_gap_m` (60 m): mappers split
+  a beach into pieces, and a real inlet is wider.
+- Access: a highway way *end* inside a beach polygon or within `beach_access_snap_m` (25 m) of its
+  boundary gets a `kBeachAccess` arc to the nearest point on a run, splitting the run there with
+  a new graph node. The arc inherits the access bits of the way it extends, so Boardwalk 38 stays
+  private. A path that crosses the beach attaches at the node it shares with the polygon.
+- Names: a run takes the `name` of the polygon it borders, else "Beach"; access arcs are unnamed.
+  GD1 then says "right onto Beach", and P20's road search lists it, which is correct.
+- Synthetic nodes get negative `osm_id`s. Multipolygon beaches are counted
+  (`beach_relations_skipped`) and not built; Kiawah has none.
+- `IsCycleable` true and `IsDriveable` false for both classes; `RoadClassName` "beach" and
+  "beach_access". `fvgraph` prints beach polygons, coastline ways, runs, run length, access arcs.
+- Tests: a synthetic fixture — one polygon, a coastline sharing its seaward edge, a path ending
+  10 m inside and one ending 30 m outside — gives exactly one run and one access arc. The Kiawah
+  extracts give an access count close to the boardwalk count above, a run length within a few
+  percent of the coastline inside the beach, and a route Boardwalk 29 → Boardwalk 41 that exists
+  when beaches are allowed and not otherwise. `road_graph_test.cpp`, `router_test.cpp`.
+- Rebuild `testdata/OSM/kiawah.fvroad` with `--beach` and update the README's data-pack row. Every
+  pinned route (the Ruddy Turnstone fixtures above all) must be unchanged, because the beach is
+  excluded by default.
+
+**BUILT 2026-09-26.** `RoadClass::kBeach`/`kBeachAccess` (10 and 4 km/h class defaults, cycleable,
+not driveable, reachable by name only); `RoadGraphBuildOptions::beaches` plus the four distances;
+`port/Routing/fv_road_graph_beach.{h,cpp}` does the synthesis; `fvgraph build --beach`, a beach
+line in `fvgraph info`, and `pyfvw.RoadGraph.build(beaches=)`. On the Kiawah extracts: 15 beach
+polygons, 2 coastline ways, 2 runs, 19.03 km along the water, 79 access arcs (median 46 m, longest
+195 m), none out of reach. Walking Boardwalk 29 → Boardwalk 41 is 3.99 km on the sand against
+5.16 km by road. 7 new gtests. Departures:
+- Adjacent on-beach coastline nodes always join. Kiawah's coastline has ~200 m between nodes, so
+  `beach_gap_m` applies only across off-beach nodes.
+- A run vertex at a coastline node keeps that node's OSM id; only split points are negative.
+- Access candidates are way ends near a polygon *and* any way node the polygon shares. A node
+  reached by several ways takes the most open of their access bits. `beach_access_max_m`
+  (200 m) caps an access arc, and the ones it refuses are counted.
+- A run takes the name most of it borders, with unnamed polygons voting, so the 19 km run is
+  "Beach" and not "Kiawah Beachwalker Park".
+- **The `kiawah.fvroad` rebuild moves to BR2.** Until `beach_penalty` excludes the beach by
+  default, `foot`'s `"unlisted_classes": 1.0` would send walking routes onto the sand.
+
+#### BR2 — the beach in the rules (M, mac)
+
+- `beach_penalty` in the rule-file grammar (a number, or `false`/"exclude"), on `RouteProfile`
+  and `RouteOptions`, mirrored by `SelectProfile`; `AvoidFactor`/`ArcUsable` bar both classes
+  when it excludes.
+- Per-class speed, because dry sand at 4 km/h is physics rather than preference: an optional
+  `"class_kph": {"beach": 10, "beach_access": 4}` per profile, applied in `ProfileSeconds` (where
+  the ferry's own clock already lives), so the cost and the reported seconds agree.
+- `route-weights.json`: `bicycle` and `foot` get weights and speeds for both classes and
+  `"beach_penalty": "exclude"`, with comments saying what the numbers mean. The pack uses the
+  same file (`pippin.ini` `rules`).
+- The preference: `RouteOptions::beach` is `kNever | kToSaveTime | kWheneverPossible`; the
+  profile carries `beach_prefer_factor` (default 0.5, must be in (0, 1]) applied as a multiplier
+  on `kBeach` arc cost only when `kWheneverPossible` — access arcs are not discounted, so the
+  preference never pulls a route across dry sand for its own sake. `beach_penalty` stays the
+  profile-level default (exclude).
+- Tests: excluded by default for every profile, `foot` included; the override admits them;
+  on a fixture where the beach is slightly slower than the road, To Save Time takes the road and
+  Whenever Possible takes the beach; where it is faster, both take it;
+  reported seconds use the class speeds; a misspelt key is still an error.
+
+**BUILT 2026-09-26.** `RouteOptions::beach` is `BeachUse { kProfileDefault, kNever, kToSaveTime,
+kWheneverPossible }`; `kProfileDefault` defers to `RouteOptions::beach_penalty`, a multiplier on
+both beach classes or `kAvoidExcluded`, defaulting to excluded so a graph built with beaches
+routes like one without until asked. `kNever` excludes; `kToSaveTime` costs both classes ×1.0;
+`kWheneverPossible` multiplies `kBeach` arcs only by `beach_prefer_factor` — access arcs are never
+discounted. `BeachFactor()` sits public beside `ArcUsable()`; `AvoidFactor`/`ArcUsable` both read
+it. Rule-file grammar: `beach_penalty` (same shape as toll/ferry, but ABSENT means exclude rather
+than 1.0 — deliberate, since `foot`'s `unlisted_classes: 1.0` would otherwise walk people onto the
+sand), `beach_prefer_factor` in (0, 1], and per-profile `class_kph` overlaying key by key, applied
+in `RouteProfile::Seconds` via `ProfileSeconds` so cost and reported seconds agree. Builtin rules
+and the shipped `route-weights.json`: bicycle beach 0.65/0.75, beach_access 1.5/1.1, class_kph
+beach 10 / access 4 km/h; foot class_kph beach 5 / access 3 km/h; both profiles exclude by default,
+prefer factor 0.5. `fvgraph route --beach never|time|prefer`; `fvgraph profiles` prints the beach
+default. `testdata/OSM/kiawah.fvroad` rebuilt with `--beach` from `~/Downloads/kiawah-260906.osm.pbf`
+(418 KB, 3433 nodes / 8132 arcs, 4 runs, 25.53 km along the water, 80 access arcs — a rebuild from
+the same source is byte-identical); the README's data-pack row was wrong about the source (claimed
+the `map*.osm` extracts) and is corrected. Full ctest green on the rebuilt graph, so every pinned
+route is unchanged. By bike, Boardwalk 29 → Boardwalk 41 is 4.23 km / 21.2 min by road at Never
+and To Save Time (the sand would be 24.4 min) and 3.99 km, 3.69 km of it beach, at Whenever
+Possible. 7 new gtests in `route_rules_test.cpp`; `router_test`'s Kiawah boardwalk test
+now also checks that unasked (with and without the `foot` profile) it routes like the plain graph.
+No departures of substance: `RouteOptions::beach_penalty` is kept as the per-query override
+alongside the enum, with `kProfileDefault` meaning "use `beach_penalty`". `pyfvw` did not gain a
+beach argument — BR3 wires `route.py`. Next is TD3, the beach verdict.
+
+#### BR3 — the beach in the document and the plan (M, mac)
+
+- `RouteDoc` reads and writes `options.beach` (`"time"`/`"prefer"`; absent means never; the key
+  position decided once and matched in both writers); `apps/route.py` does the same and passes it
+  to the router. The existing round-trip fixtures stay byte-exact; a new fixture carries the key.
+- `RoutePlanner::Plan` applies it. `RoutePlan` gains `beach` stretches — `{geometry_begin,
+  geometry_end, length_m, enter_s, exit_s}` over contiguous `kBeach` arcs (access arcs are not
+  tide-gated), timed from the route's own per-arc seconds.
+- `pippin::RouteStore` saves the option and replans with it at launch; the relaunch test
+  (`ARouteSurvivesARelaunchWITHItsRoads`) gets a beach twin.
+
+**BUILT 2026-09-26.** `fv::RouteBeach { kNever, kToSaveTime, kWheneverPossible }` in
+`fv_route_doc.h` (Routing-free); `.fvrte` gains an `options` object `{"beach": "time"|"prefer"}`,
+written after `profile` and only when not never, so existing documents stay byte-identical.
+Version stays 1 — a reader that ignores the key routes without the beach. Absent key reads as
+never and RESETS on write (unlike name/profile, which keep their prior value when absent); an
+unknown spelling also reads as never. Departure: the plan named `apps/route.py` as the writer,
+but that module has had no reader/writer since the RouteKit move — the Python side is
+`pyfvw.route`: `RouteOverlay.beach` and `RoutePlanOptions.beach` as strings
+`'never'/'time'/'prefer'` (`''` on options means the route's own), `RoutePlan.beach` a list of
+`RouteBeachStretch`. `RoutePlanOptions::beach` (`routing::BeachUse`, default `kProfileDefault`) is
+passed to the router in `BuildOptions`; `RouteOverlay::FollowRoads` fills it from the document
+when `kProfileDefault`, like the profile; `ToBeachUse()` maps the doc enum. `RoutePlan::beach` is
+`RouteBeachStretch { geometry_begin, geometry_end, start_m, length_m, enter_s, exit_s }`, derived
+in the planner from `Route::legs` of class "beach" (no router change), merged across adjacent
+beach legs since legs split on name too; through routes only, like maneuvers. Departure: added
+`start_m`, the index-free position, because `RoutePath`'s duplicate-dropping could in principle
+drift indices. `pippin::RouteStore::SetWaypoints(waypoints, profile, std::optional<RouteBeach>
+beach = nullopt)` (`nullopt` keeps the document's), `RouteSnapshot::beach` and `beach_stretches`.
+On the Boardwalk 29 → 41 fixture by bike, Whenever Possible gives one beach stretch of 3.69 km
+(3695 m), entered 52 s in, left at 1382 s; To Save Time and Never take no beach. New fixture
+`port/Routing/rules/Boardwalk 29 to Boardwalk 41 by the beach.fvrte`
+(`FV_ROUTE_BEACH_FIXTURE_FILE`), written by Python `json.dump`. 6 new gtests (3 RouteDoc, 2
+RoutePlanner, 1 RouteStore — `ARouteSurvivesARelaunchWITHItsBeach`); all route tests green. Next
+is BR4, the beach in the route sheet.
+
+#### BR4 — the beach in the route sheet (M, sim)
+
+- `PPMap.beachAvailable` (the graph has any `kBeach` arc), `setRouteWaypoints:profile:options:`,
+  `PPRoute.beachStretches`.
+- Under the Walk/Cycle picker, a three-position slider "Use beach:" — Never / To Save Time /
+  Whenever Possible — shown only when the pack has a beach, where Apple Maps puts "Avoid tolls".
+- When the setting admits the beach but TD3's gate dropped it, the sheet says why, in one line
+  under the slider: "Beach not used — the tide is high (4.8 ft). Rideable again from 1:40 pm."
+  or "Beach not used — the tide is rising and covers the beach by 3:10 pm." or "Beach not used —
+  the tide table has ended." Required for Whenever Possible, where the rider expects sand; shown
+  for To Save Time too, because the rider would otherwise not know the tide was the reason. No
+  message when the beach was simply slower. Tapping it opens TD2's card.
+- Its footnote is the tide ("Low 2:14 pm · good until 4:05 pm")
+  and, once the route uses the beach, TD3's verdict on it ("The beach stretch is at 3.1 ft at
+  5:20 pm — soft sand likely"). Tapping the footnote opens TD2's card.
+- A new route starts with the last value chosen (a user default); an existing route shows its
+  own.
+- The route summary says how much is beach ("includes 4.2 km of beach").
+- Acceptance: simulator screenshots of the same two stops at Never and Whenever Possible, the
+  second taking the beach with the verdict visible, and a third at high water showing the
+  "Beach not used" line.
+
+**BUILT 2026-09-26.** Decided the open question from TD3: with no tide table, or a departure past
+the table's end, the beach is **allowed, not blocked** — a route stays usable if the app outlives
+its table, and the sheet warns instead. `BeachTideGate::keep_unknown` (default true) in
+`fv_route_planner.h`; `false` gives TD3's old behaviour (drop as `kNoTable`), which is what TD3's
+own tests pass. New test `RoutePlanner.TheTideGateKeepsAnUnknownStretchByDefault`.
+`pippin::RouteStore` gains `SetTide(table, limits)`, `set_clock()`, `BeachAvailable()`; every plan
+runs the gate with departure = now; `RouteSnapshot` gains `beach_verdicts`, `beach_dropped`,
+`beach_dropped_verdict`, `depart_s`. New test `RouteStore.TheTideGatesTheBeachAndNoTableKeepsIt`.
+PippinKit: `PPBeachUse`/`PPBeachVerdict`/`PPBeachDropped` enums, `PPBeachStretch`;
+`PPRoute.beachUse/beachStretches/beachMeters/beachDropped/droppedStretch/departTime`; `PPMap
+setRouteWaypoints:profile:beachUse:`, `beachAvailable`, `routeDepartureOverride`. `PPMap` now reads
+`[beach] marginal_band_m`/`exit_margin_s` from `pippin.ini` and hands the table to the store in
+`loadTides`. Departure from the plan: the three-position control is a **menu picker, not a
+slider/segmented control** — "Whenever Possible" truncates in a segmented control at phone width.
+The "Use beach" row sits under Walk/Cycle, shown only when the graph has beach arcs. Footer: the
+"Beach not used — …" line (high/rising/table ended) when it applies, else the verdict on the
+worst stretch ("The beach stretch is at 0.5 ft at 3:35 pm — firm sand."/"— soft sand likely.", or
+unknown: "No tide table for this area. Check the water…" / "The tide table has ended…"), then the
+tide now ("Low 3:14 pm, 0.4 ft · Beach rideable until 5:02 pm"); tapping the footer opens TD2's
+tide card over the sheet. Status line appends "includes 2.3 mi of beach". A new route starts with
+the last chosen value (`UserDefaults` `routeBeachUse`); an existing route shows its own. The tide
+card's "ended" notice now says beach routes are still offered. Wording lives in `TideText`
+(Foundation-only), 9 new checks in `test/tide_text_test.swift`. A DEBUG-only `-PPDepartAt <epoch>`
+launch argument (`TideClock`) judges the tide at a chosen time, used for the acceptance shots.
+Acceptance screenshots: `docs/br4-beach-low-water.png` (Boardwalk 29→41 by bike, Whenever
+Possible, departing 2026-09-27 15:02: 2.5 mi, 24 min, includes 2.3 mi of beach, firm sand),
+`br4-beach-never.png` (2.6 mi, 21 min, no beach), `br4-beach-high-water.png` (departing 08:45,
+"Beach not used — the tide is high (6.8 ft). Rideable again from 1:25 pm."). Full ctest green
+(2201). `RouteRules.WheneverPossibleDoesNotDiscountTheDrySand` failed once under `-j8` and passed
+on rerun and at HEAD — a flake noted, not investigated. Next is BR5, riding the beach.
+
+#### BR5 — riding the beach (M, sim + phone)
+
+- The follow-mode snap: the snap network's `kCycleable` filter (`IsCycleable` plus the access
+  bit) admits beach arcs after BR1, which is right — the snap says where the rider is, not what
+  the route prefers. Verify a ride along the water snaps to the run rather than a dune-side path,
+  and a rider on Beachwalker Drive is not pulled onto the sand.
+- Guidance: turns onto and off the beach read sensibly ("right onto Beach", "left onto Boardwalk
+  29"), and `end_margin_m` does not swallow a short access arc.
+- The route overlay draws beach stretches with a sand-coloured casing (`RouteOverlay` gains
+  per-range styling fed from `RoutePlan.beach`), so the rider can see which part is sand.
+- A simulated ride along the water with `port/tools/make_sim_gpx.py` (Boardwalk 29 → the beach →
+  Boardwalk 41): guidance, snap and trip computer end to end on the simulator, then ridden.
+
+**BUILT 2026-09-26.** Snap: verified, no code change — Pippin's follow-mode snap uses
+`RoadSnapFilter::kAll` (`PPRouteStore::EnsureRoadNetwork`), not `kCycleable` as this plan said;
+beach arcs are admitted either way. A ride along the Boardwalk 29→41 beach stretch (924 fixes at
+4 m spacing, ±8 m noise, 4 m/s) snaps 924/924 to `kBeach` arcs; the same resampling along
+Beachwalker Drive (273 fixes) always snaps to residential/tertiary/service, never beach or
+beach_access. Guidance: the synthesized `kBeachAccess` arcs are unnamed, so the turn list read
+"slight right" onto an unnamed connector then "left onto Beach" 37 m later, and "left" with no
+name on exit. Fixed in `port/RouteKit/fv_route_maneuvers.cpp` `ManeuverShapeOf`: each
+`beach_access` leg is folded into a neighbour, preferring a non-beach one, earlier first — the
+route now reads depart Boardwalk 29 · left onto Beach at 101 m · left onto Boardwalk 41 at 3796 m
+· arrive. `end_margin_m`: Kiawah access arcs run 10.5–194.5 m (5 of 80 under the 20 m margin);
+`fvkit/nav/maneuver.cpp`'s `kDepart` now names the last road joined inside `end_margin_m` (the
+road the rider sets off on) rather than the first leg, so a start beside the sand departs "onto
+Beach" instead of silently dropping the turn — documented on `ManeuverSettings::end_margin_m`.
+Overlay: `RouteOverlay` draws the plan's beach stretches with `kBeachCasingColor` {200,155,70}
+(ochre, darker than the style's pale `landcover_sand` fill) instead of the white casing, legs
+split at stretch boundaries (`SplitAtBeach`). New `port/RouteKit/test/route_beach_ride_test.cpp`,
+7 tests (turn list on the real route, two synthetic fold cases, start-beside-the-sand depart,
+snap along the water, Beachwalker Drive, sand casing pixel count 5907 vs 0 with Never);
+`nav_maneuver_test`'s `CornersOnTopOfEitherEnd` re-pinned to depart road "Long Rd". Full ctest
+green: 2226 registered, 2209 passed, 0 failed, 17 disabled, 3 skipped. Simulator: iOS-sim core +
+Pippin built, `Boardwalk 29 to Boardwalk 41 by the beach.fvrte` as current.fvrte, `-PPDepartAt`
+2026-09-27 15:02 EDT, `simctl location start --speed=5` along the plan's 34 points. Banner on
+Boardwalk 29 showed "left · 90 yd · Beach", snap "Boardwalk 29". On the sand the snap read "Beach" and the banner "left · 2.3 mi · Boardwalk 41" (`docs/br5-on-the-beach.png`, the ochre casing visible); 150 yd before the exit, still "Beach" (`docs/br5-leaving-the-beach.png`); past it the snap read "Boardwalk 41" and the banner the arrival. The rider was jumped from the beach entry to 280 m before the exit, so the trip computer was not checked over one continuous ride. `make_sim_gpx.py` converts a recorded track, so the ride was
+driven from the plan's own points instead.
+Still open: the ride on the phone (Chris).
+
+### EL — elevation in the router (item 3)
+
+**What exists.**
+
+- `IElevationSource` (`fvkit/formats/source.h`), the DTED reader, and
+  `analysis::SampleTerrainProfile` (AN2): sampling a path at post spacing is built and tested.
+- DTED in `testdata/dted/`: level 2 over Kiawah (`w081/n32.dt2`, `w080/n32.dt2`), a flat-island
+  sanity check, and level 1 over Atlanta (`w085/n33.dt1` covers the city, 85–84 W;
+  `W084/n33.dt1` the eastern suburbs). **Atlanta is the hilly test area** (Chris, 2026-09-25: the
+  next place he wants to map), and Chris is downloading DTED level 2 over it before EL starts.
+  Note the directory case: `W084` is upper case and every other directory lower, which macOS
+  forgives and a case-sensitive Linux checkout will not (an open Peregrine follow-up).
+- Everything else an Atlanta pack needs is on disk: `testdata/OSM/us-south-260728.osm.pbf`
+  (Geofabrik's US South, which includes Georgia) and `testdata/OSM/mbtiles/us-south.mbtiles`
+  (bounds reach 40.6 N; Kiawah's tiles were cut from it). The router reads `.osm.pbf` directly,
+  and `osmium` is installed for the cut.
+- An undirected edge is two mirrored arcs, one in each endpoint's adjacency, so each stored arc
+  has a direction and can carry its own climb and descent.
+- `fv_routing` links nothing from fvkit (the invariant RouteKit exists for). The `.fvroad` header
+  has a reserved `flags` word and is at version 2.
+- **The reverse frontier costs the wrong direction once costs are asymmetric.** In the
+  bidirectional search (`fv_router.cpp`, the expansion loop around line 676) the backward frontier
+  standing at `u` relaxes arc `a` of `u`, stored `u → target`, while the travel it represents is
+  `target → u`. With today's symmetric costs that is exact. With climb it prices every backward
+  step with the wrong sign of slope. EL2 fixes it first, and the plain-Dijkstra reference
+  (`bidirectional = false`) is the test that proves it.
+
+#### EL1 — elevation in the graph (M, mac)
+
+- A D6-style seam on the builder: `RoadGraphBuildOptions::elevation =
+  std::function<bool(double lat, double lon, float* metres)>`. `fvgraph build --dem <dir>` wires
+  fvkit's DTED source into it; the tool links fvkit, `fv_routing` still does not.
+- Per arc: sample the geometry at the DEM's post spacing, clamped to 10–30 m; apply a hysteresis of
+  `elevation_hysteresis_m` (3 m, the rule GPS apps use for total ascent, which removes DEM noise);
+  sum climb and descent in the arc's own direction. The mirror gets the swapped pair.
+- Bridges and tunnels mislead a DEM. The OSM reader keeps `bridge`, `tunnel` and `layer`, and
+  those arcs interpolate linearly between their end nodes (the Kiawah causeway is the local
+  case).
+- Per node: an elevation, for EL3's chart.
+- Format: version 3, header `flags` bit 0 = elevation present, then a trailing section of
+  per-arc `uint16 climb_dm, descent_dm` and per-node `int16 elev_dm`. Versions 1 and 2 still load,
+  without elevation. `RoadGraph::has_elevation()`.
+- Tests: a synthetic DEM — a plane of known grade, and a sinusoid with ±2 m noise — gives the
+  exact climb on the plane and rejects the noise; a bridge over a synthetic valley counts no
+  climb; the Kiawah graph over the dt2 cells has a total climb near zero (pinned); a small
+  Atlanta cut over the Atlanta cells (dt2 once Chris has them, dt1 until then) has climbs
+  plausible for its streets, spot-checked against two known hills.
+
+#### EL2 — elevation in the cost (M, mac)
+
+- The direction fix first: `ArcCost(arc, options, reversed)`, the reverse frontier passes `true`
+  and the climb/descent pair swaps; `Materialize` uses the traversal direction. Test: on a hilly
+  synthetic graph, bidirectional and plain Dijkstra agree on route and cost for 100 random pairs.
+  That test must fail before the fix.
+- The model, per profile in the rule file; the defaults are the textbook rules and every number
+  is a setting:
+  - `climb_s_per_m`: seconds added per metre climbed. 6.0 on foot (Naismith: an hour per 600 m);
+    6.0 on a bike (about the extra time ~150 W takes to lift 90 kg one metre).
+  - `descent_s_per_m`: seconds saved per metre descended on gentle grades, 2.0 for both
+    (Langmuir's correction), never faster than `max_kph`.
+  - `steep_grade` / `steep_descent_s_per_m`: above 12% a descent costs time instead (+2.0):
+    steep descents are slow on foot and braked on a bike.
+  - `hill_penalty`: a preference multiplier on the climb seconds in the cost only, never in the
+    reported clock. 1.0 is neutral; EL4's "avoid hills" sets it high.
+- The physics goes in `ProfileSeconds` (costed and reported alike) and `hill_penalty` in
+  `ArcCost` (costed only) — the same split as speeds against class weights.
+- An arc's cost is floored at its length over `max_kph`. A descent credit that drove a cost to
+  zero or below would break Dijkstra.
+- A graph with no elevation behaves exactly as today: every pinned route unchanged.
+
+#### EL3 — the route's profile (S–M, mac then sim)
+
+- `RoutePlan` gains `climb_m`, `descent_m` and an elevation series (distance along, elevation)
+  from the node elevations.
+- The route sheet shows "↑ 120 m ↓ 85 m" and a small Swift Charts profile under the summary when
+  the graph has elevation. On a flat pack it shows nothing, not a flat line.
+
+#### EL4 — "Avoid hills" (S, sim)
+
+- `options.hills: "avoid"` in `.fvrte` (BR3's object; absent is neutral) sets `hill_penalty` from
+  `[routing] avoid_hills_penalty`. A toggle under "Use the beach", shown only when the graph has
+  elevation.
+
+#### EL5 — the Atlanta pack (M, data + sim)
+
+Atlanta is where Pippin goes next, so this is the second region as well as the test of EL2's
+numbers.
+
+- The box is Chris's to name (the BeltLine and intown neighbourhoods are the obvious first cut;
+  the metro is far larger than Kiawah and the graph and tiles grow with it).
+- The graph: `osmium extract -b <box>` from `us-south-260728.osm.pbf`, then `fvgraph build
+  --dem testdata/dted` (no `--beach`: Atlanta has none).
+- The tiles: `port/tools/mbtiles_cut.py` from `us-south.mbtiles`, the way P1 cut Kiawah. No
+  tilemaker run is needed.
+- The DEM: Chris's DTED level 2 cells over the box.
+- The pack: `stage_data.py` takes a region (`--region kiawah|atlanta`); the rows that differ
+  (graph, tiles, points seed, `pippin.ini`'s home view, `search.initial_text`) move into a
+  per-region table, and the Kiawah rows stay byte-for-byte what they are. One pack per build, as
+  today.
+- An Atlanta build exercises every "shown only when the pack has it" rule in this plan: no beach
+  row, no tide card, the hills toggle and elevation profile present.
+- Acceptance: a bike route across intown Atlanta that takes a longer, flatter line with "Avoid
+  hills" on, and an ETA that tracks a real or simulated ride.
+
+#### RG1 — more than one region in one app (optional; needs Chris)
+
+Once Atlanta exists, a phone that goes to both places wants both packs. Sketch only: the bundle
+(or `Documents/`, for a pack added later) holds several packs; the app opens the one whose bounds
+contain the last fix, with a map-menu picker to override; `PPMap` is rebuilt on a switch, and the
+route, points and rides documents are kept per pack. Not planned in detail until Chris wants it.
+
+### PV — the 2.5D view (item 7, stretch)
+
+**Why it is cheaper than it sounds.**
+
+- A flat map seen in perspective is a projective transform (a homography) of the top-down
+  picture. Pippin already draws that picture and composites it on the GPU under a 2D transform
+  (P18: `MapScreen.layer`, scale, turn and offset, no blitter). A tilt is a 3D transform on the
+  same layer — `.projectionEffect(ProjectionTransform(CATransform3D))` with a perspective term.
+  No 3D renderer, no Metal, no new raster path.
+- `PPViewport` is the camera, and every geo↔screen conversion goes through it (P3's rule): picks,
+  the crosshair, snap, `RenderGate`, `LocationPolicy`. Teaching it the homography teaches all of
+  them.
+- The cost is area. At a 40° vertical field of view, the top-down picture that covers the visible
+  ground is about 1.5× the screen at 30° pitch, 2.6× at 45°, and 7.5–9× at 60° (computed for the
+  iPhone 14 Pro screen, 2026-09-25). P18's band is already 2.25×. So **the pitch is capped at
+  45°**; past that a CPU raster pays for ground nobody can read.
+
+#### PV1 — the math (M, mac)
+
+- `PPPerspective.h`, pure C++ like `PPCameraFit.h`: from surface size, pitch, field of view and
+  the anchor (where the ship sits, about 70% down the screen in follow), the homography H
+  (top-down surface → screen) and its inverse; the visible ground trapezoid clipped at
+  `max_depth` screens; the horizon line when the view reaches it; the top-down rectangle to render,
+  in the rotated frame so course-up costs nothing extra.
+- `PPBaseCoverage` generalised: coverage maps the trapezoid's corners, not the screen's.
+- Tests: inverse round trips; pitch 0 reduces exactly to today's transform; footprint ratios
+  match the table above.
+
+#### PV2 — the tilted composite (M, sim)
+
+- `PPViewport.pitchDegrees` (0 leaves every path as it is today); the render request uses PV1's
+  rectangle; `MapScreen` applies the projection to the base, overlay and underlay (DR1) layers; a
+  sky gradient above the horizon and a fade over the last screen of depth, both in the active
+  style's colours (BT4), so a night chart gets a night sky.
+- Behind a launch argument (`-PPPitch 45`) until PV3 gives it a gesture.
+- Acceptance: screenshots at 0, 30 and 45° following the demo feed; the cache hit rate in follow
+  reported against P18's ~89%.
+
+#### PV3 — gestures and picks through the homography (M, sim)
+
+- Pan keeps the ground under the finger; pinch zooms about the ground point under the centroid;
+  a two-finger vertical drag changes pitch (Apple Maps' gesture); the compass button also resets
+  pitch. DR3's fling coasts in screen space and each frame's delta goes through H⁻¹ like a drag,
+  so a coast slows naturally as it runs towards the horizon.
+- Pick-on-map (P6/P19) goes flat while picking: a crosshair over a foreshortened map is
+  imprecise.
+- `-PPViewportProbe` gains pitched checks against P3's drift budget.
+- GPS mode pitches to `[display] follow_pitch_deg` (default 0, off), with a map-menu toggle "3D
+  while following".
+
+#### PV4 — upright symbols (M, sim; after BT3)
+
+- On a tilted plane the route line is right and everything else is wrong: the ship, point
+  markers, waypoint diamonds and turn arrow lie flat and foreshorten. The overlay splits: ground
+  (route lines) stays in the tilted layer; billboards (ship, markers, diamonds) become sprites
+  placed at H(project(geo)) in screen space — BT3's ship sprite, generalised. `RouteOverlay` and
+  `PointOverlay` gain a lines-only / markers-only draw switch, or the shell draws markers from the
+  overlays' data.
+
+#### PV5 — polish (M, sim + phone)
+
+- Far-field quality: minified ground shimmers. Try `.interpolation(.high)` first. The two-tier
+  answer is already built by then: DR1's underlay is the map two zoom levels out, so the far
+  part of the footprint can come from it and the sharp band need only reach the middle
+  distance, which also cuts PV's 2.6× area cost.
+- Base-map labels lie on the plane and stay readable to about 40°, which is part of why the cap
+  is 45°. Upright base-map labels would need the style engine to emit labels as billboards; out
+  of scope unless asked for.
+- BT1's table for 2.5D follow against flat follow. If the difference is large, 2.5D stays a
+  manual choice rather than GPS mode's default.
+
+### Open for Chris
+
+1. **Which tide station stands for the beach.** The default is 8667062 Kiawah River Bridge —
+   NOAA's "Kiawah" station, but it sits in the river behind the island. The alternatives are
+   Charleston 8665530 itself or another subordinate station whose timing matches the ocean front
+   better. It is a pack key, so riding can change it.
+2. **The rideable threshold.** `[beach] rideable_below_m` starts as a guess — 0.8 m (2.5 ft) above
+   MLLW, the lower half of Charleston's ~1.6 m mean range — to be set from riding.
+3. **More network.** SH2 sends a place name to Apple; WX would fetch wind. Pippin's only network
+   use today is following a short link. Both are optional, and both need a yes.
+4. ~~A night chart~~ — **answered 2026-09-25: yes**, for its own sake and for the 2.5D view (BT4).
+5. **Where the beach choice lives** — decided here as an `options` object in `.fvrte` (a three-way value since 2026-09-26) that
+   route.py learns, rather than profile variants. Override if the format should not move.
+6. ~~The hilly pack~~ — **answered 2026-09-25: Atlanta**, the next place to map; Chris downloads
+   the DTED level 2 before EL starts. Still open: **the Atlanta box** (EL5), and whether one app
+   should carry both regions (RG1).
+7. **2.5D** capped at 45°, with base-map labels left lying on the plane.
+8. ~~Keeping the band at rest~~ (DR2) — **answered by the build, 2026-09-25**: the band is held at
+   rest (2.25× the screen), reversing P18's choice; the memory-warning drop is unchanged.
 
 ## What is deliberately NOT in v1
 Server/gazetteer lookup, other areas of interest (the manifest is data-driven, so a second

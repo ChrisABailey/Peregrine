@@ -35,7 +35,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <functional>
 #include <vector>
 
 #include "fv_road_network.h"
@@ -44,6 +46,7 @@
 #include "fv_route_planner.h"
 #include "fvkit/geo.h"
 #include "fvkit/nav/road_snap.h"
+#include "fvkit/nav/tide.h"
 
 namespace pippin {
 
@@ -60,6 +63,7 @@ struct RouteSnapshot {
 
   std::vector<fv::RouteWaypoint> waypoints;
   std::string profile;
+  fv::RouteBeach beach = fv::RouteBeach::kNever;
 
   // Road geometry, as against straight legs between the waypoints. False both
   // when nothing has been planned and when the plan came back with nothing
@@ -79,6 +83,28 @@ struct RouteSnapshot {
   // by the sheet rather than drawn on the map; see `RouteStore`'s constructor
   // on why the overlay's status line is off.
   std::string status;
+
+  /// The planned route's beach stretches. Geometry indices follow the joined
+  /// route line that `RouteStore::RoutePath()` returns; `start_m` does not
+  /// depend on vertex bookkeeping at all.
+  std::vector<fv::RouteBeachStretch> beach_stretches;
+
+  /// The tide's verdict on each of `beach_stretches`. Every verdict is
+  /// kUnknown when the pack has no table or the departure is past its end;
+  /// the beach is kept in that case and the sheet warns.
+  std::vector<fv::nav::BeachStretchVerdict> beach_verdicts;
+
+  /// Each of `beach_stretches`' net heading in the direction of travel,
+  /// degrees true, start to end. What the wind is judged against.
+  std::vector<double> beach_headings_deg;
+
+  /// Why the tide took the beach off a route that admitted it, and the
+  /// verdict that did it; kNone when it did not.
+  fv::BeachDropped beach_dropped = fv::BeachDropped::kNone;
+  fv::nav::BeachStretchVerdict beach_dropped_verdict;
+
+  /// The departure the tide was judged for, Unix seconds.
+  double depart_s = 0.0;
 };
 
 // Where a point is, in words a rider can act on.
@@ -151,10 +177,26 @@ class RouteStore {
   // produces. Plans, then writes.
   //
   // `profile` names a rule-file profile ("foot", "bicycle"); empty keeps the
-  // document's own. Fewer than two waypoints is not an error — it is a
-  // half-built route — and comes back as a snapshot whose `status` says so.
+  // document's own, as does an empty `beach`. Fewer than two waypoints is not
+  // an error — it is a half-built route — and comes back as a snapshot whose
+  // `status` says so.
   RouteSnapshot SetWaypoints(std::vector<fv::RouteWaypoint> waypoints,
-                             const std::string& profile);
+                             const std::string& profile,
+                             std::optional<fv::RouteBeach> beach = std::nullopt);
+
+  /// Gates beach stretches on `table` for every later plan. A null table
+  /// keeps the beach and judges it unknown, as does a departure outside the
+  /// table's span. `foot` judges a walking route; `limits` applies when it is
+  /// unset. Does not replan.
+  void SetTide(std::shared_ptr<const fv::nav::TideTable> table,
+               fv::nav::BeachTideLimits limits,
+               std::optional<fv::nav::BeachTideLimits> foot = std::nullopt);
+
+  /// The departure clock, Unix seconds; the system clock unless a test sets it.
+  void set_clock(std::function<double()> now) { now_ = std::move(now); }
+
+  /// Whether the loaded graph has any beach arc. Loads the graph.
+  bool BeachAvailable() const;
 
   // Replans what is already there, without touching the document. For a rule
   // file or a graph that has changed under a route the user has not edited.
@@ -377,6 +419,12 @@ class RouteStore {
 
   double last_plan_ms_ = 0.0;
   std::string last_write_error_;
+
+  std::shared_ptr<const fv::nav::TideTable> tide_;
+  fv::nav::BeachTideLimits tide_limits_;
+  std::optional<fv::nav::BeachTideLimits> tide_foot_limits_;
+  std::function<double()> now_;
+  double depart_s_ = 0.0;
 
   // Built on demand by `EnsureRoadNetwork` and rebuilt if the graph under it
   // is ever replaced. The network holds its own reference to the graph, so it

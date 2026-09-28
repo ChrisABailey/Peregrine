@@ -141,6 +141,13 @@ std::vector<Maneuver> BuildManeuvers(const RouteShape& shape,
       depart.road = first_leg->name;
       depart.klass = first_leg->klass;
     }
+    // A boundary inside the departing margin is not announced (below), so the
+    // road the rider departs on is the one joined there, not the stub before it.
+    for (const Candidate& c : candidates) {
+      if (cum[c.index] >= settings.end_margin_m) break;
+      depart.road = c.leg->name;
+      depart.klass = c.leg->klass;
+    }
     depart.geometry_index = 0;
     out.push_back(depart);
   }

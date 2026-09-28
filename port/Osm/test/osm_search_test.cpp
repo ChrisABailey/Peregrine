@@ -31,6 +31,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "fv_osm_name_index.h"
 #include "fv_osm_vector_source.h"
 #include "fvkit/detail/sqlite.h"
@@ -265,6 +271,22 @@ TEST(OsmSearch, NoAreaFindsNothingInAPackWithNoIndex) {
 
 namespace {
 
+/// Returns this process's scratch directory, created if missing.
+/// ctest runs each test in its own process, so a shared path would have
+/// parallel tests rebuilding one another's index mid-read.
+fs::path ScratchDir() {
+#ifdef _WIN32
+  const int pid = _getpid();
+#else
+  const int pid = static_cast<int>(getpid());
+#endif
+  const fs::path dir = fs::temp_directory_path() / "fv_osm_name_index_test" /
+                       std::to_string(pid);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  return dir;
+}
+
 // The pack is copied, indexed once per test binary, and the copy is what these
 // tests read. The delivered TestData cut is never written to: an index is a
 // derived artefact and a test that left one behind would silently change what
@@ -280,13 +302,17 @@ class IndexedPack {
   bool ok() const { return ok_; }
 
  private:
-  IndexedPack() {
+  IndexedPack() { Build(); }
+  ~IndexedPack() {
+    std::error_code ec;
+    fs::remove_all(ScratchDir(), ec);
+  }
+
+  void Build() {
     const std::string src = KiawahPath();
     if (src.empty()) return;
-    const fs::path dir = fs::temp_directory_path() / "fv_osm_name_index_test";
+    const fs::path dst = ScratchDir() / "kiawah.mbtiles";
     std::error_code ec;
-    fs::create_directories(dir, ec);
-    const fs::path dst = dir / "kiawah.mbtiles";
     fs::remove(dst, ec);
     fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
     if (ec) return;
@@ -462,8 +488,7 @@ TEST(OsmNameIndex, WithoutTheFtsMirrorThePackStillAnswers) {
   // A copy with the FTS5 mirror removed — which is also what a SQLite built
   // without the module sees, since an FTS table it cannot open is a table it
   // cannot read.
-  const fs::path dst =
-      fs::temp_directory_path() / "fv_osm_name_index_test" / "no_fts.mbtiles";
+  const fs::path dst = ScratchDir() / "no_fts.mbtiles";
   std::error_code ec;
   fs::remove(dst, ec);
   fs::copy_file(built.path(), dst, fs::copy_options::overwrite_existing, ec);
@@ -497,8 +522,7 @@ TEST(OsmNameIndex, RebuildingReplacesRatherThanAppends) {
   if (built.path().empty()) GTEST_SKIP() << "no Kiawah mbtiles test data";
   ASSERT_TRUE(built.ok());
 
-  const fs::path dst =
-      fs::temp_directory_path() / "fv_osm_name_index_test" / "rebuilt.mbtiles";
+  const fs::path dst = ScratchDir() / "rebuilt.mbtiles";
   std::error_code ec;
   fs::remove(dst, ec);
   fs::copy_file(built.path(), dst, fs::copy_options::overwrite_existing, ec);

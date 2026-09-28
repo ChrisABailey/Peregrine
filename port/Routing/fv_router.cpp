@@ -56,7 +56,7 @@ double ProfileSeconds(const RoadArc& arc, const RouteOptions& options) {
   // derived from the way's `duration` — is the clock for every profile alike.
   if (arc.is_ferry()) return arc.travel_seconds();
   if (options.profile != nullptr)
-    return options.profile->Seconds(static_cast<double>(arc.length_m), arc.speed_kph);
+    return options.profile->Seconds(static_cast<double>(arc.length_m), arc.speed_kph, arc.klass);
   if (options.cycle_only) return BikeSeconds(arc);
   return options.driving ? arc.travel_seconds() : WalkSeconds(arc);
 }
@@ -239,6 +239,26 @@ double PrivateFactor(const RoadArc& arc, const RouteOptions& options) {
   return is_private ? (options.private_penalty > 0.0 ? options.private_penalty : 1.0) : 1.0;
 }
 
+}  // namespace
+
+/// The multiplier a beach arc's cost takes under the query's beach setting, or
+/// kAvoidExcluded when the beach is barred. A non-positive factor or penalty
+/// other than kAvoidExcluded reads as no preference.
+double BeachFactor(const RoadArc& arc, const RouteOptions& options) {
+  switch (options.beach) {
+    case BeachUse::kNever: return kAvoidExcluded;
+    case BeachUse::kToSaveTime: return 1.0;
+    case BeachUse::kWheneverPossible:
+      return arc.klass == RoadClass::kBeach && options.beach_prefer_factor > 0.0
+                 ? options.beach_prefer_factor
+                 : 1.0;
+    case BeachUse::kProfileDefault: break;
+  }
+  return options.beach_penalty;
+}
+
+namespace {
+
 // The toll and ferry preferences (O5e). Unlike every other profile-backed
 // setting these are read from the OPTIONS and never from the profile, because
 // they are the two a caller overrides per query: SelectProfile seeds them from
@@ -246,16 +266,38 @@ double PrivateFactor(const RoadArc& arc, const RouteOptions& options) {
 // An excluded one never reaches here — ArcUsable has already refused the arc —
 // so a non-positive value can only be a caller's own nonsense and means "no
 // preference", the same reading private_penalty gives it.
+/// Whether an arc's golf=path penalty applies: always, except for a bicycle
+/// query on a way tagged bicycle=designated.
+bool GolfPathPenaltyApplies(const RoadArc& arc, const RouteOptions& options) {
+  if (!arc.golf_path()) return false;
+  const bool bicycle = options.profile != nullptr
+                           ? options.profile->mode == TravelMode::kBicycle
+                           : options.cycle_only;
+  return !(bicycle && arc.bicycle_designated());
+}
+
 double AvoidFactor(const RoadArc& arc, const RouteOptions& options) {
   double factor = 1.0;
+  if (arc.golf_cartpath() && options.golf_cartpath_penalty > 0.0)
+    factor *= options.golf_cartpath_penalty;
+  if (GolfPathPenaltyApplies(arc, options) && options.golf_path_penalty > 0.0)
+    factor *= options.golf_path_penalty;
   if (arc.tolled() && options.toll_penalty > 0.0) factor *= options.toll_penalty;
   if (arc.is_ferry() && options.ferry_penalty > 0.0) factor *= options.ferry_penalty;
+  if (arc.is_beach()) {
+    const double beach = BeachFactor(arc, options);
+    if (beach > 0.0) factor *= beach;
+  }
   return factor;
 }
 
 }  // namespace
 
 double Router::ArcCost(const RoadArc& arc, const RouteOptions& options) const {
+  return routing::ArcCost(arc, options);
+}
+
+double ArcCost(const RoadArc& arc, const RouteOptions& options) {
   const double gate = PrivateFactor(arc, options) * AvoidFactor(arc, options);
   // O5c: one formula, base cost times the class weight the rules give it. The
   // bicycle branch below is the same arithmetic with the multipliers written
@@ -309,6 +351,10 @@ bool ArcUsable(const RoadArc& arc, const RouteOptions& options) {
   // PAIRS of arcs (a turn), which no frontier can decide alone.
   if (arc.tolled() && options.toll_penalty == kAvoidExcluded) return false;
   if (arc.is_ferry() && options.ferry_penalty == kAvoidExcluded) return false;
+  if (arc.golf_cartpath() && options.golf_cartpath_penalty == kAvoidExcluded) return false;
+  if (options.golf_path_penalty == kAvoidExcluded && GolfPathPenaltyApplies(arc, options))
+    return false;
+  if (arc.is_beach() && BeachFactor(arc, options) == kAvoidExcluded) return false;
   if (options.profile != nullptr) {
     const RouteProfile& p = *options.profile;
     if (!p.allows(arc.klass)) return false;

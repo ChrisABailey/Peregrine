@@ -589,3 +589,9 @@ simplify_pixels = 0.5
 # label_color = "#000000FF"
 # label_halo_color = "#FFFFFFDC"
 # label_font = ""
+
+[dted]
+# Elevation colour breakpoints for DTED shaded relief, in feet, lowest first,
+# at most five. Empty = FalconView's 2500/5000/7500/10000/12500. PythonView's
+# Tools > DTED Colour Breaks... edits this key.
+# elevation_bands_ft = "2500,5000,7500,10000,12500"

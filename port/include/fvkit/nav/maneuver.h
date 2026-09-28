@@ -89,7 +89,8 @@ struct ManeuverSettings {
   // few metres are then the stub joining the rider's own position to it: on
   // the Kiawah fixture the last named way is reached half a metre before the
   // destination, which is a "turn left" nobody can act on. The rider is
-  // departing or arriving there, not turning.
+  // departing or arriving there, not turning. kDepart names the last road
+  // joined inside the margin, since that is the road the rider sets off on.
   double end_margin_m = 20.0;
 };
 

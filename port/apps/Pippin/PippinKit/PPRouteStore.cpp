@@ -13,6 +13,7 @@
 // session it owns, so the one call site that drives a drag is also the one
 // place that needs the whole class.
 #include "fv_route_edit.h"
+#include "fvkit/nav/wind.h"
 
 namespace pippin {
 namespace {
@@ -41,9 +42,19 @@ RouteStore::RouteStore(std::string graph_path, std::string rules_path,
 
 void RouteStore::PlanNow() {
   const Clock::time_point t0 = Clock::now();
-  // The document's own profile is the default, so there is nothing to pass
-  // here: a route saved as a cycle route replans as one.
-  overlay_->FollowRoads();
+  // The document's own profile and beach setting are the defaults, so only
+  // the tide is passed: a route saved as a cycle route replans as one.
+  depart_s_ = now_ ? now_()
+                   : std::chrono::duration<double>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+  fv::RoutePlanOptions options;
+  options.tide.enabled = true;
+  options.tide.table = tide_.get();
+  options.tide.depart_s = depart_s_;
+  options.tide.limits = tide_limits_;
+  options.tide.foot_limits = tide_foot_limits_;
+  overlay_->FollowRoads(options);
   last_plan_ms_ =
       std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
@@ -99,16 +110,36 @@ fv::Status RouteStore::LoadAtLaunch() {
 }
 
 RouteSnapshot RouteStore::SetWaypoints(std::vector<fv::RouteWaypoint> waypoints,
-                                       const std::string& profile) {
+                                       const std::string& profile,
+                                       std::optional<fv::RouteBeach> beach) {
   // The profile FIRST: `SetWaypoints` drops the plan, and planning has to see
   // the profile this route is now priced with.
   if (!profile.empty() && profile != overlay_->profile()) {
     overlay_->SetProfile(profile);
   }
+  if (beach.has_value() && *beach != overlay_->beach()) overlay_->SetBeach(*beach);
   overlay_->SetWaypoints(std::move(waypoints));
   PlanNow();
   Persist();
   return Snapshot();
+}
+
+void RouteStore::SetTide(std::shared_ptr<const fv::nav::TideTable> table,
+                         fv::nav::BeachTideLimits limits,
+                         std::optional<fv::nav::BeachTideLimits> foot) {
+  tide_ = std::move(table);
+  tide_limits_ = limits;
+  tide_foot_limits_ = foot;
+}
+
+bool RouteStore::BeachAvailable() const {
+  if (!planner_->EnsureGraph().ok()) return false;
+  const std::shared_ptr<const fv::routing::RoadGraph> graph = planner_->graph();
+  if (graph == nullptr) return false;
+  for (uint32_t a = 0; a < graph->arc_count(); ++a) {
+    if (graph->arc(a).klass == fv::routing::RoadClass::kBeach) return true;
+  }
+  return false;
 }
 
 RouteSnapshot RouteStore::Replan() {
@@ -128,6 +159,7 @@ RouteSnapshot RouteStore::Snapshot() const {
   out.waypoints = overlay_->waypoints();
   out.exists = !out.waypoints.empty();
   out.profile = overlay_->profile();
+  out.beach = overlay_->beach();
 
   const fv::RoutePlan& plan = overlay_->plan();
   out.calculated = overlay_->has_plan();
@@ -137,6 +169,20 @@ RouteSnapshot RouteStore::Snapshot() const {
   out.length_m = plan.length_m;
   out.seconds = plan.seconds;
   out.status = plan.status;
+  out.depart_s = depart_s_;
+  if (out.calculated) {
+    out.beach_stretches = plan.beach;
+    out.beach_verdicts = plan.beach_verdicts;
+    const std::vector<fv::GeoPoint> path = RoutePath();
+    for (const fv::RouteBeachStretch& b : plan.beach) {
+      const bool inside = b.geometry_begin < b.geometry_end && b.geometry_end < path.size();
+      out.beach_headings_deg.push_back(
+          inside ? fv::nav::TrueBearingDeg(path[b.geometry_begin], path[b.geometry_end])
+                 : NAN);
+    }
+    out.beach_dropped = plan.beach_dropped;
+    out.beach_dropped_verdict = plan.beach_dropped_verdict;
+  }
   return out;
 }
 

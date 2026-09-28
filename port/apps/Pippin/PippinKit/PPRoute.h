@@ -41,6 +41,54 @@ NS_SWIFT_SENDABLE
 
 @end
 
+/// The "Use beach:" setting, as saved in the route document.
+typedef NS_ENUM(NSInteger, PPBeachUse) {
+  PPBeachUseNever = 0,
+  PPBeachUseToSaveTime,
+  PPBeachUseWheneverPossible,
+};
+
+/// The tide's judgement of one beach stretch (`fv::nav::BeachVerdict`).
+typedef NS_ENUM(NSInteger, PPBeachVerdict) {
+  PPBeachVerdictGood = 0,
+  PPBeachVerdictMarginal,  ///< Passable, soft sand likely.
+  PPBeachVerdictPoor,      ///< Covered on the way.
+  PPBeachVerdictUnknown,   ///< No tide table, or past its end.
+};
+
+/// Why a route that admitted the beach came back without it.
+typedef NS_ENUM(NSInteger, PPBeachDropped) {
+  PPBeachDroppedNone = 0,
+  PPBeachDroppedHigh,     ///< Above the rideable height on arrival.
+  PPBeachDroppedRising,   ///< Covered before the stretch ends.
+  PPBeachDroppedNoTable,  ///< Unknown and the gate drops unknown stretches.
+};
+
+/// One stretch along the water and the tide's verdict on it. Times are
+/// epoch seconds, heights metres above the tide table's datum; a time or
+/// height that does not apply is NaN.
+NS_SWIFT_SENDABLE
+@interface PPBeachStretch : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// Distance along the route where the stretch starts, and its length.
+@property(nonatomic, readonly) double startMeters;
+@property(nonatomic, readonly) double lengthMeters;
+@property(nonatomic, readonly) NSTimeInterval enterTime;
+@property(nonatomic, readonly) NSTimeInterval exitTime;
+@property(nonatomic, readonly) PPBeachVerdict verdict;
+@property(nonatomic, readonly) double enterHeightMeters;
+@property(nonatomic, readonly) double peakMeters;
+@property(nonatomic, readonly) NSTimeInterval peakTime;
+/// When the water rises over the rideable height during the stretch.
+@property(nonatomic, readonly) NSTimeInterval coveredTime;
+/// The earliest entry at or after arrival that is passable, or good.
+@property(nonatomic, readonly) NSTimeInterval passableFrom;
+@property(nonatomic, readonly) NSTimeInterval goodFrom;
+/// Net heading in the direction of travel, degrees true, start to end; NaN
+/// for the dropped stretch, which has no geometry on the kept plan.
+@property(nonatomic, readonly) double headingDegrees;
+@end
+
 /// The route, photographed. Every field is meaningful when `isCalculated` is
 /// NO — that is the state the status line exists for.
 NS_SWIFT_SENDABLE
@@ -58,6 +106,25 @@ NS_SWIFT_SENDABLE
 /// The rule-file profile this route is priced with — `foot` or `bicycle` in
 /// the shipped rules. Empty means the router's own default.
 @property(nonatomic, readonly, copy) NSString *profile;
+
+/// The route's own beach setting.
+@property(nonatomic, readonly) PPBeachUse beachUse;
+
+/// The beach stretches the planned route rides, in travel order, each with
+/// the tide's verdict for `departTime`.
+@property(nonatomic, readonly, copy) NSArray<PPBeachStretch *> *beachStretches;
+
+/// Total metres of `beachStretches`.
+@property(nonatomic, readonly) double beachMeters;
+
+/// Set when the setting admitted the beach and the tide took it off; the
+/// stretch that did it, as timed on the plan that was discarded, is
+/// `droppedStretch`.
+@property(nonatomic, readonly) PPBeachDropped beachDropped;
+@property(nonatomic, readonly, nullable) PPBeachStretch *droppedStretch;
+
+/// The departure the tide was judged for, epoch seconds.
+@property(nonatomic, readonly) NSTimeInterval departTime;
 
 /// The drawn line follows roads rather than straight legs between waypoints.
 /// NO both before anything has been planned and when the plan came back with

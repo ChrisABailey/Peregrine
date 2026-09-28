@@ -13,6 +13,7 @@
 // because a user drops a waypoint in the marsh far more often than they route
 // two connected roads.
 
+#include "fv_route_overlay.h"
 #include "fv_route_planner.h"
 
 #include <gtest/gtest.h>
@@ -287,6 +288,218 @@ TEST(RoutePlanner, ABadRuleFileWarnsOnAnAnswerRatherThanReplacingOne) {
   EXPECT_TRUE(plan.found) << plan.status;
   EXPECT_NE(std::string::npos, plan.status.find("[rules:")) << plan.status;
   std::remove(bad.c_str());
+}
+
+// The beach setting reaches the router, and the plan reports where the
+// sand is. Boardwalk 29 to 41 is the pair the router's own beach test rides.
+const GeoPoint kBoardwalk29{32.602374, -80.0838337};
+const GeoPoint kBoardwalk41{32.6100451, -80.045189};
+
+TEST(RoutePlanner, WheneverPossibleRidesTheBeachAndReportsTheStretch) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+
+  const RoutePlan road = planner.Plan({kBoardwalk29, kBoardwalk41}, opts);
+  ASSERT_TRUE(road.found) << road.status;
+  EXPECT_TRUE(road.beach.empty());
+
+  opts.beach = fv::routing::BeachUse::kToSaveTime;
+  const RoutePlan time = planner.Plan({kBoardwalk29, kBoardwalk41}, opts);
+  ASSERT_TRUE(time.found) << time.status;
+  EXPECT_TRUE(time.beach.empty());  // the sand is slower by bike here
+  EXPECT_DOUBLE_EQ(road.length_m, time.length_m);
+
+  opts.beach = fv::routing::BeachUse::kWheneverPossible;
+  const RoutePlan sand = planner.Plan({kBoardwalk29, kBoardwalk41}, opts);
+  ASSERT_TRUE(sand.found) << sand.status;
+  ASSERT_EQ(1u, sand.beach.size());
+  const fv::RouteBeachStretch& b = sand.beach[0];
+  EXPECT_NEAR(3690.0, b.length_m, 50.0);
+  EXPECT_GT(b.start_m, 0.0);  // an access arc comes first
+  EXPECT_LT(b.start_m + b.length_m, sand.length_m);
+  EXPECT_GT(b.enter_s, 0.0);
+  EXPECT_LT(b.exit_s, sand.seconds);
+  // 10 km/h on the sand, from the shipped class_kph.
+  EXPECT_NEAR(b.length_m / (10.0 / 3.6), b.exit_s - b.enter_s, 1.0);
+
+  size_t points = 0;
+  for (const auto& leg : sand.legs) points += leg.size();
+  points -= sand.legs.size() - 1;  // shared joints
+  EXPECT_LT(b.geometry_begin, b.geometry_end);
+  EXPECT_LT(b.geometry_end, points);
+}
+
+TEST(RoutePlanner, TheDocumentsBeachSettingReachesThePlan) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  fv::RouteOverlay overlay("beach");
+  overlay.SetPlanner(&planner);
+  ASSERT_TRUE(overlay.FileOpen(FV_ROUTE_BEACH_FIXTURE_FILE).ok());
+  ASSERT_TRUE(overlay.FollowRoads());
+  EXPECT_EQ(1u, overlay.plan().beach.size());
+
+  // A beach setting named on the call wins over the document's.
+  RoutePlanOptions never;
+  never.beach = fv::routing::BeachUse::kNever;
+  ASSERT_TRUE(overlay.FollowRoads(never));
+  EXPECT_TRUE(overlay.plan().beach.empty());
+}
+
+// The tide gate. Synthetic table: low 0.0 m at 0, high 2.0 m at 6 h,
+// low 0.4 m at 12 h, high 1.6 m at 18 h. The Boardwalk 29 -> 41 beach stretch
+// is entered about 52 s after departure and left about 1382 s after it.
+fv::nav::TideTable SyntheticTide() {
+  fv::nav::TideTable t;
+  const fv::Status s = t.Parse(
+      "{\"units\": \"m\", \"datum\": \"MLLW\", \"valid_from\": 0, \"valid_until\": 64800,"
+      " \"station\": {\"id\": \"1\", \"name\": \"Test\"}, \"extremes\": ["
+      "[0, 0.0, \"L\"], [21600, 2.0, \"H\"], [43200, 0.4, \"L\"], [64800, 1.6, \"H\"]]}");
+  EXPECT_TRUE(s.ok()) << s.message;
+  return t;
+}
+
+RoutePlan PlanAtTide(const RoutePlanner& planner, fv::routing::BeachUse beach,
+                     const fv::nav::TideTable* table, double depart_s,
+                     bool keep_unknown = false) {
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  opts.beach = beach;
+  opts.tide.enabled = true;
+  opts.tide.keep_unknown = keep_unknown;
+  opts.tide.table = table;
+  opts.tide.depart_s = depart_s;
+  return planner.Plan({kBoardwalk29, kBoardwalk41}, opts);
+}
+
+TEST(RoutePlanner, TheTideGateKeepsTheBeachAtLowWater) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  const fv::nav::TideTable tide = SyntheticTide();
+  const RoutePlan plan =
+      PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible, &tide, 0);
+  ASSERT_TRUE(plan.found) << plan.status;
+  ASSERT_EQ(1u, plan.beach.size());
+  ASSERT_EQ(1u, plan.beach_verdicts.size());
+  EXPECT_EQ(fv::nav::BeachVerdict::kGood, plan.beach_verdicts[0].verdict);
+  EXPECT_DOUBLE_EQ(plan.beach[0].enter_s, plan.beach_verdicts[0].enter_at_s);
+  EXPECT_EQ(fv::BeachDropped::kNone, plan.beach_dropped);
+}
+
+TEST(RoutePlanner, TheTideGateDropsTheBeachAtHighWater) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  const fv::nav::TideTable tide = SyntheticTide();
+  RoutePlanOptions never;
+  never.profile = "bicycle";
+  const RoutePlan road = planner.Plan({kBoardwalk29, kBoardwalk41}, never);
+
+  const RoutePlan plan =
+      PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible, &tide, 21600);
+  ASSERT_TRUE(plan.found) << plan.status;
+  EXPECT_TRUE(plan.beach.empty());
+  EXPECT_TRUE(plan.beach_verdicts.empty());
+  EXPECT_EQ(fv::BeachDropped::kHigh, plan.beach_dropped);
+  EXPECT_EQ(fv::nav::BeachVerdict::kPoor, plan.beach_dropped_verdict.verdict);
+  EXPECT_GT(plan.beach_dropped_verdict.enter_height_m, 1.9);
+  EXPECT_GT(plan.beach_dropped_verdict.passable_from_s, 21600);
+  EXPECT_DOUBLE_EQ(road.length_m, plan.length_m);  // the road route, unchanged
+}
+
+TEST(RoutePlanner, TheTideGateDropsTheBeachJustBeforeTheFlood) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  const fv::nav::TideTable tide = SyntheticTide();
+  // Below 0.5 m on arrival (0.5 m is reached at 7200 s), above it before the
+  // stretch and its ten-minute margin end.
+  const RoutePlan plan =
+      PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible, &tide, 6400);
+  ASSERT_TRUE(plan.found) << plan.status;
+  EXPECT_TRUE(plan.beach.empty());
+  EXPECT_EQ(fv::BeachDropped::kRising, plan.beach_dropped);
+  EXPECT_LE(plan.beach_dropped_verdict.enter_height_m, 0.5);
+  EXPECT_NEAR(7200.0, plan.beach_dropped_verdict.covered_at_s, 1e-6);
+}
+
+TEST(RoutePlanner, TheTideGateDropsTheBeachWithoutATable) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  const RoutePlan none =
+      PlanAtTide(planner, fv::routing::BeachUse::kToSaveTime, nullptr, 0);
+  ASSERT_TRUE(none.found) << none.status;
+  // To Save Time takes no beach on this pair, so there is nothing to gate.
+  EXPECT_EQ(fv::BeachDropped::kNone, none.beach_dropped);
+
+  const RoutePlan prefer =
+      PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible, nullptr, 0);
+  EXPECT_TRUE(prefer.beach.empty());
+  EXPECT_EQ(fv::BeachDropped::kNoTable, prefer.beach_dropped);
+
+  const fv::nav::TideTable tide = SyntheticTide();
+  const RoutePlan ended =
+      PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible, &tide, 64000);
+  EXPECT_EQ(fv::BeachDropped::kNoTable, ended.beach_dropped);
+}
+
+TEST(RoutePlanner, TheTideGateKeepsAnUnknownStretchByDefault) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  EXPECT_TRUE(fv::BeachTideGate{}.keep_unknown);
+
+  const RoutePlan none = PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible,
+                                    nullptr, 0, /*keep_unknown=*/true);
+  ASSERT_TRUE(none.found) << none.status;
+  ASSERT_EQ(1u, none.beach.size());
+  ASSERT_EQ(1u, none.beach_verdicts.size());
+  EXPECT_EQ(fv::nav::BeachVerdict::kUnknown, none.beach_verdicts[0].verdict);
+  EXPECT_EQ(fv::BeachDropped::kNone, none.beach_dropped);
+
+  // Past the table's end is the same answer; a poor stretch is still dropped.
+  const fv::nav::TideTable tide = SyntheticTide();
+  const RoutePlan ended = PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible,
+                                     &tide, 64000, /*keep_unknown=*/true);
+  EXPECT_EQ(1u, ended.beach.size());
+  EXPECT_EQ(fv::BeachDropped::kNone, ended.beach_dropped);
+  const RoutePlan high = PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible,
+                                    &tide, 21600, /*keep_unknown=*/true);
+  EXPECT_EQ(fv::BeachDropped::kHigh, high.beach_dropped);
+}
+
+TEST(RoutePlanner, NeverIsNotGated) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  const fv::nav::TideTable tide = SyntheticTide();
+  const RoutePlan plan = PlanAtTide(planner, fv::routing::BeachUse::kNever, &tide, 21600);
+  ASSERT_TRUE(plan.found) << plan.status;
+  EXPECT_TRUE(plan.beach.empty());
+  EXPECT_TRUE(plan.beach_verdicts.empty());
+  EXPECT_EQ(fv::BeachDropped::kNone, plan.beach_dropped);
+}
+
+TEST(RoutePlanner, TheTideGateOnTheKiawahTable) {
+  SKIP_WITHOUT_GRAPH();
+  const std::string path = std::string(TestDataDir()) + "/tides/8667062.json";
+  if (!std::filesystem::exists(path)) GTEST_SKIP() << path << " not fetched";
+  fv::nav::TideTable tide;
+  ASSERT_TRUE(tide.Load(path).ok());
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+
+  // 2026-06-01 onward: the first low and the high after it.
+  const auto ex = tide.Extremes(1780272000, 1780272000 + 86400);
+  ASSERT_GE(ex.size(), 3u);
+  const fv::nav::TideExtreme& low = ex[0].high ? ex[1] : ex[0];
+  const fv::nav::TideExtreme& high = ex[0].high ? ex[2] : ex[1];
+
+  const RoutePlan at_low = PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible,
+                                      &tide, low.time_s - 700);
+  EXPECT_EQ(1u, at_low.beach.size());
+  EXPECT_EQ(fv::BeachDropped::kNone, at_low.beach_dropped);
+
+  const RoutePlan at_high = PlanAtTide(planner, fv::routing::BeachUse::kWheneverPossible,
+                                       &tide, high.time_s - 700);
+  EXPECT_TRUE(at_high.beach.empty());
+  EXPECT_EQ(fv::BeachDropped::kHigh, at_high.beach_dropped);
 }
 
 }  // namespace

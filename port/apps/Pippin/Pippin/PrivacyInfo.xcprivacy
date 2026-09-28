@@ -13,13 +13,15 @@
      TWO CATEGORIES, AND THEY ARE THE ONLY TWO THIS APP HAS:
 
        * USER DEFAULTS. Four preferences (the distance units, the symbol
-         size, the last search term) plus the five `-PP…` launch arguments
-         the probes read. All of it is this app's own, read back by this app
+         size, the last search term), the NWS grid URL `WindFeed` remembers,
+         plus the five `-PP…` launch arguments the probes read. All of it is this app's own, read back by this app
          only, which is exactly what CA92.1 describes.
 
        * FILE TIMESTAMP. `RideLibrary.rides()` and `ReportLibrary.reports()`
-         read `.creationDateKey` to sort and title the lists — of files this
-         app wrote itself, in its own container. That is C617.1.
+         read `.creationDateKey` to sort and title the lists, and `WindFeed`
+         reads its cached forecast's `.contentModificationDateKey` to know
+         its age — all files this app wrote itself, in its own container.
+         That is C617.1.
 
      WHAT IS DELIBERATELY ABSENT, so a later reader does not "fix" it:
      DiskSpace (never asked), SystemBootTime (never asked), ActiveKeyboards
@@ -28,16 +30,21 @@
 
      AND THE SHARE EXTENSION HAS NO MANIFEST OF ITS OWN, on purpose: a
      manifest is per-bundle and needed only where a required-reason API is
-     called, and `PippinShare` is two files (`ShareViewController.swift` and
-     `PlaceLink.swift`) that between them touch none of them. Adding an empty
+     called, and `PippinShare` is three files (`ShareViewController.swift`,
+     `PlaceLink.swift` and `PlaceGeocoder.swift`) that between them touch
+     none of them. Adding an empty
      one would be a second file to keep true for no gain.
 
      NOTHING IS COLLECTED. `NSPrivacyCollectedDataTypes` is empty because it
      is empty: no analytics, no crash reporter, no account, no server. The
-     one network call in the app (`PlaceLink.resolve`) follows a link the
-     user has just handed over from another app, to the company that minted
-     it — it sends nothing about the rider and stores nothing, so it is not
-     collection and it is not tracking. `NSPrivacyTrackingDomains` is empty
+     app itself makes one network call: `WindFeed` asks api.weather.gov for
+     the forecast at a fixed point on the pack's beach from `pippin.ini`,
+     never the rider's position. The share extension makes the others: `PlaceLink.resolve`
+     follows a link the user has just handed over from another app, to the
+     company that minted it, and when that link carries only a place's name,
+     `PlaceGeocoder` sends that name to Apple's MapKit search. Neither sends
+     anything about the rider or stores anything, so neither is collection
+     and neither is tracking. `NSPrivacyTrackingDomains` is empty
      for the same reason, and MUST stay empty while `NSPrivacyTracking` is
      false: App Store Connect rejects the combination of false with a
      non-empty domain list.

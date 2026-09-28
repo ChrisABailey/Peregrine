@@ -76,6 +76,11 @@ enum class RoadClass : uint8_t {
   // a route may use it. Appended, so a .fvroad written before it exists holds
   // no arc of this class and reads exactly as it always did.
   kFerry,
+  /// Firm sand along the water's edge, synthesised from `natural=coastline`
+  /// where it borders a beach polygon (RoadGraphBuildOptions::beaches).
+  kBeach,
+  /// Dry sand between a path end and the water's edge.
+  kBeachAccess,
   kCount,
   kNone = 255,  // not a routable highway value
 };
@@ -85,8 +90,8 @@ const char* RoadClassName(RoadClass klass);
 
 // Maps a `highway=*` tag value to a class, or kNone when the value is not
 // something anything can travel along (bus_stop, crossing, proposed, ...).
-// NEVER returns kFerry: `highway=ferry` is not a tag OSM uses, and a caller
-// naming a class by its own name wants RoadClassFromName below.
+// Never returns kFerry, kBeach or kBeachAccess: none is a `highway=*` value,
+// and a caller naming a class by its own name wants RoadClassFromName below.
 RoadClass RoadClassFromHighwayTag(const std::string& value);
 
 // Maps a class's own name to the class — RoadClassFromHighwayTag plus the
@@ -139,6 +144,15 @@ enum ArcFlags : uint16_t {
   // motorway and keeps a motorway's weight. `toll:hgv` and the other
   // mode-qualified forms are lorry signage and are not read.
   kArcToll = 1 << 9,
+  /// `golf=cartpath` and `golf=path`: a golf course's cart path, and the
+  /// golfers' footpath between holes. Descriptive, not access: a profile's
+  /// `golf_cartpath_penalty` and `golf_path_penalty` decide what they cost,
+  /// and a graph written before they existed reads them clear.
+  kArcGolfCartpath = 1 << 10,
+  kArcGolfPath = 1 << 11,
+  /// `bicycle=designated`: a positive statement that bikes belong here, which
+  /// exempts a golf path from its profile penalty.
+  kArcBicycleDesignated = 1 << 12,
 };
 
 struct RoadArc {
@@ -165,6 +179,13 @@ struct RoadArc {
   bool motor_vehicle_private() const { return (flags & kArcPrivateMotorVehicle) != 0; }
   bool tolled() const { return (flags & kArcToll) != 0; }
   bool is_ferry() const { return klass == RoadClass::kFerry; }
+  bool golf_cartpath() const { return (flags & kArcGolfCartpath) != 0; }
+  bool golf_path() const { return (flags & kArcGolfPath) != 0; }
+  bool bicycle_designated() const { return (flags & kArcBicycleDesignated) != 0; }
+  /// Either beach class: the run along the water or a crossing onto it.
+  bool is_beach() const {
+    return klass == RoadClass::kBeach || klass == RoadClass::kBeachAccess;
+  }
 
   // Seconds to drive this arc at its posted/assumed speed.
   double travel_seconds() const {
@@ -513,6 +534,19 @@ struct RoadGraphBuildOptions {
   // builds the O4 graph exactly, which is what the router's own tests use to
   // show that a restriction is what changed an answer.
   bool honor_turn_restrictions = true;
+
+  /// Synthesise kBeach arcs along the coastline where it borders a beach
+  /// polygon, and kBeachAccess arcs from nearby way ends. Off by default, so a
+  /// graph built without it is unchanged.
+  bool beaches = false;
+  /// A coastline node within this of a beach polygon's boundary is on the beach.
+  double beach_line_snap_m = 15.0;
+  /// A break in a run shorter than this is bridged; an inlet is wider.
+  double beach_gap_m = 60.0;
+  /// A way end inside a beach polygon or within this of one gets an access arc.
+  double beach_access_snap_m = 25.0;
+  /// An access arc longer than this is not built.
+  double beach_access_max_m = 200.0;
 };
 
 struct RoadGraphBuildStats {
@@ -548,6 +582,15 @@ struct RoadGraphBuildStats {
   int64_t restrictions_via_way = 0;   // recognised, not applied (see the note)
   int64_t restrictions_unresolved = 0;  // via node or a named way not in the graph
   int64_t restrictions_excepted = 0;  // `except` lets a car through anyway
+
+  /// Beach synthesis; all zero unless RoadGraphBuildOptions::beaches.
+  int64_t beach_polygons = 0;
+  int64_t beach_relations_skipped = 0;  // multipolygon beaches, not built
+  int64_t coastline_ways = 0;
+  int64_t beach_runs = 0;
+  double beach_run_m = 0.0;
+  int64_t beach_access_arcs = 0;        // undirected, one per access point
+  int64_t beach_access_unreached = 0;   // near a beach, but no run within beach_access_max_m
 };
 
 // Two passes over each input: ways first (to learn which node IDs matter),

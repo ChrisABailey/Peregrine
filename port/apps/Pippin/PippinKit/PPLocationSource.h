@@ -48,7 +48,7 @@ typedef NS_ENUM(NSInteger, PPLocationAuthorization) {
 /// as `Best` and believe it had saved something.
 typedef NS_ENUM(NSInteger, PPLocationAccuracyMode) {
   /// The moving map's own setting, and the one this starts in:
-  /// `BestForNavigation`, every fix, no automatic pause.
+  /// `BestForNavigation`, a 2 m distance filter, no automatic pause.
   PPLocationAccuracyModeNavigation = 0,
   /// Nobody is watching the ship: `ThreeKilometers`, a large distance filter,
   /// and CoreLocation allowed to pause the journey it thinks has ended.

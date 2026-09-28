@@ -2449,11 +2449,10 @@ def test_the_route_line_says_which_MODE_it_was_priced_as(tmp_path, kiawah_graph)
     assert _count(car, overlay.color) < _count(straight, overlay.color)
 
 
-def test_a_selected_waypoint_keeps_the_routes_colour(tmp_path):
-    """G4's acceptance test on the app's own overlay. Before it, selecting a
-    waypoint repainted that marker yellow, so a two-route session could not
-    tell you which route the selected point belonged to. Now the marker keeps
-    the route's colour and the selection is a band around it."""
+def test_a_selected_waypoint_keeps_its_colour(tmp_path):
+    """Selecting a waypoint draws a band around its marker and does not
+    repaint the marker itself. Markers are coloured by position (start green,
+    vias blue, end red); the legs carry the route's own colour."""
     proj = _harbour_proj()
     overlay = _cpp_route("sel", [
         ("A", 32.73, -79.94),
@@ -2473,8 +2472,8 @@ def test_a_selected_waypoint_keeps_the_routes_colour(tmp_path):
 
     x, y = proj.geo_to_surface(pyfvw.geo.GeoPoint(32.73, -79.94))
     at = lambda c: tuple(np.asarray(c.buffer)[int(round(y)), int(round(x)), :3])
-    assert at(none) == (0, 160, 0)
-    assert at(one) == (0, 160, 0), "the selected marker is not recoloured"
+    assert at(none) == (20, 160, 60), "the first waypoint wears the start colour"
+    assert at(one) == at(none), "the selected marker is not recoloured"
     assert _count(none, (255, 220, 0)) == 0
     assert _count(one, (255, 220, 0)) > 0
     # The highlight lands UNDER its own marker and over what was already

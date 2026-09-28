@@ -36,16 +36,60 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "fv_route_doc.h"
 #include "fv_route_rules.h"
 #include "fv_road_graph.h"
 #include "fv_route_maneuvers.h"
 #include "fv_router.h"
 #include "fvkit/geo.h"
+#include "fvkit/nav/beach.h"
 
 namespace fv {
+
+/// One contiguous run of kBeach arcs along a planned route. Access arcs are
+/// not part of it: they cross the dunes and are not covered by the tide.
+struct RouteBeachStretch {
+  /// Indices into the through route's geometry, which is `plan.legs` joined
+  /// end to end with the shared joint vertices dropped.
+  uint32_t geometry_begin = 0;
+  uint32_t geometry_end = 0;
+  /// Distance along the route where the stretch starts, and its length.
+  double start_m = 0.0;
+  double length_m = 0.0;
+  /// Seconds from the route's start, on the route's own per-arc clock.
+  double enter_s = 0.0;
+  double exit_s = 0.0;
+};
+
+/// Why a plan that admitted the beach came back without it.
+enum class BeachDropped {
+  kNone,
+  kHigh,     ///< The water is above the threshold when the rider reaches the sand.
+  kRising,   ///< Below it on arrival, above it before the stretch and its margin end.
+  kNoTable,  ///< No tide table, or the stretch falls outside its span, and
+             ///< the gate was told to drop an unknown stretch.
+};
+
+/// The tide check on a plan's beach stretches. Off by default, so a caller
+/// that knows nothing of tides plans as before.
+struct BeachTideGate {
+  bool enabled = false;
+  /// Null while enabled judges every stretch unknown.
+  const nav::TideTable* table = nullptr;
+  /// What an unknown stretch (no table, or outside its span) does: kept by
+  /// default, so a pack whose table has lapsed still routes on the sand and
+  /// the shell warns instead; false drops it as kNoTable.
+  bool keep_unknown = true;
+  /// Departure time, Unix seconds.
+  double depart_s = 0.0;
+  nav::BeachTideLimits limits;
+  /// Limits for a walking profile; `limits` applies when unset.
+  std::optional<nav::BeachTideLimits> foot_limits;
+};
 
 // What a plan came out as. Every field is meaningful when `found` is false —
 // that is the case the status line exists for.
@@ -85,6 +129,10 @@ struct RoutePlan {
   // third.
   bool is_bicycle = false;
 
+  /// The profile's travel mode is kFoot. Taken from the resolved profile, so
+  /// it picks the walking tide limits whatever the profile is called.
+  bool is_foot = false;
+
   // The one line of map a route gets to explain itself on. Same wording as
   // route.py's `_road_status_line`, so a user moving between the two shells
   // reads the same sentence.
@@ -99,6 +147,19 @@ struct RoutePlan {
   // The distances are along `legs` joined end to end, which is what
   // `pippin::RouteStore::RoutePath()` produces.
   std::vector<nav::Maneuver> maneuvers;
+
+  /// The beach stretches, in travel order. Filled only on a through route,
+  /// for the same reason as `maneuvers`.
+  std::vector<RouteBeachStretch> beach;
+
+  /// The tide's verdict on each of `beach`, when the gate was enabled.
+  std::vector<nav::BeachStretchVerdict> beach_verdicts;
+
+  /// Set when the gate found a stretch poor or unknown and the route was
+  /// planned again without the beach; `beach_dropped_verdict` is that
+  /// stretch's verdict, timed on the first plan.
+  BeachDropped beach_dropped = BeachDropped::kNone;
+  nav::BeachStretchVerdict beach_dropped_verdict;
 
   // Set when the plan failed outright — no legs, nothing to draw. `status`
   // carries the same words; this is for a caller that wants the code.
@@ -125,7 +186,18 @@ struct RoutePlanOptions {
   // defaults, which is what `SelectProfile` mirrors onto the options.
   bool avoid_tolls = false;
   bool avoid_ferries = false;
+
+  /// The "Use beach:" choice. kProfileDefault leaves the profile's
+  /// `beach_penalty` in force, which excludes the beach unless the rule file
+  /// says otherwise.
+  routing::BeachUse beach = routing::BeachUse::kProfileDefault;
+
+  /// Drops the beach when the tide would cover it on the way.
+  BeachTideGate tide;
 };
+
+/// The router's reading of a document's beach setting.
+routing::BeachUse ToBeachUse(RouteBeach v);
 
 // Is `profile` (or `cycle_only` when it is empty) a bicycle request? Public
 // because the OVERLAY needs the same answer to style a line it did not plan —
@@ -177,6 +249,11 @@ class RoutePlanner {
   // The profiles the rule file defines, for a UI that offers them.
   std::vector<std::string> profile_names() const;
 
+  // With `options.tide` enabled, a through route whose beach stretch the tide
+  // judges poor (or unknown, when the gate does not keep unknown stretches) is
+  // planned a second time with the beach excluded, and that route is returned
+  // with `beach_dropped` saying why.
+  //
   // Fewer than two waypoints is not an error to shout about — it is what a
   // half-built route looks like — so it comes back as a failed plan with the
   // status line saying so, exactly as route.py does.
@@ -197,6 +274,8 @@ class RoutePlanner {
   Status BuildOptions(const RoutePlanOptions& in, routing::RouteOptions* out) const;
 
  private:
+  RoutePlan PlanOnce(const std::vector<GeoPoint>& stops,
+                     const RoutePlanOptions& options) const;
 
   RoutePlan PlanPerPair(const std::vector<GeoPoint>& stops,
                         const routing::RouteOptions& options) const;

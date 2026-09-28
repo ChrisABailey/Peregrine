@@ -10,6 +10,12 @@ import SwiftUI
 
 @main
 struct PippinApp: App {
+    init() {
+        #if DEBUG
+        MetricsArchive.shared.start()
+        #endif
+    }
+
     /// Which measurement screen to show, or nil for the map. Each is a
     /// screen rather than a log line so the answer can be photographed, and
     /// each is behind a launch argument rather than a button so the shipping

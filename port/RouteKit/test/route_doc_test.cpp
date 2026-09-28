@@ -252,4 +252,51 @@ TEST(RouteDoc, AnEmptyNameDoesNotBlankTheOneAlreadyThere) {
   EXPECT_EQ(220, doc.color().r);
 }
 
+// --- options.beach -----------------------------------------------------------
+
+TEST(RouteDoc, ReadsAndRewritesTheBeachFixtureByteForByte) {
+  // The fixture was written by Python's json.dump, so this pins the nested
+  // `options` object to the serializer every other key is matched against.
+  RouteDoc doc;
+  const fv::Status s = doc.Read(FV_ROUTE_BEACH_FIXTURE_FILE);
+  ASSERT_TRUE(s.ok()) << s.message;
+  EXPECT_EQ("bicycle", doc.profile());
+  EXPECT_EQ(fv::RouteBeach::kWheneverPossible, doc.beach());
+  ASSERT_EQ(2u, doc.waypoints().size());
+  EXPECT_EQ(ReadWhole(FV_ROUTE_BEACH_FIXTURE_FILE), doc.ToJson());
+}
+
+TEST(RouteDoc, NeverIsNotWrittenAndAnAbsentKeyReadsAsNever) {
+  RouteDoc doc;
+  ASSERT_TRUE(doc.Read(FV_ROUTE_BEACH_FIXTURE_FILE).ok());
+  doc.set_beach(fv::RouteBeach::kNever);
+  EXPECT_EQ(std::string::npos, doc.ToJson().find("options"));
+
+  // Reading a document without the key resets a setting already held, since
+  // absent has a meaning of its own.
+  RouteDoc other;
+  other.set_beach(fv::RouteBeach::kToSaveTime);
+  ASSERT_TRUE(other.Read(FV_ROUTE_FIXTURE_FILE).ok());
+  EXPECT_EQ(fv::RouteBeach::kNever, other.beach());
+}
+
+TEST(RouteDoc, TimeRoundTripsAndAnUnknownValueReadsAsNever) {
+  RouteDoc doc;
+  ASSERT_TRUE(doc.Read(FV_ROUTE_FIXTURE_FILE).ok());
+  doc.set_beach(fv::RouteBeach::kToSaveTime);
+  const std::string text = doc.ToJson();
+  EXPECT_NE(std::string::npos, text.find("  \"options\": {\n    \"beach\": \"time\"\n  },\n"));
+
+  RouteDoc back;
+  ASSERT_TRUE(back.Parse(text, "x.fvrte").ok());
+  EXPECT_EQ(fv::RouteBeach::kToSaveTime, back.beach());
+  EXPECT_EQ(text, back.ToJson());
+
+  ASSERT_TRUE(back.Parse(R"({"format": "peregrine-route", "version": 1,
+                              "options": {"beach": "sometimes"}, "waypoints": []})",
+                         "x.fvrte")
+                  .ok());
+  EXPECT_EQ(fv::RouteBeach::kNever, back.beach());
+}
+
 }  // namespace

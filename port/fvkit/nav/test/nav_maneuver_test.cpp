@@ -183,7 +183,10 @@ TEST(Maneuver, CornersOnTopOfEitherEndAreNotInstructions) {
   s.geometry = {At(0, 0), At(5, 0), At(5, 100), At(5, 195), At(10, 195)};
   s.legs = {Leg(0, "Stub"), Leg(1, "Long Rd"), Leg(3, "Second Rd")};
 
-  EXPECT_EQ(BuildManeuvers(s).size(), 2u);
+  const std::vector<Maneuver> m = BuildManeuvers(s);
+  ASSERT_EQ(m.size(), 2u);
+  // The rider departs on the road joined inside the margin, not on the stub.
+  EXPECT_EQ(m[0].road, "Long Rd");
 
   ManeuverSettings keep_everything;
   keep_everything.end_margin_m = 0.0;

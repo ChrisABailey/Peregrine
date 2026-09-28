@@ -63,6 +63,14 @@ struct RouteProfile;
 // Spelled the same way RouteProfile spells an excluded class (kClassExcluded).
 constexpr double kAvoidExcluded = -1.0;
 
+/// The rider's "Use beach:" choice, which overrides RouteOptions::beach_penalty.
+enum class BeachUse : uint8_t {
+  kProfileDefault = 0,  ///< beach_penalty decides, as SelectProfile seeded it
+  kNever,               ///< both beach classes excluded
+  kToSaveTime,          ///< beach arcs at their true cost, so taken only when cheaper
+  kWheneverPossible,    ///< kBeach arcs at beach_prefer_factor of their cost
+};
+
 struct RouteOptions {
   // The rules this query costs arcs by (O5c). Null keeps the profile the
   // boolean fields below describe, computed exactly as O5b computed it — a
@@ -124,6 +132,23 @@ struct RouteOptions {
   // board"; it can make a destination unreachable, which is the answer.
   double toll_penalty = 1.0;
   double ferry_penalty = 1.0;
+
+  // Golf ways, seeded from the profile like the two above. `golf_cartpath_penalty` applies to arcs
+  // tagged golf=cartpath; `golf_path_penalty` to golf=path, except for a
+  // bicycle profile on a way tagged bicycle=designated.
+  double golf_cartpath_penalty = 1.0;
+  double golf_path_penalty = 1.0;
+
+  // The beach classes (kBeach, kBeachAccess) under BeachUse::kProfileDefault:
+  // a multiplier on both, or kAvoidExcluded. Excluded unless a profile or the
+  // query says otherwise, so a graph built with beaches routes like one
+  // without until asked.
+  double beach_penalty = kAvoidExcluded;
+  BeachUse beach = BeachUse::kProfileDefault;
+  // The multiplier on kBeach arc cost under kWheneverPossible, in (0, 1].
+  // Access arcs are never discounted: the preference is for the firm sand,
+  // not for crossing dry sand to reach it.
+  double beach_prefer_factor = 0.5;
 
   // How far an endpoint may be from the road network before the request is
   // refused. Applies to Router::Route (geographic endpoints) only.
@@ -270,6 +295,15 @@ struct Route {
 // `Router::ArcUsable` is this function; the member remains because the search
 // calls it on every relaxation and reads better as one.
 bool ArcUsable(const RoadArc& arc, const RouteOptions& options);
+
+/// What relaxing `arc` costs under `options`: its time (or length) times the
+/// class weight and the private, toll, ferry and beach factors. The router's
+/// own cost, public so a view of the graph can show what the router sees.
+double ArcCost(const RoadArc& arc, const RouteOptions& options);
+
+/// The cost multiplier `options` gives a beach arc, or kAvoidExcluded when the
+/// beach is barred. Only meaningful for an arc whose is_beach() is true.
+double BeachFactor(const RoadArc& arc, const RouteOptions& options);
 
 // Where a route touches the network (§1d). Either a graph NODE — a junction,
 // which is all a node-indexed snap can find and all O4 could express — or a

@@ -24,6 +24,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "fvkit/formats/source.h"
 
@@ -52,5 +53,14 @@ class DtedShadedRasterSource : public IRasterSource {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+/// Sets the elevation colour breakpoints, in feet, that every DTED shaded
+/// source opened after this call renders with. An empty list restores
+/// FalconView's defaults. At most five are used. Thread-safe; cells already
+/// rendered keep their colours until their source is reopened.
+void SetDtedShadedElevationBands(const std::vector<int>& feet);
+
+/// The breakpoints set by SetDtedShadedElevationBands; empty = the defaults.
+std::vector<int> DtedShadedElevationBands();
 
 }  // namespace fv

@@ -29,6 +29,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+@interface PPBeachStretch ()
+
+/// A null `stretch` leaves the distances NaN, for a stretch the plan dropped.
+- (instancetype)initWithStretch:(const fv::RouteBeachStretch *_Nullable)stretch
+                        verdict:(const fv::nav::BeachStretchVerdict &)verdict
+                 headingDegrees:(double)headingDegrees
+    NS_DESIGNATED_INITIALIZER;
+
+@end
+
 @interface PPPlace ()
 
 - (instancetype)initWithDescription:(const pippin::PlaceDescription &)place

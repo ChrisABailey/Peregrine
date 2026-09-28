@@ -17,8 +17,9 @@
 //     in it (https://maps.apple/p/U8rE9v8n8iVZjr). The coordinate is only
 //     recoverable by following the redirects and reading an INTERMEDIATE hop;
 //     the last hop is an "unsupported" page.
-//   * Google Maps — always a short link, whose redirect lands on a
-//     `/maps/place/…` URL carrying `!3d<lat>!4d<lng>`.
+//   * Google Maps — always a short link. A dropped pin's chain carries
+//     `q=<lat>,<lon>`; a named place's may carry only `q=<name>, <address>`,
+//     which `resolve(_:)` reports as `.noCoordinate` with that query.
 //   * A `geo:` URI, a vCard, or a pasted "32.60841, -80.07213".
 //
 // So the parse is offline and the lookup is the fallback: `place(in:)` never
@@ -60,6 +61,12 @@ struct SharedPlace: Equatable {
     var longitude: Double
     var name: String
     var address: String
+    /// The text Apple's search was given when the position came from a
+    /// search rather than the link; "" for an exact position.
+    var searchQuery: String = ""
+
+    /// Whether the position is a search result and needs checking.
+    var isApproximate: Bool { !searchQuery.isEmpty }
 
     /// Rejects a coordinate that is out of range or at the origin. `q=0,0` is
     /// Apple's spelling for "no coordinate, search the text instead", and
@@ -90,13 +97,15 @@ struct SharedPlace: Equatable {
 // MARK: - Parser
 
 enum PlaceLink {
-    /// Whether `resolve(_:)` may use the network.
+    /// Whether the share extension may use the network.
     ///
-    /// Pippin's location string promises that ride data never leaves the
-    /// phone, and that promise holds: none of it passes through here. What
-    /// goes out is one link the user just handed to Pippin, sent to the
-    /// company that minted it. Set this false and every short link becomes an
-    /// honest "that link does not carry a position"; nothing else changes.
+    /// Pippin's location string promises that the rider's position never
+    /// leaves the phone, and that holds: none of it passes through here. Two
+    /// things go out, both about a place the user just handed to Pippin: the
+    /// link, to the company that minted it (`resolve(_:)`), and, when that
+    /// link carried only a name, the name to Apple's search
+    /// (`PlaceGeocoder`). Set this false and both become an honest "that link
+    /// does not carry a position"; nothing else changes.
     static let allowsNetworkLookup = true
 
     // MARK: Offline
@@ -200,21 +209,48 @@ enum PlaceLink {
 
     // MARK: Network
 
+    /// What following a short link came to. Each case is a different
+    /// sentence on screen, because each asks something different of the rider.
+    enum ResolveOutcome: Equatable {
+        /// A hop, or the last page's `!3d…!4d…`, carried a coordinate.
+        case place(SharedPlace)
+        /// The chain never completed for want of a network. Worth a retry.
+        case offline(URLError.Code)
+        /// The chain completed and nothing in it was a position. `query` is
+        /// the `q=` text of the last hop that had one, when that text was a
+        /// name or an address rather than a coordinate.
+        case noCoordinate(lastHop: URL?, query: String?)
+    }
+
+    /// The agent `resolve(_:)` sends: mobile Safari. `maps.app.goo.gl`
+    /// answers desktop Safari with a 200 page that redirects in JavaScript
+    /// (measured 2026-09-25), and every other agent with a 302 whose target
+    /// carries the place. Apple's short-link host redirects either.
+    static let userAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+            + "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+
+    /// URL errors that mean "no signal" rather than "a bad link".
+    static let offlineCodes: Set<URLError.Code> = [
+        .notConnectedToInternet, .networkConnectionLost, .timedOut,
+        .cannotFindHost, .dataNotAllowed, .internationalRoamingOff,
+    ]
+
     /// Follows a short link until a hop admits a coordinate.
     ///
     /// The answer is in the middle of the chain, not at the end:
     /// `https://maps.apple/p/XXXX` redirects to a full `maps.apple.com/place?
     /// …&coordinate=…` and then on to an "unsupported" page, so a plain fetch
-    /// returns the useless last hop. Every proposed hop is inspected instead
-    /// and the first that parses wins.
+    /// returns the useless last hop. Every proposed hop is logged and
+    /// inspected, and the first that parses wins.
     ///
     /// The shape is undocumented and will break. When it does the failure is
     /// a sentence on screen and a share that did nothing, never a marker in
     /// the wrong place.
-    static func resolve(_ url: URL) async -> SharedPlace? {
+    static func resolve(_ url: URL) async -> ResolveOutcome {
         guard allowsNetworkLookup else {
             PippinLog.share.notice("resolve refused: network lookup is off")
-            return nil
+            return .noCoordinate(lastHop: url, query: nil)
         }
         PippinLog.share.notice("resolve: following \(url.absoluteString, privacy: .public)")
 
@@ -230,50 +266,93 @@ enum PlaceLink {
         defer { session.invalidateAndCancel() }
 
         var request = URLRequest(url: url)
-        // A desktop browser agent: Google serves an unrecognised agent a
-        // consent interstitial with no coordinate in it, and Apple's
-        // short-link host serves the redirect chain only to a browser.
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-                + "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-            forHTTPHeaderField: "User-Agent")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
-        let body: Data?
+        var body: String?
+        var failure: URLError.Code?
         do {
-            (body, _) = try await session.data(for: request) as (Data, URLResponse)
+            let (data, _) = try await session.data(for: request) as (Data, URLResponse)
+            body = String(data: data.prefix(512 * 1024), encoding: .utf8)
+        } catch let error as URLError {
+            failure = error.code
+            PippinLog.share.notice("resolve: stopped with URLError \(error.code.rawValue, privacy: .public)")
         } catch {
-            // A cancelled task is what success looks like: the sniffer stops
-            // the chain as soon as it has an answer.
-            body = nil
+            PippinLog.share.notice("resolve: stopped with \(String(describing: error), privacy: .public)")
         }
 
-        if let hit = sniffer.found {
+        if let body, body.contains("DurableDeepLinkUi") {
+            PippinLog.share.error("resolve: got Google's JavaScript link page, not a redirect")
+        }
+        let outcome = classify(start: url, hops: sniffer.hops, found: sniffer.found,
+                               body: body, failure: failure)
+        switch outcome {
+        case .place(let hit):
             PippinLog.share.notice(
-                "resolve: a redirect carried \(hit.latitude, privacy: .public),\(hit.longitude, privacy: .public)")
-            return hit
+                "resolve: place \(hit.latitude, privacy: .public),\(hit.longitude, privacy: .public)")
+        case .offline(let code):
+            PippinLog.share.error("resolve: offline (URLError \(code.rawValue, privacy: .public))")
+        case .noCoordinate(let lastHop, let query):
+            PippinLog.share.error(
+                "resolve: no coordinate; last hop \(lastHop?.absoluteString ?? "-", privacy: .public) query \(query ?? "-", privacy: .public)")
         }
-
-        // Last resort: the page body, which carries the same `!3d…!4d…`. The
-        // bytes are already here.
-        if let body, let text = String(data: body.prefix(512 * 1024), encoding: .utf8) {
-            if let coordinate = coordinateInPath(text) {
-                PippinLog.share.notice("resolve: the page body carried a coordinate")
-                return SharedPlace(latitude: coordinate.latitude,
-                                   longitude: coordinate.longitude,
-                                   name: googlePlaceName(text))
-            }
-        }
-        PippinLog.share.error(
-            "resolve: no coordinate anywhere in the chain from \(url.absoluteString, privacy: .public)")
-        return nil
+        return outcome
     }
 
-    /// Watches a redirect chain and keeps the first hop that is a place. A
-    /// class because `URLSession` wants a delegate object, locked because the
-    /// delegate queue is not the caller's.
+    /// The decision `resolve(_:)` makes once the fetch is over, kept apart
+    /// from the network so captured chains can be replayed on the mac.
+    ///
+    /// - Parameters:
+    ///   - start: the shared link.
+    ///   - hops: every redirect target, in order, excluding `start`.
+    ///   - found: the place the sniffer stopped the chain on, if any.
+    ///   - body: the last page, when it arrived.
+    ///   - failure: the fetch's URL error. `.cancelled` is how a sniffer
+    ///     hit ends the fetch and is not a failure.
+    static func classify(start: URL, hops: [URL], found: SharedPlace?,
+                         body: String?, failure: URLError.Code?) -> ResolveOutcome {
+        if let found { return .place(found) }
+        let chain = [start] + hops
+        if let hit = chain.lazy.compactMap({ place(in: $0) }).first { return .place(hit) }
+        if let failure, offlineCodes.contains(failure) { return .offline(failure) }
+
+        // Only the place pair, never the camera: a search page's `@lat,lon`
+        // and `center=` are the requester's IP location, not the place.
+        if let body, let coordinate = placePair(in: body),
+           let hit = SharedPlace(latitude: coordinate.latitude,
+                                 longitude: coordinate.longitude,
+                                 name: googlePlaceName(body)) {
+            return .place(hit)
+        }
+
+        let query = chain.reversed().lazy.compactMap { url -> String? in
+            nonCoordinate(formValue(of: url, key: "q"))
+                ?? nonCoordinate(formValue(of: url, key: "query"))
+        }.first
+        return .noCoordinate(lastHop: chain.last, query: query)
+    }
+
+    /// The sentence the share sheet shows for a lookup that found no place;
+    /// nil for `.place`.
+    static func failureMessage(for outcome: ResolveOutcome) -> String? {
+        switch outcome {
+        case .place:
+            return nil
+        case .offline:
+            return "Couldn't look that link up. Short links need a signal; try again when you have one."
+        case .noCoordinate(_, nil):
+            return "That link doesn't carry a position."
+        case .noCoordinate(_, let query?):
+            return "That link sent a name, not a position: \(query)"
+        }
+    }
+
+    /// Watches a redirect chain, logs every hop, and keeps the first hop that
+    /// is a place. A class because `URLSession` wants a delegate object,
+    /// locked because the delegate queue is not the caller's.
     private final class RedirectSniffer: NSObject, URLSessionTaskDelegate {
         private let lock = NSLock()
         private var hit: SharedPlace?
+        private var chain: [URL] = []
 
         var found: SharedPlace? {
             lock.lock()
@@ -281,21 +360,70 @@ enum PlaceLink {
             return hit
         }
 
+        var hops: [URL] {
+            lock.lock()
+            defer { lock.unlock() }
+            return chain
+        }
+
         func urlSession(_ session: URLSession,
                         task: URLSessionTask,
                         willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest,
                         completionHandler: @escaping (URLRequest?) -> Void) {
-            if let url = request.url, let place = PlaceLink.place(in: url) {
-                lock.lock()
-                hit = place
-                lock.unlock()
-                // Nil stops the chain: the next hop throws the answer away.
-                completionHandler(nil)
+            guard let url = request.url else {
+                completionHandler(request)
                 return
             }
-            completionHandler(request)
+            PippinLog.share.notice(
+                "resolve: hop \(response.statusCode, privacy: .public) -> \(url.absoluteString, privacy: .public)")
+            let place = PlaceLink.place(in: url)
+            lock.lock()
+            chain.append(url)
+            if let place { hit = place }
+            lock.unlock()
+            // Nil stops the chain: the next hop throws the answer away.
+            completionHandler(place == nil ? request : nil)
         }
+    }
+
+    // MARK: - Search results
+
+    /// Words too common in names and addresses to show two places are the
+    /// same one.
+    private static let searchStopWords: Set<String> = [
+        "the", "and", "of", "at", "for", "on", "in", "st", "rd", "dr", "ave", "ln",
+    ]
+
+    /// The distinctive words of a name or address: case- and accent-folded,
+    /// split on anything that is not a letter or digit, stop words and
+    /// one-letter tokens dropped.
+    static func searchWords(_ text: String) -> Set<String> {
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let tokens = folded.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        return Set(tokens.filter { $0.count > 1 && !searchStopWords.contains($0) })
+    }
+
+    /// Whether a search result is plausibly the place the query named: its
+    /// name or postal address shares a distinctive word with the query.
+    static func searchResultMatches(query: String, name: String, address: String) -> Bool {
+        let wanted = searchWords(query)
+        return !wanted.isDisjoint(with: searchWords(name + " " + address))
+    }
+
+    /// The name half of a Google `q=` ("Name, 1 Street, Town"): the text
+    /// before the first comma, trimmed; the whole query when there is no comma.
+    static func namePart(of query: String) -> String {
+        let head = query.split(separator: ",", maxSplits: 1).first.map(String.init) ?? query
+        return head.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The address half of a Google `q=` ("Name, 1 Street, Town"): the text
+    /// after the first comma, or nil when there is no comma or nothing after it.
+    static func addressPart(of query: String) -> String? {
+        guard let comma = query.firstIndex(of: ",") else { return nil }
+        let rest = query[query.index(after: comma)...].trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? nil : rest
     }
 
     // MARK: - Handoff to the app
@@ -304,7 +432,8 @@ enum PlaceLink {
     /// place to the app. Registered in `Pippin/Info.plist`.
     static let scheme = "pippin"
 
-    /// `pippin://place?lat=…&lon=…&name=…&address=…`.
+    /// `pippin://place?lat=…&lon=…&name=…&address=…`, plus `&approx=1&query=…`
+    /// for a position that came from a search.
     ///
     /// The whole place travels in the URL. The alternative, an App Group
     /// container, costs an entitlement on both targets and a group id
@@ -320,6 +449,12 @@ enum PlaceLink {
             URLQueryItem(name: "name", value: place.name),
             URLQueryItem(name: "address", value: place.address),
         ]
+        if place.isApproximate {
+            components.queryItems? += [
+                URLQueryItem(name: "approx", value: "1"),
+                URLQueryItem(name: "query", value: place.searchQuery),
+            ]
+        }
         return components.url
     }
 
@@ -331,9 +466,11 @@ enum PlaceLink {
         let items = queryItems(of: url)
         guard let lat = Double(items["lat"] ?? ""),
               let lon = Double(items["lon"] ?? "") else { return nil }
-        return SharedPlace(latitude: lat, longitude: lon,
-                           name: items["name"] ?? "",
-                           address: items["address"] ?? "")
+        guard var place = SharedPlace(latitude: lat, longitude: lon,
+                                      name: items["name"] ?? "",
+                                      address: items["address"] ?? "") else { return nil }
+        if items["approx"] == "1" { place.searchQuery = items["query"] ?? "" }
+        return place
     }
 
     // MARK: - Small parsers
@@ -507,15 +644,31 @@ enum PlaceLink {
     /// place is looked for first; the camera is the fallback for a link with
     /// no place in it.
     private static func coordinateInPath(_ text: String) -> Coordinate? {
-        if let pair = firstMatch(#"!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)"#, in: text),
-           let lat = Double(pair.0), let lon = Double(pair.1) {
-            return Coordinate(latitude: lat, longitude: lon)
-        }
+        if let place = placePair(in: text) { return place }
         if let pair = firstMatch(#"[@/](-?\d{1,2}\.\d{3,}),(-?\d{1,3}\.\d{3,})"#, in: text),
            let lat = Double(pair.0), let lon = Double(pair.1) {
             return Coordinate(latitude: lat, longitude: lon)
         }
         return nil
+    }
+
+    /// A query value decoded as a form field, so Google's `+` reads as a
+    /// space and an encoded `%2B` stays a plus; nil when absent or empty.
+    private static func formValue(of url: URL, key: String) -> String? {
+        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .percentEncodedQueryItems,
+              let raw = items.first(where: { $0.name.lowercased() == key })?.value
+        else { return nil }
+        let decoded = raw.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? raw
+        let trimmed = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Google's `!3d<lat>!4d<lng>`, the place itself; nil when absent.
+    private static func placePair(in text: String) -> Coordinate? {
+        guard let pair = firstMatch(#"!3d(-?\d+\.?\d*)!4d(-?\d+\.?\d*)"#, in: text),
+              let lat = Double(pair.0), let lon = Double(pair.1) else { return nil }
+        return Coordinate(latitude: lat, longitude: lon)
     }
 
     /// The segment after `/maps/place/`, which is the only name a Google link

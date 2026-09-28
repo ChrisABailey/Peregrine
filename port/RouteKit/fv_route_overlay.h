@@ -23,6 +23,8 @@
 //   * a CALCULATED route is blue with a WHITE CASING so it reads over a chart,
 //     and DASHED when it was priced as a bicycle route — the mode is visible
 //     in the LINE and not only in a line of small text;
+//   * the stretches a calculated route rides on the beach (`RoutePlan::beach`)
+//     have a sand casing instead of the white one;
 //   * an UNCALCULATED route is the overlay's own colour (red by default),
 //     straight legs, no casing: those are the waypoints joined, not a route
 //     anybody can ride, and the two must not be confusable at a glance;
@@ -127,6 +129,9 @@ class RouteOverlay : public Overlay,
   // The line a CALCULATED route wears. Blue over white, route.py's numbers.
   static const FvColor kRoadColor;
   static const FvColor kCasingColor;
+  // The casing under the beach stretches: darker than the chart's pale sand
+  // fill, so the stretch still stands out where it crosses the beach.
+  static const FvColor kBeachCasingColor;
 
   app::Persistence* AsPersistence() override { return this; }
   app::HitTest* AsHitTest() override { return this; }
@@ -180,6 +185,10 @@ class RouteOverlay : public Overlay,
   void SetProfile(std::string profile);
   const std::string& profile() const { return doc_.profile(); }
 
+  /// Whether the route may use the beach. A document field, so it dirties.
+  void SetBeach(RouteBeach beach);
+  RouteBeach beach() const { return doc_.beach(); }
+
   // The selected waypoint's LABEL, or empty. Selection is NOT a document
   // change: selecting does not dirty the overlay.
   const std::string& selected() const { return selected_; }
@@ -195,7 +204,8 @@ class RouteOverlay : public Overlay,
 
   // Plan over the current waypoints and keep the answer to draw. `options`
   // takes the document's own profile when its `profile` is empty, so a route
-  // saved as a cycle route replans as one. Returns false for anything short of
+  // saved as a cycle route replans as one; likewise its beach setting when
+  // `options.beach` is kProfileDefault. Returns false for anything short of
   // a through route — the same answer `follow_roads` gives — and the plan is
   // still kept and still drawn, because the fallback legs are worth seeing.
   bool FollowRoads(RoutePlanOptions options = RoutePlanOptions{});
@@ -354,6 +364,7 @@ class RouteOverlay : public Overlay,
     std::string label;
     double x = 0.0;
     double y = 0.0;
+    FvColor color;  // marker fill: start, via or end
   };
   std::vector<DrawnPoint> drawn_;
 

@@ -263,7 +263,37 @@ struct StyleLayer {
   double spacing = 250.0;    // GL default, in px at the style's own sizes
   double max_angle = 45.0;   // GL default
   double offset_em = 0.0;    // text-offset is in EMs; +y in GL is DOWN
+  // Point placement: text-offset as GL states it (ems, +y down) and
+  // text-anchor, whose GL default is "center".
+  double point_dx_em = 0.0;
+  double point_dy_em = 0.0;
+  LabelHAlign point_halign = LabelHAlign::kCenter;
+  LabelVAlign point_valign = LabelVAlign::kCenter;
 };
+
+/// Maps a GL `text-anchor` keyword to the renderer's box alignment: the
+/// keyword names the side of the label box that sits on the anchor point.
+/// Returns false for an unknown keyword.
+bool ParseTextAnchor(const std::string& a, LabelHAlign* h, LabelVAlign* v) {
+  *h = LabelHAlign::kCenter;
+  *v = LabelVAlign::kCenter;
+  if (a == "center") return true;
+  const bool top = a.rfind("top", 0) == 0;
+  const bool bottom = a.rfind("bottom", 0) == 0;
+  if (top) *v = LabelVAlign::kTop;
+  if (bottom) *v = LabelVAlign::kBottom;
+  std::string side = a;
+  if (top || bottom) {
+    side = a.substr(top ? 3 : 6);
+    if (side.empty()) return true;
+    if (side[0] != '-') return false;
+    side = side.substr(1);
+  }
+  if (side == "left") *h = LabelHAlign::kLeft;
+  else if (side == "right") *h = LabelHAlign::kRight;
+  else return false;
+  return true;
+}
 
 // `{name:latin} {ref}` -> the feature's values, with a token that resolves to
 // nothing dropping out. Returns false when the template HAS tokens and none of
@@ -1001,14 +1031,25 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
         }
         if (layout.contains("text-offset")) {
           const Json& o = layout["text-offset"];
-          if (!o.is_array() || o.size() != 2 || !o[1].is_number())
+          if (!o.is_array() || o.size() != 2 || !o[0].is_number() ||
+              !o[1].is_number())
             return fail(Reject(id, "text-offset is not a constant [x, y]"));
+          L.point_dx_em = o[0].get<double>();
+          L.point_dy_em = o[1].get<double>();
           // Only the perpendicular component survives: the placer offsets
           // across the path, and a GL along-axis offset has no meaning once
           // the run is centred on the geometry. GL's +y is DOWN, the placer's
           // positive offset is LEFT of travel (up on an eastward road), hence
           // the negation.
           L.offset_em = -o[1].get<double>();
+        }
+        if (layout.contains("text-anchor")) {
+          if (!layout["text-anchor"].is_string())
+            return fail(Reject(id, "text-anchor is not a constant"));
+          if (!ParseTextAnchor(layout["text-anchor"].get<std::string>(),
+                               &L.point_halign, &L.point_valign))
+            return fail(Reject(id, "unknown text-anchor: " +
+                                       layout["text-anchor"].get<std::string>()));
         }
         break;
       case OsmStyleLayerType::kCircle:
@@ -1287,6 +1328,11 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
           // from there; the placer's own anchor is the baseline, which put
           // every street name along the top edge of its street.
           lb.along_anchor = LabelAlongAnchor::kCenter;
+        } else {
+          lb.dx = static_cast<int>(std::lround(L.point_dx_em * lb.style.size));
+          lb.dy = static_cast<int>(std::lround(L.point_dy_em * lb.style.size));
+          lb.halign = L.point_halign;
+          lb.valign = L.point_valign;
         }
         break;
       }

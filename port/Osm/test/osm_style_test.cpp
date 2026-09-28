@@ -535,6 +535,46 @@ TEST(OsmStyleSymbol, LinePlacementCarriesTheRoadNameOntoItsRoad) {
   EXPECT_DOUBLE_EQ(lb.offset_px, 6.0);
 }
 
+/// A point label takes text-offset as a pixel dx/dy (ems times the text size,
+/// +y down) and text-anchor as the box alignment, defaulting to centred.
+TEST(OsmStyleSymbol, PointPlacementHonoursTextOffsetAndAnchor) {
+  fv::OsmStyleEngine e;
+  e.SetDrawLabels(true);
+  ASSERT_TRUE(
+      e.LoadText(Wrap(
+           R"({"id":"poi","type":"symbol","source-layer":"poi",
+               "layout":{"text-field":"{name}","text-size":10,
+                         "text-offset":[0.9,2],"text-anchor":"top-left"}},
+              {"id":"town","type":"symbol","source-layer":"place",
+               "layout":{"text-field":"{name}","text-size":10}})"))
+          .ok());
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+
+  fv::VectorFeature poi;
+  poi.type = fv::VectorGeometryType::kPoint;
+  poi.layer = "poi";
+  poi.attributes.push_back({"name", "Boardwalk 12"});
+  poi.parts.push_back({{32.61, -80.07}});
+  ASSERT_TRUE(e.Style(poi, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].label.placement, fv::LabelPlacement::kPoint);
+  EXPECT_EQ(out[0].label.dx, 9);
+  EXPECT_EQ(out[0].label.dy, 20);
+  EXPECT_EQ(out[0].label.halign, fv::LabelHAlign::kLeft);
+  EXPECT_EQ(out[0].label.valign, fv::LabelVAlign::kTop);
+
+  fv::VectorFeature town = poi;
+  town.layer = "place";
+  out.clear();
+  ASSERT_TRUE(e.Style(town, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].label.dx, 0);
+  EXPECT_EQ(out[0].label.dy, 0);
+  EXPECT_EQ(out[0].label.halign, fv::LabelHAlign::kCenter);
+  EXPECT_EQ(out[0].label.valign, fv::LabelVAlign::kCenter);
+}
+
 TEST(OsmStyleSymbol, HaloWidthAndColourCrossTheSeamInDevicePixels) {
   fv::OsmStyleEngine e;
   e.SetDrawLabels(true);

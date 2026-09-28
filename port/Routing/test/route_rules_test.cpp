@@ -559,4 +559,237 @@ TEST(RouteRules, SelectProfileSeedsTheAvoidancesAndTheCallerHasTheLastWord) {
   EXPECT_DOUBLE_EQ(o.toll_penalty, fv::routing::kAvoidExcluded);
 }
 
+// ---------------------------------------------------------------------------
+// The beach (BR2)
+// ---------------------------------------------------------------------------
+
+/// Two boardwalks from an inland road down onto a beach, 187 m apart along the
+/// coastline. Boardwalk to boardwalk is ~632 m over the sand (122 m of path,
+/// 100 m of dry sand, 187 m of beach, and back); the inland road bows north
+/// through node 210 at `road_lat`, which sets how long the way round is.
+///
+///        210                      inland road 201-210-203
+///   201       203
+///    |         |                  paths
+///   202       204                 path ends, inside the beach
+///   91 -- 92 -- 93                coastline, the beach's seaward edge
+std::string BeachChoiceOsm(double road_lat) {
+  char road[96];
+  std::snprintf(road, sizeof(road), R"( <node id="210" lat="%.7f" lon="-79.9980000"/>)",
+                road_lat);
+  return std::string(R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="90" lat="32.6000000" lon="-80.0000000"/>
+ <node id="91" lat="32.6000000" lon="-79.9990000"/>
+ <node id="92" lat="32.6000000" lon="-79.9980000"/>
+ <node id="93" lat="32.6000000" lon="-79.9970000"/>
+ <node id="94" lat="32.6000000" lon="-79.9960000"/>
+ <node id="95" lat="32.6010000" lon="-79.9990000"/>
+ <node id="96" lat="32.6010000" lon="-79.9970000"/>
+ <node id="201" lat="32.6020000" lon="-79.9990000"/>
+ <node id="202" lat="32.6009000" lon="-79.9990000"/>
+ <node id="203" lat="32.6020000" lon="-79.9970000"/>
+ <node id="204" lat="32.6009000" lon="-79.9970000"/>
+)") + road + R"(
+ <way id="900">
+  <nd ref="90"/><nd ref="91"/><nd ref="92"/><nd ref="93"/><nd ref="94"/>
+  <tag k="natural" v="coastline"/>
+ </way>
+ <way id="901">
+  <nd ref="91"/><nd ref="95"/><nd ref="96"/><nd ref="93"/><nd ref="92"/><nd ref="91"/>
+  <tag k="natural" v="beach"/>
+ </way>
+ <way id="301">
+  <nd ref="201"/><nd ref="202"/><tag k="highway" v="path"/><tag k="name" v="West Walk"/>
+ </way>
+ <way id="302">
+  <nd ref="203"/><nd ref="204"/><tag k="highway" v="path"/><tag k="name" v="East Walk"/>
+ </way>
+ <way id="303">
+  <nd ref="201"/><nd ref="210"/><nd ref="203"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Inland Road"/>
+ </way>
+</osm>
+)";
+}
+
+RoadGraph BuildBeachChoiceGraph(double road_lat) {
+  RoadGraph g;
+  fv::routing::RoadGraphBuildOptions options;
+  options.beaches = true;
+  const fv::Status s = fv::routing::BuildRoadGraph(
+      {WriteFile("rules-beach.osm", BeachChoiceOsm(road_lat))}, options, &g, nullptr);
+  EXPECT_EQ(s.code, fv::kOk) << s.message;
+  return g;
+}
+
+/// A bicycle profile with every class at weight 1.0 and one speed, so cost is
+/// proportional to length and the fixtures' distances decide.
+const char* kFlatBeachRules = R"({"version":1,"profiles":{"ride":{
+    "mode":"bicycle","speed":{"source":"fixed","kph":12.0},"metric":"time",
+    "unlisted_classes":1.0,"beach_penalty":"exclude","beach_prefer_factor":0.5}}})";
+
+double BeachMetres(const Route& r) {
+  double m = 0.0;
+  for (const fv::routing::RouteLeg& leg : r.legs) m += leg.klass == "beach" ? leg.length_m : 0.0;
+  return m;
+}
+
+Route RideBeachChoice(const RoadGraph& g, const RouteOptions& o) {
+  Route r;
+  EXPECT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 201), NodeByOsmId(g, 203), o, &r).code,
+            fv::kOk);
+  EXPECT_TRUE(r.found);
+  return r;
+}
+
+TEST(RouteRules, BeachPenaltyParsesAndTheBeachIsExcludedByDefault) {
+  const auto rules = ParseOk(R"({"version":1,"profiles":{
+      "open":   {"mode":"foot","beach_penalty":1.5,"beach_prefer_factor":0.25},
+      "silent": {"mode":"foot"}}})");
+  ASSERT_NE(rules, nullptr);
+  EXPECT_DOUBLE_EQ(rules->Find("open")->beach_penalty, 1.5);
+  EXPECT_DOUBLE_EQ(rules->Find("open")->beach_prefer_factor, 0.25);
+  // Unlike toll and ferry, saying nothing excludes: `foot` admits every
+  // unlisted class, and a rule file written before the beach existed must not
+  // start walking people across it.
+  EXPECT_DOUBLE_EQ(rules->Find("silent")->beach_penalty, fv::routing::kAvoidExcluded);
+
+  // Every builtin and shipped profile excludes it, and none routes onto it.
+  std::shared_ptr<const RouteRules> shipped;
+  ASSERT_EQ(RouteRules::Load(FV_ROUTE_RULES_FILE, &shipped).code, fv::kOk);
+  const RoadGraph g = BuildBeachChoiceGraph(32.6100);  // road ~2.3 km round
+  for (const auto& set : {RouteRules::Builtin(), shipped}) {
+    for (const std::string& name : set->names()) {
+      const fv::routing::RouteProfile* p = set->Find(name);
+      EXPECT_DOUBLE_EQ(p->beach_penalty, fv::routing::kAvoidExcluded) << name;
+      RouteOptions o;
+      ASSERT_EQ(SelectProfile(set, name, &o).code, fv::kOk);
+      Route r;
+      ASSERT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 201), NodeByOsmId(g, 203), o, &r).code,
+                fv::kOk);
+      EXPECT_DOUBLE_EQ(BeachMetres(r), 0.0) << set->origin() << " " << name;
+    }
+  }
+}
+
+TEST(RouteRules, BeachOverridesAdmitTheBeach) {
+  const RoadGraph g = BuildBeachChoiceGraph(32.6100);
+  RouteOptions o;
+  ASSERT_EQ(SelectProfile(RouteRules::Builtin(), "bicycle", &o).code, fv::kOk);
+  EXPECT_DOUBLE_EQ(BeachMetres(RideBeachChoice(g, o)), 0.0);
+
+  RouteOptions penalty = o;
+  penalty.beach_penalty = 1.0;
+  EXPECT_GT(BeachMetres(RideBeachChoice(g, penalty)), 150.0);
+
+  RouteOptions chosen = o;
+  chosen.beach = fv::routing::BeachUse::kToSaveTime;
+  EXPECT_GT(BeachMetres(RideBeachChoice(g, chosen)), 150.0);
+
+  // Never wins over a profile that admits the beach.
+  RouteOptions never = penalty;
+  never.beach = fv::routing::BeachUse::kNever;
+  EXPECT_DOUBLE_EQ(BeachMetres(RideBeachChoice(g, never)), 0.0);
+}
+
+TEST(RouteRules, ToSaveTimeTakesTheBeachOnlyWhenFasterWheneverPossibleWhenNotMuchSlower) {
+  const auto rules = ParseOk(kFlatBeachRules);
+  ASSERT_NE(rules, nullptr);
+  RouteOptions o;
+  ASSERT_EQ(SelectProfile(rules, "ride", &o).code, fv::kOk);
+  RouteOptions save_time = o, whenever = o;
+  save_time.beach = fv::routing::BeachUse::kToSaveTime;
+  whenever.beach = fv::routing::BeachUse::kWheneverPossible;
+
+  // Road ~600 m round against ~632 m over the sand: the beach is slightly slower.
+  const RoadGraph slower = BuildBeachChoiceGraph(32.6045650);
+  const Route road = RideBeachChoice(slower, save_time);
+  const Route sand = RideBeachChoice(slower, whenever);
+  EXPECT_DOUBLE_EQ(BeachMetres(road), 0.0);
+  EXPECT_GT(BeachMetres(sand), 150.0);
+  EXPECT_GT(sand.length_m, road.length_m);
+
+  // Road ~700 m round: the beach is faster, and both take it.
+  const RoadGraph faster = BuildBeachChoiceGraph(32.6050330);
+  EXPECT_GT(BeachMetres(RideBeachChoice(faster, save_time)), 150.0);
+  EXPECT_GT(BeachMetres(RideBeachChoice(faster, whenever)), 150.0);
+}
+
+TEST(RouteRules, WheneverPossibleDoesNotDiscountTheDrySand) {
+  const RoadGraph g = BuildBeachChoiceGraph(32.6045650);
+  RouteOptions o;
+  ASSERT_EQ(SelectProfile(ParseOk(kFlatBeachRules), "ride", &o).code, fv::kOk);
+  o.beach = fv::routing::BeachUse::kWheneverPossible;
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    const fv::routing::RoadArc& arc = g.arc(i);
+    if (arc.klass == RoadClass::kBeach) EXPECT_DOUBLE_EQ(fv::routing::BeachFactor(arc, o), 0.5);
+    if (arc.klass == RoadClass::kBeachAccess)
+      EXPECT_DOUBLE_EQ(fv::routing::BeachFactor(arc, o), 1.0);
+  }
+}
+
+TEST(RouteRules, ClassSpeedsTimeTheBeachAndTheReportedSecondsAgree) {
+  const auto rules = ParseOk(R"({"version":1,"profiles":{
+      "flat": {"mode":"bicycle","speed":{"source":"fixed","kph":12.0},"unlisted_classes":1.0},
+      "sand": {"extends":"flat","class_kph":{"beach":6.0,"beach_access":3.0}}}})");
+  ASSERT_NE(rules, nullptr);
+  EXPECT_DOUBLE_EQ(rules->Find("sand")->Seconds(600.0, 0, RoadClass::kBeach), 360.0);
+  EXPECT_DOUBLE_EQ(rules->Find("sand")->Seconds(600.0, 0, RoadClass::kPath), 180.0);
+  EXPECT_DOUBLE_EQ(rules->Find("flat")->Seconds(600.0, 0, RoadClass::kBeach), 180.0);
+
+  const RoadGraph g = BuildBeachChoiceGraph(32.6100);
+  Route flat, sand;
+  for (auto [name, out] : {std::pair{"flat", &flat}, std::pair{"sand", &sand}}) {
+    RouteOptions o;
+    ASSERT_EQ(SelectProfile(rules, name, &o).code, fv::kOk);
+    o.beach = fv::routing::BeachUse::kToSaveTime;
+    *out = RideBeachChoice(g, o);
+  }
+  ASSERT_EQ(flat.nodes, sand.nodes);
+  double beach_m = 0.0, access_m = 0.0, leg_s = 0.0;
+  for (const fv::routing::RouteLeg& leg : sand.legs) {
+    if (leg.klass == "beach") beach_m += leg.length_m;
+    if (leg.klass == "beach_access") access_m += leg.length_m;
+    leg_s += leg.seconds;
+  }
+  ASSERT_GT(beach_m, 150.0);
+  ASSERT_GT(access_m, 150.0);
+  const double mps = 12.0 / 3.6;
+  EXPECT_NEAR(sand.seconds - flat.seconds,
+              beach_m / (6.0 / 3.6) - beach_m / mps + access_m / (3.0 / 3.6) - access_m / mps,
+              1e-6);
+  EXPECT_NEAR(leg_s, sand.seconds, 1e-6);
+}
+
+TEST(RouteRules, BeachKeysRejectWhatTheyCannotUnderstand) {
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"p":{"beach_penalti":1.0}}})")
+                .find("unknown key"),
+            std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"p":{"beach_prefer_factor":1.5}}})")
+                .find("at most 1.0"),
+            std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"p":{"beach_prefer_factor":0}}})")
+                .find("greater than zero"),
+            std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"p":{"class_kph":{"beech":4}}}})")
+                .find("not a routable road class"),
+            std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"p":{"class_kph":{"beach":0}}}})")
+                .find("greater than zero"),
+            std::string::npos);
+}
+
+TEST(RouteRules, SelectProfileSeedsTheBeachSettings) {
+  const auto rules = ParseOk(R"({"version":1,"profiles":{
+      "p":{"mode":"foot","beach_penalty":2.0,"beach_prefer_factor":0.3}}})");
+  ASSERT_NE(rules, nullptr);
+  RouteOptions o;
+  EXPECT_DOUBLE_EQ(o.beach_penalty, fv::routing::kAvoidExcluded);
+  ASSERT_EQ(SelectProfile(rules, "p", &o).code, fv::kOk);
+  EXPECT_DOUBLE_EQ(o.beach_penalty, 2.0);
+  EXPECT_DOUBLE_EQ(o.beach_prefer_factor, 0.3);
+  EXPECT_EQ(o.beach, fv::routing::BeachUse::kProfileDefault);
+}
+
 }  // namespace

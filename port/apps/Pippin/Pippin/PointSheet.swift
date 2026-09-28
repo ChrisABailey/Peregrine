@@ -131,9 +131,13 @@ enum PointPalette {
         var color: Color { PointPalette.color(hex) ?? .gray }
     }
 
+    /// The badge colour of a place shared in from another app.
+    static let yellowHex = "#f5c518"
+
     static let swatches: [Swatch] = [
         Swatch(hex: "#c82828", name: "Red"),
         Swatch(hex: "#e1a01e", name: "Amber"),
+        Swatch(hex: yellowHex, name: "Yellow"),
         Swatch(hex: "#1e8c46", name: "Green"),
         Swatch(hex: "#285ad2", name: "Blue"),
         Swatch(hex: "#8246a0", name: "Plum"),

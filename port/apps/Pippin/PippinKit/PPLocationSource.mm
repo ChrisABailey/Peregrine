@@ -120,9 +120,9 @@ PPLocationSample SampleFromLocation(CLLocation* l) {
   // A bike on an island, and the plan's own settings. `BestForNavigation`
   // asks for the receiver's best and lets it use the accelerometers.
   _manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation;
-  // Every update, not every N metres: the moving map wants a fix while the
-  // rider is stopped at a junction as much as while they are moving.
-  _manager.distanceFilter = kCLDistanceFilterNone;
+  // Two metres: a stopped rider generates no fixes, so the map stops drawing.
+  // Well under a fix's own accuracy, so a moving rider still reports at 1 Hz.
+  _manager.distanceFilter = 2.0;
   // CoreLocation pauses updates when it thinks the journey has ended, and
   // resuming is the app's job. A navigation app that quietly stops navigating
   // is worse than one that costs a little more battery.

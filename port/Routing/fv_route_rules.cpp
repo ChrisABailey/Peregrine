@@ -25,7 +25,9 @@ using Json = nlohmann::json;
 // O5e added `"ferry": 1.0` to the two profiles that exclude what they do not
 // list. That is the ONLY departure from the O5b numbers these rules
 // reproduce, and it cannot change an existing answer: no graph built before
-// O5e holds an arc of that class.
+// O5e holds an arc of that class. The beach classes, their speeds and
+// `beach_penalty: "exclude"` are the same kind of addition: the beach is out
+// of every profile until a query admits it.
 // Kept as JSON rather than a table of structs so that there is exactly ONE
 // parser, and so the default is exercised by the same code path every load
 // takes — a schema change that breaks files breaks the built-in rules too,
@@ -68,8 +70,12 @@ const char* const kBuiltinRules = R"JSON({
         "track": 1.0, "unclassified": 1.0, "service": 1.0,
         "tertiary": 1.0, "secondary": 1.0,
         "footway": 1.5, "pedestrian": 1.5,
-        "ferry": 1.0
-      }
+        "ferry": 1.0,
+        "beach": 0.65, "beach_access": 1.5
+      },
+      "class_kph": { "beach": 10.0, "beach_access": 4.0 },
+      "beach_penalty": "exclude",
+      "beach_prefer_factor": 0.5
     },
     "foot": {
       "description": "Walking at a flat speed; anything on foot, no class preference.",
@@ -79,7 +85,10 @@ const char* const kBuiltinRules = R"JSON({
       "turn_restrictions": false,
       "private_penalty": 5.0,
       "unlisted_classes": 1.0,
-      "classes": {}
+      "classes": {},
+      "class_kph": { "beach": 5.0, "beach_access": 3.0 },
+      "beach_penalty": "exclude",
+      "beach_prefer_factor": 0.5
     },
     "car_shortest": {
       "description": "Driving, minimising distance instead of time.",
@@ -104,8 +113,10 @@ int64_t NowMs() {
 bool KnownProfileKey(const std::string& k) {
   return k == "description" || k == "extends" || k == "mode" || k == "speed" ||
          k == "metric" || k == "turn_restrictions" || k == "private_penalty" ||
-         k == "toll_penalty" || k == "ferry_penalty" ||
-         k == "unlisted_classes" || k == "classes";
+         k == "toll_penalty" || k == "ferry_penalty" || k == "beach_penalty" ||
+         k == "golf_cartpath_penalty" || k == "golf_path_penalty" ||
+         k == "beach_prefer_factor" || k == "unlisted_classes" || k == "classes" ||
+         k == "class_kph";
 }
 
 Status ParseMode(const Json& v, const std::string& where, TravelMode* out) {
@@ -236,13 +247,37 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
   // ParseWeight is also what keeps "exclude" spelled one way across the file.
   struct AvoidKey { const char* key; double* slot; };
   const AvoidKey avoid_keys[] = {{"toll_penalty", &p.toll_penalty},
-                                 {"ferry_penalty", &p.ferry_penalty}};
+                                 {"ferry_penalty", &p.ferry_penalty},
+                                 {"golf_cartpath_penalty", &p.golf_cartpath_penalty},
+                                 {"golf_path_penalty", &p.golf_path_penalty},
+                                 {"beach_penalty", &p.beach_penalty}};
   for (const AvoidKey& a : avoid_keys) {
     if (!obj.contains(a.key)) continue;
     double v = 1.0;
     const Status s = ParseWeight(obj[a.key], where, std::string("'") + a.key + "'", &v);
     if (!s.ok()) return s;
     *a.slot = (v == kClassExcluded) ? kAvoidExcluded : v;
+  }
+
+  if (obj.contains("beach_prefer_factor")) {
+    const Json& v = obj["beach_prefer_factor"];
+    if (!v.is_number()) return Fail(where, "'beach_prefer_factor' must be a number");
+    p.beach_prefer_factor = v.get<double>();
+    if (!(p.beach_prefer_factor > 0.0 && p.beach_prefer_factor <= 1.0))
+      return Fail(where, "'beach_prefer_factor' must be greater than zero and at most 1.0");
+  }
+
+  // Overlays key by key on a profile that extends another, like "classes".
+  if (obj.contains("class_kph")) {
+    if (!obj["class_kph"].is_object()) return Fail(where, "'class_kph' must be an object");
+    for (auto it = obj["class_kph"].begin(); it != obj["class_kph"].end(); ++it) {
+      const RoadClass klass = RoadClassFromName(it.key());
+      if (klass == RoadClass::kNone)
+        return Fail(where, "'class_kph." + it.key() + "' is not a routable road class");
+      if (!it.value().is_number() || !(it.value().get<double>() > 0.0))
+        return Fail(where, "'class_kph." + it.key() + "' must be a speed greater than zero");
+      p.class_kph[static_cast<size_t>(klass)] = it.value().get<double>();
+    }
   }
 
   // `unlisted_classes` sets every class the object does not name, so it has to
@@ -277,11 +312,13 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
 
 }  // namespace
 
-double RouteProfile::Seconds(double length_m, int posted_kph) const {
+double RouteProfile::Seconds(double length_m, int posted_kph, RoadClass klass) const {
   double kph = fixed_kph;
   if (speed_source == SpeedSource::kPosted) {
     kph = posted_kph > 0 ? static_cast<double>(posted_kph) : 1.0;
   }
+  if (klass < RoadClass::kCount && class_kph[static_cast<size_t>(klass)] > 0.0)
+    kph = class_kph[static_cast<size_t>(klass)];
   if (!(kph > 0.0)) kph = 1.0;
   return length_m / (kph * (1000.0 / 3600.0));
 }
@@ -509,6 +546,10 @@ Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::
   options->private_penalty = p->private_penalty;
   options->toll_penalty = p->toll_penalty;
   options->ferry_penalty = p->ferry_penalty;
+  options->golf_cartpath_penalty = p->golf_cartpath_penalty;
+  options->golf_path_penalty = p->golf_path_penalty;
+  options->beach_penalty = p->beach_penalty;
+  options->beach_prefer_factor = p->beach_prefer_factor;
   return Status::Ok();
 }
 

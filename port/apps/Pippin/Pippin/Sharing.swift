@@ -90,7 +90,14 @@ struct RecordedRide: Identifiable, Hashable {
 
     var id: URL { url }
 
-    var title: String { RideLibrary.titleFormatter.string(from: recordedAt) }
+    /// An energy log, not a track. Listed beside the rides so it can be
+    /// shared and deleted the same way.
+    var isEnergyLog: Bool { url.pathExtension.lowercased() == "csv" }
+
+    var title: String {
+        let date = RideLibrary.titleFormatter.string(from: recordedAt)
+        return isEnergyLog ? "Energy log, " + date : date
+    }
 
     var subtitle: String {
         ByteCountFormatter.string(fromByteCount: Int64(byteCount),
@@ -125,11 +132,11 @@ enum RideLibrary {
             ext: "gpx")
     }
 
-    /// Every recorded ride, newest first.
+    /// Every recorded ride and energy log, newest first.
     static func rides() -> [RecordedRide] {
-        DocumentFolder
-            .entries(in: directory(), ext: "gpx",
-                     keys: [.creationDateKey, .fileSizeKey])
+        let keys: [URLResourceKey] = [.creationDateKey, .fileSizeKey]
+        return (DocumentFolder.entries(in: directory(), ext: "gpx", keys: keys)
+                + DocumentFolder.entries(in: directory(), ext: "csv", keys: keys))
             .map { url, values in
                 RecordedRide(url: url,
                              recordedAt: values?.creationDate ?? .distantPast,

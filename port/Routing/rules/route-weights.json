@@ -19,6 +19,7 @@
 //
 //   cost(arc) = base(arc) * classes[arc.class] * (private ? private_penalty : 1)
 //                         * (tolled ? toll_penalty : 1) * (ferry ? ferry_penalty : 1)
+//                         * (beach ? the beach setting : 1)
 //
 // Weights bias which road is chosen. They cannot make one shorter than it is.
 //
@@ -26,6 +27,26 @@
 // `route=ferry` way is admitted to the graph as its own class, timed by its own
 // `duration` tag rather than by the profile's speed. A profile that excludes
 // what it does not list must name it or no route of that profile can board.
+//
+// "beach" and "beach_access" are classes the same way: "beach" is the firm sand
+// along the water's edge, "beach_access" the dry sand between a boardwalk's end
+// and it. Both exist only in a graph built with `fvgraph build --beach`. A
+// profile's "beach_penalty" is its default for both, "exclude" everywhere here:
+// the rider's "Use beach:" setting admits them per route. That setting is
+//   Never              — excluded, whatever beach_penalty says
+//   To Save Time       — both classes at their weighted cost times 1.0
+//   Whenever Possible  — "beach" arcs times beach_prefer_factor (in (0, 1]), so
+//                        0.5 keeps a route on the sand for a detour of up to ~2x;
+//                        "beach_access" is never discounted.
+// "class_kph" gives a class its own speed, overriding "speed" for that class.
+// It is a clock, not a preference: the reported duration uses it too.
+//
+// Golf ways are not a class of their own: a golf course's paths are tagged
+// `highway=path` or `service` like any other, plus `golf=cartpath` for the cart
+// paths and `golf=path` for the golfers' footpaths between holes.
+// "golf_cartpath_penalty" and "golf_path_penalty" price them in the same grammar
+// as the avoidances, on top of the class weight. A bicycle profile does not
+// apply "golf_path_penalty" to a way tagged `bicycle=designated`.
 
 {
   "version": 1,
@@ -108,13 +129,23 @@
         "service": 1.0,
         "tertiary": 2.0,
         "secondary": 3.0,
-        "footway": 1.1,         // walking the bike
-        "pedestrian": 1.1,
-        "ferry": 1.0            // bikes board almost anything that floats
+        "footway": 1.5,         // walking the bike
+        "pedestrian": 1.5,      // walking the bike
+        "ferry": 1.0,           // bikes board almost anything that floats
+        "beach": 0.75,          // firm sand at low water rides like a path
+        "beach_access": 1.5     // dry sand is walking the bike, like a footway
         // Motorway/trunk/primary and every _link off them are absent, so a bike
         // may not use them. Steps too — carrying a bike up a staircase is not a
         // route anyone asked for.
-      }
+      },
+      // Firm sand is slower than pavement; dry sand is pushing the bike.
+      "class_kph": { "beach": 10.0, "beach_access": 4.0 },
+      "beach_penalty": "exclude",
+      "beach_prefer_factor": 0.5,
+      // Cart paths are for carts. A golfers' footpath is used only for a real
+      // saving, unless the way says bicycle=designated.
+      "golf_cartpath_penalty": "exclude",
+      "golf_path_penalty": 10.0
     },
 
     // -----------------------------------------------------------------------
@@ -129,9 +160,23 @@
       "private_penalty": 1.0,
 
       // Walking is the one profile with no class filter of its own: what a
-      // pedestrian may use is decided by the arc's foot-access bits alone.
+      // pedestrian may use is decided by the arc's foot-access bits alone. The
+      // weights below only steer it off the busier streets.
       "unlisted_classes": 1.0,
-      "classes": {}
+      "classes": {
+        "tertiary": 2.0,        // busier streets, walked only when they save the time
+        "tertiary_link": 2.0,
+        "secondary": 3.0,
+        "secondary_link": 3.0,
+        "beach": 1.0,
+        "beach_access": 1.0
+      },
+      // Firm sand walks at pavement pace; dry sand is slower going.
+      "class_kph": { "beach": 5.0, "beach_access": 3.0 },
+      "beach_penalty": "exclude",
+      "beach_prefer_factor": 0.5,
+      // Cart paths are for carts, not walkers.
+      "golf_cartpath_penalty": "exclude"
     },
 
     // -----------------------------------------------------------------------

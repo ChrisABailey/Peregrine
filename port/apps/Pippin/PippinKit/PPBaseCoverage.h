@@ -21,7 +21,7 @@
 //      engine choose a zoom level from the scale, so a base reused across a
 //      zoom is a picture the style never asked for; `VectorScene::CanServe`
 //      refuses for the same reason. A pinch therefore misses every frame,
-//      which is what it did before the cache existed. See `bandMargin` in
+//      which is what it did before the cache existed. See `band` in
 //      `PPMap.h` for why a pinch must not be charged for the band either.
 //
 //   2. Has the chart turned too far? A quality limit rather than a coverage
@@ -37,6 +37,19 @@
 //      are affine, so four corners settle a rectangle exactly, with no
 //      sampling and no margin fraction to tune. Eight multiply-adds, which is
 //      why it can be asked every frame.
+//
+// Under the base sits the underlay: the map two zoom levels out at screen
+// size, built when the loop is idle, so whatever the band does not reach is
+// shown soft rather than blank. `ScreenCoverage` says which layer reaches
+// every part of the live screen, and `UnderlayServes` when the underlay is
+// due to be rebuilt.
+//
+// The band is kept at rest. It grows by whole, equal pixels on each side, so a
+// band drawn at the live camera lands on the screen's pixels and is shown
+// unfiltered (`PixelAligned`); a drag then starts covered. During a gesture
+// the shell redraws the band early, when the screen predicted one draw ahead
+// comes within a fraction of the edge (`BandHeadroomPx`), and draws it ahead
+// of the finger (`BandLead`).
 //
 // Nothing here is about content. A route replanning, a point being dragged
 // and the ownship moving are all overlay changes, and the overlay is redrawn
@@ -72,17 +85,34 @@ struct BaseCoverageLimits {
   double edge_inset_px = 1.0;
 };
 
-// The size of the guard band, in the same unit the surface is given in.
-// `margin` is the fraction added on each side, so 0.25 is 2.25x the pixels.
-// Rounded outward, and never smaller than the surface it grows.
-inline void GrownSurfaceSize(double width, double height, double margin,
-                             double* out_width, double* out_height) {
+// The size of the guard band in device pixels. `margin` is the fraction of
+// each axis added on each side, so 0.25 is 2.25x the pixels. Each side grows
+// by a whole number of pixels and both sides by the same number, so the
+// band's centre pixel lands on the screen's and a band drawn at the live
+// camera composites without resampling (`PixelAligned`).
+//
+// `rotation_safe` grows each axis to the screen's diagonal plus half the
+// normal margin of the short side, so any turn of the screen inside the band
+// keeps its corners covered. At 0.25 on a 393x852 pt screen that is about
+// 3.2x the screen's pixels; the diagonal alone would leave 43 pt of headroom
+// top and bottom, less than the refresh threshold.
+inline void GrownSurfacePixels(int width, int height, double margin,
+                               bool rotation_safe, int* out_width,
+                               int* out_height) {
   const double m = (margin > 0.0 && std::isfinite(margin)) ? margin : 0.0;
-  const double k = 1.0 + 2.0 * m;
-  *out_width = std::ceil(width * k);
-  *out_height = std::ceil(height * k);
-  if (*out_width < width) *out_width = width;
-  if (*out_height < height) *out_height = height;
+  const double w = width, h = height;
+  double gx = std::ceil(w * m);
+  double gy = std::ceil(h * m);
+  if (rotation_safe) {
+    const double reach = std::sqrt(w * w + h * h) / 2.0 +
+                         0.5 * std::ceil((w < h ? w : h) * m);
+    gx = std::ceil(reach - w / 2.0);
+    gy = std::ceil(reach - h / 2.0);
+    if (gx < 0.0) gx = 0.0;
+    if (gy < 0.0) gy = 0.0;
+  }
+  *out_width = width + 2 * (int)gx;
+  *out_height = height + 2 * (int)gy;
 }
 
 // True when the base map drawn for `base` can be composited for `live`
@@ -137,6 +167,177 @@ inline bool BaseCovers(const fv::MapProjection& base,
     }
   }
   return true;
+}
+
+// True when the base's pixels land exactly on the live screen's: the same
+// scale, pitch and rotation, the screen's pixel centres on whole base pixels,
+// and the screen inside the base. Such a base is shown unfiltered and needs no
+// settle frame, whatever its size and wherever the screen sits in it.
+inline bool PixelAligned(const fv::MapProjection& base,
+                         const fv::MapProjection& live) {
+  if (!base.Ready() || !live.Ready()) return false;
+  if (!(base.Scale() == live.Scale())) return false;
+  if (!(base.MmPerPixel() == live.MmPerPixel())) return false;
+  if (!(std::fabs(fv::ShortestRotationDelta(base.Rotation(), live.Rotation())) <
+        1e-9))
+    return false;
+  const fv::PixelSize lsz = live.SurfaceSize();
+  const fv::PixelSize bsz = base.SurfaceSize();
+  if (lsz.width <= 0 || lsz.height <= 0 || bsz.width < lsz.width ||
+      bsz.height < lsz.height)
+    return false;
+  // Two opposite corners pin an affine map with no turn and no scale: both
+  // must land on whole pixels a screen apart. The projection's x scale follows
+  // the centre latitude, so after a north-south pan the two grids differ by
+  // thousandths of a pixel across the screen; unfiltered sampling still picks
+  // the same pixel for anything under a tenth.
+  constexpr double kTol = 0.1;
+  const double lx[2] = {0.0, (double)lsz.width - 1.0};
+  const double ly[2] = {0.0, (double)lsz.height - 1.0};
+  double bx[2], by[2];
+  for (int i = 0; i < 2; ++i) {
+    fv::GeoPoint g;
+    if (!live.SurfaceToGeo(lx[i], ly[i], &g).ok()) return false;
+    if (!base.GeoToSurface(g, &bx[i], &by[i]).ok()) return false;
+    if (!std::isfinite(bx[i]) || !std::isfinite(by[i])) return false;
+    if (std::fabs(bx[i] - std::round(bx[i])) > kTol ||
+        std::fabs(by[i] - std::round(by[i])) > kTol)
+      return false;
+  }
+  if (std::fabs((bx[1] - bx[0]) - lx[1]) > kTol ||
+      std::fabs((by[1] - by[0]) - ly[1]) > kTol)
+    return false;
+  const double ox = std::round(bx[0]);
+  const double oy = std::round(by[0]);
+  return ox >= 0.0 && oy >= 0.0 && ox + lsz.width <= bsz.width &&
+         oy + lsz.height <= bsz.height;
+}
+
+// How far the live screen is from the base's edge, in base pixels: the
+// smallest distance from any live corner to any edge of the base surface.
+// Negative when a corner is already past the edge. Scale and turn are not
+// refused; this is geometry only, asked of a camera predicted one draw ahead.
+inline double BandHeadroomPx(const fv::MapProjection& base,
+                             const fv::MapProjection& live) {
+  const double kNone = -1e300;
+  if (!base.Ready() || !live.Ready()) return kNone;
+  const fv::PixelSize lsz = live.SurfaceSize();
+  const fv::PixelSize bsz = base.SurfaceSize();
+  if (lsz.width <= 0 || lsz.height <= 0 || bsz.width <= 0 || bsz.height <= 0)
+    return kNone;
+  const double lx[2] = {-0.5, (double)lsz.width - 0.5};
+  const double ly[2] = {-0.5, (double)lsz.height - 0.5};
+  const double hi_x = (double)bsz.width - 0.5;
+  const double hi_y = (double)bsz.height - 0.5;
+  double least = 1e300;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      fv::GeoPoint g;
+      if (!live.SurfaceToGeo(lx[i], ly[j], &g).ok()) return kNone;
+      double bx = 0.0, by = 0.0;
+      if (!base.GeoToSurface(g, &bx, &by).ok()) return kNone;
+      if (!std::isfinite(bx) || !std::isfinite(by)) return kNone;
+      const double d[4] = {bx + 0.5, hi_x - bx, by + 0.5, hi_y - by};
+      for (double v : d) least = v < least ? v : least;
+    }
+  }
+  return least;
+}
+
+// The distance to lead the band by along one screen axis, in points: the
+// pan velocity times the expected draw time, capped at `max_fraction` of the
+// band's margin on that axis so the band still covers the screen if the
+// finger stops before the draw lands.
+inline double BandLead(double velocity_pt_s, double draw_seconds,
+                       double margin_pt, double max_fraction = 0.75) {
+  if (!std::isfinite(velocity_pt_s) || !(draw_seconds > 0.0) ||
+      !(margin_pt > 0.0))
+    return 0.0;
+  const double cap = margin_pt * max_fraction;
+  const double lead = velocity_pt_s * draw_seconds;
+  return lead > cap ? cap : (lead < -cap ? -cap : lead);
+}
+
+// How much further out the underlay is drawn than the camera it serves.
+// Four screens of ground on a screen of pixels in each axis: more than the
+// half-diagonal any turn reaches, and about a screen and a half of pan either
+// way from its centre.
+constexpr double kUnderlayZoomOut = 4.0;
+
+// True when the live surface point (x, y) lands on `layer`'s surface. The
+// half-pixel convention of `BaseCovers`, with no inset: this is a question
+// about what is on screen, not about what the compositor samples.
+inline bool LayerReaches(const fv::MapProjection& layer,
+                         const fv::MapProjection& live, double x, double y) {
+  if (!layer.Ready()) return false;
+  const fv::PixelSize sz = layer.SurfaceSize();
+  if (sz.width <= 0 || sz.height <= 0) return false;
+  fv::GeoPoint g;
+  if (!live.SurfaceToGeo(x, y, &g).ok()) return false;
+  double lx = 0.0, ly = 0.0;
+  if (!layer.GeoToSurface(g, &lx, &ly).ok()) return false;
+  if (!std::isfinite(lx) || !std::isfinite(ly)) return false;
+  return lx >= -0.5 && lx <= (double)sz.width - 0.5 && ly >= -0.5 &&
+         ly <= (double)sz.height - 0.5;
+}
+
+// What the live screen shows, from best to worst.
+enum class ScreenCover {
+  kSharp,       // the base reaches every corner
+  kUnderlay,    // some corner is past the base but inside the underlay
+  kBackground,  // some corner is past both: the style's background colour
+};
+
+// Which layers reach the four corners of the live screen, reported as the
+// worst of them. Both layers are rectangles under affine maps, so a layer
+// that reaches all four corners covers the whole screen. Scale and turn are
+// not refused here, unlike `BaseCovers`: during a pinch the base is scaled
+// on screen and still covers what it covers. `underlay` may be null.
+inline ScreenCover ScreenCoverage(const fv::MapProjection& base,
+                                  const fv::MapProjection* underlay,
+                                  const fv::MapProjection& live) {
+  const fv::PixelSize lsz = live.SurfaceSize();
+  if (!live.Ready() || lsz.width <= 0 || lsz.height <= 0)
+    return ScreenCover::kSharp;
+  const double lx[2] = {-0.5, (double)lsz.width - 0.5};
+  const double ly[2] = {-0.5, (double)lsz.height - 0.5};
+  ScreenCover worst = ScreenCover::kSharp;
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      if (LayerReaches(base, live, lx[i], ly[j])) continue;
+      if (underlay != nullptr && LayerReaches(*underlay, live, lx[i], ly[j])) {
+        worst = ScreenCover::kUnderlay;
+        continue;
+      }
+      return ScreenCover::kBackground;
+    }
+  }
+  return worst;
+}
+
+// True while the underlay built for one camera is still good for `live`.
+// It is rebuilt when the live centre leaves the middle half of its surface,
+// when the live scale has moved more than 2x from the one it was built for
+// (`underlay.Scale() / zoom_out`), or when the screen changed size. Turning
+// never stales it: four screens of ground cover any rotation.
+inline bool UnderlayServes(const fv::MapProjection& underlay,
+                           const fv::MapProjection& live,
+                           double zoom_out = kUnderlayZoomOut) {
+  if (!underlay.Ready() || !live.Ready() || !(zoom_out > 0.0)) return false;
+  const fv::PixelSize usz = underlay.SurfaceSize();
+  const fv::PixelSize lsz = live.SurfaceSize();
+  if (usz.width != lsz.width || usz.height != lsz.height) return false;
+  if (!(underlay.MmPerPixel() == live.MmPerPixel())) return false;
+
+  const double key = underlay.Scale() / zoom_out;
+  const double ratio = live.Scale() / key;
+  if (!(ratio >= 0.5 && ratio <= 2.0)) return false;
+
+  double cx = 0.0, cy = 0.0;
+  if (!underlay.GeoToSurface(live.Center(), &cx, &cy).ok()) return false;
+  const double w = (double)usz.width;
+  const double h = (double)usz.height;
+  return cx >= 0.25 * w && cx <= 0.75 * w && cy >= 0.25 * h && cy <= 0.75 * h;
 }
 
 }  // namespace pippin

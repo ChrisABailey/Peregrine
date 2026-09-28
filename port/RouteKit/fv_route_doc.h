@@ -52,6 +52,18 @@ constexpr int kRouteVersion = 1;
 extern const char kRouteTypeId[];     // "fv.route"
 extern const char kRouteExtension[];  // "fvrte"
 
+/// The rider's "Use beach:" choice as the document stores it: `options.beach`
+/// is "time" or "prefer", and an absent key means never. Mapped onto
+/// `routing::BeachUse` by the planner, so this header stays free of Routing.
+enum class RouteBeach : unsigned char {
+  kNever = 0,
+  kToSaveTime,
+  kWheneverPossible,
+};
+
+/// The `options.beach` spelling of `v`, or "" for kNever (which is not written).
+const char* RouteBeachKey(RouteBeach v);
+
 // One waypoint. The label is the IDENTITY — route.py selects and deletes by
 // it, and two waypoints sharing one label would delete as a pair — so it is
 // carried rather than derived from the index.
@@ -86,6 +98,12 @@ class RouteDoc {
   const std::string& profile() const { return profile_; }
   void set_profile(std::string v) { profile_ = std::move(v); }
 
+  /// Whether the route may use the beach. Written under `options` only when
+  /// it is not kNever, so a document without it is byte-identical to one
+  /// written before the key existed.
+  RouteBeach beach() const { return beach_; }
+  void set_beach(RouteBeach v) { beach_ = v; }
+
   const std::vector<RouteWaypoint>& waypoints() const { return waypoints_; }
   std::vector<RouteWaypoint>& waypoints() { return waypoints_; }
   void set_waypoints(std::vector<RouteWaypoint> v) { waypoints_ = std::move(v); }
@@ -117,6 +135,7 @@ class RouteDoc {
   std::string name_;
   FvColor color_{220, 30, 30, 255};  // route.py's default red
   std::string profile_;
+  RouteBeach beach_ = RouteBeach::kNever;
   std::vector<RouteWaypoint> waypoints_;
 };
 

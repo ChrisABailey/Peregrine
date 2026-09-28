@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -304,6 +305,103 @@ TEST(RouteStore, ARouteSurvivesARelaunchWITHItsRoads) {
   // the rules did not change, so the geometry the document did not carry comes
   // back identical.
   EXPECT_DOUBLE_EQ(length, snap.length_m);
+}
+
+// The beach twin of the relaunch test. The setting is a document field,
+// so the cold start replans onto the same sand.
+TEST(RouteStore, ARouteSurvivesARelaunchWITHItsBeach) {
+  SKIP_WITHOUT_GRAPH();
+  TempDocument doc("relaunch_beach");
+  const std::vector<RouteWaypoint> boardwalks = {
+      RouteWaypoint{"BW29", fv::GeoPoint{32.602374, -80.0838337}},
+      RouteWaypoint{"BW41", fv::GeoPoint{32.6100451, -80.045189}}};
+
+  double length = 0.0;
+  {
+    RouteStore store(graph, RulesFile(), doc.path());
+    const RouteSnapshot snap =
+        store.SetWaypoints(boardwalks, "bicycle", fv::RouteBeach::kWheneverPossible);
+    ASSERT_TRUE(snap.complete) << snap.status;
+    EXPECT_EQ(fv::RouteBeach::kWheneverPossible, snap.beach);
+    ASSERT_EQ(1u, snap.beach_stretches.size());
+    length = snap.length_m;
+
+    // An edit that names no beach keeps the route's own.
+    const RouteSnapshot again = store.SetWaypoints(boardwalks, "");
+    EXPECT_EQ(fv::RouteBeach::kWheneverPossible, again.beach);
+    EXPECT_DOUBLE_EQ(length, again.length_m);
+  }
+
+  RouteStore relaunched(graph, RulesFile(), doc.path());
+  ASSERT_TRUE(relaunched.LoadAtLaunch().ok());
+  const RouteSnapshot snap = relaunched.Snapshot();
+  EXPECT_EQ(fv::RouteBeach::kWheneverPossible, snap.beach);
+  EXPECT_TRUE(snap.complete);
+  EXPECT_EQ(1u, snap.beach_stretches.size());
+  EXPECT_DOUBLE_EQ(length, snap.length_m);
+
+  // And back to never: the stretch goes, and so does the key on disk.
+  const RouteSnapshot road =
+      relaunched.SetWaypoints(boardwalks, "", fv::RouteBeach::kNever);
+  EXPECT_TRUE(road.beach_stretches.empty());
+  EXPECT_GT(road.length_m, length);
+  fv::RouteDoc saved;
+  ASSERT_TRUE(saved.Read(doc.path()).ok());
+  EXPECT_EQ(fv::RouteBeach::kNever, saved.beach());
+}
+
+// Without a table the beach is kept and judged unknown; with one, high water
+// takes it off the route and the snapshot says why.
+TEST(RouteStore, TheTideGatesTheBeachAndNoTableKeepsIt) {
+  SKIP_WITHOUT_GRAPH();
+  const std::vector<RouteWaypoint> boardwalks = {
+      RouteWaypoint{"BW29", fv::GeoPoint{32.602374, -80.0838337}},
+      RouteWaypoint{"BW41", fv::GeoPoint{32.6100451, -80.045189}}};
+  RouteStore store(graph, RulesFile(), "");
+  EXPECT_TRUE(store.BeachAvailable());
+  double now = 21600.0;
+  store.set_clock([&now] { return now; });
+
+  const RouteSnapshot untabled =
+      store.SetWaypoints(boardwalks, "bicycle", fv::RouteBeach::kWheneverPossible);
+  ASSERT_EQ(1u, untabled.beach_stretches.size());
+  ASSERT_EQ(1u, untabled.beach_verdicts.size());
+  EXPECT_EQ(fv::nav::BeachVerdict::kUnknown, untabled.beach_verdicts[0].verdict);
+  EXPECT_EQ(fv::BeachDropped::kNone, untabled.beach_dropped);
+  EXPECT_DOUBLE_EQ(21600.0, untabled.depart_s);
+
+  // Low 0.0 m at 0, high 2.0 m at 6 h, low 0.4 m at 12 h.
+  auto tide = std::make_shared<fv::nav::TideTable>();
+  ASSERT_TRUE(tide->Parse("{\"units\": \"m\", \"datum\": \"MLLW\", \"valid_from\": 0,"
+                          " \"valid_until\": 43200, \"station\": {\"id\": \"1\", \"name\":"
+                          " \"Test\"}, \"extremes\": [[0, 0.0, \"L\"], [21600, 2.0, \"H\"],"
+                          " [43200, 0.4, \"L\"]]}")
+                  .ok());
+  store.SetTide(tide, fv::nav::BeachTideLimits{});
+  const RouteSnapshot high = store.Replan();
+  EXPECT_TRUE(high.beach_stretches.empty());
+  EXPECT_EQ(fv::BeachDropped::kHigh, high.beach_dropped);
+  EXPECT_GT(high.beach_dropped_verdict.passable_from_s, now);
+
+  now = 0.0;
+  const RouteSnapshot low = store.Replan();
+  ASSERT_EQ(1u, low.beach_stretches.size());
+  EXPECT_EQ(fv::nav::BeachVerdict::kGood, low.beach_verdicts[0].verdict);
+
+  // Walking limits with no passable height: the same high water keeps the
+  // beach on a walk and marks it marginal, while a ride still drops it.
+  fv::nav::BeachTideLimits walk;
+  walk.rideable_below_m = std::numeric_limits<double>::infinity();
+  walk.good_below_m = 1.2;
+  store.SetTide(tide, fv::nav::BeachTideLimits{}, walk);
+  now = 21600.0;
+  const RouteSnapshot ride = store.Replan();
+  EXPECT_EQ(fv::BeachDropped::kHigh, ride.beach_dropped);
+  const RouteSnapshot walked =
+      store.SetWaypoints(boardwalks, "foot", fv::RouteBeach::kWheneverPossible);
+  ASSERT_EQ(1u, walked.beach_stretches.size());
+  EXPECT_EQ(fv::BeachDropped::kNone, walked.beach_dropped);
+  EXPECT_EQ(fv::nav::BeachVerdict::kMarginal, walked.beach_verdicts[0].verdict);
 }
 
 TEST(RouteStore, TheProfileRoundTripsAndDecidesHowTheLineIsDrawn) {

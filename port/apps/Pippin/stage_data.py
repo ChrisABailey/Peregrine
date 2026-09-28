@@ -37,6 +37,7 @@ failure mode a phone reports as a blank map at 3 pm on a bike.
 import argparse
 import configparser
 import glob
+import datetime
 import json
 import os
 import shutil
@@ -66,16 +67,18 @@ MANIFEST = [
          "the map, cut from us-south by port/tools/mbtiles_cut.py"),
     Item("testdata/OSM/kiawah.fvroad", "kiawah.fvroad",
          "the road graph, built by fvgraph HONOURING access"),
+    Item("port/Osm/styles/kiawah-trails.json", "kiawah-trails.json",
+         "the look pippin.ini selects: Kiawah Trails"),
     Item("port/Osm/styles/style.json", "style.json",
-         "the look pippin.ini selects: CyclOSM, tuned for riding"),
-    # The sheet style.json's `sprite` names. That value is RELATIVE, and the
+         "the alternative look: CyclOSM"),
+    # The sheet both OSM styles' `sprite` names. That value is RELATIVE, and the
     # engine resolves it against the directory of the style file it read — so
     # the sheet has to land in `symbols/` beside the style, under the sheet's
     # own two names. Both halves are required: PngSymbolLibrary opens the
     # sheet as a .png/.json PAIR, and half a pair is no sheet at all.
     Item("port/Osm/styles/symbols/osm-liberty-topo.png",
          "symbols/osm-liberty-topo.png",
-         "the icon artwork style.json's `sprite` points at"),
+         "the icon artwork the styles' `sprite` points at"),
     Item("port/Osm/styles/symbols/osm-liberty-topo.json",
          "symbols/osm-liberty-topo.json",
          "and its index, without which the artwork is one opaque bitmap"),
@@ -90,6 +93,10 @@ MANIFEST = [
     Item("testdata/kiawah_cycle.gpx", "kiawah_cycle.gpx",
          "the demo feed: a real ride, replayed at the speed it was ridden",
          debug_only=True),
+    # NOAA's tide predictions, fetched once by port/tools/fetch_tides.py so
+    # staging itself stays offline. Public domain.
+    Item("testdata/tides/8667062.json", "tides.json",
+         "five years of predicted high and low water at Kiawah River Bridge"),
     Item("port/apps/Pippin/pippin.ini", "pippin.ini",
          "the settings file, every path in it bundle-relative"),
     # The label face and its licence, which travel together: the Bitstream
@@ -120,7 +127,7 @@ FONT_FILES = ["DejaVuSans.ttf", "LICENSE_DEJAVU"]
 # after staging, which is what keeps pippin.ini and MANIFEST from drifting.
 PATH_KEYS = ["pippin.mbtiles", "pippin.font", "osm.style",
              "routing.graph", "routing.rules", "movingmap.demo_track",
-             "points.seed"]
+             "points.seed", "tides.file"]
 
 # The keys whose file only exists in a development pack. `pippin.ini` is one
 # tracked file for both packs, so it names the demo track either way; under
@@ -393,6 +400,56 @@ def check_sprite(pack, style_rel):
     return missing
 
 
+def check_tides(pack, values):
+    """The tide table's station and span, and a warning as its end nears.
+
+    Returns the pack-relative paths that fail, for the INCOMPLETE line.
+    """
+    rel = values.get("tides.file")
+    path = os.path.join(pack, rel) if rel else None
+    if not path or not os.path.isfile(path):
+        return []  # the dangling-path check already said so
+    with open(path) as f:
+        doc = json.load(f)
+    want = values.get("tides.station", "")
+    got = doc.get("station", {}).get("id", "")
+    if want and want != got:
+        print("  TIDES       %s is station %s, pippin.ini says %s" % (rel, got, want))
+        return [rel]
+    until = datetime.datetime.fromtimestamp(doc["valid_until"], datetime.timezone.utc).date()
+    left = (until - datetime.date.today()).days
+    print("  %-22s %s, %d extremes, valid until %s (%d days)"
+          % ("", doc["station"].get("name", got), len(doc["extremes"]), until, left))
+    if left < 365:
+        print("  TIDES       under a year left; refetch with port/tools/fetch_tides.py")
+    return []
+
+
+def prune_extras(pack, keep, dry_run):
+    """Delete every file in `pack` whose pack-relative path is not in `keep`.
+
+    Catches files a development pack picked up from outside the manifest,
+    such as the demo tracks `port/tools/stage_demo_feed.py` copies in.
+    With `dry_run`, reports them without deleting. Returns the extras found.
+    """
+    extras = []
+    for dirpath, dirnames, filenames in os.walk(pack, topdown=False):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, pack).replace(os.sep, "/")
+            if rel in keep:
+                continue
+            extras.append(rel)
+            if dry_run:
+                print("  EXTRA       %s (not part of a release pack)" % rel)
+            else:
+                os.remove(path)
+                print("  %-22s removed  (--release: not in the manifest)" % rel)
+        if not dry_run and dirpath != pack and not os.listdir(dirpath):
+            os.rmdir(dirpath)
+    return extras
+
+
 def read_ini_paths(ini_path):
     """The dotted key -> value map fv::Settings would build from this file."""
     cp = configparser.ConfigParser()
@@ -445,7 +502,8 @@ def main():
     # are `#if DEBUG`, so in a store build it is bytes on every phone for no
     # rider's benefit.
     ap.add_argument("--release", action="store_true",
-                    help="leave out the development-only rows (the demo ride)")
+                    help="leave out the development-only rows (the demo ride) "
+                         "and delete any other file not in the manifest")
     ap.add_argument("--regen-points", action="store_true",
                     help="rewrite kiawah.fvpoints from POINTS, discarding "
                          "a hand-edited set already in the pack")
@@ -521,11 +579,21 @@ def main():
             if not os.path.isfile(os.path.join(args.pack, rel)):
                 print("  DANGLING    %s = %s (not in the pack)" % (key, rel))
                 missing.append(rel)
+        missing += check_tides(args.pack, values)
         style_rel = values.get("osm.style")
         if style_rel:
             missing += check_sprite(args.pack, style_rel)
     else:
         missing.append("pippin.ini")
+
+    if args.release:
+        keep = {item.dst for item in MANIFEST if not item.debug_only}
+        if os.path.isfile(ini):
+            keep.add(read_ini_paths(ini).get("points.seed", ""))
+        extras = prune_extras(args.pack, keep, dry_run=args.check)
+        # Under --check a leftover is reported as a failure rather than deleted.
+        if args.check:
+            missing += extras
 
     print("pippin: %d file(s), %.1f MB in %s%s"
           % (staged, total_bytes / 1048576.0, args.pack,

@@ -230,24 +230,71 @@ double Clamp(double v, double lo, double hi) {
 }
 
 - (PPViewport *)viewportGrownByMargin:(double)margin {
+  return [self viewportGrownByMargin:margin rotationSafe:NO];
+}
+
+- (PPViewport *)viewportGrownByMargin:(double)margin
+                         rotationSafe:(BOOL)rotationSafe {
   if (![self hasSurface]) return self;
-  double w = 0.0, h = 0.0;
-  pippin::GrownSurfaceSize(_sizeInPoints.width, _sizeInPoints.height, margin,
-                           &w, &h);
-  if (w == _sizeInPoints.width && h == _sizeInPoints.height) return self;
+  int pw = 0, ph = 0;
+  pippin::GrownSurfacePixels(_pixelWidth, _pixelHeight, margin,
+                             rotationSafe ? true : false, &pw, &ph);
+  if (pw == _pixelWidth && ph == _pixelHeight) return self;
 
   // Everything is copied — the camera, the pitch AND the limits — and only
   // the surface changes. `derivedWithCenter:` already carries the limits over
   // and re-clamps against them, which is a no-op here because the camera it is
-  // handed is the one that already satisfied them.
+  // handed is the one that already satisfied them. The size is set in pixels
+  // and the points follow, so the growth stays whole pixels on each side.
   PPViewport *v = [self derivedWithCenter:_center
                          scaleDenominator:_scaleDenominator
                           rotationDegrees:_rotationDegrees];
-  v->_sizeInPoints = CGSizeMake(w, h);
-  v->_pixelWidth = (int)std::lround(w * (double)_displayScale);
-  v->_pixelHeight = (int)std::lround(h * (double)_displayScale);
+  v->_pixelWidth = pw;
+  v->_pixelHeight = ph;
+  v->_sizeInPoints = CGSizeMake((double)pw / (double)_displayScale,
+                                (double)ph / (double)_displayScale);
   [v reconfigure];
   return v;
+}
+
+- (BOOL)isPixelAlignedToViewport:(PPViewport *)live {
+  if (live == nil || ![self hasSurface] || ![live hasSurface]) return NO;
+  if (_displayScale != live->_displayScale) return NO;
+  return pippin::PixelAligned(_proj, live->_proj) ? YES : NO;
+}
+
+- (double)bandHeadroomForViewport:(PPViewport *)live {
+  if (live == nil || ![self hasSurface] || ![live hasSurface]) return -1e300;
+  return pippin::BandHeadroomPx(_proj, live->_proj);
+}
+
+- (PPViewport *)viewportForUnderlay {
+  // `derivedWithCenter:` would clamp the scale to the limits, so the scale is
+  // set after it, the way `viewportGrownByMargin:` sets the surface.
+  PPViewport *v = [self derivedWithCenter:_center
+                         scaleDenominator:_scaleDenominator
+                          rotationDegrees:_rotationDegrees];
+  v->_scaleDenominator = _scaleDenominator * pippin::kUnderlayZoomOut;
+  [v reconfigure];
+  return v;
+}
+
+- (BOOL)underlayServesViewport:(PPViewport *)live {
+  if (live == nil || ![self hasSurface] || ![live hasSurface]) return NO;
+  return pippin::UnderlayServes(_proj, live->_proj) ? YES : NO;
+}
+
+- (PPScreenCover)coverageOfViewport:(PPViewport *)live
+                           underlay:(nullable PPViewport *)underlay {
+  if (live == nil || ![live hasSurface]) return PPScreenCoverSharp;
+  const fv::MapProjection *u =
+      (underlay != nil && [underlay hasSurface]) ? &underlay->_proj : nullptr;
+  switch (pippin::ScreenCoverage(_proj, u, live->_proj)) {
+    case pippin::ScreenCover::kSharp: return PPScreenCoverSharp;
+    case pippin::ScreenCover::kUnderlay: return PPScreenCoverUnderlay;
+    case pippin::ScreenCover::kBackground: return PPScreenCoverBackground;
+  }
+  return PPScreenCoverBackground;
 }
 
 // The zoom limits come from the data: how far in is what the pyramid holds,
@@ -470,3 +517,7 @@ double Clamp(double v, double lo, double hi) {
 }
 
 @end
+
+double PPBandLead(double velocity, double seconds, double marginPoints) {
+  return pippin::BandLead(velocity, seconds, marginPoints);
+}

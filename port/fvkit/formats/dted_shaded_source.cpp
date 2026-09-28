@@ -8,10 +8,28 @@
 #include "fvkit/formats/dted_shaded.h"
 
 #include <cstring>
+#include <mutex>
 
 #include "fv_dted_shaded_renderer.h"  // port/DtedShadedRenderer
 
 namespace fv {
+
+namespace {
+
+std::mutex g_bands_mutex;
+std::vector<int> g_bands_ft;
+
+}  // namespace
+
+void SetDtedShadedElevationBands(const std::vector<int>& feet) {
+  std::lock_guard<std::mutex> lock(g_bands_mutex);
+  g_bands_ft = feet;
+}
+
+std::vector<int> DtedShadedElevationBands() {
+  std::lock_guard<std::mutex> lock(g_bands_mutex);
+  return g_bands_ft;
+}
 
 struct DtedShadedRasterSource::Impl {
   DtedShadedRenderer renderer;
@@ -35,6 +53,8 @@ Status DtedShadedRasterSource::Open(const std::string& path) {
   if (impl_->is_open) return Status::Error(kInvalidArg, "already open");
   Status s = impl_->renderer.Open(path);
   if (!s.ok()) return s;
+  const std::vector<int> bands = DtedShadedElevationBands();
+  if (!bands.empty()) impl_->renderer.SetElevationBands(bands);
   impl_->is_open = true;
   return Status::Ok();
 }

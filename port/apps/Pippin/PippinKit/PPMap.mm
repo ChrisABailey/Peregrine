@@ -10,12 +10,15 @@
 #import "PPPoint+Internal.h"
 #import "PPRoute+Internal.h"
 #import "PPSearch+Internal.h"
+#import "PPTide+Internal.h"
+#import "PPWind+Internal.h"
 #import "PPGuidance+Internal.h"
 #import "PPTrip+Internal.h"
 #import "PPViewport+Internal.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,6 +32,7 @@
 #include "fvkit/nav/gpx.h"
 #include "fvkit/nav/gpx_recorder.h"
 #include "fvkit/nav/scripted_source.h"
+#include "fvkit/nav/tide.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
@@ -274,6 +278,66 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
 @end
 
+@interface PPUnderlay ()
+- (instancetype)initWithImage:(CGImageRef)image
+                     viewport:(PPViewport*)viewport
+              backgroundColor:(CGColorRef)backgroundColor
+           renderMilliseconds:(double)ms;
+@end
+
+@implementation PPUnderlay {
+  CGImageRef _image;
+  CGColorRef _backgroundColor;
+}
+
+/// Takes ownership of both references.
+- (instancetype)initWithImage:(CGImageRef)image
+                     viewport:(PPViewport*)viewport
+              backgroundColor:(CGColorRef)backgroundColor
+           renderMilliseconds:(double)ms {
+  self = [super init];
+  if (self == nil) return nil;
+  _image = image;
+  _viewport = viewport;
+  _backgroundColor = backgroundColor;
+  _renderMilliseconds = ms;
+  return self;
+}
+
+- (void)dealloc {
+  if (_image != nullptr) CGImageRelease(_image);
+  if (_backgroundColor != nullptr) CGColorRelease(_backgroundColor);
+}
+
+- (CGImageRef)image { return _image; }
+- (CGColorRef)backgroundColor { return _backgroundColor; }
+
+@end
+
+@implementation PPCameraStep
+
+- (instancetype)initWithOwnship:(PPOwnship*)ownship
+                           trip:(PPTrip*)trip
+                       guidance:(PPGuidance*)guidance
+                 guidanceEvents:(NSArray<PPGuidanceEvent*>*)guidanceEvents
+                           slew:(const fv::SlewState&)slew
+                         newFix:(BOOL)newFix {
+  self = [super init];
+  if (self == nil) return nil;
+  _ownship = ownship;
+  _trip = trip;
+  _guidance = guidance;
+  _guidanceEvents = guidanceEvents;
+  _hasCameraUpdate = slew.changed ? YES : NO;
+  _cameraCenter = PPGeoPointMake(slew.center.lat, slew.center.lon);
+  _cameraRotationDegrees = slew.rotation_deg;
+  _cameraIsAnimating = slew.active ? YES : NO;
+  _sawNewFix = newFix;
+  return self;
+}
+
+@end
+
 @implementation PPMap {
   std::string _packRoot;
   fv::Settings _settings;
@@ -287,6 +351,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   std::shared_ptr<fv::OsmVectorSource> _source;
   std::shared_ptr<fv::OsmStyleEngine> _style;
   std::unique_ptr<fv::VectorRenderer> _renderer;
+  // The underlay's own renderer over the same source and style. A scene
+  // retained at the underlay's zoom would evict the base map's.
+  std::unique_ptr<fv::VectorRenderer> _underlayRenderer;
 
   // The route store owns the planner and the overlay, because the overlay
   // borrows a raw pointer to the planner and neither may outlive the other.
@@ -388,6 +455,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   pippin::FixCadence _cadence;
 
   PPGeoBounds _homeBounds;
+  PPTide* _tide;
+  PPWindSettings* _wind;
+  NSTimeInterval _routeDepartureOverride;
   std::string _fontPath;
   double _mmPerPixelOverride;  // `display.mm_per_pixel`, 0 when unset
   int _baseCanvasWidth;
@@ -457,6 +527,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // is the settings key's default rather than nothing.
   _renderer->SetSceneMargin(_settings.GetDouble("vector.scene_margin", 0.25));
   _renderer->SetSimplifyPixels(_settings.GetDouble("vector.simplify_pixels", 0.0));
+  // No scene margin: an underlay is redrawn at a new camera, never re-panned.
+  _underlayRenderer = std::make_unique<fv::VectorRenderer>(_source, _style);
+  _underlayRenderer->SetSceneMargin(0.0);
+  _underlayRenderer->SetSimplifyPixels(
+      _settings.GetDouble("vector.simplify_pixels", 0.0));
   _overlays = std::make_unique<fv::OverlayManager>();
 
   // The label font. The pack carries its own because iOS gives an app no
@@ -507,7 +582,67 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   [self buildRoute];
   [self buildPoints];
   [self buildMovingMap];
+  _routeDepartureOverride = NAN;
+  [self loadTides];
+  [self loadWindSettings];
   return self;
+}
+
+// The tide table is optional: a pack without `[tides] file` has no card. A
+// table that is named but will not load is logged and treated the same way,
+// because a missing tide card is no reason to refuse the map.
+// The route's beach gate gets the same table, or none: without one the beach
+// stays routable and the sheet warns that the tide is unknown.
+- (void)loadTides {
+  _tide = nil;
+  fv::nav::BeachTideLimits limits;
+  limits.rideable_below_m = _settings.GetDouble("beach.rideable_below_m", limits.rideable_below_m);
+  limits.good_below_m = _settings.GetDouble("beach.good_below_m", limits.good_below_m);
+  limits.exit_margin_s = _settings.GetDouble("beach.exit_margin_s", limits.exit_margin_s);
+  // Walking has no passable limit unless the pack sets one.
+  fv::nav::BeachTideLimits foot = limits;
+  foot.rideable_below_m = _settings.GetDouble("beach.walk_passable_below_m",
+                                              std::numeric_limits<double>::infinity());
+  foot.good_below_m = _settings.GetDouble("beach.walk_good_below_m", foot.rideable_below_m);
+  _routeStore->SetTide(nullptr, limits, foot);
+
+  const std::string name = _settings.GetString("tides.file", "");
+  if (name.empty()) return;
+  auto table = std::make_shared<fv::nav::TideTable>();
+  const fv::Status s = table->Load(_packRoot + "/" + name);
+  if (!s.ok() || table->empty()) {
+    NSLog(@"PippinKit: tide table %s: %s", name.c_str(), s.message.c_str());
+    return;
+  }
+  _routeStore->SetTide(table, limits, foot);
+  _tide = [[PPTide alloc] initWithTable:std::move(table)
+                    rideableBelowMeters:limits.rideable_below_m
+                    walkEasyBelowMeters:foot.good_below_m];
+}
+
+- (nullable PPTide*)tide {
+  return _tide;
+}
+
+// The forecast point is a spot on the pack's beach, so the request never
+// carries the rider's position. No point, no wind: the card and the sheet
+// simply leave the wind out.
+- (void)loadWindSettings {
+  _wind = nil;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double lat = _settings.GetDouble("wind.lat", nan);
+  const double lon = _settings.GetDouble("wind.lon", nan);
+  if (std::isnan(lat) || std::isnan(lon)) return;
+  _wind = [[PPWindSettings alloc]
+               initWithLatitude:lat
+                      longitude:lon
+              beachFacesDegrees:_settings.GetDouble("beach.faces_deg", nan)
+     onshoreWarnMetersPerSecond:_settings.GetDouble("wind.onshore_warn_mps", 7.0)
+    headwindWarnMetersPerSecond:_settings.GetDouble("wind.headwind_warn_mps", 5.0)];
+}
+
+- (nullable PPWindSettings*)wind {
+  return _wind;
 }
 
 // The points join the stack at construction and stay there, like the route and
@@ -658,6 +793,26 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   return _settings.GetDouble("display.base_cache_band_margin", 0.25);
 }
 
+- (double)baseCacheRefreshFraction {
+  return _settings.GetDouble("display.band_refresh_fraction", 0.5);
+}
+
+- (double)flingMinSpeedPoints {
+  return _settings.GetDouble("display.fling_min_speed_pt", 200.0);
+}
+
+- (double)flingDecelerationRate {
+  return _settings.GetDouble("display.fling_deceleration", 0.998);
+}
+
+- (double)followFramesPerSecond {
+  return _settings.GetDouble("display.follow_fps", 20.0);
+}
+
+- (double)followMinMovePoints {
+  return _settings.GetDouble("display.min_move_pt", 0.25);
+}
+
 - (PPViewport*)initialViewport {
   // The pack's zoom range is the pyramid's own, straight off the file: what
   // the data holds is what the camera is allowed to ask for.
@@ -697,15 +852,85 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   [self invalidateBaseLayer];
 }
 
+/// Sets the source's and style's pitch and the style's reference latitude
+/// for a draw at `viewport`. The latitude is stepped, so a draw that does not
+/// cross a step leaves the style epoch, and the retained scene, alone.
+- (void)prepareStyleForViewport:(PPViewport*)viewport {
+  const double mmPerPoint = viewport.mmPerPoint;
+  _source->SetDisplayMmPerPixel(mmPerPoint);
+  _style->SetDisplayMmPerPixel(mmPerPoint);
+  const double lat =
+      std::round(viewport.center.latitude / kRefLatStep) * kRefLatStep;
+  if (!_refLatSet || lat != _refLat) {
+    _style->SetReferenceLatitude(lat);
+    _refLat = lat;
+    _refLatSet = YES;
+  }
+}
+
+- (nullable PPUnderlay*)renderUnderlayForViewport:(PPViewport*)viewport
+                                            error:(NSError**)error {
+  if (viewport == nil || !viewport.hasSurface) {
+    if (error) *error = MakeError(PPErrorRenderFailed, @"no surface size set");
+    return nil;
+  }
+  const CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+  PPViewport* under = [viewport viewportForUnderlay];
+  const double mmPerPixel = under.mmPerPixel;
+  const double pixelsPerPoint =
+      mmPerPixel > 0 ? under.mmPerPoint / mmPerPixel : 1.0;
+
+  // Symbology at a quarter size, so that once the compositor magnifies the
+  // underlay back to the live scale its lines and text are the sharp map's
+  // size rather than four times it.
+  [self prepareStyleForViewport:under];
+  _underlayRenderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint *
+                                  _symbolZoom / pippin::kUnderlayZoomOut);
+
+  // The background under the live camera, for the shell to paint behind
+  // everything, and the one at the underlay's own scale to clear it with.
+  fv::FvColor liveBg{255, 255, 255, 255};
+  _style->background(viewport.projection.Scale(), &liveBg);
+  fv::FvColor bg{255, 255, 255, 255};
+  _style->background(under.projection.Scale(), &bg);
+  bg.a = 255;
+
+  // A canvas per build: an underlay is drawn a few times a minute at most,
+  // and holding a second screen of pixels between builds would double its
+  // memory.
+  fv::CpuCanvas canvas(under.pixelWidth, under.pixelHeight);
+  if (_hasLabelFont) canvas.SetDefaultFont(_fontPath);
+  canvas.Clear(bg);
+  const fv::Status rs = _underlayRenderer->Render(under.projection, &canvas);
+  if (!rs.ok()) {
+    if (error) *error = ErrorFromStatus(PPErrorRenderFailed, rs, @"underlay");
+    return nil;
+  }
+  CGImageRef image = PPCreateCGImageFromPixelBuffer(canvas.Buffer());
+  if (image == nullptr) {
+    if (error)
+      *error = MakeError(PPErrorRenderFailed, @"CGImage creation failed");
+    return nil;
+  }
+  // sRGB, the space the map's own pixels are tagged with.
+  CGColorRef color =
+      CGColorCreateSRGB(liveBg.r / 255.0, liveBg.g / 255.0, liveBg.b / 255.0, 1.0);
+  return [[PPUnderlay alloc]
+           initWithImage:image
+                viewport:under
+         backgroundColor:color
+      renderMilliseconds:(CFAbsoluteTimeGetCurrent() - t0) * 1000.0];
+}
+
 - (nullable PPFrame*)renderViewport:(PPViewport*)viewport
                               error:(NSError**)error {
   // The unbanded, uncached call: what every caller outside the render loop
   // wants, and what the loop asks for when it settles.
-  return [self renderViewport:viewport bandMargin:0.0 reuseBase:NO error:error];
+  return [self renderViewport:viewport band:nil reuseBase:NO error:error];
 }
 
 - (nullable PPFrame*)renderViewport:(PPViewport*)viewport
-                         bandMargin:(double)bandMargin
+                               band:(nullable PPViewport*)bandViewport
                           reuseBase:(BOOL)reuseBase
                               error:(NSError**)error {
   if (viewport == nil || !viewport.hasSurface) {
@@ -741,7 +966,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   double baseMs = 0.0;
   if (!baseServes) {
     const CFAbsoluteTime b0 = CFAbsoluteTimeGetCurrent();
-    PPViewport* band = [viewport viewportGrownByMargin:bandMargin];
+    PPViewport* band = bandViewport != nil ? bandViewport : viewport;
     const fv::MapProjection& bandProj = band.projection;
     const int bw = band.pixelWidth;
     const int bh = band.pixelHeight;
@@ -764,15 +989,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     // scene, so doing it on a frame that is not drawing the base map would
     // throw away the query and the styling behind a picture nobody asked to
     // redraw.
-    _source->SetDisplayMmPerPixel(mmPerPoint);
-    _style->SetDisplayMmPerPixel(mmPerPoint);
-    const double lat =
-        std::round(viewport.center.latitude / kRefLatStep) * kRefLatStep;
-    if (!_refLatSet || lat != _refLat) {
-      _style->SetReferenceLatitude(lat);
-      _refLat = lat;
-      _refLatSet = YES;
-    }
+    [self prepareStyleForViewport:band];
     // The style engine wants how many device pixels an authored pixel is,
     // expressed as a dpi it divides by 96, so the answer is the backing scale
     // and not the screen's own 489 dpi. Written as the ratio rather than
@@ -872,6 +1089,23 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                    guidance:[self guidanceOrNil]
              guidanceEvents:[self takeGuidanceEvents]
                        slew:tick.slew];
+}
+
+- (nullable PPCameraStep*)stepCameraAtViewport:(PPViewport*)viewport {
+  if (viewport == nil || !viewport.hasSurface) return nil;
+  const double mmPerPixel = viewport.mmPerPixel;
+  const double pixelsPerPoint =
+      mmPerPixel > 0 ? viewport.mmPerPoint / mmPerPixel : 1.0;
+  // The overlay's apron stays as the last drawn frame computed it; the camera
+  // has moved less than the shell's redraw threshold since then.
+  const fv::MovingMapTick tick = [self tickMovingMap:viewport.projection
+                                      pixelsPerPoint:pixelsPerPoint];
+  return [[PPCameraStep alloc] initWithOwnship:[self ownshipOrNil]
+                                          trip:[self tripOrNil]
+                                      guidance:[self guidanceOrNil]
+                                guidanceEvents:[self takeGuidanceEvents]
+                                          slew:tick.slew
+                                        newFix:(tick.new_fix ? YES : NO)];
 }
 
 - (fv::MovingMapTick)tickMovingMap:(const fv::MapProjection&)proj
@@ -1326,6 +1560,34 @@ static double PPEpochNow() {
   const pippin::RouteSnapshot snapshot = _routeStore->SetWaypoints(
       PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "");
   return [self routeFromSnapshot:snapshot];
+}
+
+- (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
+                      profile:(NSString*)profile
+                     beachUse:(PPBeachUse)beachUse {
+  fv::RouteBeach beach = fv::RouteBeach::kNever;
+  if (beachUse == PPBeachUseToSaveTime) beach = fv::RouteBeach::kToSaveTime;
+  if (beachUse == PPBeachUseWheneverPossible) beach = fv::RouteBeach::kWheneverPossible;
+  const pippin::RouteSnapshot snapshot = _routeStore->SetWaypoints(
+      PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "", beach);
+  return [self routeFromSnapshot:snapshot];
+}
+
+- (NSTimeInterval)routeDepartureOverride {
+  return _routeDepartureOverride;
+}
+
+- (void)setRouteDepartureOverride:(NSTimeInterval)t {
+  _routeDepartureOverride = t;
+  if (std::isfinite(t)) {
+    _routeStore->set_clock([t] { return t; });
+  } else {
+    _routeStore->set_clock(nullptr);
+  }
+}
+
+- (BOOL)beachAvailable {
+  return _routeStore->BeachAvailable() ? YES : NO;
 }
 
 - (PPRoute*)clearRoute {

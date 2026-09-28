@@ -66,6 +66,10 @@ add_library(fv_fvkit STATIC
   nav/trip.cpp
   nav/maneuver.cpp
   nav/guidance.cpp
+  nav/tide.cpp
+  nav/sun.cpp
+  nav/wind.cpp
+  nav/beach.cpp
   overlay/manager.cpp
   overlay/contour_overlay.cpp
   overlay/grid_overlay.cpp
@@ -173,6 +177,10 @@ if(FVW_BUILD_TESTS)
     nav/test/nav_trip_test.cpp
     nav/test/nav_maneuver_test.cpp
     nav/test/nav_guidance_test.cpp
+    nav/test/nav_tide_test.cpp
+    nav/test/nav_sun_test.cpp
+    nav/test/nav_wind_test.cpp
+    nav/test/nav_beach_test.cpp
     app/test/app_type_registry_test.cpp
     app/test/app_stack_test.cpp
     app/test/app_session_test.cpp
@@ -196,13 +204,15 @@ if(FVW_BUILD_TESTS)
     test/settings_test.cpp
   )
   # fv_png: golden-PNG side channel in canvas_test (ported libpng)
-  target_link_libraries(fv_fvkit_test PRIVATE fv_fvkit fv_png GTest::gtest_main)
+  target_link_libraries(fv_fvkit_test PRIVATE fv_fvkit fv_png fv_json GTest::gtest_main)
   # The shipped data-family starter files, read at RUN time by the test that
   # checks they parse. Same pattern as FV_ROUTE_RULES_FILE in port/Routing.
   target_compile_definitions(fv_fvkit_test PRIVATE
     FV_FAMILIES_DNC="${CMAKE_SOURCE_DIR}/port/families/dnc-families.json"
     FV_FAMILIES_ENC="${CMAKE_SOURCE_DIR}/port/families/enc-families.json"
-    FV_FAMILIES_OSM="${CMAKE_SOURCE_DIR}/port/families/osm-families.json")
+    FV_FAMILIES_OSM="${CMAKE_SOURCE_DIR}/port/families/osm-families.json"
+    FV_TIDE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/charleston-2026-03.json"
+    FV_WIND_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/nws-chs-82-68-2026-09-26.json")
   # MSPCCS_DATA: GEOTRANS data for the GeoTIFF datum shift (see
   # GeoTIFFMapServer/CMakeLists.txt; escaped list separator)
   gtest_discover_tests(fv_fvkit_test

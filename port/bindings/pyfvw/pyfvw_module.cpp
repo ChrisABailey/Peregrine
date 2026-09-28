@@ -44,6 +44,7 @@
 #include "fvkit/store/tile_pack.h"
 #include "fvkit/formats/cadrg.h"
 #include "fvkit/formats/dted.h"
+#include "fvkit/formats/dted_shaded.h"
 #include "fvkit/formats/geotiff.h"
 #include "fvkit/formats/registry.h"
 #include "fvkit/formats/tiros.h"
@@ -995,6 +996,14 @@ PYBIND11_MODULE(pyfvw, m) {
       formats, "IElevationSource");
   py::class_<fv::IRasterSource, std::shared_ptr<fv::IRasterSource>>(
       formats, "IRasterSource");
+
+  formats.def("set_dted_elevation_bands", &fv::SetDtedShadedElevationBands,
+              "feet"_a,
+              "Elevation colour breakpoints (feet, up to five) for DTED shaded "
+              "relief opened from now on; [] restores FalconView's defaults. "
+              "Rebuild the MapEngine to re-render cells already drawn.");
+  formats.def("dted_elevation_bands", &fv::DtedShadedElevationBands,
+              "The breakpoints set by set_dted_elevation_bands; [] = defaults.");
 
   py::class_<fv::DtedElevationSource, fv::IElevationSource,
              std::shared_ptr<fv::DtedElevationSource>>(
@@ -3265,13 +3274,14 @@ PYBIND11_MODULE(pyfvw, m) {
           "build",
           [](const std::vector<std::string>& inputs, bool include_non_driveable,
              bool honor_oneway, bool honor_access, bool cycle_only,
-             bool include_ferries) {
+             bool include_ferries, bool beaches) {
             fv::routing::RoadGraphBuildOptions options;
             options.include_non_driveable = include_non_driveable;
             options.honor_oneway = honor_oneway;
             options.honor_access = honor_access;
             options.cycle_only = cycle_only;
             options.include_ferries = include_ferries;
+            options.beaches = beaches;
             auto g = std::make_shared<fv::routing::RoadGraph>();
             fv::Status s;
             {
@@ -3283,13 +3293,16 @@ PYBIND11_MODULE(pyfvw, m) {
           },
           "inputs"_a, "include_non_driveable"_a = true, "honor_oneway"_a = true,
           "honor_access"_a = true, "cycle_only"_a = false, "include_ferries"_a = true,
+          "beaches"_a = false,
           "Build from raw .osm / .osm.pbf extracts. Minutes and gigabytes on a "
           "continent — this is the offline half; ship the .fvroad, not the pbf."
           " cycle_only keeps only the classes a bike may ride (and drops "
           "bicycle=no), giving a smaller bike-specific graph — the same as "
           "fvgraph build --cycle-only. include_ferries=False leaves "
           "`route=ferry` ways out, which can disconnect a coastal network — "
-          "prefer the per-query ferry_penalty on route().")
+          "prefer the per-query ferry_penalty on route(). beaches=True adds "
+          "`beach` arcs along the coastline where it borders a beach polygon "
+          "and `beach_access` arcs from nearby path ends, as fvgraph build --beach.")
       .def("save",
            [](const fv::routing::RoadGraph& g, const std::string& path) {
              ThrowIfError(g.Save(path));

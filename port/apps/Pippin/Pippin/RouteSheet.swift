@@ -46,6 +46,16 @@ final class RouteDraft: ObservableObject {
     @Published var phase: Phase = .search
     @Published var stops: [RouteStop] = [RouteStop(), RouteStop()]
     @Published var profile: String = "bicycle"
+    @Published var beachUse: PPBeachUse = RouteDraft.lastBeachUse
+
+    /// The "Use beach:" setting a new route starts with: the last one chosen.
+    static var lastBeachUse: PPBeachUse {
+        get {
+            PPBeachUse(rawValue: UserDefaults.standard.integer(forKey: beachUseKey)) ?? .never
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: beachUseKey) }
+    }
+    private static let beachUseKey = "routeBeachUse"
 
     /// Every stop has a position and there are at least two. Enables OK.
     var isRoutable: Bool {
@@ -64,6 +74,12 @@ final class RouteDraft: ObservableObject {
     /// Inserts a via before the End.
     func addVia() {
         stops.insert(RouteStop(), at: max(1, stops.count - 1))
+    }
+
+    /// Reverses the stops, so the route runs from the End back to the Start.
+    /// Names travel with their stops; labels follow position.
+    func reverse() {
+        stops.reverse()
     }
 
     /// Only vias can be removed.
@@ -89,12 +105,14 @@ final class RouteDraft: ObservableObject {
     func load(from route: PPRoute?) {
         guard let route, route.waypoints.count > 0 else {
             stops = [RouteStop(), RouteStop()]
+            beachUse = Self.lastBeachUse
             phase = .search
             return
         }
         stops = route.waypoints.map { RouteStop(coordinate: $0.coordinate) }
         if stops.count == 1 { stops.append(RouteStop()) }
         if !route.profile.isEmpty { profile = route.profile }
+        beachUse = route.beachUse
         phase = .stops
     }
 
@@ -130,6 +148,10 @@ struct RouteSheet: View {
     /// Nil when no fix has arrived; "Current location" is then offered disabled.
     let currentLocation: PPGeoPoint?
     let profileNames: [String]
+    /// The pack's graph has a beach; without one "Use beach:" is not shown.
+    let beachAvailable: Bool
+    /// The pack's tide table, or nil.
+    let tide: PPTide?
 
     /// Search callback, handed in so this view never sees `MapModel`.
     let search: (String) async -> [PPSearchResult]
@@ -149,8 +171,14 @@ struct RouteSheet: View {
     /// with the new profile, never the draft's. Not a submit: Cancel leaves a
     /// mode change standing.
     let onProfileChange: (String) -> Void
+    /// The beach control changed; handled like `onProfileChange`.
+    let onBeachChange: (PPBeachUse) -> Void
     let onClear: () -> Void
     let onCancel: () -> Void
+
+    @ObservedObject private var windFeed = WindFeed.shared
+    /// The tide card, presented over this sheet.
+    @State private var tidesShown = false
 
     var body: some View {
         Group {
@@ -165,6 +193,8 @@ struct RouteSheet: View {
         // detents applied inside one branch do not resize a sheet presented
         // on the other.
         .presentationDetents([.medium, .large])
+        // Only a pack with a beach has anything for the wind to say here.
+        .onAppear { if beachAvailable { windFeed.refresh() } }
     }
 
     // MARK: - Phase one: search
@@ -206,10 +236,23 @@ struct RouteSheet: View {
                         index, stop in
                         stopRow(index: index, stop: stop)
                     }
-                    Button {
-                        draft.addVia()
-                    } label: {
-                        Label("Add via", systemImage: "plus.circle")
+                    // Borderless so each button takes its own taps; a Form row
+                    // otherwise fires every button in it.
+                    HStack {
+                        Button {
+                            draft.addVia()
+                        } label: {
+                            Label("Add via", systemImage: "plus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        Spacer()
+                        Button {
+                            draft.reverse()
+                        } label: {
+                            Label("Reverse", systemImage: "arrow.up.arrow.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!draft.hasAnything)
                     }
                 } header: {
                     Text("Stops")
@@ -221,7 +264,7 @@ struct RouteSheet: View {
                     }
                 }
 
-                Section("Mode") {
+                Section {
                     Picker("Mode", selection: $draft.profile) {
                         ForEach(Self.offeredModes(profileNames), id: \.profile) { mode in
                             Text(mode.title).tag(mode.profile)
@@ -234,11 +277,35 @@ struct RouteSheet: View {
                     .onChange(of: draft.profile) { _, profile in
                         onProfileChange(profile)
                     }
+
+                    // A menu rather than a segmented control: "Whenever
+                    // Possible" truncates in a third of a phone's width.
+                    if beachAvailable {
+                        Picker("Use beach", selection: $draft.beachUse) {
+                            Text("Never").tag(PPBeachUse.never)
+                            Text("To Save Time").tag(PPBeachUse.toSaveTime)
+                            Text("Whenever Possible").tag(PPBeachUse.wheneverPossible)
+                        }
+                        .pickerStyle(.menu)
+                        // Clear's `load(from: nil)` also writes `beachUse`,
+                        // while the cleared route is still `model.route`.
+                        .onChange(of: draft.beachUse) { _, beachUse in
+                            guard draft.phase == .stops else { return }
+                            onBeachChange(beachUse)
+                        }
+                    }
+                } footer: {
+                    if beachAvailable { beachFooter }
                 }
 
             }
             .navigationTitle("Route")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $tidesShown) {
+                if let tide {
+                    TideCard(tide: tide, onClose: { tidesShown = false })
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
@@ -253,6 +320,11 @@ struct RouteSheet: View {
                             Image(systemName: "trash")
                         }
                         .accessibilityLabel("Clear Route")
+                    }
+                    // iOS 26 groups adjacent trailing items into one glass
+                    // capsule; Clear is destructive and must not read as part of OK.
+                    if #available(iOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .topBarTrailing)
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -298,6 +370,137 @@ struct RouteSheet: View {
             }
     }
 
+    /// Under "Use beach:": why the tide took the beach off the route, the
+    /// verdict on the stretch the route rides, and the tide now. Tapping it
+    /// opens the tide card.
+    @ViewBuilder private var beachFooter: some View {
+        let lines = beachLines
+        if !lines.isEmpty {
+            Button {
+                if tide != nil { tidesShown = true }
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(lines, id: \.self) { Text($0) }
+                }
+                .multilineTextAlignment(.leading)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var beachLines: [String] {
+        let now = TideClock.now
+        let zone = TimeZone.current
+        let locale = Locale.current
+        let units = display.units
+        var lines: [String] = []
+
+        // Only for the route on the map, and only if it still has the setting
+        // the control shows.
+        if let route, route.isCalculated, route.beachUse == draft.beachUse,
+           draft.beachUse != .never {
+            if let dropped = route.droppedStretch,
+               let reason = Self.dropReason(route.beachDropped) {
+                lines.append(TideText.beachNotUsed(
+                    reason, enterHeightMeters: dropped.enterHeightMeters,
+                    passableFrom: dropped.passableFrom, coveredAt: dropped.coveredTime,
+                    now: now, units: units, zone: zone, locale: locale))
+            } else if let worst = Self.worstStretch(route.beachStretches) {
+                lines.append(TideText.beachVerdict(
+                    Self.stretchVerdict(worst.verdict), peakMeters: worst.peakMeters,
+                    peakAt: worst.peakTime, hasTable: tide != nil,
+                    now: now, units: units, zone: zone, locale: locale,
+                    walking: route.profile == "foot"))
+                lines.append(contentsOf: windLines(route.beachStretches, units: units))
+            }
+        }
+        if let tide, let line = Self.tideNow(tide, walking: draft.profile == "foot",
+                                             now: now, zone: zone, locale: locale) {
+            lines.append(line)
+        }
+        return lines
+    }
+
+    /// The wind on the route's beach stretches at the time each is reached:
+    /// the worst headwind if it is worth naming, else the best tailwind, and
+    /// the onshore warning when any stretch meets it. Empty without a
+    /// forecast for them.
+    private func windLines(_ stretches: [PPBeachStretch], units: DistanceUnits) -> [String] {
+        guard let settings = windFeed.settings, let forecast = windFeed.forecast else { return [] }
+        var head: (sample: PPWindSample, tailwind: Double)?
+        var tail: (sample: PPWindSample, tailwind: Double)?
+        var onshore = -Double.infinity
+        for stretch in stretches where stretch.headingDegrees.isFinite {
+            guard let sample = forecast.sample(at: stretch.enterTime) else { continue }
+            let tailwind = sample.tailwind(heading: stretch.headingDegrees)
+            if tailwind < (head?.tailwind ?? .infinity) { head = (sample, tailwind) }
+            if tailwind > (tail?.tailwind ?? -.infinity) { tail = (sample, tailwind) }
+            let seaward = settings.seaward(heading: stretch.headingDegrees)
+            if seaward.isFinite { onshore = max(onshore, sample.onshore(seaward: seaward)) }
+        }
+        let warnAt = settings.headwindWarnMetersPerSecond
+        let ride = (head.map { -$0.tailwind >= warnAt } ?? false) ? head : tail
+        var lines: [String] = []
+        if let ride, let line = WindText.beachRide(
+            speed: ride.sample.speedMetersPerSecond, gust: ride.sample.gustMetersPerSecond,
+            tailwind: ride.tailwind, warnAt: warnAt, units: units) {
+            lines.append(line)
+        }
+        if let warning = WindText.onshore(onshore, warnAt: settings.onshoreWarnMetersPerSecond) {
+            lines.append(warning)
+        }
+        return lines
+    }
+
+    /// "High tide is 8:40 pm, the beach should be rideable until about 5:13 pm.", or the
+    /// best-walking window for a walking route; nil past the table's end.
+    private static func tideNow(_ tide: PPTide, walking: Bool, now: TimeInterval,
+                                zone: TimeZone, locale: Locale) -> String? {
+        guard now < tide.validUntil else { return nil }
+        let walk = walking && tide.walkEasyBelowMeters.isFinite
+        let below = walk ? tide.walkEasyBelowMeters : tide.rideableBelowMeters
+        let beach = TideCard.beachLine(tide, now: now, below: below,
+                                       activity: walk ? .walk : .ride,
+                                       zone: zone, locale: locale)
+        guard let next = tide.extremes(from: now, to: now + 86_400).first else { return beach + "." }
+        return TideText.nextTide(isHigh: next.isHigh, time: next.time, beach: beach,
+                                 now: now, zone: zone, locale: locale)
+    }
+
+    private static func dropReason(_ dropped: PPBeachDropped) -> TideText.BeachDrop? {
+        switch dropped {
+        case .high: return .high
+        case .rising: return .rising
+        case .noTable: return .noTable
+        case .none: return nil
+        @unknown default: return nil
+        }
+    }
+
+    private static func stretchVerdict(_ verdict: PPBeachVerdict) -> TideText.StretchVerdict {
+        switch verdict {
+        case .good: return .good
+        case .marginal, .poor: return .marginal
+        default: return .unknown
+        }
+    }
+
+    /// The stretch whose verdict most needs saying: unknown, then marginal,
+    /// then the highest water.
+    private static func worstStretch(_ stretches: [PPBeachStretch]) -> PPBeachStretch? {
+        func rank(_ s: PPBeachStretch) -> Int {
+            switch s.verdict {
+            case .unknown: return 3
+            case .poor: return 2
+            case .marginal: return 1
+            default: return 0
+            }
+        }
+        return stretches.max { a, b in
+            rank(a) != rank(b) ? rank(a) < rank(b) : a.peakMeters < b.peakMeters
+        }
+    }
+
     private var statusLine: String? {
         if currentLocation == nil && !draft.isRoutable {
             return "No position yet — pick both ends on the map."
@@ -316,10 +519,24 @@ struct RouteSheet: View {
         let text = route.statusText
         guard route.isCalculated,
               let minutes = text.range(of: " min") else { return text }
-        let what = route.profile.isEmpty ? "roads" : route.profile
-        let head = "\(what): \(units.distance(route.lengthMeters)), "
+        let what = Self.modeName(route.profile)
+        var head = "\(what): \(units.distance(route.lengthMeters)), "
             + String(format: "%.0f min", route.seconds / 60.0)
+        if route.beachMeters > 0 {
+            head += ", " + TideText.beachShare(route.beachMeters, units: units)
+        }
         return head + text[minutes.upperBound...]
+    }
+
+    /// The status line's name for a profile: "Walking" and "Cycling" for the
+    /// two modes with a control, otherwise the rule file's own name.
+    private static func modeName(_ profile: String) -> String {
+        switch profile {
+        case "": return "roads"
+        case "foot": return "Walking"
+        case "bicycle": return "Cycling"
+        default: return profile
+        }
     }
 
     /// The modes with a control, filtered by what the rule file defines.

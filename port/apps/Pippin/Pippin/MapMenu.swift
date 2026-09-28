@@ -57,6 +57,8 @@ struct MapMenuButton: View, Equatable {
     /// Opens the rides sheet, the same one the record button's long press
     /// opens, under the name a rider would look for.
     let onExportRide: () -> Void
+    /// Opens the tide card; nil hides the item, for a pack with no table.
+    let onTides: (() -> Void)?
     let onAbout: () -> Void
     let onReportProblem: () -> Void
 
@@ -77,6 +79,11 @@ struct MapMenuButton: View, Equatable {
                 }
             }
             .pickerStyle(.menu)
+            if let onTides {
+                Button(action: onTides) {
+                    Label("Tides", systemImage: "water.waves")
+                }
+            }
             Button(action: onExportRide) {
                 Label("Export Ride Tracks", systemImage: "square.and.arrow.up")
             }
@@ -115,6 +122,7 @@ struct MapMenuButton: View, Equatable {
         a.symbolStep == b.symbolStep
             && a.symbolStepLabels == b.symbolStepLabels
             && a.units == b.units
+            && (a.onTides == nil) == (b.onTides == nil)
     }
 }
 

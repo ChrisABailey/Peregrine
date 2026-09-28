@@ -18,6 +18,7 @@ const char RouteOverlay::kExtension[] = "fvrte";
 // route.py's ROAD_COLOR / CASING_COLOR.
 const FvColor RouteOverlay::kRoadColor{40, 90, 210, 255};
 const FvColor RouteOverlay::kCasingColor{255, 255, 255, 255};
+const FvColor RouteOverlay::kBeachCasingColor{200, 155, 70, 255};
 
 namespace {
 
@@ -25,6 +26,37 @@ namespace {
 // scale 1.6 over a 9-pixel builtin, so this is 14.4 px across and its half is
 // the 7 route.py's hit test spells as a literal.
 constexpr double kMarkerScale = 1.6;
+
+// Marker fills by position in the route.
+constexpr FvColor kStartColor{20, 160, 60, 255};
+constexpr FvColor kViaColor{30, 110, 235, 255};
+constexpr FvColor kEndColor{215, 30, 30, 255};
+
+struct BeachPiece {
+  std::vector<GeoPoint> points;
+  bool on_beach = false;
+};
+
+/// Splits one leg into runs that are on and off the beach. `offset` is the
+/// leg's first vertex in the joined line the stretches index; neighbouring
+/// runs share their boundary vertex so the line stays unbroken.
+std::vector<BeachPiece> SplitAtBeach(const std::vector<GeoPoint>& leg, uint32_t offset,
+                                     const std::vector<RouteBeachStretch>& beach) {
+  auto segment_on_beach = [&](uint32_t k) {
+    for (const RouteBeachStretch& b : beach)
+      if (b.geometry_begin <= k && k < b.geometry_end) return true;
+    return false;
+  };
+  std::vector<BeachPiece> out;
+  for (size_t j = 0; j + 1 < leg.size(); ++j) {
+    const bool on = segment_on_beach(offset + static_cast<uint32_t>(j));
+    if (out.empty() || out.back().on_beach != on) {
+      out.push_back(BeachPiece{{leg[j]}, on});
+    }
+    out.back().points.push_back(leg[j + 1]);
+  }
+  return out;
+}
 
 }  // namespace
 
@@ -65,6 +97,11 @@ void RouteOverlay::SetProfile(std::string profile) {
   set_dirty(true);
 }
 
+void RouteOverlay::SetBeach(RouteBeach beach) {
+  doc_.set_beach(beach);
+  set_dirty(true);
+}
+
 void RouteOverlay::SetSelected(std::string label) {
   selected_ = std::move(label);
 }
@@ -85,6 +122,9 @@ bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
   // route replans as one without the caller having to remember. A profile
   // named on the call wins, exactly as it does in route.py.
   if (options.profile.empty()) options.profile = doc_.profile();
+  if (options.beach == routing::BeachUse::kProfileDefault) {
+    options.beach = ToBeachUse(doc_.beach());
+  }
 
   std::vector<GeoPoint> stops;
   stops.reserve(doc_.waypoints().size());
@@ -132,10 +172,16 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
 
   drawn_.clear();
   drawn_.reserve(doc_.waypoints().size());
-  for (const RouteWaypoint& w : doc_.waypoints()) {
+  const std::vector<RouteWaypoint>& wps = doc_.waypoints();
+  for (size_t i = 0; i < wps.size(); ++i) {
     double sx = 0, sy = 0;
-    if (!proj.GeoToSurface(w.position, &sx, &sy).ok()) continue;
-    drawn_.push_back(DrawnPoint{w.label, sx, sy});
+    if (!proj.GeoToSurface(wps[i].position, &sx, &sy).ok()) continue;
+    // Colour by position in the document, not in `drawn_`, so an End that
+    // fails to project does not turn the last via red.
+    const FvColor color = i == 0                ? kStartColor
+                          : i + 1 == wps.size() ? kEndColor
+                                                : kViaColor;
+    drawn_.push_back(DrawnPoint{wps[i].label, sx, sy, color});
   }
 
   Status s = Status::Ok();
@@ -152,11 +198,19 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     GeoLineStyle style = PresetGeoLine(
         plan_.is_bicycle ? line_preset::kDash : line_preset::kSolid,
         kRoadColor, 6);
+    GeoLineStyle sand = style;
     AddCasing(&style, kCasingColor, 4);
+    AddCasing(&sand, kBeachCasingColor, 4);
+    uint32_t offset = 0;  // index of each leg's first vertex in the joined line
     for (const std::vector<GeoPoint>& leg : plan_.legs) {
-      if (leg.size() < 2) continue;
-      s = draw.DrawGeoPolyline(leg, LineKind::kSimple, style);
-      if (!s.ok()) return s;
+      if (leg.size() >= 2) {
+        for (const BeachPiece& piece : SplitAtBeach(leg, offset, plan_.beach)) {
+          s = draw.DrawGeoPolyline(piece.points, LineKind::kSimple,
+                                   piece.on_beach ? sand : style);
+          if (!s.ok()) return s;
+        }
+      }
+      if (!leg.empty()) offset += static_cast<uint32_t>(leg.size() - 1);
     }
   } else if (doc_.waypoints().size() >= 2) {
     // An UNCALCULATED route: the overlay's own colour, no casing, and GREAT
@@ -178,6 +232,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     // G4: selection is a RENDER STATE, not a second colour. The marker keeps
     // the route's colour and gains a halo of its own silhouette, so it still
     // says which route it belongs to.
+    draw.SetSymbols(LibraryFor(d.color));
     draw.SetState(!selected_.empty() && d.label == selected_
                       ? RenderState::kHighlighted
                       : RenderState::kNormal);
@@ -203,6 +258,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     }
   }
   draw.SetState(RenderState::kNormal);
+  draw.SetSymbols(LibraryFor(doc_.color()));
 
   if (show_status_ && !plan_.status.empty()) {
     // The one line of map a route gets to explain itself on. Drawn straight on

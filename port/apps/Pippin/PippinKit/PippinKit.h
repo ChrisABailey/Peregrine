@@ -22,6 +22,8 @@
 #import <PippinKit/PPPoint.h>
 #import <PippinKit/PPRoute.h>
 #import <PippinKit/PPSearch.h>
+#import <PippinKit/PPTide.h>
+#import <PippinKit/PPWind.h>
 #import <PippinKit/PPGuidance.h>
 #import <PippinKit/PPTrip.h>
 #import <PippinKit/PPViewport.h>

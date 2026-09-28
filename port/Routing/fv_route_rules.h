@@ -100,8 +100,25 @@ struct RouteProfile {
   double toll_penalty = 1.0;
   double ferry_penalty = 1.0;
 
+  // Golf ways, in the same grammar. `golf_cartpath_penalty` applies to arcs
+  // tagged golf=cartpath; `golf_path_penalty` to golf=path, except for a
+  // bicycle profile on a way tagged bicycle=designated.
+  double golf_cartpath_penalty = 1.0;
+  double golf_path_penalty = 1.0;
+
+  // The beach's default, in the same grammar: excluded unless the profile
+  // says otherwise, and seeded onto RouteOptions by SelectProfile like the two
+  // above. `beach_prefer_factor` is what "Whenever Possible" multiplies kBeach
+  // arc cost by, in (0, 1].
+  double beach_penalty = kAvoidExcluded;
+  double beach_prefer_factor = 0.5;
+
   // Indexed by RoadClass; kClassExcluded for a class this profile bars.
   double class_weight[static_cast<size_t>(RoadClass::kCount)];
+
+  // Indexed by RoadClass; a speed that overrides the profile's own for that
+  // class (dry sand is walking the bike whatever the bike's speed), or 0.
+  double class_kph[static_cast<size_t>(RoadClass::kCount)] = {};
 
   bool allows(RoadClass klass) const {
     if (klass >= RoadClass::kCount) return false;
@@ -115,9 +132,10 @@ struct RouteProfile {
     return w == kClassExcluded ? 1.0 : w;
   }
 
-  // Seconds to travel `length_m` metres of an arc whose posted speed is
-  // `posted_kph`, under this profile's speed rule.
-  double Seconds(double length_m, int posted_kph) const;
+  // Seconds to travel `length_m` metres of an arc of `klass` whose posted
+  // speed is `posted_kph`, under this profile's speed rule. A class_kph entry
+  // for `klass` wins over both the posted and the fixed speed.
+  double Seconds(double length_m, int posted_kph, RoadClass klass = RoadClass::kNone) const;
 };
 
 // A parsed rule file: every profile in it, plus which one is the default.
@@ -211,7 +229,7 @@ class RouteRulesFile {
 // choice. The stored profile pointer shares ownership with `rules`, so the
 // rules cannot be freed under a route in flight even if the file reloads.
 //
-// `toll_penalty` and `ferry_penalty` are mirrored too, and for those the
+// `toll_penalty`, `ferry_penalty` and the beach settings are mirrored too, and for those the
 // mirror is not cosmetic: the router reads them from the options, so this is
 // where a profile's defaults take effect and anything set AFTER this call
 // overrides them. Call SelectProfile first, then apply the query's own
