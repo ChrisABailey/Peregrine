@@ -397,10 +397,22 @@ Development, simulator, after a C++ change:
 python3 port/apps/Pippin/stage_data.py && cmake --preset ios-sim && cmake --build build-ios-sim -j && xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath build-xcode-sim build && xcrun simctl install booted build-xcode-sim/Build/Products/Debug-iphonesimulator/Pippin.app && xcrun simctl launch booted org.peregrine.Pippin
 ```
 
-A shipping `.ipa` from a clean tree:
+The App Store `.ipa` from a clean tree. The file to upload is
+`build-xcode/ipa-appstore/Pippin.ipa`:
 
 ```sh
-python3 port/apps/Pippin/stage_data.py --release && cmake --preset ios && cmake --build build-ios -j && xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -allowProvisioningUpdates -archivePath build-xcode/Pippin.xcarchive archive && xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptionsPlist port/apps/Pippin/ExportOptions.plist -exportPath build-xcode/ipa
+python3 port/apps/Pippin/stage_data.py --release && cmake --preset ios && cmake --build build-ios -j && xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -allowProvisioningUpdates -archivePath build-xcode/Pippin.xcarchive archive && xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptionsPlist port/apps/Pippin/ExportOptions-AppStore.plist -exportPath build-xcode/ipa-appstore -allowProvisioningUpdates
+```
+
+It is about twice the size of the sideload `.ipa` because it carries a `Symbols/` folder for
+crash symbolication (`uploadSymbols` in `ExportOptions-AppStore.plist`); Apple strips it, so the
+download a user gets is not larger. App Store Connect rejects the sideload `.ipa`, which is
+signed for development.
+
+The sideload `.ipa` for your own phone (Step 4) comes from the same archive, with no rebuild:
+
+```sh
+xcodebuild -exportArchive -archivePath build-xcode/Pippin.xcarchive -exportOptionsPlist port/apps/Pippin/ExportOptions.plist -exportPath build-xcode/ipa
 ```
 
 ## Before an upload: the checks worth two minutes
