@@ -9435,7 +9435,7 @@ int CGeoTiff::read_tag( CTiffTag &tag )
 #if defined MAPPEDFILE_FILE_INPUT || defined LLFILE_FILE_INPUT
    PCHAR pchSavedFilePosition;
 #else
-   fpos_t qwSavedFilePosition;
+   GtfFilePos qwSavedFilePosition;
 #endif
 
    double ratio;
@@ -9459,7 +9459,7 @@ int CGeoTiff::read_tag( CTiffTag &tag )
 #if defined MAPPEDFILE_FILE_INPUT || defined LLFILE_FILE_INPUT
    pchSavedFilePosition = m_iobMappedFileIOBufDesc._ptr;
 #elif defined READFILE_FILE_INPUT
-   qwSavedFilePosition = m_ovlpOverlapped.Offset | ( (fpos_t) m_ovlpOverlapped.OffsetHigh << 32 );
+   qwSavedFilePosition = m_ovlpOverlapped.Offset | ( (GtfFilePos) m_ovlpOverlapped.OffsetHigh << 32 );
 #else
    qwSavedFilePosition = m_qwFilePosition;
 #endif
@@ -20254,7 +20254,7 @@ FileOpened:    // Input file opened
 // to flush network file caches
 //
 
-INT CGeoTiff::gtfSeek( fpos_t qwFilePosition )
+INT CGeoTiff::gtfSeek( GtfFilePos qwFilePosition )
 {
 #ifdef MAPPEDFILE_FILE_INPUT
    INT64 iPositionChange = qwFilePosition  - (INT64) ( m_iobMappedFileIOBufDesc._ptr - m_iobMappedFileIOBufDesc._base );
