@@ -18,7 +18,7 @@
 
 // fid.cpp
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "fid.h"
 #include "Util.h"
 #include <math.h>

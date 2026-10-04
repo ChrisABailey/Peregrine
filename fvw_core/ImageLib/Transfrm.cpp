@@ -20,7 +20,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include <float.h>
 #include <math.h>

@@ -22,7 +22,7 @@
 
 /* PROGRAM MAGPOINT (GEOMAG DRIVER) */
 
-#include "stdafx.h"
+#include "Stdafx.h"
 
 #ifdef _WIN32
 #include "..\FvCore\Include\Registry.h"

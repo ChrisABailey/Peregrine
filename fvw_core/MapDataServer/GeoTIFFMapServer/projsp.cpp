@@ -39,7 +39,7 @@ ALGORITHM REFERENCES
     Printing Office, Washington D.C., 1989.
 *******************************************************************************/
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include <stdio.h>
 #include <math.h>
 #include "projsp.h"

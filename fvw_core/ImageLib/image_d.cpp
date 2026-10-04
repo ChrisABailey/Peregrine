@@ -20,7 +20,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "image_d.h"
 #include "Common.h"
 

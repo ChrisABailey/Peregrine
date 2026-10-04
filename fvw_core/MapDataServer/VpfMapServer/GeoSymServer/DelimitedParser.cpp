@@ -25,7 +25,7 @@
 // Author:      Louis Framarini, Jr., Created: 06/11/03
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "DelimitedParser.h"
 
 #ifdef _DEBUG

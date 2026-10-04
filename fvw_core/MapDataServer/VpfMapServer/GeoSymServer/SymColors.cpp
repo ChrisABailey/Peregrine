@@ -25,7 +25,7 @@
 // Author:      Louis Framarini, Jr., Created: 06/19/03
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "SymColors.h"
 #include "DelimitedParser.h"
 

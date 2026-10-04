@@ -18,7 +18,7 @@
 
 // codes.cpp
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "codes.h"
 #include "Common.h"  // for SUCCESS and FAILURE
 #include "GeoTiffFrameFile.h"  // for state plane codes

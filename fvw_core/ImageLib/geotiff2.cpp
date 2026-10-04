@@ -22,7 +22,7 @@
 
 // 15-Sep-2005  (RAC)  Use file-specific temp file names for overview builds
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "Common.h"
 #include "defines.h"
 #include "mem.h"

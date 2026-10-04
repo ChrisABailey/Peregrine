@@ -20,7 +20,7 @@
 
 // mercator.cpp
 
-#include "stdafx.h"
+#include "Stdafx.h"
 
 #include <math.h>
 

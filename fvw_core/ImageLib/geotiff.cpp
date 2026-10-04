@@ -26,7 +26,7 @@
 // Author: Barrett D. Flansburg
 // GTRI FalconView
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "Common.h"
 #include "err.h"
 #include "file.h"

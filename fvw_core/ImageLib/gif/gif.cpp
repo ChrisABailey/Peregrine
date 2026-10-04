@@ -46,7 +46,7 @@
  * in future portability!
  */
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "frame.h"
 #include "gif.h"
 #include "gifdecod.h"

@@ -20,7 +20,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "Util.h"
 #include "Common.h"
 #include "geo_tool_d.h"
