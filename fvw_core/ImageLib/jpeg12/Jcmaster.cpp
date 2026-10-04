@@ -13,8 +13,8 @@
  */
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
 
 
 /* Private state */

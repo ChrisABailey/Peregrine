@@ -14,9 +14,9 @@
  */
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
-#include "jchuff.h"		/* Declarations shared with jchuff.c */
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
+#include "JCHUFF.H"		/* Declarations shared with jchuff.c */
 
 #ifdef C_PROGRESSIVE_SUPPORTED
 

@@ -18,7 +18,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "rpf_util.h"
 
 int read_auint_2(FILE* fp, size_t field_size, UINT2* val)

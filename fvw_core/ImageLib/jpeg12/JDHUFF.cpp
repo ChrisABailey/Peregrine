@@ -18,9 +18,9 @@
 #include "../StdAfx.h"
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
-#include "jdhuff.h"		/* Declarations shared with jdphuff.c */
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
+#include "JDHUFF.H"		/* Declarations shared with jdphuff.c */
 
 
 /*

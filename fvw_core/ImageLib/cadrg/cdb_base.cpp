@@ -18,7 +18,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include "cdb_base.h"
 #include "rpf_lcl.h"

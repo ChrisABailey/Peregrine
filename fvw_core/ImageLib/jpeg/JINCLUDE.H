@@ -18,7 +18,7 @@
 
 /* Include auto-config file to find out which system include files we need. */
 
-#include "jconfig.h"		/* auto configuration options */
+#include "Jconfig.h"		/* auto configuration options */
 #define JCONFIG_INCLUDED	/* so that jpeglib.h doesn't do it again */
 
 #ifdef _WIN32  // memory-mapped/ReadFile FILE* tricks; POSIX uses plain fread

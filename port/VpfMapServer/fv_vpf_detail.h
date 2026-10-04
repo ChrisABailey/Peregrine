@@ -16,7 +16,7 @@
 #include <cstdio>
 #include <string>
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include "variant.h"
 
