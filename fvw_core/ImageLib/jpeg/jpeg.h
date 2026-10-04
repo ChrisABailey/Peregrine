@@ -24,6 +24,7 @@
 #ifndef _WIN32
 #include "fv_compat.h"
 #include "fv_cstring.h"
+#include <memory>  // std::unique_ptr
 #endif
 #include "JPEGLIB.H"
 #include "JINCLUDE.H"

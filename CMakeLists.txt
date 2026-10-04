@@ -27,6 +27,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Every module is a static library, and pyfvw (a shared Python extension) links
+# them. macOS code is always position-independent; on Linux/ELF that has to be
+# asked for or the final link fails with R_X86_64_TPOFF32 / recompile with -fPIC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 option(FVW_BUILD_TESTS "Build unit tests" ON)
 
 # --- iOS cross-build ---------------------------------------------------------
