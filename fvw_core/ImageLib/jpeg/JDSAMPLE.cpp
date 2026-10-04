@@ -19,7 +19,7 @@
  *   Pub. by IEEE Computer Society Press, Los Alamitos, CA. ISBN 0-8186-8944-7.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

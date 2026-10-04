@@ -16,7 +16,7 @@
  * is shoved onto the user.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

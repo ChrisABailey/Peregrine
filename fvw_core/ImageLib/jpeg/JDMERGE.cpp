@@ -33,7 +33,7 @@
  * general code in jdsample.c and jdcolor.c.)
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

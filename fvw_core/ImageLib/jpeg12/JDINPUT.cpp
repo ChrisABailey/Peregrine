@@ -12,7 +12,7 @@
  * reading is done in jdmarker.c, jdhuff.c, and jdphuff.c.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

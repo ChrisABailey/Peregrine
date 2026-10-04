@@ -23,7 +23,7 @@
  */
 
 /* this is not a core library module, so it doesn't define JPEG_INTERNALS */
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #include "jinclude.h"
 #include "jpeglib.h"

@@ -33,7 +33,7 @@
  * quality-setting files than with low-quality ones.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

@@ -27,14 +27,14 @@
 // GTRI FalconView
 
 #include "stdafx.h"
-#include "common.h"
+#include "Common.h"
 #include "err.h"
 #include "file.h"
 #include "mem.h"
 #include "map.h"        // CImageMap
 #include "geotiff.h"
 #include "projsp.h"
-#include "util.h"
+#include "Util.h"
 
 #include <errno.h>
 #ifdef _WIN32

@@ -15,7 +15,7 @@
  * Also, the input side (only) is used when reading a file for transcoding.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

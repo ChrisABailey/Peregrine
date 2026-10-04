@@ -21,7 +21,7 @@
 #ifndef NMEA_H
 #define NMEA_H 1
 
-#include "NetNmeaDll.h"
+#include "NetNMEADll.h"
 #include "gps.h"
 
 #define MAX_NMEA_SENTENCE_LENGTH 82

@@ -43,7 +43,7 @@ ALGORITHM REFERENCES
 #include <stdio.h>
 #include <math.h>
 #include "projsp.h"
-#include "common.h"
+#include "Common.h"
 #include "GeoTiffFrameFile.h"
 #include "codes.h"
 

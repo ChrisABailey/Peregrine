@@ -20,7 +20,7 @@
 
 #include "stdafx.h"
 #include "fid.h"
-#include "util.h"
+#include "Util.h"
 #include <math.h>
 #ifdef _WIN32
 #include <io.h>

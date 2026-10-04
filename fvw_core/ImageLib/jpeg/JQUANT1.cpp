@@ -11,7 +11,7 @@
  * color values.  Optional Floyd-Steinberg or ordered dithering is available.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

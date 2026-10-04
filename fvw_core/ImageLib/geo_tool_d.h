@@ -24,7 +24,7 @@
 -                            Includes
 -------------------------------------------------------------------*/
 
-#include "common.h"  // for degrees_t, radians_t, minutes_t
+#include "Common.h"  // for degrees_t, radians_t, minutes_t
 
 /*------------------------------------------------------------------
 -                           Definitions

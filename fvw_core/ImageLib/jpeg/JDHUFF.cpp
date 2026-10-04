@@ -15,7 +15,7 @@
  * storage only upon successful completion of an MCU.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

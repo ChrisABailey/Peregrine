@@ -13,8 +13,8 @@
 
 #include <cstdlib>
 
-#include "common.h"  // SUCCESS/FAILURE
-#include "util.h"
+#include "Common.h"  // SUCCESS/FAILURE
+#include "Util.h"
 
 // --- data-path discovery (registry on Windows) ---
 CString CUtil::get_default_source() { return s_csDefaultImageryDataPath; }

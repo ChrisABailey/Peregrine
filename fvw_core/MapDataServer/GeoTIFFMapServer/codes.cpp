@@ -20,7 +20,7 @@
 
 #include "stdafx.h"
 #include "codes.h"
-#include "common.h"  // for SUCCESS and FAILURE
+#include "Common.h"  // for SUCCESS and FAILURE
 #include "GeoTiffFrameFile.h"  // for state plane codes
 #include "GeoTiff_defines.h"
 

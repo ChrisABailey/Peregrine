@@ -63,7 +63,7 @@
 
 #include "stdafx.h"
 
-#include "common.h"
+#include "Common.h"
 #include "geo_tool.h"
 #include "geo_loc.h"
 

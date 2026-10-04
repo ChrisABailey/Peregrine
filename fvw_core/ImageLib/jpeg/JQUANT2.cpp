@@ -18,7 +18,7 @@
  * fundamental assumptions even hold with an irregularly spaced color map.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

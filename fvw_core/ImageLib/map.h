@@ -22,7 +22,7 @@
 #define MAP_H
 
 #include "geotiff.h"
-#include "transfrm.h"
+#include "Transfrm.h"
 #include <map>
 
 class CImageMap

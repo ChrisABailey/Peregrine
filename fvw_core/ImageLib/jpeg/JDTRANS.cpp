@@ -11,7 +11,7 @@
  * The routines in jdapimin.c will also be needed by a transcoder.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"

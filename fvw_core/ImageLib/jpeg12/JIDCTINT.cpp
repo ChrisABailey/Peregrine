@@ -26,7 +26,7 @@
  * scaled fixed-point arithmetic, with a minimal number of shifts.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
 #include "jinclude.h"
