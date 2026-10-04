@@ -16,7 +16,7 @@
 
 // FalconView(tm) is a trademark of Georgia Tech Research Corporation.
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "vpfrcset.h"
 #include "indexes.h"
 #include "tables.h"

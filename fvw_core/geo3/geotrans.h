@@ -384,12 +384,22 @@ protected:
    long report_error( long lStatus, const std::stringstream& ssErrorMsg );
 
 private:
+#ifndef __in  // non-Windows: no sal.h; keep the annotations local (see fv_compat.h)
+#define __in
+#define __out
+#define FVW_GEOTRANS_LOCAL_SAL
+#endif
    LONG report_error( __in long lStatus,
       __in const std::stringstream& ssErrorMsg, __in boolean_t bLogError );
    MSP::CCS::DatumLibrary* GetDatumLibrary();
    MSP::CCS::EllipsoidLibrary* GetEllipsoidLibrary();
    LONG GetDatumIndex( __in LPCSTR pszDatumName, __out long& lDatumIndex,
       __in boolean_t bLogIfInvalid );
+#ifdef FVW_GEOTRANS_LOCAL_SAL
+#undef __in
+#undef __out
+#undef FVW_GEOTRANS_LOCAL_SAL
+#endif
    long convert_geo_to_mgrs(double lat_in, double long_in, LPCSTR sdatum,
       char *milgrid, int milgrid_len);
 };

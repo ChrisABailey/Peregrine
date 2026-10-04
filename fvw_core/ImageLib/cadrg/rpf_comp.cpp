@@ -18,7 +18,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include "file.h"
 #include "rpf_defs.h"

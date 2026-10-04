@@ -20,11 +20,11 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include <float.h>
 #include <math.h>
-#include "common.h"
+#include "Common.h"
 #include "err.h"
 #include "file.h"
 #include "mem.h"

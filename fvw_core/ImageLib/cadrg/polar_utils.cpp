@@ -19,7 +19,7 @@
 // polar_utils.cpp
 //
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "polar_utils.h"
 #include <math.h>
 

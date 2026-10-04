@@ -52,7 +52,7 @@ inline int scan_one(const char* in, const char* spec, void* target) {
   return consumed;
 }
 
-inline int vsscanf_s_impl(const char* buffer, const char* format, va_list ap) {
+inline int vsscanf_s_impl(const char* buffer, const char* format, va_list& ap) {
   if (buffer == nullptr || format == nullptr) return EOF;
   const char* in = buffer;
   const char* f = format;

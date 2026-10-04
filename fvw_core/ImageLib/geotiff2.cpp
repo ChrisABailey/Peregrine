@@ -22,14 +22,14 @@
 
 // 15-Sep-2005  (RAC)  Use file-specific temp file names for overview builds
 
-#include "stdafx.h"
-#include "common.h"
+#include "StdAfx.h"
+#include "Common.h"
 #include "defines.h"
 #include "mem.h"
 #include "geotiff.h"
 #include <math.h>
 //#include "ProgressDlg.h"
-#include "util.h"
+#include "Util.h"
 #ifdef _WIN32
 #include "ComErrorObject.h"
 #endif

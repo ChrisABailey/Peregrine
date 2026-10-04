@@ -10,7 +10,7 @@
 #include <cstdlib>
 #include <memory>
 
-#include "stdafx.h"  // POSIX branch: fv_compat + CString + MFC containers
+#include "StdAfx.h"  // POSIX branch: fv_compat + CString + MFC containers
 
 #include "CGMFile.h"
 #include "fv_win32_path.h"

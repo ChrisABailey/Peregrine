@@ -19,7 +19,7 @@
 // GeoTiff_defines.cpp
 //
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "GeoTiff_defines.h"
 
 int geotiff_num_linear_units_names = 17;

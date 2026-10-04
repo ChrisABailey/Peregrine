@@ -15,12 +15,12 @@
  * storage only upon successful completion of an MCU.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
-#include "jdhuff.h"		/* Declarations shared with jdhuff.c */
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
+#include "JDHUFF.H"		/* Declarations shared with jdhuff.c */
 
 
 #ifdef D_PROGRESSIVE_SUPPORTED

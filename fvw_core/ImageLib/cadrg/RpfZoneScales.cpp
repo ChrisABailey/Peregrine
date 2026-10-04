@@ -17,7 +17,7 @@
 // FalconView(R) is a registered trademark of Georgia Tech Research Corporation.
 
 // *** RpfZoneScales.cpp ***
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "RpfZoneScales.h"
 
 #include <math.h>

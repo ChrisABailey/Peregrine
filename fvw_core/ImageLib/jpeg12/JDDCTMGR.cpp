@@ -16,12 +16,12 @@
  * dequantization multiplier table needed by the IDCT routine.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
-#include "jdct.h"		/* Private declarations for DCT subsystem */
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
+#include "JDCT.H"		/* Private declarations for DCT subsystem */
 
 
 /*

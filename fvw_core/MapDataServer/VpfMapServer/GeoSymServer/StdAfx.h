@@ -85,14 +85,9 @@ extern CComModule _Module;
 #include "fv_win32_filemap.h"    // CreateFile/MapViewOfFile idiom -> mmap
                                  // (CCGMFile::LoadCGM maps the .cgm file)
 
-// Win32 min/max macros (windef.h). GeoSym's SymColors.cpp uses them; scoped
-// to this TU so it never shadows std::min/std::max elsewhere.
-#ifndef min
-#define min(a, b) (((a) < (b)) ? (a) : (b))
-#endif
-#ifndef max
-#define max(a, b) (((a) > (b)) ? (a) : (b))
-#endif
+// (The Win32 min/max macros (windef.h) that SymColors.cpp uses are defined in
+// that file, after its includes: defined here, they would break every
+// libstdc++ header included after this one, which uses min/max as names.)
 
 #endif  // _WIN32
 

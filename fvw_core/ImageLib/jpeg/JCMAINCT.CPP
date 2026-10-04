@@ -12,8 +12,8 @@
  */
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
 
 
 /* Note: currently, there is no operating mode in which a full-image buffer

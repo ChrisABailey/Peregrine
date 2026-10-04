@@ -21,7 +21,7 @@
 // lst_iter.cpp : implementation file
 // created by Robert 12/10/99
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include "lst_iter.h"
 #include "vpf_d.h"

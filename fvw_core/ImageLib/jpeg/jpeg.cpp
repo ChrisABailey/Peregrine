@@ -18,11 +18,11 @@
 
 // Jpeg.cpp
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 #include "jpeg.h"
-#include "common.h"
+#include "Common.h"
 //#include "jpeglib.h"
-#include "cdjpeg.h"
+#include "CDJPEG.H"
 #ifdef _WIN32
 #include <io.h>
 #endif

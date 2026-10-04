@@ -17,7 +17,7 @@
 // FalconView(R) is a registered trademark of Georgia Tech Research Corporation.
 
 // GeoTiffFrameFile.cpp : Implementation of CGeoTiffFrameFile
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "GeoTiffFrameFile.h"
 #include "GeoTiff_defines.h"
 #ifdef _WIN32

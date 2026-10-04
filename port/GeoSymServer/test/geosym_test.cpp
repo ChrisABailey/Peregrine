@@ -16,7 +16,7 @@
 // the file-open boundary (CStdioFile -> FvResolveWin32Path), so the Windows
 // backslash + mixed case in the ledger works unmodified here.
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include <sys/stat.h>
 #include <cstdio>

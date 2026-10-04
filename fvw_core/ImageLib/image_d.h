@@ -23,7 +23,7 @@
 #pragma once
 
 #include "MetadataStructs.h"
-#include "transfrm.h"
+#include "Transfrm.h"
 #include "fv_autoptr.h"  // fvw_auto_ptr (CImagePtr; std::auto_ptr removed in C++17)
 #ifdef _WIN32
 #include <afxtempl.h>  // for CList

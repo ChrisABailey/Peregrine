@@ -11,7 +11,7 @@
 // on-disk directories, FACC codes are valid). They are the golden values for
 // the phases that build on this reader.
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include <sys/stat.h>
 

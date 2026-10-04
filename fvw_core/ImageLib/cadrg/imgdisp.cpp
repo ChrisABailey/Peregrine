@@ -18,7 +18,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "imgdisp.h"
 #include "cdb_base.h"
 #include "RpfZoneScales.h"

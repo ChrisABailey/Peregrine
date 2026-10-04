@@ -33,11 +33,11 @@
  * general code in jdsample.c and jdcolor.c.)
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
 
 #ifdef UPSAMPLE_MERGING_SUPPORTED
 

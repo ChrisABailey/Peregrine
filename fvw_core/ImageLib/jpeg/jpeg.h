@@ -24,9 +24,10 @@
 #ifndef _WIN32
 #include "fv_compat.h"
 #include "fv_cstring.h"
+#include <memory>  // std::unique_ptr
 #endif
-#include "jpeglib.h"
-#include "jinclude.h"
+#include "JPEGLIB.H"
+#include "JINCLUDE.H"
 
 // * JPEG markers consist of one or more 0xFF bytes, followed by a marker
 // * code byte (which is not an FF).  Here are the marker codes of interest

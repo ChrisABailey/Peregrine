@@ -19,8 +19,8 @@
 
 #define JPEG_INTERNALS
 //#include "stdafx.h"
-#include "jinclude.h"
-#include "jpeglib.h"
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
 
 
 /*

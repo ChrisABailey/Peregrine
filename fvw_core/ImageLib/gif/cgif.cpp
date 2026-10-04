@@ -18,14 +18,14 @@
 
 // cpng.cpp
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 extern "C"
 {
 //#include "pov_file.h"
 }
 #include "gif.h"
 #include "cgif.h"
-#include "..//util.h"
+#include "../Util.h"
 #include "..//defines.h"
 #include "..//jpeg//jpeg.h"
 

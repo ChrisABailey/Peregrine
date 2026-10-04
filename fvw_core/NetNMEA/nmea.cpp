@@ -24,7 +24,7 @@
 // Only GGA, GLL, RMC, and VTG are handled by this class.  See nmea.h
 // for more information on what data is in which sentence.
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include <string.h>
 #include <stdio.h>
 #include "nmea.h"

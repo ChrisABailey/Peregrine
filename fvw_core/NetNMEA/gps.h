@@ -20,7 +20,7 @@
 #ifndef _GPS_H_
 #define _GPS_H_
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #define GPS_TIME		    0x0001
 #define GPS_LOCATION		0x0002
 #define GPS_SPEED_KTS		0x0004

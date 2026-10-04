@@ -18,7 +18,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include "nitf.h"
 #include "rpf_lcl.h"

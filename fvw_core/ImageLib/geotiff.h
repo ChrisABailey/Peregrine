@@ -51,6 +51,11 @@
 #include "image_d.h"
 #include "tiffdata.h"
 
+// A 64-bit byte offset into the file. This was fpos_t, which is __int64 on Windows
+// and an integer on macOS but an opaque struct in glibc, where the arithmetic
+// done on it (offset differences, += byte counts) does not compile.
+typedef long long GtfFilePos;
+
 //#include "interfaces//imagelib.h"
 
 struct value_name
@@ -1114,7 +1119,7 @@ public:
    INT gtfOpen( LPCSTR pszFilename );
 
    // File seek
-   INT gtfSeek( fpos_t qwFilePosition );
+   INT gtfSeek( GtfFilePos qwFilePosition );
 
    // General file read
    INT gtfRead( DWORD dwFilePosition, PBYTE pbBuffer, DWORD dwByteCount );
@@ -1129,7 +1134,7 @@ protected:
 #if defined MAPPEDFILE_FILE_INPUT || defined READFILE_FILE_INPUT || defined LLFILE_FILE_INPUT
    FILE     m_iobMappedFileIOBufDesc;  // Pseudo-FILE
 #else    // No MAPPEDFILE_FILE_INPUT, LLFILE_FILE_INPUT, or READFILE_FILE_INPUT
-   fpos_t   m_qwFilePosition;
+   GtfFilePos m_qwFilePosition;
 #endif
 
    INT      GetTagStringValue( USHORT wTagID, CString& csValue );

@@ -17,6 +17,7 @@
 #ifndef _WIN32
 
 #include <cctype>
+#include <climits>  // INT_MAX/INT_MIN, which MSVC's CRT headers pull in transitively
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,17 @@
 // MSVC fixed-width integer spellings. A macro (not typedef) because MSVC's
 // __int64 is a keyword that combines with 'unsigned'.
 #define __int64 long long
+
+#ifndef __clang__
+// MSVC calling-convention keyword; Clang accepts and ignores it on x86-64 but
+// GCC does not know it. No-op everywhere it can matter (LP64 has one ABI).
+#define __fastcall
+#endif
+
+#ifndef __APPLE__
+// C11 Annex K size type: declared by Apple's libc, absent from glibc.
+typedef size_t rsize_t;
+#endif
 
 // Core Win32 typedefs (subset; grow only on demand).
 // Win32 LONG/DWORD are exactly 32 bits; on LP64 'long' is 64 bits, which
@@ -224,12 +236,11 @@ struct CRect : public RECT {
 #define FALSE 0
 #endif
 
-// SAL annotations
-#define __in
-#define __out
-#define __inout
-#define __in_opt
-#define __out_opt
+// SAL annotations (__in, __out, ...) are deliberately NOT defined here: they are
+// reserved identifiers that libstdc++ uses as parameter names (e.g. __out in
+// <bits/locale_facets.h>), so an object-like macro breaks any standard header
+// included after this one. The one header that uses them, geo3/geotrans.h,
+// defines them locally around its declarations.
 
 // 16-bit segmented-memory keywords, empty on Win32 too (windows.h does this)
 #define far

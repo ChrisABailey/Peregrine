@@ -22,7 +22,7 @@
 
 
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include <memory>
 #include "CGMFile.h"
 #include "math.h"

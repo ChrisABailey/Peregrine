@@ -18,11 +18,11 @@
  * fundamental assumptions even hold with an irregularly spaced color map.
  */
 
-#include "..//stdafx.h"
+#include "../StdAfx.h"
 
 #define JPEG_INTERNALS
-#include "jinclude.h"
-#include "jpeglib.h"
+#include "JINCLUDE.H"
+#include "JPEGLIB.H"
 
 #ifdef QUANT_2PASS_SUPPORTED
 

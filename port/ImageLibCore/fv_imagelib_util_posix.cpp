@@ -9,12 +9,12 @@
 // reads -> env vars / settable statics; COM progress -> no-op (headless);
 // GDI drawing is not replaced (SEVER: Phase 5).
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include <cstdlib>
 
-#include "common.h"  // SUCCESS/FAILURE
-#include "util.h"
+#include "Common.h"  // SUCCESS/FAILURE
+#include "Util.h"
 
 // --- data-path discovery (registry on Windows) ---
 CString CUtil::get_default_source() { return s_csDefaultImageryDataPath; }

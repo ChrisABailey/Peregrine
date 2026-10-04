@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // stdafx.h first: fv_cgm_to_symbol.h pulls in SymColors.h, which is MFC-shaped.
-#include "stdafx.h"  // POSIX branch: fv_compat + CString + MFC containers
+#include "StdAfx.h"  // POSIX branch: fv_compat + CString + MFC containers
 
 #include "fv_cgm_library.h"
 

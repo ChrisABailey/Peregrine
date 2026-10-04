@@ -23,7 +23,7 @@ extern "C" {
 }
 #include <csetjmp>
 // IJG jpeg: C++-compiled in this tree, no extern "C"
-#include "jpeglib.h"
+#include "JPEGLIB.H"
 
 namespace {
 
