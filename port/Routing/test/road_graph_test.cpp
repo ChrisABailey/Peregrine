@@ -74,8 +74,13 @@ std::vector<std::string> KiawahInputs() {
   GTEST_SKIP() << "no Kiawah OSM exports in " << TestDataDir() << "/OSM"
 
 
+// Each test gets its own directory: ctest runs every test in its own process,
+// and under ctest -j tests writing the same file name would clobber each other.
 fs::path ScratchDir() {
-  fs::path dir = fs::temp_directory_path() / "fv_routing_test";
+  const ::testing::TestInfo* info =
+      ::testing::UnitTest::GetInstance()->current_test_info();
+  fs::path dir = fs::temp_directory_path() / "fv_routing_test" /
+                 (std::string(info->test_suite_name()) + "." + info->name());
   fs::create_directories(dir);
   return dir;
 }

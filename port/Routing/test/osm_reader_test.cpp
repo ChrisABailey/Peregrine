@@ -32,6 +32,17 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Each test gets its own directory: ctest runs every test in its own process,
+// and under ctest -j tests writing the same file name would clobber each other.
+fs::path ScratchDir() {
+  const ::testing::TestInfo* info =
+      ::testing::UnitTest::GetInstance()->current_test_info();
+  fs::path dir = fs::temp_directory_path() / "fv_routing_test" /
+                 (std::string(info->test_suite_name()) + "." + info->name());
+  fs::create_directories(dir);
+  return dir;
+}
+
 std::string TestDataDir() {
   const char* env = std::getenv("FVW_TESTDATA_DIR");
   return env != nullptr ? std::string(env) : std::string("TestData");
@@ -230,8 +241,7 @@ std::string SyntheticOsmData() {
 }
 
 std::string WriteSyntheticPbf(const char* name, bool compress_it) {
-  fs::path dir = fs::temp_directory_path() / "fv_routing_test";
-  fs::create_directories(dir);
+  const fs::path dir = ScratchDir();
   const fs::path path = dir / name;
 
   std::string file;
@@ -317,8 +327,7 @@ TEST(OsmXmlReader, MissingFileIsAnIoError) {
 }
 
 TEST(OsmXmlReader, MalformedXmlIsReportedNotIgnored) {
-  fs::path dir = fs::temp_directory_path() / "fv_routing_test";
-  fs::create_directories(dir);
+  const fs::path dir = ScratchDir();
   const fs::path path = dir / "broken.osm";
   {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -329,8 +338,7 @@ TEST(OsmXmlReader, MalformedXmlIsReportedNotIgnored) {
 }
 
 TEST(OsmXmlReader, ReadsRelationMembersAndKeepsThemOffTheWay) {
-  fs::path dir = fs::temp_directory_path() / "fv_routing_test";
-  fs::create_directories(dir);
+  const fs::path dir = ScratchDir();
   const fs::path path = dir / "relation.osm";
   {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -371,8 +379,7 @@ TEST(OsmXmlReader, ReadsRelationMembersAndKeepsThemOffTheWay) {
 }
 
 TEST(OsmXmlReader, RelationsAreSkippedUnlessAskedFor) {
-  fs::path dir = fs::temp_directory_path() / "fv_routing_test";
-  fs::create_directories(dir);
+  const fs::path dir = ScratchDir();
   const fs::path path = dir / "relation-skip.osm";
   {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
