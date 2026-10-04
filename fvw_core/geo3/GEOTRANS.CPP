@@ -878,10 +878,20 @@ static const int NUM_UI_DATUM_ALIASES =
       }
    }
 
+#ifndef __in  // non-Windows: no sal.h; keep the annotations local (see fv_compat.h)
+#define __in
+#define __out
+#define FVW_GEOTRANS_LOCAL_SAL
+#endif
 LONG CGeoTrans::GetDatumIndex(
       __in LPCSTR pszDatumName,
       __out long& lDatumIndex,
       __in boolean_t bLogIfInvalid )
+#ifdef FVW_GEOTRANS_LOCAL_SAL
+#undef __in
+#undef __out
+#undef FVW_GEOTRANS_LOCAL_SAL
+#endif
 {
    try
    {
