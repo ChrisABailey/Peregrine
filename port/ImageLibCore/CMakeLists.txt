@@ -35,7 +35,7 @@ add_library(fv_imagelib_geotiff STATIC
   ${ILC}/geotiff2.cpp
   ${ILC}/fid.cpp
   ${ILC}/image_d.cpp
-  ${ILC}/transfrm.cpp
+  ${ILC}/Transfrm.cpp
   ${ILC}/Util.cpp
   ${ILC}/MetadataStructs.cpp
   ${CMAKE_SOURCE_DIR}/fvw_core/Utility/SVD/svd.cpp
