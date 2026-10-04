@@ -15,7 +15,7 @@
 #include <map>
 #include <unordered_map>
 
-#include "stdafx.h"  // POSIX branch: fv_compat + CString + MFC containers
+#include "StdAfx.h"  // POSIX branch: fv_compat + CString + MFC containers
 
 #include "AttributeExpressions.h"
 #include "DelimitedParser.h"

@@ -12,7 +12,7 @@
 #include <cmath>
 #include <vector>
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "geotiff.h"  // ImageLib's CGeoTiff (via ILC include dirs)
 
 #include "fv_geotiff_frame.h"

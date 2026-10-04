@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "stdafx.h"  // POSIX branch: fv_compat + CString + MFC containers
+#include "StdAfx.h"  // POSIX branch: fv_compat + CString + MFC containers
 
 namespace fv {
 

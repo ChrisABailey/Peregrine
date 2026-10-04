@@ -24,7 +24,7 @@
 // SymColors.h is MFC-shaped (LPCTSTR, CString) and does not include the
 // precompiled header it was written under, so stdafx.h has to come first —
 // the same order every .cpp in this directory already uses.
-#include "stdafx.h"     // POSIX branch: fv_compat + CString + MFC containers
+#include "StdAfx.h"     // POSIX branch: fv_compat + CString + MFC containers
 #include "SymColors.h"  // CSymColorAdjuster, COLORREF
 #include "fv_cgm_symbol.h"
 

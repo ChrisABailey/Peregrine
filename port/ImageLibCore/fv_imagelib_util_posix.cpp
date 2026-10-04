@@ -9,7 +9,7 @@
 // reads -> env vars / settable statics; COM progress -> no-op (headless);
 // GDI drawing is not replaced (SEVER: Phase 5).
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include <cstdlib>
 

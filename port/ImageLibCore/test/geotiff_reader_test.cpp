@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "stdafx.h"
+#include "StdAfx.h"
 #include "geotiff.h"
 
 namespace {
