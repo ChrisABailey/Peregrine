@@ -29,6 +29,17 @@
 #include "SymColors.h"
 #include "DelimitedParser.h"
 
+#ifndef _WIN32
+// Win32 min/max macros (windef.h), scoped to this TU after all includes so they
+// never shadow std::min/std::max in standard headers.
+#ifndef min
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef max
+#define max(a, b) (((a) > (b)) ? (a) : (b))
+#endif
+#endif
+
 #ifdef _DEBUG
 #undef THIS_FILE
 static char THIS_FILE[]=__FILE__;
