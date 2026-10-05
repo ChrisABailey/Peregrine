@@ -237,6 +237,18 @@ class RouteOverlay : public Overlay,
   void SetShowLabels(bool on) { show_labels_ = on; }
   bool show_labels() const { return show_labels_; }
 
+  /// Off: `OnDraw` draws the line and status but no waypoint diamonds or
+  /// names, for a shell that shows them as upright sprites over a tilted map.
+  /// Waypoints are still placed for the hit test.
+  void SetDrawMarkers(bool on) { draw_markers_ = on; }
+  bool draw_markers() const { return draw_markers_; }
+
+  /// Stamps waypoint `index`'s diamond and name centred on surface pixel
+  /// (x, y): what `OnDraw` stamps for it, minus placement. kInvalidArg when
+  /// `index` is past the last waypoint.
+  Status DrawMarkerAt(const MapProjection& proj, ICanvas& canvas, size_t index,
+                      double x, double y);
+
   // How an UNCALCULATED leg is filled in between its two waypoints (G1).
   // kGreatCircle is the default because it is what the route IS — a leg is
   // flown, not drawn, and the straight line between two projected pixels is an
@@ -345,6 +357,7 @@ class RouteOverlay : public Overlay,
   std::string selected_;
   bool show_labels_ = true;
   bool show_status_ = true;
+  bool draw_markers_ = true;
   double dpi_scale_ = 1.0;
   LineKind leg_kind_ = LineKind::kGreatCircle;
 
@@ -367,6 +380,11 @@ class RouteOverlay : public Overlay,
     FvColor color;  // marker fill: start, via or end
   };
   std::vector<DrawnPoint> drawn_;
+
+  /// The fill for waypoint `index` of `count`: start, via or end.
+  static FvColor MarkerColor(size_t index, size_t count);
+  /// One waypoint's diamond and name, through `draw`.
+  Status DrawMarker(GeoDraw& draw, const DrawnPoint& d);
 
   // Keyed by packed RGBA, exactly PointOverlay's arrangement: a builtin
   // library is thirteen literals with no files behind it, and a route wants

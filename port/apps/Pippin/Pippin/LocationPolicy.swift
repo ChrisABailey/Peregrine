@@ -5,8 +5,8 @@
 
 // LocationPolicy.swift — how hard the receiver should be working.
 //
-// The feed is started once from `MapScreen.onAppear` and `stopFeed()` has no
-// call sites, so without this policy `CLLocationManager` would run at
+// The feed is started once from `MapScreen.onAppear` and is never torn down,
+// so without this policy `CLLocationManager` would run at
 // `kCLLocationAccuracyBestForNavigation` with `distanceFilter =
 // kCLDistanceFilterNone` and `pausesLocationUpdatesAutomatically = NO` — the
 // most expensive configuration CoreLocation offers — for as long as the app
@@ -25,6 +25,15 @@
 // physically travelling back into view, which three kilometres is about the
 // right resolution to notice.
 //
+// In the background the screen decides nothing. Following or recording keeps
+// navigation accuracy, because the app holds the background location mode
+// for exactly those two jobs and a coarse run there could be paused by iOS
+// with nobody looking to resume it. With neither, the receiver stops: an
+// allowed background run would otherwise keep the app alive and the GNSS
+// chip powered for nobody. Following stops counting once the route has been
+// arrived: the guidance has nothing left to say, so in the background only a
+// recording keeps the receiver running. In the foreground nothing changes.
+//
 // This file is the decision and nothing else, for `RenderGate`'s reason: a
 // hysteresis rule is a state machine, and one wired into CoreLocation could
 // only be tested by riding a bicycle. It is CoreGraphics-only so
@@ -38,6 +47,8 @@ enum LocationAccuracy {
     case navigation
     /// `ThreeKilometers` and a large distance filter. Nobody is.
     case coarse
+    /// No updates. In the background with nothing following or recording.
+    case stopped
 }
 
 /// Decides which accuracy the receiver should be in, given what the map is
@@ -71,16 +82,29 @@ struct LocationPolicy {
     /// A nil `screenPoint` means the question could not be asked: no fix, no
     /// surface, or a non-finite projection. All of those answer `.navigation`,
     /// because a guess here would cost a rider their position.
+    ///
+    /// `inBackground` overrides the screen: `.navigation` while following or
+    /// recording, `.stopped` otherwise. `arrived` (the planned route's end
+    /// has been reached) takes following out of that rule, so an arrived
+    /// ride that is not recording stops in the background. The first
+    /// foreground call after a stop answers `.navigation`, as a launch does.
     @discardableResult
     mutating func accuracy(shipAt screenPoint: CGPoint?,
                            inSurface surface: CGSize,
                            following: Bool,
-                           recording: Bool) -> LocationAccuracy {
+                           recording: Bool,
+                           inBackground: Bool = false,
+                           arrived: Bool = false) -> LocationAccuracy {
         // Following and recording are separate jobs, and either one ends the
         // question: following needs the best fix because the camera is on it,
         // recording because a track logged at three kilometres is not a track.
-        if following || recording {
+        let guiding = following && !(inBackground && arrived)
+        if guiding || recording {
             mode = .navigation
+            return mode
+        }
+        if inBackground {
+            mode = .stopped
             return mode
         }
         guard let screenPoint,
@@ -90,6 +114,8 @@ struct LocationPolicy {
             return mode
         }
         switch mode {
+        case .stopped:
+            mode = .navigation
         case .navigation:
             if !Self.isInside(screenPoint, surface, Self.leaveFraction) {
                 mode = .coarse

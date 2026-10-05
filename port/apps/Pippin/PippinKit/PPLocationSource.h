@@ -17,8 +17,9 @@
 // `PPMap.pushFix:` on the render queue -> `fv::FixQueue` -> `Tick`. Only the
 // last hop needs a lock, and MM1 built it.
 //
-// Authorization is when-in-use and v1 asks for no more. Background updates
-// need a capability, a second purpose string and a battery story.
+// Authorization is when-in-use. The app holds the `location` background mode,
+// and background delivery is allowed only while the shell sets
+// `allowsBackgroundUpdates` (following or recording).
 
 #import <Foundation/Foundation.h>
 
@@ -53,6 +54,9 @@ typedef NS_ENUM(NSInteger, PPLocationAccuracyMode) {
   /// Nobody is watching the ship: `ThreeKilometers`, a large distance filter,
   /// and CoreLocation allowed to pause the journey it thinks has ended.
   PPLocationAccuracyModeCoarse = 1,
+  /// No updates, with `start`'s intent kept: leaving this mode restarts them.
+  /// The background with nothing following or recording.
+  PPLocationAccuracyModeStopped = 2,
 };
 
 @class PPLocationSource;
@@ -120,6 +124,12 @@ typedef NS_ENUM(NSInteger, PPLocationAccuracyMode) {
 /// for iOS to notice motion, which is the moment somebody asked to be
 /// followed.
 @property(nonatomic) PPLocationAccuracyMode accuracyMode;
+
+/// Whether updates continue with the app in the background, with the system's
+/// location indicator showing. NO at birth. Sets both
+/// `allowsBackgroundLocationUpdates` and `showsBackgroundLocationIndicator`;
+/// requires `location` in `UIBackgroundModes`.
+@property(nonatomic) BOOL allowsBackgroundUpdates;
 
 /// Asks for permission if it has not been asked for, and starts updates as
 /// soon as there is permission to start them. Calling it twice is harmless.

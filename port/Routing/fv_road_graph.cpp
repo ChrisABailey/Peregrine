@@ -896,6 +896,26 @@ uint32_t RoadGraph::ArcBetween(uint32_t from_node, uint32_t to_node) const {
   return kNoArc;
 }
 
+// The builder emits each road as a pair of arcs, one at each end, in edge
+// order, so the k-th arc from u to w and the k-th arc from w to u are the same
+// road. A closed loop stores both of its arcs at u, adjacent: forward, then
+// reverse.
+uint32_t RoadGraph::TwinArc(uint32_t from_node, uint32_t arc) const {
+  if (from_node + 1 >= arc_begin_.size()) return kNoArc;
+  if (arc < arc_begin_[from_node] || arc >= arc_begin_[from_node + 1]) return kNoArc;
+  const uint32_t to_node = arcs_[arc].target;
+  uint32_t rank = 0;
+  for (uint32_t a = arc_begin_[from_node]; a < arc; ++a)
+    if (arcs_[a].target == to_node) ++rank;
+  if (to_node == from_node) rank ^= 1u;
+  for (uint32_t a = arc_begin_[to_node]; a < arc_begin_[to_node + 1]; ++a) {
+    if (arcs_[a].target != from_node) continue;
+    if (rank == 0) return a;
+    --rank;
+  }
+  return kNoArc;
+}
+
 bool RoadGraph::NearestNode(const GeoPoint& p, double max_meters, uint32_t* out_node,
                             double* out_meters, const NodeFilter& accept) const {
   if (nodes_.empty() || grid_cols_ == 0) return false;

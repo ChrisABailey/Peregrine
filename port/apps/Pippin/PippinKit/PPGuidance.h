@@ -75,6 +75,11 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) PPManeuver maneuver;
 /// Along-route metres to the maneuver when the event fired.
 @property(nonatomic, readonly) double distanceMeters;
+/// Position of the maneuver in the route's turn list. Every event about one
+/// corner carries the same index; meaningless on off route and rejoined.
+@property(nonatomic, readonly) NSInteger maneuverIndex;
+/// The road being joined at that maneuver, or empty for an unnamed way.
+@property(nonatomic, readonly) NSString *road;
 
 @end
 

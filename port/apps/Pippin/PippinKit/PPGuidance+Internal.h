@@ -18,7 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface PPGuidanceEvent ()
 
 - (instancetype)initWithEvent:(const fv::nav::GuidanceEvent &)event
-    NS_DESIGNATED_INITIALIZER;
+                         road:(NSString *)road NS_DESIGNATED_INITIALIZER;
 
 @end
 

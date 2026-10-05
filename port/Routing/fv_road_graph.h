@@ -281,11 +281,15 @@ class RoadGraph {
   bool TurnAllowed(uint32_t via, uint32_t from_arc, uint32_t to_arc) const;
 
   // The arc of `from_node` whose target is `to_node`, or kNoArc. Linear in
-  // the node's degree, so the router calls it only at restricted nodes.
-  // NOTE: with parallel edges between the same pair this returns the first,
-  // which is the same arbitrary choice OSM itself leaves open when a
-  // restriction names a way that meets the via node twice.
+  // the node's degree. With parallel edges between the same pair this returns
+  // the first; use TwinArc when the arc travelled is known.
   uint32_t ArcBetween(uint32_t from_node, uint32_t to_node) const;
+
+  /// The same road seen from its other end: the arc of `arc`'s target that
+  /// runs back to `from_node`, the node `arc` is stored at. Exact where two
+  /// nodes are joined by more than one road. kNoArc if `arc` is not one of
+  /// `from_node`'s arcs. Linear in the two nodes' degrees.
+  uint32_t TwinArc(uint32_t from_node, uint32_t arc) const;
 
   // --- search state space -----------------------------------------------
   // A plain Dijkstra label per node cannot express a turn restriction: the

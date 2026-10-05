@@ -14,6 +14,7 @@ assembles that bundle directory out of the working tree.
     python3 port/apps/Pippin/stage_data.py --check    # verify only
     python3 port/apps/Pippin/stage_data.py --release  # the pack that ships
     python3 port/apps/Pippin/stage_data.py --regen-points   # redo the points
+    python3 port/apps/Pippin/stage_data.py --region atlanta # another region
 
 TWO OF THOSE FLAGS ARE ABOUT WHAT MUST NOT HAPPEN BY ACCIDENT. `--release`
 leaves out the rows that exist to measure the app rather than to ride with it
@@ -51,22 +52,22 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 class Item:
     """One staged file: where it comes from, where it lands, why it is here."""
 
-    def __init__(self, src, dst, why, required=True, debug_only=False):
+    def __init__(self, src, dst, why, required=True, debug_only=False,
+                 transform=None):
         self.src = src      # repo-relative
         self.dst = dst      # pack-relative
         self.why = why
         self.required = required
+        # `transform(src, dst)` writes the staged file in place of a copy.
+        self.transform = transform
         # A measuring instrument rather than a feature: staged for
         # development and left out by `--release`, because nothing a rider
         # can reach names it. See `--release` in `main`.
         self.debug_only = debug_only
 
 
-MANIFEST = [
-    Item("testdata/OSM/kiawah.mbtiles", "kiawah.mbtiles",
-         "the map, cut from us-south by port/tools/mbtiles_cut.py"),
-    Item("testdata/OSM/kiawah.fvroad", "kiawah.fvroad",
-         "the road graph, built by fvgraph HONOURING access"),
+# The rows every region shares. A region's own rows are in REGIONS below.
+COMMON = [
     Item("port/Osm/styles/kiawah-trails.json", "kiawah-trails.json",
          "the look pippin.ini selects: Kiawah Trails"),
     Item("port/Osm/styles/style.json", "style.json",
@@ -86,6 +87,21 @@ MANIFEST = [
          "the plainer look, and PPMap's compiled-in fallback if osm.style goes"),
     Item("port/Routing/rules/route-weights.json", "route-weights.json",
          "the cost rules the walk and cycle profiles come out of"),
+    # The label face and its licence, which travel together: the Bitstream
+    # Vera licence DejaVu is under permits redistribution only with the
+    # notice attached, so staging the TTF without LICENSE_DEJAVU would ship
+    # a font we do not have permission to ship.
+    Item("port/apps/Pippin/fonts/DejaVuSans.ttf", "fonts/DejaVuSans.ttf",
+         "the label face; iOS gives an app no readable path to a system one"),
+    Item("port/apps/Pippin/fonts/LICENSE_DEJAVU", "fonts/LICENSE_DEJAVU",
+         "and the licence that lets it be in the bundle at all"),
+]
+
+KIAWAH_ROWS = [
+    Item("testdata/OSM/kiawah.mbtiles", "kiawah.mbtiles",
+         "the map, cut from us-south by port/tools/mbtiles_cut.py"),
+    Item("testdata/OSM/kiawah.fvroad", "kiawah.fvroad",
+         "the road graph, built by fvgraph HONOURING access"),
     # The demo feed: a real 28-minute Kiawah ride, so the ownship can be seen
     # on a phone nowhere near the island. In the pack rather than the Xcode
     # target because it is data the settings file names, and everything
@@ -99,15 +115,91 @@ MANIFEST = [
          "five years of predicted high and low water at Kiawah River Bridge"),
     Item("port/apps/Pippin/pippin.ini", "pippin.ini",
          "the settings file, every path in it bundle-relative"),
-    # The label face and its licence, which travel together: the Bitstream
-    # Vera licence DejaVu is under permits redistribution only with the
-    # notice attached, so staging the TTF without LICENSE_DEJAVU would ship
-    # a font we do not have permission to ship.
-    Item("port/apps/Pippin/fonts/DejaVuSans.ttf", "fonts/DejaVuSans.ttf",
-         "the label face; iOS gives an app no readable path to a system one"),
-    Item("port/apps/Pippin/fonts/LICENSE_DEJAVU", "fonts/LICENSE_DEJAVU",
-         "and the licence that lets it be in the bundle at all"),
 ]
+
+# Atlanta: a 20-mile square of intown Atlanta. The tiles are a tilemaker run
+# with the peregrine profile over an osmium cut of the us-south extract; the
+# graph is `fvgraph build` over the same cut, honouring access, with no beach.
+# See README.md, "Another region".
+ATLANTA_BOUNDS = "-84.61,33.67,-84.25,33.97"
+
+ATLANTA_INI = {
+    "pippin.mbtiles": '"atlanta.mbtiles"',
+    "pippin.home_bounds": '"%s"' % ATLANTA_BOUNDS,
+    "points.seed": '"atlanta.fvpoints"',
+    "search.initial_text": '"BeltLine"',
+    "routing.graph": '"atlanta.fvroad"',
+    # A city grid puts the next street closer than Kiawah's cul-de-sacs do.
+    "routing.pick_radius_m": "30",
+    # Downtown; the forecast is the same anywhere in the box.
+    "wind.lat": "33.749",
+    "wind.lon": "-84.388",
+}
+
+# Inland: no tide table and no beach, so the tide card and the beach gate stay
+# off. No demo ride either; the Kiawah track would replay 400 km away.
+ATLANTA_DROP = ["tides", "beach", "movingmap.demo_track"]
+
+
+def region_ini(values, drop):
+    """A transform that stages pippin.ini with some keys reset and some removed.
+
+    `values` maps dotted keys to the literal text after `=`; each must already
+    exist in pippin.ini, so a renamed key fails here rather than on a phone.
+    `drop` names whole sections or dotted keys. Comments are kept as written.
+    """
+    def write(src, dst):
+        out, section, seen, skipping = [], "", set(), False
+        with open(src) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    section = stripped[1:-1]
+                    skipping = section in drop
+                if skipping:
+                    continue
+                key = stripped.split("=", 1)[0].strip()
+                dotted = "%s.%s" % (section, key)
+                if "=" in stripped and not stripped.startswith("#"):
+                    if dotted in drop:
+                        continue
+                    if dotted in values:
+                        line = "%s = %s\n" % (key, values[dotted])
+                        seen.add(dotted)
+                out.append(line)
+        unknown = sorted(set(values) - seen)
+        if unknown:
+            raise SystemExit("pippin.ini has no %s to set" % ", ".join(unknown))
+        with open(dst, "w") as f:
+            f.writelines(out)
+    return write
+
+
+class Region:
+    """One pack's worth of data: its own rows, and its starter point set."""
+
+    def __init__(self, rows, points_name, points):
+        self.rows = rows
+        self.points_name = points_name
+        self.points = points
+
+
+REGIONS = {
+    "kiawah": Region(KIAWAH_ROWS, "Kiawah", None),   # None: POINTS below
+    "atlanta": Region([
+        Item("testdata/OSM/atlanta.mbtiles", "atlanta.mbtiles",
+             "the map: tilemaker, peregrine profile, over the Atlanta cut"),
+        Item("testdata/OSM/atlanta.fvroad", "atlanta.fvroad",
+             "the road graph, built by fvgraph HONOURING access"),
+        Item("port/apps/Pippin/pippin.ini", "pippin.ini",
+             "the settings file, rewritten for Atlanta",
+             transform=region_ini(ATLANTA_INI, ATLANTA_DROP)),
+    ], "Atlanta", []),
+}
+
+# Every seed name any region uses. A seed may be hand-edited and lives only in
+# the pack, so switching regions or pruning a release pack never deletes one.
+REGION_SEEDS = {"kiawah.fvpoints", "atlanta.fvpoints"}
 
 # Where to find the font when `port/apps/Pippin/fonts/` is empty. That
 # directory is git-ignored (it is 756 KB of binary, and this repo has been
@@ -277,7 +369,8 @@ POINTS = [
 ]
 
 
-def build_points_seed(pack, rel, regenerate=False):
+def build_points_seed(pack, rel, regenerate=False, name="Kiawah",
+                      points=None):
     """Write the pack's `.fvpoints` starter set. Returns the path, or None.
 
     None when a set is already there, which is the case that matters: the
@@ -295,7 +388,12 @@ def build_points_seed(pack, rel, regenerate=False):
     edited document — but it IS a hand-edited SOURCE that lives nowhere else,
     because `Data/` is git-ignored. Keep a copy outside the pack if it
     matters, and `--regen-points` when the schema or `POINTS` moves.
+
+    `name` is the document's title and `points` its rows (default `POINTS`);
+    an empty list writes the palette alone.
     """
+    if points is None:
+        points = POINTS
     dst = os.path.join(pack, rel)
     os.makedirs(os.path.dirname(dst) or pack, exist_ok=True)
     if os.path.exists(dst):
@@ -307,7 +405,7 @@ def build_points_seed(pack, rel, regenerate=False):
         db.executescript(POINTS_SCHEMA)
         db.execute("INSERT OR REPLACE INTO meta VALUES('schema_version','3')")
         db.execute("INSERT OR REPLACE INTO meta VALUES('name',?)",
-                   ("Kiawah",))
+                   (name,))
 
         # The palette FIRST, so the file is never — even mid-transaction — a
         # set of points referencing rows that are not there yet. `symbol_id`
@@ -335,7 +433,7 @@ def build_points_seed(pack, rel, regenerate=False):
             print("  points: no artwork for %s (those points draw as shapes)"
                   % ", ".join(missing))
 
-        for i, row in enumerate(POINTS, start=1):
+        for i, row in enumerate(points, start=1):
             (name, lat, lon, shape, color, category, remarks, phone, url,
              icon) = row
             db.execute(
@@ -505,9 +603,27 @@ def main():
                     help="leave out the development-only rows (the demo ride) "
                          "and delete any other file not in the manifest")
     ap.add_argument("--regen-points", action="store_true",
-                    help="rewrite kiawah.fvpoints from POINTS, discarding "
-                         "a hand-edited set already in the pack")
+                    help="rewrite the region's .fvpoints from POINTS, "
+                         "discarding a hand-edited set already in the pack")
+    ap.add_argument("--region", choices=sorted(REGIONS), default="kiawah",
+                    help="which area the pack covers (default kiawah)")
     args = ap.parse_args()
+
+    region = REGIONS[args.region]
+    own = {item.dst for item in region.rows}
+    MANIFEST = [item for item in COMMON if item.dst not in own] + region.rows
+
+    # Another region's copied rows are reproducible from testdata/ and would
+    # only ride along in the bundle. Seeds are never removed: see REGION_SEEDS.
+    if not args.check:
+        for name, other in REGIONS.items():
+            if name == args.region:
+                continue
+            for item in other.rows:
+                stale = os.path.join(args.pack, item.dst)
+                if item.dst not in own and os.path.isfile(stale):
+                    os.remove(stale)
+                    print("  %-22s removed  (belongs to %s)" % (item.dst, name))
 
     if not args.check:
         fetch_font()
@@ -538,7 +654,10 @@ def main():
             continue
         if not args.check:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
+            if item.transform:
+                item.transform(src, dst)
+            else:
+                shutil.copy2(src, dst)
         if not os.path.isfile(dst):
             missing.append(item.dst)
             print("  NOT STAGED  %s" % item.dst)
@@ -557,7 +676,8 @@ def main():
         # and before the dangling-path check, which is what gives it teeth.
         seed_rel = values.get("points.seed")
         if seed_rel and not args.check:
-            seed = build_points_seed(args.pack, seed_rel, args.regen_points)
+            seed = build_points_seed(args.pack, seed_rel, args.regen_points,
+                                     region.points_name, region.points)
             if seed is None:
                 kept = os.path.join(args.pack, seed_rel)
                 print("  %-22s %8.1f KB  %s" %
@@ -568,7 +688,8 @@ def main():
                 print("  %-22s %8.1f KB  %s" %
                       (seed_rel, os.path.getsize(seed) / 1024.0,
                        "the starter point set: %d places, %d embedded icons"
-                       % (len(POINTS), len(ICONS))))
+                       % (len(region.points if region.points is not None
+                              else POINTS), len(ICONS))))
         for key in PATH_KEYS:
             if key in DEBUG_PATH_KEYS and args.release:
                 continue
@@ -588,6 +709,7 @@ def main():
 
     if args.release:
         keep = {item.dst for item in MANIFEST if not item.debug_only}
+        keep |= REGION_SEEDS
         if os.path.isfile(ini):
             keep.add(read_ini_paths(ini).get("points.seed", ""))
         extras = prune_extras(args.pack, keep, dry_run=args.check)
@@ -595,8 +717,8 @@ def main():
         if args.check:
             missing += extras
 
-    print("pippin: %d file(s), %.1f MB in %s%s"
-          % (staged, total_bytes / 1048576.0, args.pack,
+    print("pippin: %s, %d file(s), %.1f MB in %s%s"
+          % (args.region, staged, total_bytes / 1048576.0, args.pack,
              " (release pack)" if args.release else ""))
     if missing:
         print("pippin: INCOMPLETE — %s" % ", ".join(sorted(set(missing))))

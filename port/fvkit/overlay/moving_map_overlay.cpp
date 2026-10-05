@@ -296,6 +296,13 @@ Status MovingMapOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     }
   }
 
+  if (!draw_symbol_) return Status::Ok();
+  return DrawSymbolAt(proj, canvas, sx, sy, screen_angle_deg());
+}
+
+Status MovingMapOverlay::DrawSymbolAt(const MapProjection& proj,
+                                      ICanvas& canvas, double sx, double sy,
+                                      double screen_angle_deg) {
   GeoDraw draw(proj, &canvas);
   draw.SetSymbolDpiScale(dpi_scale_);
 
@@ -309,7 +316,7 @@ Status MovingMapOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   // authors in bearings converts. Without this the ship flies EAST while
   // pointing WEST — which a golden hash cannot see, and a look at the render
   // can.
-  const double angle = -screen_angle_deg();
+  const double angle = -screen_angle_deg;
   const double scale = size_px_ / kBuiltinSymbolNominalPx;
 
   // G4: the highlight goes on the OUTERMOST stamp and on that one only (the
@@ -327,7 +334,7 @@ Status MovingMapOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     const double edge_px = size_px_ + 2.0;
     draw.SetState(next_state());
     draw.SetSymbols(&edge_);
-    s = draw.DrawSymbolAtPixel(
+    const Status s = draw.DrawSymbolAtPixel(
         sx, sy, symbol_id_,
         PointSymbolStyle{true, symbol_id_, angle,
                          edge_px / kBuiltinSymbolNominalPx});

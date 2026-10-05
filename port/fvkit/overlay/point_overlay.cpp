@@ -524,14 +524,7 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   // a position with the projection the user was looking at.
   last_proj_ = proj;
   have_proj_ = true;
-
-  // Every ink below goes through this. Dimmed, a colour keeps its hue and
-  // loses its opacity, so a dimmed set is the same picture further back rather
-  // than a different one.
-  const auto ink = [this](FvColor c) {
-    if (dimmed_) c.a = static_cast<unsigned char>(std::lround(c.a * kDimmedAlpha));
-    return c;
-  };
+  if (!draw_markers_) return Status::Ok();
 
   // G3. Every marker and every name below goes through GeoDraw, which is what
   // this overlay was A6's placeholder for: the six shapes are BuiltinSymbol-
@@ -557,117 +550,142 @@ Status PointOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     // `size_px`. At the default 1.0 the two are the same number, which is why
     // no golden moved.
     const double drawn_px = p.size_px * dpi_scale_;
-    const double r = drawn_px / 2.0;
     // Cull generously: a shape whose centre is off-screen may still have ink
     // on it, and the canvas clips anyway — this is only to skip the work.
     if (sx < -drawn_px || sy < -drawn_px || sx > surf.width + drawn_px ||
         sy > surf.height + drawn_px)
       continue;
 
-    const bool sel = (p.id != 0 && p.id == selected_);
-    const char* id = SymbolIdFor(p.shape);
-    // A builtin is authored 9 nominal pixels across, so `size_px` is a scale.
-    const double scale = p.size_px / kBuiltinSymbolNominalPx;
+    Status s = DrawMarker(draw, p, sx, sy);
+    if (!s.ok()) return s;
+  }
+  return Status::Ok();
+}
 
-    // The document's own artwork, if this point wears any and it decodes.
-    const SymbolPixmap* icon = PixmapFor(p.symbol_id);
+FvColor PointOverlay::Ink(FvColor c) const {
+  // Dimmed, a colour keeps its hue and loses its opacity, so a dimmed set is
+  // the same picture further back rather than a different one.
+  if (dimmed_) c.a = static_cast<unsigned char>(std::lround(c.a * kDimmedAlpha));
+  return c;
+}
 
-    // A fully transparent colour means "no badge": the icon stands alone, and
-    // so does the edge, which is a ring around nothing without it. There is
-    // still an edge when SELECTED, because the highlight below needs a
-    // silhouette to be a halo OF, and a bare icon may be nearly all
-    // transparent.
-    const bool badge = p.color.a != 0;
-    const bool edge = badge || sel;
+Status PointOverlay::DrawMarkerAt(const MapProjection& proj, ICanvas& canvas,
+                                  size_t index, double x, double y) {
+  if (index >= points_.size())
+    return Status::Error(kInvalidArg, "point index out of range");
+  GeoDraw draw(proj, &canvas);
+  draw.SetSymbolDpiScale(dpi_scale_);
+  return DrawMarker(draw, points_[index], x, y);
+}
 
-    // G4. SELECTION IS A RENDER STATE, not a colour. The edge is now always
-    // black — it is the badge's outline and nothing to do with selection — and
-    // the selected marker instead wears GeoDraw's highlight: its own
-    // silhouette stamped around it in the selection colour. That keeps the
-    // point's own colour, which is what a user identifies it by and what the
-    // pre-G4 swap threw away.
+Status PointOverlay::DrawMarker(GeoDraw& draw, const MapPoint& p, double sx,
+                                double sy) {
+  const double drawn_px = p.size_px * dpi_scale_;
+  const double r = drawn_px / 2.0;
+  const bool sel = (p.id != 0 && p.id == selected_);
+  const char* id = SymbolIdFor(p.shape);
+  // A builtin is authored 9 nominal pixels across, so `size_px` is a scale.
+  const double scale = p.size_px / kBuiltinSymbolNominalPx;
+
+  // The document's own artwork, if this point wears any and it decodes.
+  const SymbolPixmap* icon = PixmapFor(p.symbol_id);
+
+  // A fully transparent colour means "no badge": the icon stands alone, and
+  // so does the edge, which is a ring around nothing without it. There is
+  // still an edge when SELECTED, because the highlight below needs a
+  // silhouette to be a halo OF, and a bare icon may be nearly all
+  // transparent.
+  const bool badge = p.color.a != 0;
+  const bool edge = badge || sel;
+
+  // G4. SELECTION IS A RENDER STATE, not a colour. The edge is now always
+  // black — it is the badge's outline and nothing to do with selection — and
+  // the selected marker instead wears GeoDraw's highlight: its own
+  // silhouette stamped around it in the selection colour. That keeps the
+  // point's own colour, which is what a user identifies it by and what the
+  // pre-G4 swap threw away.
+  //
+  // THE HIGHLIGHT GOES ON THE OUTERMOST STAMP AND ON THAT ONE ONLY. A marker
+  // is up to three stamps deep (edge, badge, icon); highlighting all three
+  // would draw the badge's glow over the edge and the icon's over the badge,
+  // and the marker would read as a set of rings rather than as one selected
+  // thing.
+  bool highlight_pending = sel;
+  auto next_state = [&]() {
+    const RenderState st =
+        highlight_pending ? RenderState::kHighlighted : RenderState::kNormal;
+    highlight_pending = false;
+    return st;
+  };
+
+  Status s = Status::Ok();
+  if (edge) {
+    const double edge_px = p.size_px + 2.0;
+    draw.SetState(next_state());
+    draw.SetSymbols(LibraryFor(Ink(FvColor{0, 0, 0, 255})));
+    s = draw.DrawSymbolAtPixel(
+        sx, sy, id,
+        PointSymbolStyle{true, id, 0.0, edge_px / kBuiltinSymbolNominalPx});
+    if (!s.ok()) return s;
+  }
+
+  if (badge) {
+    draw.SetState(next_state());
+    draw.SetSymbols(LibraryFor(Ink(p.color)));
+    s = draw.DrawSymbolAtPixel(sx, sy, id,
+                               PointSymbolStyle{true, id, 0.0, scale});
+    if (!s.ok()) return s;
+  }
+
+  if (icon != nullptr) {
+    // The tile goes ON the badge, sized as a fraction of it, so `size_px`
+    // keeps meaning one thing — the marker's full width on screen — whether
+    // or not there is artwork inside it.
     //
-    // THE HIGHLIGHT GOES ON THE OUTERMOST STAMP AND ON THAT ONE ONLY. A marker
-    // is up to three stamps deep (edge, badge, icon); highlighting all three
-    // would draw the badge's glow over the edge and the icon's over the badge,
-    // and the marker would read as a set of rings rather than as one selected
-    // thing.
-    bool highlight_pending = sel;
-    auto next_state = [&]() {
-      const RenderState st =
-          highlight_pending ? RenderState::kHighlighted : RenderState::kNormal;
-      highlight_pending = false;
-      return st;
-    };
-
-    Status s = Status::Ok();
-    if (edge) {
-      const double edge_px = p.size_px + 2.0;
+    // The style's `scale` is in NOMINAL pixels: DrawResolvedSymbol divides
+    // by the tile's pixel_ratio on the way through, so a 32 px tile that
+    // states a ratio of 2 is 16 nominal pixels wide and asks for half the
+    // scale a 1x tile of the same file would. Hence the ratio here rather
+    // than the raw tile width.
+    const double ratio = icon->pixel_ratio > 0.0 ? icon->pixel_ratio : 1.0;
+    const double nominal_w = icon->tile.Width() / ratio;
+    if (nominal_w > 0.0) {
+      const double want_px =
+          badge ? p.size_px * kIconFractionOfBadge : p.size_px;
+      const std::string icon_id = EmbeddedSymbolLibrary::IdFor(p.symbol_id);
       draw.SetState(next_state());
-      draw.SetSymbols(LibraryFor(ink(FvColor{0, 0, 0, 255})));
+      draw.SetSymbols(SymbolLibrary());
       s = draw.DrawSymbolAtPixel(
-          sx, sy, id,
-          PointSymbolStyle{true, id, 0.0, edge_px / kBuiltinSymbolNominalPx});
-      if (!s.ok()) return s;
-    }
-
-    if (badge) {
-      draw.SetState(next_state());
-      draw.SetSymbols(LibraryFor(ink(p.color)));
-      s = draw.DrawSymbolAtPixel(sx, sy, id,
-                                 PointSymbolStyle{true, id, 0.0, scale});
-      if (!s.ok()) return s;
-    }
-
-    if (icon != nullptr) {
-      // The tile goes ON the badge, sized as a fraction of it, so `size_px`
-      // keeps meaning one thing — the marker's full width on screen — whether
-      // or not there is artwork inside it.
-      //
-      // The style's `scale` is in NOMINAL pixels: DrawResolvedSymbol divides
-      // by the tile's pixel_ratio on the way through, so a 32 px tile that
-      // states a ratio of 2 is 16 nominal pixels wide and asks for half the
-      // scale a 1x tile of the same file would. Hence the ratio here rather
-      // than the raw tile width.
-      const double ratio = icon->pixel_ratio > 0.0 ? icon->pixel_ratio : 1.0;
-      const double nominal_w = icon->tile.Width() / ratio;
-      if (nominal_w > 0.0) {
-        const double want_px =
-            badge ? p.size_px * kIconFractionOfBadge : p.size_px;
-        const std::string icon_id = EmbeddedSymbolLibrary::IdFor(p.symbol_id);
-        draw.SetState(next_state());
-        draw.SetSymbols(SymbolLibrary());
-        s = draw.DrawSymbolAtPixel(
-            sx, sy, icon_id,
-            PointSymbolStyle{true, icon_id, 0.0, want_px / nominal_w});
-        if (!s.ok()) return s;
-      }
-    }
-
-    if (show_labels_ && !p.name.empty()) {
-      // The NAME is not highlighted: the selection belongs to the marker, and
-      // a yellow-outlined name over a chart is less legible than the white
-      // halo it already has, not more.
-      draw.SetState(RenderState::kNormal);
-      LabelStyle ls;
-      ls.valid = true;
-      // The type scales with the device too, and it has to: a 12-px name
-      // beside a marker drawn three times its authored size is a caption a
-      // third the height of the thing it names.
-      ls.style.size = 12.0 * dpi_scale_;
-      ls.style.color = ink(FvColor{0, 0, 0, 255});
-      ls.dx = (int)std::lround(r) + 3;
-      ls.dy = -(int)std::lround(r);
-      // A white halo, which the hand-rolled version could not have had: a name
-      // over a chart is unreadable without one. Labels are still OFF by
-      // default — the halo makes a name legible, not un-overlapping, and label
-      // collision is still the ledger's open item.
-      ls.halo_width = 1.0;
-      ls.halo_color = ink(FvColor{255, 255, 255, 255});
-      s = draw.DrawLabelAtPixel(sx, sy, p.name, ls);
+          sx, sy, icon_id,
+          PointSymbolStyle{true, icon_id, 0.0, want_px / nominal_w});
       if (!s.ok()) return s;
     }
   }
+
+  if (show_labels_ && !p.name.empty()) {
+    // The NAME is not highlighted: the selection belongs to the marker, and
+    // a yellow-outlined name over a chart is less legible than the white
+    // halo it already has, not more.
+    draw.SetState(RenderState::kNormal);
+    LabelStyle ls;
+    ls.valid = true;
+    // The type scales with the device too, and it has to: a 12-px name
+    // beside a marker drawn three times its authored size is a caption a
+    // third the height of the thing it names.
+    ls.style.size = 12.0 * dpi_scale_;
+    ls.style.color = Ink(FvColor{0, 0, 0, 255});
+    ls.dx = (int)std::lround(r) + 3;
+    ls.dy = -(int)std::lround(r);
+    // A white halo, which the hand-rolled version could not have had: a name
+    // over a chart is unreadable without one. Labels are still OFF by
+    // default — the halo makes a name legible, not un-overlapping, and label
+    // collision is still the ledger's open item.
+    ls.halo_width = 1.0;
+    ls.halo_color = Ink(FvColor{255, 255, 255, 255});
+    s = draw.DrawLabelAtPixel(sx, sy, p.name, ls);
+    if (!s.ok()) return s;
+  }
+  draw.SetState(RenderState::kNormal);
   return Status::Ok();
 }
 

@@ -18,10 +18,9 @@
 // under music is still audible, and ducking a podcast for 200 ms is worse
 // than the chime being quiet.
 //
-// Foreground only, which is the step's own scope: GD4 is the screen-on case,
-// and `UIFeedbackGenerator` does nothing from a suspended app anyway. The
-// backgrounded rider is BG5's notification, where the sound and the vibration
-// are already the rider's per-app notification settings.
+// Foreground only: `UIFeedbackGenerator` does nothing from a backgrounded
+// app. The backgrounded rider gets `TurnNotifications` instead, where the
+// sound and the vibration are the rider's per-app notification settings.
 
 import AVFoundation
 import PippinKit

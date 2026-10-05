@@ -178,10 +178,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     if (!proj.GeoToSurface(wps[i].position, &sx, &sy).ok()) continue;
     // Colour by position in the document, not in `drawn_`, so an End that
     // fails to project does not turn the last via red.
-    const FvColor color = i == 0                ? kStartColor
-                          : i + 1 == wps.size() ? kEndColor
-                                                : kViaColor;
-    drawn_.push_back(DrawnPoint{wps[i].label, sx, sy, color});
+    drawn_.push_back(DrawnPoint{wps[i].label, sx, sy, MarkerColor(i, wps.size())});
   }
 
   Status s = Status::Ok();
@@ -228,32 +225,9 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     if (!s.ok()) return s;
   }
 
-  for (const DrawnPoint& d : drawn_) {
-    // G4: selection is a RENDER STATE, not a second colour. The marker keeps
-    // the route's colour and gains a halo of its own silhouette, so it still
-    // says which route it belongs to.
-    draw.SetSymbols(LibraryFor(d.color));
-    draw.SetState(!selected_.empty() && d.label == selected_
-                      ? RenderState::kHighlighted
-                      : RenderState::kNormal);
-    s = draw.DrawSymbolAtPixel(
-        d.x, d.y, builtin_symbol::kDiamond,
-        PointSymbolStyle{true, builtin_symbol::kDiamond, 0.0, kMarkerScale});
-    if (!s.ok()) return s;
-
-    if (show_labels_ && !d.label.empty()) {
-      // The NAME is not highlighted; the marker is. Same rule PointOverlay
-      // follows, for the same reason.
-      draw.SetState(RenderState::kNormal);
-      LabelStyle ls;
-      ls.valid = true;
-      ls.style.size = 12.0;
-      ls.style.color = FvColor{0, 0, 0, 255};
-      ls.dx = 10;
-      ls.dy = -10;
-      ls.halo_width = 1.0;
-      ls.halo_color = FvColor{255, 255, 255, 255};
-      s = draw.DrawLabelAtPixel(d.x, d.y, d.label, ls);
+  if (draw_markers_) {
+    for (const DrawnPoint& d : drawn_) {
+      s = DrawMarker(draw, d);
       if (!s.ok()) return s;
     }
   }
@@ -268,6 +242,52 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     ts.size = 13.0;
     ts.color = kRoadColor;
     s = canvas.DrawTextString(plan_.status, 10, 20, ts);
+    if (!s.ok()) return s;
+  }
+  return Status::Ok();
+}
+
+Status RouteOverlay::DrawMarkerAt(const MapProjection& proj, ICanvas& canvas,
+                                  size_t index, double x, double y) {
+  const std::vector<RouteWaypoint>& wps = doc_.waypoints();
+  if (index >= wps.size())
+    return Status::Error(kInvalidArg, "waypoint index out of range");
+  GeoDraw draw(proj, &canvas, LibraryFor(doc_.color()));
+  draw.SetSymbolDpiScale(dpi_scale_);
+  return DrawMarker(draw, DrawnPoint{wps[index].label, x, y,
+                                     MarkerColor(index, wps.size())});
+}
+
+FvColor RouteOverlay::MarkerColor(size_t index, size_t count) {
+  return index == 0 ? kStartColor : index + 1 == count ? kEndColor : kViaColor;
+}
+
+Status RouteOverlay::DrawMarker(GeoDraw& draw, const DrawnPoint& d) {
+  // G4: selection is a RENDER STATE, not a second colour. The marker keeps
+  // the route's colour and gains a halo of its own silhouette, so it still
+  // says which route it belongs to.
+  draw.SetSymbols(LibraryFor(d.color));
+  draw.SetState(!selected_.empty() && d.label == selected_
+                    ? RenderState::kHighlighted
+                    : RenderState::kNormal);
+  Status s = draw.DrawSymbolAtPixel(
+      d.x, d.y, builtin_symbol::kDiamond,
+      PointSymbolStyle{true, builtin_symbol::kDiamond, 0.0, kMarkerScale});
+  if (!s.ok()) return s;
+
+  if (show_labels_ && !d.label.empty()) {
+    // The NAME is not highlighted; the marker is. Same rule PointOverlay
+    // follows, for the same reason.
+    draw.SetState(RenderState::kNormal);
+    LabelStyle ls;
+    ls.valid = true;
+    ls.style.size = 12.0;
+    ls.style.color = FvColor{0, 0, 0, 255};
+    ls.dx = 10;
+    ls.dy = -10;
+    ls.halo_width = 1.0;
+    ls.halo_color = FvColor{255, 255, 255, 255};
+    s = draw.DrawLabelAtPixel(d.x, d.y, d.label, ls);
     if (!s.ok()) return s;
   }
   return Status::Ok();

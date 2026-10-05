@@ -44,11 +44,16 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::GuidanceEventType type) {
 
 @implementation PPGuidanceEvent {
   fv::nav::GuidanceEvent _event;
+  NSString* _road;
 }
 
-- (instancetype)initWithEvent:(const fv::nav::GuidanceEvent&)event {
+- (instancetype)initWithEvent:(const fv::nav::GuidanceEvent&)event
+                         road:(NSString*)road {
   self = [super init];
-  if (self != nil) _event = event;
+  if (self != nil) {
+    _event = event;
+    _road = [road copy];
+  }
   return self;
 }
 
@@ -56,6 +61,8 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::GuidanceEventType type) {
 - (PPGuidanceRing)ring { return PPRingFrom(_event.ring); }
 - (PPManeuver)maneuver { return PPManeuverFrom(_event.maneuver_type); }
 - (double)distanceMeters { return _event.distance_m; }
+- (NSInteger)maneuverIndex { return static_cast<NSInteger>(_event.maneuver_index); }
+- (NSString*)road { return _road; }
 
 - (NSString*)description {
   return [NSString stringWithFormat:@"<PPGuidanceEvent %s %s %.0f m>",

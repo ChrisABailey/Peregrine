@@ -84,8 +84,18 @@ PPLocationSample SampleFromLocation(CLLocation* l) {
 
 - (void)setAccuracyMode:(PPLocationAccuracyMode)mode {
   if (mode == _accuracyMode) return;
+  const PPLocationAccuracyMode was = _accuracyMode;
   _accuracyMode = mode;
   [self applyAccuracyMode];
+
+  if (mode == PPLocationAccuracyModeStopped) {
+    [self stopUpdates];
+    return;
+  }
+  if (was == PPLocationAccuracyModeStopped) {
+    [self startUpdatesIfPermitted];
+    return;
+  }
 
   // A run CoreLocation paused on its own does not come back because the
   // settings changed — the system resumes it when it next sees motion, which
@@ -98,6 +108,8 @@ PPLocationSample SampleFromLocation(CLLocation* l) {
 }
 
 - (void)applyAccuracyMode {
+  // Stopped keeps whatever configuration it left; nothing is delivered.
+  if (_accuracyMode == PPLocationAccuracyModeStopped) return;
   if (_accuracyMode == PPLocationAccuracyModeCoarse) {
     // Nobody is watching the ship. `ThreeKilometers` is the tier where iOS
     // can answer from cell and wifi and largely power the GNSS chip down;
@@ -155,6 +167,18 @@ PPLocationSample SampleFromLocation(CLLocation* l) {
 
 - (void)stop {
   _wantsUpdates = NO;
+  [self stopUpdates];
+}
+
+- (void)setAllowsBackgroundUpdates:(BOOL)allows {
+  if (allows == _allowsBackgroundUpdates) return;
+  _allowsBackgroundUpdates = allows;
+  _manager.allowsBackgroundLocationUpdates = allows;
+  _manager.showsBackgroundLocationIndicator = allows;
+}
+
+/// Stops the hardware and leaves `_wantsUpdates` alone.
+- (void)stopUpdates {
   if (_updatesLive) {
     [_manager stopUpdatingLocation];
     _updatesLive = NO;
@@ -164,6 +188,7 @@ PPLocationSample SampleFromLocation(CLLocation* l) {
 
 - (void)startUpdatesIfPermitted {
   if (!_wantsUpdates || _updatesLive) return;
+  if (_accuracyMode == PPLocationAccuracyModeStopped) return;
   if (_authorization != PPLocationAuthorizationAuthorized) return;
   [_manager startUpdatingLocation];
   _updatesLive = YES;

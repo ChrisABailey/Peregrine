@@ -39,7 +39,7 @@
 //      why it can be asked every frame.
 //
 // Under the base sits the underlay: the map two zoom levels out at screen
-// size, built when the loop is idle, so whatever the band does not reach is
+// size (a square of the long side when tilted), built when the loop is idle, so whatever the band does not reach is
 // shown soft rather than blank. `ScreenCoverage` says which layer reaches
 // every part of the live screen, and `UnderlayServes` when the underlay is
 // due to be rebuilt.
@@ -60,6 +60,7 @@
 #ifndef PIPPIN_PPBASECOVERAGE_H_
 #define PIPPIN_PPBASECOVERAGE_H_
 
+#include <algorithm>
 #include <cmath>
 
 #include "fvkit/nav/camera_slew.h"  // fv::ShortestRotationDelta
@@ -115,11 +116,31 @@ inline void GrownSurfacePixels(int width, int height, double margin,
   *out_height = height + 2 * (int)gy;
 }
 
+/// The four live-surface points the screen shows: `xs`/`ys` when given,
+/// otherwise the outer corners of the live surface.
+inline void LiveCorners(const fv::MapProjection& live, const double* xs,
+                        const double* ys, double out_x[4], double out_y[4]) {
+  if (xs != nullptr && ys != nullptr) {
+    for (int i = 0; i < 4; ++i) out_x[i] = xs[i], out_y[i] = ys[i];
+    return;
+  }
+  const fv::PixelSize s = live.SurfaceSize();
+  const double r = (double)s.width - 0.5, b = (double)s.height - 0.5;
+  const double x[4] = {-0.5, r, r, -0.5};
+  const double y[4] = {-0.5, -0.5, b, b};
+  for (int i = 0; i < 4; ++i) out_x[i] = x[i], out_y[i] = y[i];
+}
+
 // True when the base map drawn for `base` can be composited for `live`
 // without being drawn again.
+//
+// `xs`/`ys`, when given, are the four live-surface points the screen actually
+// shows (a tilted camera's ground quad, `Perspective::GroundQuad`); otherwise
+// the live surface's own corners. The quad is convex, so its corners settle it.
 inline bool BaseCovers(const fv::MapProjection& base,
                        const fv::MapProjection& live,
-                       const BaseCoverageLimits& limits = {}) {
+                       const BaseCoverageLimits& limits = {},
+                       const double* xs = nullptr, const double* ys = nullptr) {
   if (!base.Ready() || !live.Ready()) return false;
 
   // 1. The scale, exactly. Both are physical-scale projections, so the pitch
@@ -143,28 +164,27 @@ inline bool BaseCovers(const fv::MapProjection& base,
 
   // Nothing is resampled when the base and the live camera are the same
   // picture, so nothing is inset either. See `edge_inset_px`.
-  const bool identity = bsz.width == lsz.width && bsz.height == lsz.height &&
+  const bool identity = xs == nullptr && bsz.width == lsz.width &&
+                        bsz.height == lsz.height &&
                         base.Center().lat == live.Center().lat &&
                         base.Center().lon == live.Center().lon &&
                         base.Rotation() == live.Rotation();
   const double inset = identity ? 0.0 : limits.edge_inset_px;
 
-  const double lx[2] = {-0.5, (double)lsz.width - 0.5};
-  const double ly[2] = {-0.5, (double)lsz.height - 0.5};
+  double cx[4], cy[4];
+  LiveCorners(live, xs, ys, cx, cy);
   const double lo = -0.5 + inset;
   const double hi_x = (double)bsz.width - 0.5 - inset;
   const double hi_y = (double)bsz.height - 0.5 - inset;
   if (hi_x < lo || hi_y < lo) return false;
 
-  for (int i = 0; i < 2; ++i) {
-    for (int j = 0; j < 2; ++j) {
-      fv::GeoPoint g;
-      if (!live.SurfaceToGeo(lx[i], ly[j], &g).ok()) return false;
-      double bx = 0.0, by = 0.0;
-      if (!base.GeoToSurface(g, &bx, &by).ok()) return false;
-      if (!std::isfinite(bx) || !std::isfinite(by)) return false;
-      if (bx < lo || bx > hi_x || by < lo || by > hi_y) return false;
-    }
+  for (int i = 0; i < 4; ++i) {
+    fv::GeoPoint g;
+    if (!live.SurfaceToGeo(cx[i], cy[i], &g).ok()) return false;
+    double bx = 0.0, by = 0.0;
+    if (!base.GeoToSurface(g, &bx, &by).ok()) return false;
+    if (!std::isfinite(bx) || !std::isfinite(by)) return false;
+    if (bx < lo || bx > hi_x || by < lo || by > hi_y) return false;
   }
   return true;
 }
@@ -217,29 +237,30 @@ inline bool PixelAligned(const fv::MapProjection& base,
 // smallest distance from any live corner to any edge of the base surface.
 // Negative when a corner is already past the edge. Scale and turn are not
 // refused; this is geometry only, asked of a camera predicted one draw ahead.
+// `xs`/`ys` as in `BaseCovers`.
 inline double BandHeadroomPx(const fv::MapProjection& base,
-                             const fv::MapProjection& live) {
+                             const fv::MapProjection& live,
+                             const double* xs = nullptr,
+                             const double* ys = nullptr) {
   const double kNone = -1e300;
   if (!base.Ready() || !live.Ready()) return kNone;
   const fv::PixelSize lsz = live.SurfaceSize();
   const fv::PixelSize bsz = base.SurfaceSize();
   if (lsz.width <= 0 || lsz.height <= 0 || bsz.width <= 0 || bsz.height <= 0)
     return kNone;
-  const double lx[2] = {-0.5, (double)lsz.width - 0.5};
-  const double ly[2] = {-0.5, (double)lsz.height - 0.5};
+  double cx[4], cy[4];
+  LiveCorners(live, xs, ys, cx, cy);
   const double hi_x = (double)bsz.width - 0.5;
   const double hi_y = (double)bsz.height - 0.5;
   double least = 1e300;
-  for (int i = 0; i < 2; ++i) {
-    for (int j = 0; j < 2; ++j) {
-      fv::GeoPoint g;
-      if (!live.SurfaceToGeo(lx[i], ly[j], &g).ok()) return kNone;
-      double bx = 0.0, by = 0.0;
-      if (!base.GeoToSurface(g, &bx, &by).ok()) return kNone;
-      if (!std::isfinite(bx) || !std::isfinite(by)) return kNone;
-      const double d[4] = {bx + 0.5, hi_x - bx, by + 0.5, hi_y - by};
-      for (double v : d) least = v < least ? v : least;
-    }
+  for (int i = 0; i < 4; ++i) {
+    fv::GeoPoint g;
+    if (!live.SurfaceToGeo(cx[i], cy[i], &g).ok()) return kNone;
+    double bx = 0.0, by = 0.0;
+    if (!base.GeoToSurface(g, &bx, &by).ok()) return kNone;
+    if (!std::isfinite(bx) || !std::isfinite(by)) return kNone;
+    const double d[4] = {bx + 0.5, hi_x - bx, by + 0.5, hi_y - by};
+    for (double v : d) least = v < least ? v : least;
   }
   return least;
 }
@@ -293,40 +314,73 @@ enum class ScreenCover {
 // that reaches all four corners covers the whole screen. Scale and turn are
 // not refused here, unlike `BaseCovers`: during a pinch the base is scaled
 // on screen and still covers what it covers. `underlay` may be null.
+// `xs`/`ys` as in `BaseCovers`.
 inline ScreenCover ScreenCoverage(const fv::MapProjection& base,
                                   const fv::MapProjection* underlay,
-                                  const fv::MapProjection& live) {
+                                  const fv::MapProjection& live,
+                                  const double* xs = nullptr,
+                                  const double* ys = nullptr) {
   const fv::PixelSize lsz = live.SurfaceSize();
   if (!live.Ready() || lsz.width <= 0 || lsz.height <= 0)
     return ScreenCover::kSharp;
-  const double lx[2] = {-0.5, (double)lsz.width - 0.5};
-  const double ly[2] = {-0.5, (double)lsz.height - 0.5};
+  double cx[4], cy[4];
+  LiveCorners(live, xs, ys, cx, cy);
   ScreenCover worst = ScreenCover::kSharp;
-  for (int i = 0; i < 2; ++i) {
-    for (int j = 0; j < 2; ++j) {
-      if (LayerReaches(base, live, lx[i], ly[j])) continue;
-      if (underlay != nullptr && LayerReaches(*underlay, live, lx[i], ly[j])) {
-        worst = ScreenCover::kUnderlay;
-        continue;
-      }
-      return ScreenCover::kBackground;
+  for (int i = 0; i < 4; ++i) {
+    if (LayerReaches(base, live, cx[i], cy[i])) continue;
+    if (underlay != nullptr && LayerReaches(*underlay, live, cx[i], cy[i])) {
+      worst = ScreenCover::kUnderlay;
+      continue;
     }
+    return ScreenCover::kBackground;
   }
   return worst;
+}
+
+// How far inside the underlay's edge a tilted screen's ground quad must stay
+// before the underlay counts as stale, as a fraction of its surface. The
+// rebuild is started while the quad is still covered, not once it is not.
+constexpr double kUnderlayQuadInset = 1.0 / 16.0;
+
+// The underlay's surface, in pixels, for a live screen of `w` x `h`. Flat, it
+// is the screen. Tilted (`xs`/`ys` the ground quad, as in `BaseCovers`), it is
+// a square of at least the long side, so the quad fits inside it at any turn
+// with room to spare: the quad's farthest corner from the screen centre sits
+// no more than 0.4 of the side out once scaled down by `zoom_out`.
+inline void UnderlaySurfacePixels(int w, int h, const double* xs,
+                                  const double* ys, int* out_w, int* out_h,
+                                  double zoom_out = kUnderlayZoomOut) {
+  *out_w = w;
+  *out_h = h;
+  if (xs == nullptr || ys == nullptr || w <= 0 || h <= 0 || !(zoom_out > 0.0))
+    return;
+  const double cx = (w - 1) / 2.0, cy = (h - 1) / 2.0;
+  double reach = 0.0;
+  for (int i = 0; i < 4; ++i)
+    reach = std::max(reach, std::hypot(xs[i] - cx, ys[i] - cy));
+  double side = std::max(w, h);
+  if (std::isfinite(reach)) side = std::max(side, std::ceil(2.5 * reach / zoom_out));
+  *out_w = *out_h = (int)side;
 }
 
 // True while the underlay built for one camera is still good for `live`.
 // It is rebuilt when the live centre leaves the middle half of its surface,
 // when the live scale has moved more than 2x from the one it was built for
-// (`underlay.Scale() / zoom_out`), or when the screen changed size. Turning
-// never stales it: four screens of ground cover any rotation.
+// (`underlay.Scale() / zoom_out`), or when the screen outgrew it. Turning
+// never stales a flat screen's underlay: four screens of ground cover any
+// rotation. A tilted screen (`xs`/`ys` its ground quad) reaches farther, so
+// its quad's corners must also stay `kUnderlayQuadInset` inside the edge.
 inline bool UnderlayServes(const fv::MapProjection& underlay,
                            const fv::MapProjection& live,
+                           const double* xs = nullptr,
+                           const double* ys = nullptr,
                            double zoom_out = kUnderlayZoomOut) {
   if (!underlay.Ready() || !live.Ready() || !(zoom_out > 0.0)) return false;
   const fv::PixelSize usz = underlay.SurfaceSize();
   const fv::PixelSize lsz = live.SurfaceSize();
-  if (usz.width != lsz.width || usz.height != lsz.height) return false;
+  // Larger is fine: a tilted screen's square underlay still serves the same
+  // screen flattened by a drag.
+  if (usz.width < lsz.width || usz.height < lsz.height) return false;
   if (!(underlay.MmPerPixel() == live.MmPerPixel())) return false;
 
   const double key = underlay.Scale() / zoom_out;
@@ -337,7 +391,19 @@ inline bool UnderlayServes(const fv::MapProjection& underlay,
   if (!underlay.GeoToSurface(live.Center(), &cx, &cy).ok()) return false;
   const double w = (double)usz.width;
   const double h = (double)usz.height;
-  return cx >= 0.25 * w && cx <= 0.75 * w && cy >= 0.25 * h && cy <= 0.75 * h;
+  if (!(cx >= 0.25 * w && cx <= 0.75 * w && cy >= 0.25 * h && cy <= 0.75 * h))
+    return false;
+  if (xs == nullptr || ys == nullptr) return true;
+
+  const double ix = kUnderlayQuadInset * w, iy = kUnderlayQuadInset * h;
+  for (int i = 0; i < 4; ++i) {
+    fv::GeoPoint g;
+    if (!live.SurfaceToGeo(xs[i], ys[i], &g).ok()) return false;
+    double ux = 0.0, uy = 0.0;
+    if (!underlay.GeoToSurface(g, &ux, &uy).ok()) return false;
+    if (!(ux >= ix && ux <= w - ix && uy >= iy && uy <= h - iy)) return false;
+  }
+  return true;
 }
 
 }  // namespace pippin

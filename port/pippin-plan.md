@@ -1714,7 +1714,7 @@ Three facts set the priorities:
   Recording's base draws fell from 60/min to ~0 after the first minute, which answers BT1's
   one-base-draw-per-fix question. BT3 is optional on these numbers.
 
-#### BT3 — the ownship leaves the canvas (M–L; only if BT2 leaves CPU worth chasing)
+#### BT3 — the ownship leaves the canvas (M–L; required for PV4)
 
 - Every follow frame re-rasterises the whole overlay (route, points, ship) because the ship
   moved. Split P18's overlay layer in two: a static overlay (route, points, waypoint diamonds)
@@ -1726,6 +1726,31 @@ Three facts set the priorities:
   colour into a `CGImage` by `PPMap`, likewise its halo.
 - P18's settle rule applies to the static overlay too: at rest it must be exact.
 - This sprite is PV4's billboard layer, which is why BT3 comes first.
+
+**Built 2026-10-04** (simulator; phone acceptance pending). Required since 2026-10-04 (PV4's
+upright symbols), no longer optional.
+
+- fvkit `MovingMapOverlay`: `SetDrawSymbol(false)` places the ship and rebuilds the apron without
+  stamping; `DrawSymbolAt(proj, canvas, x, y, angle)` stamps edge + body anywhere. 1 new gtest.
+- `PPMap`: the moving map is hidden from `DrawAll` and placed by a direct `OnDraw` into a 1×1
+  scratch canvas at the live camera, on every frame **and every step**, so MM2's apron is always
+  built from where the sprite is shown. The route and points are drawn at `_baseViewport` into a
+  band-sized transparent image, kept until the base moves on or `_contentEpoch` moves (bumped by
+  every route/point/visibility/selection/drag/tide/departure/GPS-mode method and by a symbol-scale
+  change). `PPFrame.overlayViewport` is that band. The ship sprite is rendered once per symbol
+  scale; `PPOwnship` carries `symbolImage`, `symbolPixelsPerPoint`, `viewRotationDegrees`.
+- Route waypoint hit test and drag read the overlay's last-drawn projection, now the band's, so
+  `routePixel:inViewport:` maps a screen point through the ground into band pixels.
+- `MapModel`: `shipDirty` (fix, demo poll) is served by a camera step, not a frame;
+  `PPCameraStep.sawNewFix` removed. `MapScreen` places the sprite by offset from the stack's
+  centre (the stack is band-sized) and turns it by `screenAngle + live.rot − viewRotation`.
+- Memory: the overlay is band-sized now (2.25× the screen, ~28 MB on a 3x phone) instead of
+  screen-sized; dropped with the base on a memory warning.
+- Sim (iPhone 18 Pro, Atlanta pack, `simctl location` at 8 m/s): ship on the fix and on the
+  follow anchor in six consecutive captures; course-up and north-up angles right; route drawn in
+  register; an End-waypoint drag moved it 2.5 km to the release point and the cached overlay
+  redrew. GPS follow: 313/391 frames a base hit, 149 fixes served as steps.
+- Still open: phone acceptance — BT1's procedure against BT2's 14.4 CPU s/min following.
 
 #### BT4 — the night chart (M; approved by Chris 2026-09-25)
 
@@ -2515,6 +2540,32 @@ numbers.
 - Acceptance: a bike route across intown Atlanta that takes a longer, flatter line with "Avoid
   hills" on, and an ETA that tracks a real or simulated ride.
 
+**Pack half BUILT 2026-10-04; elevation still open (EL1–EL4), so acceptance above is not met.**
+Chris's box, ±10 miles: `-84.61,33.67,-84.25,33.97` (W,S,E,N). `osmium extract -b <box>` from
+`us-south-260728.osm.pbf` gave `testdata/OSM/atlanta.osm.pbf` (31 MB); `fvgraph build` over it
+(access honoured, no `--beach`, no `--dem` — no DEM yet) gave `atlanta.fvroad` (29 MB, 305,222
+nodes / 800,560 arcs). The tiles did **not** come from `mbtiles_cut.py` as planned: tilemaker
+with `config-peregrine.json`/`process-peregrine.lua` and `--bbox` over the osmium cut gave
+`atlanta.mbtiles` (23 MB, 424 tiles z0–z14), because the Kiawah Trails style needs the peregrine
+profile's tags, not a tile-level cut — the same pipeline as `kiawah.mbtiles` since 2026-08-27.
+(`/usr/local/bin/tilemaker` is broken — a dyld error, `boost_program_options` missing after
+Homebrew's boost 1.92 — the build at `~/Documents/Source/tilemaker/tilemaker` works.)
+`stage_data.py` gained `--region kiawah|atlanta` (default kiawah): COMMON rows plus a REGIONS
+table; Atlanta's `pippin.ini` is the tracked one with its keys reset for Atlanta and no
+`[tides]`/`[beach]`/demo_track; wind at downtown; `pick_radius_m` 30; `search.initial_text`
+"BeltLine". The Atlanta seed `atlanta.fvpoints` is the icon palette with 0 points. Switching
+regions drops the other region's copied rows but never a `.fvpoints` seed (`REGION_SEEDS`, kept
+by `--release` pruning too). Kiawah's pack verified byte-identical to before; Atlanta's pack is
+about 52 MB. `Pippin.xcconfig` gained `PP_BUNDLE_ID` (default `org.peregrine.Pippin`); the app
+and share-extension targets use `$(PP_BUNDLE_ID)`/`$(PP_BUNDLE_ID).Share`, so
+`PP_BUNDLE_ID=org.peregrine.Pippin.Atlanta PP_DISPLAY_NAME=Pippin` on the `xcodebuild` line
+installs beside the "Bike Kiawah" store build — verified with `-showBuildSettings` on both
+targets. README gained "Another region" under "The data pack"; `BUILDING.md` has the Atlanta recipe
+under Step 2, "Another region". Still open: both apps claim the
+`pippin://` URL scheme, so share-from-Maps is ambiguous with both installed;
+`MapModel.swift:1134` still says "outside the Kiawah map"; the app has not been built or run on
+the Atlanta pack. Chris cleared the Atlanta box for the public Peregrine repo 2026-10-04.
+
 #### RG1 — more than one region in one app (optional; needs Chris)
 
 Once Atlanta exists, a phone that goes to both places wants both packs. Sketch only: the bundle
@@ -2539,6 +2590,16 @@ route, points and rides documents are kept per pack. Not planned in detail until
   iPhone 14 Pro screen, 2026-09-25). P18's band is already 2.25×. So **the pitch is capped at
   45°**; past that a CPU raster pays for ground nobody can read.
 
+**Decided 2026-10-04 (Chris):** follow-only 2.5D for 1.3 — the view pitches only while following
+and goes flat when a drag leaves follow — capped at 45°. Upright points of interest are wanted, so
+BT3 is no longer optional.
+
+**Order, revised 2026-10-04:** PV1 → BT3 → PV2 → PV4 → PV5; PV3 reduced to the follow toggle;
+BT4 does not block PV2 (at 45° + 20° the view never reaches the horizon, so there is no sky, only a
+fade, which takes the style's background colour until BT4 exists). BT3 moves ahead of PV2 because
+the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while following, a
+2.9–4× overlay raster per frame is the real cost, while the base redraws only ~23 times a minute.
+
 #### PV1 — the math (M, mac)
 
 - `PPPerspective.h`, pure C++ like `PPCameraFit.h`: from surface size, pitch, field of view and
@@ -2550,6 +2611,28 @@ route, points and rides documents are kept per pack. Not planned in detail until
 - Tests: inverse round trips; pitch 0 reduces exactly to today's transform; footprint ratios
   match the table above.
 
+**Built 2026-10-04** (mac).
+
+- `PippinKit/PPPerspective.h`: `Homography` (apply, adjugate inverse), `Perspective(params)` with
+  `FlatToScreen`/`ScreenToFlat`, `GroundQuad`, `RenderBounds(pad)`, `DepthScale(row)` for
+  billboard sizing, `HorizonY`. "Flat" is today's viewport surface, rotation included. The tilt
+  is pinned at the anchor (it maps to itself, horizontal scale 1), so the ship keeps its pitch-0
+  detail; pitch 0 is the identity bit for bit. No `max_depth`: at the 45° cap the quad is bounded.
+- `PPBaseCoverage.h`: `BaseCovers` and `ScreenCoverage` take an optional ground quad
+  (`LiveCorners`); `BandHeadroomPx` still uses the screen rectangle (PV2).
+- **The footprint table above was centre-anchored.** Holding the detail at the follow anchor
+  (5/6 down, `kTrackUpAheadFraction`) costs more, on the 1179×2556 screen at 40° fov:
+
+  | Pitch | Bounding box | Ground quad | Road ahead of the ship vs flat |
+  |---|---|---|---|
+  | 30° | 1.99× | 1.64× | 1.46× |
+  | 45° | 3.96× | 2.90× | 2.22× |
+
+  Levers for PV2, to measure on the phone: clip the base draw to the quad (bounding box →
+  quad), a narrower fov, the ship higher than 5/6 once pitch supplies the look-ahead, or the
+  far part from the DR1 underlay (PV5).
+- 8 gtests in `test/perspective_test.cpp`; `fv_pippin_test` 145/145.
+
 #### PV2 — the tilted composite (M, sim)
 
 - `PPViewport.pitchDegrees` (0 leaves every path as it is today); the render request uses PV1's
@@ -2559,6 +2642,52 @@ route, points and rides documents are kept per pack. Not planned in detail until
 - Behind a launch argument (`-PPPitch 45`) until PV3 gives it a gesture.
 - Acceptance: screenshots at 0, 30 and 45° following the demo feed; the cache hit rate in follow
   reported against P18's ~89%.
+
+**Built 2026-10-04** (simulator; phone acceptance pending).
+
+- `PPViewport.pitchDegrees` + `pitched(_:)` (clamped 0–45; every derivation keeps it; bands and
+  the underlay are flat, pitch 0). Anchor is the follow anchor: x centre, y = (h−1)(0.5 +
+  kTrackUpAheadFraction), i.e. 5/6 down. New: `perspectiveTransform` (CATransform3D in points, H
+  conjugated by the backing scale; identity built by hand because PippinKit does not link
+  QuartzCore), `screenPoint(forFlat:)`, `flatPoint(forScreen:)`, `depthScale(atScreen:)`,
+  `farFade`, `flatBounds`; internal `perspective` and `groundQuadX:y:`.
+- A tilted `grown(byMargin:)` returns a flat band cut to `Perspective::BandRect(pad)` — the
+  ground quad's bounds padded by margin × the short side, united with the screen so it stays
+  pixel-aligned (settle logic unchanged) — off-centre, centre set after derivation so the
+  pack-box clamp can't move it. `rotationSafe` not applied when tilted. PPMap's unbanded draw of
+  a tilted viewport uses `grown(byMargin: 0)`.
+- `covers`, `coverage(of:underlay:)`, `bandHeadroom(for:)` and PPMap's cache test pass the ground
+  quad when tilted; `BandHeadroomPx` now takes the optional quad (the PV1 note "BandHeadroomPx
+  still uses the screen rectangle (PV2)" is now resolved).
+- `PPPerspective.h`: `BandRect(pad)` and `FarFade()` — a gradient in the style's background
+  colour over the last screen height of flat depth, capped at a third of the screen, top opacity
+  2×(1 − DepthScale(row 0)) clamped to 1 (≈0.98 at 45°, end row 798 of 2556 on the 14 Pro). No
+  sky: at 45° + 20° half-fov the horizon is never on screen; BT4 will supply the colours.
+- `MapScreen`: underlay, base and overlay sit in one flat ZStack under a `Tilt` modifier;
+  `projectionEffect` draws only inside the view's frame, so the frame is grown about the centre
+  to `flatBounds` and the transform conjugated by the offset (first try clipped the far ground
+  at the flat screen's top edge). Background, fade and ship are screen space. Ship placed
+  through H, heading mapped through H, scaled by depth (1 at the anchor). Tilted layers always
+  filtered (`.medium`).
+- `MapModel`: `-PPPitch <deg>` launch argument (`followPitchDegrees`), applied by `applyPitch()`
+  only in GPS mode and not during a pick (flattens for pick, restores after). Taps, waypoint
+  grab/drag/drop and pinch anchors convert screen → flat. A follow step now also requires the
+  cached base to cover the live (tilted) view (`covers(vp, maxTurnDegrees: 180)`), else it draws:
+  a few degrees of course-up turn swept the far corners past the band and 38 blank frames showed
+  in under a minute before this.
+- Sim acceptance (iPhone 18 Pro, Atlanta pack, `simctl location` 8 m/s north up Peachtree, 1:7,233,
+  ~50 s following each): base hits 0° 728/775 (94%), 30° 697/745 (94%), 45° 393/421 (93%), vs
+  P18's ~89%. Blank/soft: 0° 0/6, 30° 6/19, 45° 0/8 (soft frames come from the mode switch).
+  Screenshots `docs/pv2-pitch-0.png`, `pv2-pitch-30.png`, `pv2-pitch-45.png`.
+- gtests: 2 new in `test/perspective_test.cpp` (BandRect holds quad + screen; far fade) plus
+  headroom-over-quad assertions; `fv_pippin_test` 147/147.
+- Still open / found: (a) the underlay is north-up at 4 screen widths, so with the chart turned
+  near 90° the tilted far corners pass its short axis and show background — PV5's far-field work,
+  recorded under PV5 too; (b) pre-existing, not PV2: a pinch while in GPS mode leaves the camera
+  off the ship (reproduced flat, 19 blank frames) — needs its own item; (c) pre-existing: a saved
+  Kiawah `current.fvrte` on the Atlanta build makes GPS mode's zoom-out rule widen to 1:2,338,555
+  (the sim's copy was set aside as `current.fvrte.kiawah-aside`); (d) PV3 still owns
+  flatten-on-drag; pans in tilted GPS mode are applied as flat deltas.
 
 #### PV3 — gestures and picks through the homography (M, sim)
 
@@ -2571,6 +2700,31 @@ route, points and rides documents are kept per pack. Not planned in detail until
 - `-PPViewportProbe` gains pitched checks against P3's drift budget.
 - GPS mode pitches to `[display] follow_pitch_deg` (default 0, off), with a map-menu toggle "3D
   while following".
+- **Reduced 2026-10-04:** for 1.3 only the toggle and the flatten-on-drag; free 3D pan, pinch and
+  the pitch gesture wait until asked for.
+
+**Built 2026-10-04** (simulator; phone acceptance pending).
+
+- `[display] follow_pitch_deg` pack key (default 45, the cap) in `pippin.ini`, read by
+  `PPMap.followPitchDegrees` and snapshotted on the Swift `Renderer`. Decision: the key is the
+  angle; whether 3D is on is the rider's choice, not the pack's (the plan's "default 0, off"
+  became angle 45 in the pack, toggle off by default).
+- Map menu toggle "3D While Following" (`view.3d` symbol) → `MapModel.follow3D`, persisted in
+  user defaults `PPFollow3D`, off by default. `-PPPitch <deg>` still works: turns it on at that
+  angle (overrides the pack key).
+- Flatten-on-drag: the first `pan` of a gesture while tilted sets `flattenedForDrag` and
+  flattens; `endGesture` clears it and re-tilts; the next fix brings the camera back to the ship.
+  Pinch and picks unchanged (pick already flat since PV2). Resolves PV2's open item (d).
+- Sim acceptance (iPhone 18 Pro, Atlanta pack, `simctl location` 8 m/s north up -84.387): toggle
+  shows a checkmark when on; GPS mode tilts to 45°; a screenshot mid-drag shows the chart flat
+  and panned; after release it re-tilts with the ship back at the anchor; relaunch comes up
+  tilted (persisted).
+- Found: at the launch scale 1:240,401 (the zoom-out rule never narrows on Atlanta), tilted
+  follow shows many blank frames — 51 blank/32 soft in 38 s with no touch at all, base dropping
+  z11→z10 — so it is not the drag; PV2's 0/8 was measured at 1:7,233. For PV5's list.
+- Not done (deferred by the reduction): free tilted pan through H⁻¹, pinch about the ground
+  point, the pitch gesture, the compass resetting pitch, `-PPViewportProbe` pitched checks.
+- No new gtests (Swift/ObjC++ only; no C++ core change).
 
 #### PV4 — upright symbols (M, sim; after BT3)
 
@@ -2580,6 +2734,38 @@ route, points and rides documents are kept per pack. Not planned in detail until
   placed at H(project(geo)) in screen space — BT3's ship sprite, generalised. `RouteOverlay` and
   `PointOverlay` gain a lines-only / markers-only draw switch, or the shell draws markers from the
   overlays' data.
+
+**Built 2026-10-04** (simulator; phone acceptance pending).
+
+- Decision: the plan's first option, a draw switch on the overlays, plus a per-marker stamp
+  (BT3's `DrawSymbolAt` pattern). fvkit `PointOverlay` and RouteKit `RouteOverlay` gain
+  `SetDrawMarkers(bool)` (off: `OnDraw` records its projection / places waypoints for the hit
+  test but stamps no markers; route still draws its line and status) and
+  `DrawMarkerAt(proj, canvas, index, x, y)`; each `OnDraw`'s per-marker body moved into a private
+  `DrawMarker` so `OnDraw` and the stamp share one code path (output unchanged — existing goldens
+  untouched). `PointOverlay::Ink` replaces the local lambda; `RouteOverlay::MarkerColor` the
+  inline ternary.
+- `PippinKit/PPSprite.h` (pure C++): `InkBounds` + `Crop` to trim a stamped marker to its ink.
+- `PPMap`: when the live viewport is tilted the cached overlay is drawn with markers off
+  (`_overlayUpright` joins the cache key, so tilting/flattening redraws it once); `PPFrame.billboards`
+  (new `PPBillboard`: coordinate, trimmed CGImage, pixelsPerPoint, centerOffset from marker centre
+  to image centre in points) carries route waypoints then points, rebuilt only when `_contentEpoch`
+  moves; a hidden overlay contributes none. Each sprite is stamped at the centre of a canvas sized
+  for symbol + estimated label width, then trimmed. Flat frames carry no billboards and are
+  unchanged.
+- `MapScreen`: billboards placed between the tilted layers and the far fade, at H(project(geo)),
+  scaled by `depthScale`, offset by `centerOffset × depth`, off-screen ones skipped, no hit testing
+  (picks still go screen→flat→overlay; markers are centred on their points so the pick agrees).
+- Sim acceptance (iPhone 18 Pro, Atlanta pack, test route of 3 waypoints + 3 test points on
+  Peachtree, `simctl location` 8 m/s north, 45°): flat view unchanged; tilted at 1:19,025
+  course-up the diamonds, square, circle and names are upright, sit on their ground points (via
+  diamond on the route line) and shrink with depth. Screenshot `docs/pv4-pitch-45.png`. Sim data
+  restored afterwards.
+- Tests: 4 new core gtests (PointOverlay ×2, RouteOverlay ×2: markers-off draws nothing/only the
+  line and the pick still works; `DrawMarkerAt` is byte-identical to `OnDraw`'s stamp incl.
+  selection, dimming, dpi scale, label) and 3 in `test/sprite_test.cpp`; `fv_pippin_test` 150/150.
+- Found again (not PV4): a pinch in GPS mode leaves follow with the camera off the ship (PV2's
+  item b); 15–22 blank frames at the launch scale 1:240,401 (PV3's finding, already under PV5).
 
 #### PV5 — polish (M, sim + phone)
 
@@ -2592,6 +2778,48 @@ route, points and rides documents are kept per pack. Not planned in detail until
   of scope unless asked for.
 - BT1's table for 2.5D follow against flat follow. If the difference is large, 2.5D stays a
   manual choice rather than GPS mode's default.
+- Found in PV2: the north-up underlay (4 screen widths) doesn't reach the tilted ground quad at
+  all rotations — near 90° the far corners pass its short axis and show background. Needs
+  `UnderlayServes`'s equal-size check relaxed to a square surface of the long side, or
+  equivalent.
+- Found in PV3: tilted follow at the Atlanta launch scale (1:240,401) shows blank frames with no
+  touch at all (51 blank, 32 soft in 38 s; base z11 → z10). PV2's 0/8 was at 1:7,233.
+
+**Built 2026-10-04, partly** (simulator; the far-field and BT1 items wait for the phone).
+
+- Two causes behind both blank-frame findings. (1) The screen-sized underlay is too narrow for the
+  tilted quad: at 45° the far corners sit 3,884 px ahead of the centre (3.44 screen widths) and
+  the underlay reaches 2 widths along its short axis. (2) The underlay is rebuilt only where the
+  loop would pause, and following never pauses, so after about a minute it went stale and stayed
+  stale; PV2's 0/8 run was 50 s long.
+- `PPBaseCoverage.h`: `UnderlaySurfacePixels` — a tilted screen's underlay is a square of the
+  long side (2556², about 26 MB, twice the flat one), grown further if a quad would sit more than
+  0.4 of the side out. `UnderlayServes` takes the optional quad: the surface need only be at
+  least the live one (so a square still serves the screen flattened by a drag), and each quad
+  corner must stay `kUnderlayQuadInset` (1/16 of the side) inside the edge, so the rebuild starts
+  while the quad is still covered. `PPViewport` `forUnderlay()` / `underlayServes(_:)` pass the quad.
+- `MapModel`: `buildUnderlayIfStale` split from `pauseOrBuildUnderlay`; a follow step with a
+  stale underlay builds the underlay instead and steps on the next tick. Applies flat too, where
+  the underlay had the same never-rebuilt problem.
+- Sim acceptance (iPhone 18 Pro, Atlanta pack, 45°, `simctl location` 8 m/s, counters from the
+  stats line):
+  | Run | Before | After |
+  |---|---|---|
+  | east from Midtown at 1:240,401, ~25–30 s | 16 soft, 23 blank; base hits 63/114 | 1 soft, 1 blank (the mode switch); 201/221 |
+  | north then east (a 90° turn) at ~1:15,000, ~2.5 min | +43 soft, +83 blank | +113 soft, +12 blank |
+  Underlay draw on the sim: 41 ms at 1:240,401, 150 ms at 1:15,706 (was 16–94 ms
+  screen-sized). The empty band at the top of the east run is the pack's edge (-84.25), not a
+  coverage miss.
+- Not done: `.interpolation(.high)` was not tried — it sets how an `Image` is scaled into its
+  frame, which is 1:1 here; the tilt is resampled by the compositor's `projectionEffect`, which
+  it does not reach. Shimmer has to be judged on the phone; the remedy then is the two-tier far
+  field (the underlay is pre-minified). The two-tier band and BT1's 2.5D-vs-flat table both wait
+  for phone numbers. Upright base-map labels stay out of scope.
+- Still open: the 12 remaining blank frames on the riding-scale run (where in the run is not
+  known); PV2's item (b), a pinch in GPS mode leaving follow off the ship.
+- gtests: 4 new in `test/base_coverage_test.cpp` (square size; the screen-sized underlay misses
+  a sideways tilted screen and the square does not; the square serves at every 5° turn and
+  flattened; running ahead stales it while still covered). `fv_pippin_test` 154/154.
 
 ### Open for Chris
 
@@ -2609,7 +2837,8 @@ route, points and rides documents are kept per pack. Not planned in detail until
 6. ~~The hilly pack~~ — **answered 2026-09-25: Atlanta**, the next place to map; Chris downloads
    the DTED level 2 before EL starts. Still open: **the Atlanta box** (EL5), and whether one app
    should carry both regions (RG1).
-7. **2.5D** capped at 45°, with base-map labels left lying on the plane.
+7. ~~2.5D~~ — **answered 2026-10-04:** follow-only, capped at 45°, base-map labels lying on the
+   plane, points of interest upright (PV4).
 8. ~~Keeping the band at rest~~ (DR2) — **answered by the build, 2026-09-25**: the band is held at
    rest (2.25× the screen), reversing P18's choice; the memory-warning drop is unchanged.
 

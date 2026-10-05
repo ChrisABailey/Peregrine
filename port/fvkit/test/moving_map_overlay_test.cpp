@@ -724,4 +724,31 @@ TEST(MovingMapOverlay, ItIsRegisteredAsAStaticBuiltinType) {
   EXPECT_NE(dynamic_cast<MovingMapOverlay*>(made.get()), nullptr);
 }
 
+// With the symbol off, a draw still places the ship and builds the apron but
+// leaves the canvas empty; `DrawSymbolAt` stamps the same silhouette anywhere.
+TEST(MovingMapOverlay, ASpriteShellPlacesTheShipWithoutStampingIt) {
+  fv::MapProjection proj = Proj();
+  MovingMapOverlay ovl;
+  ovl.SetSlewSettings(Jump());
+  ovl.SetShowEdge(false);
+  ovl.SetSizePx(40.0);
+  ovl.SetDrawSymbol(false);
+  ovl.PushFix(Fix(32.60, -80.08, 0.0));
+  ovl.Tick(proj, 0.1);
+  fv::CpuCanvas canvas(800, 600);
+  canvas.Clear(fv::FvColor{0, 0, 0, 0});
+  ASSERT_TRUE(ovl.OnDraw(proj, canvas).ok());
+  EXPECT_TRUE(Ink(canvas).empty());
+  EXPECT_TRUE(ovl.has_drawn());
+  EXPECT_FALSE(ovl.camera().apron().empty());
+
+  ASSERT_TRUE(ovl.DrawSymbolAt(proj, canvas, 100.0, 200.0, 0.0).ok());
+  const InkBox b = Ink(canvas);
+  ASSERT_FALSE(b.empty());
+  EXPECT_NEAR((b.min_x + b.max_x) / 2.0, 100.0, 2.0);
+  EXPECT_NEAR((b.min_y + b.max_y) / 2.0, 200.0, 2.0);
+  EXPECT_GT(b.height(), b.width());
+  EXPECT_GT(200.0 - b.min_y, b.max_y - 200.0);  // nose up
+}
+
 }  // namespace

@@ -317,6 +317,17 @@ class MovingMapOverlay : public Overlay {
   void SetHighlighted(bool on) { highlighted_ = on; }
   bool highlighted() const { return highlighted_; }
 
+  // Off: `OnDraw` places the ship and recomputes the apron but stamps
+  // nothing, for a shell that shows the ship as its own sprite.
+  void SetDrawSymbol(bool on) { draw_symbol_ = on; }
+  bool draw_symbol() const { return draw_symbol_; }
+
+  // Stamps the ship (edge, then body) at surface pixel (x, y) on `canvas`,
+  // turned to `screen_angle_deg` clockwise. What `OnDraw` stamps, minus the
+  // placement; used to render a sprite of the ship once per size.
+  Status DrawSymbolAt(const MapProjection& proj, ICanvas& canvas, double x,
+                      double y, double screen_angle_deg);
+
   // Draws the apron as a dashed rectangle. Off by default and deliberately
   // available: the apron is the hardest part of the moving map to believe, and
   // a picture of it settles an argument that a log line does not.
@@ -356,6 +367,7 @@ class MovingMapOverlay : public Overlay {
   bool show_edge_ = true;
   bool highlighted_ = false;
   bool show_apron_ = false;
+  bool draw_symbol_ = true;
   double dpi_scale_ = 1.0;
 };
 

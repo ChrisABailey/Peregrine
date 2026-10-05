@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -53,6 +54,7 @@
 // `PPRoute+Internal.h`, since a route snapshot has one in its signature; a
 // point value carries no store type, so this one is included by name.
 #include "PPPointStore.h"
+#include "PPSprite.h"
 
 // `fv::SlewSettings` and `fv::ShortestRotationDelta`. These arrive through the
 // overlay too; named here because this file uses both directly.
@@ -199,10 +201,16 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
 }  // namespace
 
-@implementation PPOwnship
+@implementation PPOwnship {
+  CGImageRef _symbolImage;
+}
 
+/// `symbolImage` is retained, and may be null.
 - (instancetype)initWithFix:(const fv::PositionFix&)fix
             screenAngleDeg:(double)angle
+              viewRotation:(double)viewRotation
+               symbolImage:(CGImageRef)symbolImage
+            pixelsPerPoint:(double)pixelsPerPoint
                    heading:(const fv::ResolvedHeading&)heading
                    snapped:(BOOL)snapped
                   roadName:(const std::string&)roadName {
@@ -210,6 +218,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   if (self == nil) return nil;
   _coordinate = PPGeoPointMake(fix.lat, fix.lon);
   _screenAngleDegrees = angle;
+  _viewRotationDegrees = viewRotation;
+  _symbolImage = symbolImage != nullptr ? CGImageRetain(symbolImage) : nullptr;
+  _symbolPixelsPerPoint = pixelsPerPoint > 0.0 ? pixelsPerPoint : 1.0;
   _hasHeading = heading.known ? YES : NO;
   _headingIsReported = heading.reported ? YES : NO;
   _speedMetersPerSecond = fix.speed_mps;
@@ -221,6 +232,38 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   return self;
 }
 
+- (void)dealloc {
+  if (_symbolImage != nullptr) CGImageRelease(_symbolImage);
+}
+
+- (nullable CGImageRef)symbolImage { return _symbolImage; }
+
+@end
+
+@implementation PPBillboard {
+  CGImageRef _image;
+}
+
+/// Takes ownership of `image`.
+- (instancetype)initWithCoordinate:(PPGeoPoint)coordinate
+                             image:(CGImageRef)image
+                    pixelsPerPoint:(double)pixelsPerPoint
+                      centerOffset:(CGPoint)centerOffset {
+  self = [super init];
+  if (self == nil) return nil;
+  _coordinate = coordinate;
+  _image = image;
+  _pixelsPerPoint = pixelsPerPoint > 0.0 ? pixelsPerPoint : 1.0;
+  _centerOffset = centerOffset;
+  return self;
+}
+
+- (void)dealloc {
+  if (_image != nullptr) CGImageRelease(_image);
+}
+
+- (CGImageRef)image { return _image; }
+
 @end
 
 @implementation PPFrame {
@@ -228,8 +271,10 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   CGImageRef _baseImage;
 }
 
-- (instancetype)initWithOverlayImage:(CGImageRef)overlayImage
-                     overlayViewport:(PPViewport*)overlayViewport
+- (instancetype)initWithViewport:(PPViewport*)viewport
+                    overlayImage:(CGImageRef)overlayImage
+                 overlayViewport:(PPViewport*)overlayViewport
+                          billboards:(NSArray<PPBillboard*>*)billboards
                            baseImage:(CGImageRef)baseImage
                         baseViewport:(PPViewport*)baseViewport
                         baseWasDrawn:(BOOL)baseWasDrawn
@@ -245,11 +290,13 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                                 slew:(const fv::SlewState&)slew {
   self = [super init];
   if (self == nil) return nil;
-  // The frame takes both references: the overlay's is the one the bridge just
-  // minted, and the base's is a retain on pixels the map is still holding.
+  // The frame takes both references, each a retain on pixels the map is
+  // still holding.
   _overlayImage = overlayImage;
   _baseImage = baseImage;
-  _viewport = overlayViewport;
+  _viewport = viewport;
+  _overlayViewport = overlayViewport;
+  _billboards = billboards;
   _baseViewport = baseViewport;
   _baseWasDrawn = baseWasDrawn;
   _featuresQueried = features;
@@ -320,8 +367,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                            trip:(PPTrip*)trip
                        guidance:(PPGuidance*)guidance
                  guidanceEvents:(NSArray<PPGuidanceEvent*>*)guidanceEvents
-                           slew:(const fv::SlewState&)slew
-                         newFix:(BOOL)newFix {
+                           slew:(const fv::SlewState&)slew {
   self = [super init];
   if (self == nil) return nil;
   _ownship = ownship;
@@ -332,7 +378,6 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _cameraCenter = PPGeoPointMake(slew.center.lat, slew.center.lon);
   _cameraRotationDegrees = slew.rotation_deg;
   _cameraIsAnimating = slew.active ? YES : NO;
-  _sawNewFix = newFix;
   return self;
 }
 
@@ -343,11 +388,29 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   fv::Settings _settings;
 
   // The two layers. The base map is drawn into `_baseCanvas`, the guard band,
-  // which is larger than the screen and kept between frames; the overlays are
-  // drawn into `_overlayCanvas`, which is exactly the screen, cleared to
-  // transparent every frame and composited over the base by the display.
+  // which is larger than the screen and kept between frames. The route and
+  // points are drawn into `_overlayCanvas` at the same band camera, on
+  // transparent, and kept with it; the ownship is a sprite the shell places.
   std::unique_ptr<fv::CpuCanvas> _baseCanvas;
   std::unique_ptr<fv::CpuCanvas> _overlayCanvas;
+  CGImageRef _overlayImage;
+  PPViewport* _overlayViewport;  // the band `_overlayImage` was drawn at
+  // Bumped by every change to what the route or point overlays draw; the
+  // cached overlay is redrawn when its stamp falls behind.
+  uint64_t _contentEpoch;
+  uint64_t _overlayEpoch;
+  double _overlaySymbolScale;
+  // Whether `_overlayImage` was drawn without markers, for a tilted view.
+  BOOL _overlayUpright;
+  // The markers as upright sprites, rebuilt when `_contentEpoch` moves.
+  NSArray<PPBillboard*>* _billboards;
+  uint64_t _billboardEpoch;
+  // The ownship sprite, rendered once per symbol scale, and the 1x1 canvas
+  // its placement draw goes to (the overlay stamps nothing in sprite mode).
+  std::unique_ptr<fv::CpuCanvas> _shipScratch;
+  CGImageRef _shipImage;
+  double _shipImageScale;
+  double _tickRotation;  // the projection rotation of the last moving-map tick
   std::shared_ptr<fv::OsmVectorSource> _source;
   std::shared_ptr<fv::OsmStyleEngine> _style;
   std::unique_ptr<fv::VectorRenderer> _renderer;
@@ -438,6 +501,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // and not the other would animate the next unwind from an angle the map
   // left minutes ago.
   double _reportedRotation;
+  // Set by `resumeFromBackground`; the next tick with a fix finishes the slew.
+  BOOL _jumpCameraOnNextFix;
 
   // `_courseUp` is remembered whether or not the map is following, so the next
   // press of GPS comes up in the mode the rider left it in. The two slew
@@ -544,6 +609,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _overlayCanvas = std::make_unique<fv::CpuCanvas>(1, 1);
   _overlayCanvasWidth = 1;
   _overlayCanvasHeight = 1;
+  _shipScratch = std::make_unique<fv::CpuCanvas>(1, 1);
   _baseImage = nullptr;
   _baseViewport = nil;
   // How far the chart may turn under the cached base before it is drawn
@@ -594,6 +660,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 // The route's beach gate gets the same table, or none: without one the beach
 // stays routable and the sheet warns that the tide is unknown.
 - (void)loadTides {
+  [self overlayContentChanged];
   _tide = nil;
   fv::nav::BeachTideLimits limits;
   limits.rideable_below_m = _settings.GetDouble("beach.rideable_below_m", limits.rideable_below_m);
@@ -777,6 +844,12 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
       _settings.GetString("movingmap.symbol", fv::builtin_symbol::kNorthArrow));
   _movingMap->SetSizePx(_settings.GetDouble("movingmap.size_px", kOwnshipSizePx));
 
+  // The ship is a sprite (`PPOwnship.symbolImage`). The overlay stays in the
+  // stack, hidden from `DrawAll`, which draws at the band's camera; its
+  // placement draw happens at the live camera in `placeShipAt:`.
+  _movingMap->SetDrawSymbol(false);
+  _movingMap->SetVisible(false);
+
   const fv::Status s = _overlays->Add(_movingMap);
   (void)s;  // a fresh manager with no type registry cannot refuse an Add
 }
@@ -805,6 +878,10 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   return _settings.GetDouble("display.fling_deceleration", 0.998);
 }
 
+- (double)followPitchDegrees {
+  return _settings.GetDouble("display.follow_pitch_deg", 45.0);
+}
+
 - (double)followFramesPerSecond {
   return _settings.GetDouble("display.follow_fps", 20.0);
 }
@@ -823,9 +900,15 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 }
 
 - (void)dealloc {
-  // The cached base map's image is a CF reference held outside ARC's reach,
-  // and it is the only one this class owns.
+  // The cached images are CF references held outside ARC's reach.
   if (_baseImage != nullptr) CGImageRelease(_baseImage);
+  if (_overlayImage != nullptr) CGImageRelease(_overlayImage);
+  if (_shipImage != nullptr) CGImageRelease(_shipImage);
+}
+
+/// Marks the route and point overlays' drawing stale.
+- (void)overlayContentChanged {
+  ++_contentEpoch;
 }
 
 /// Drops the cached base map so the next frame draws one. Nothing inside this
@@ -838,6 +921,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     _baseImage = nullptr;
   }
   _baseViewport = nil;
+  if (_overlayImage != nullptr) {
+    CGImageRelease(_overlayImage);
+    _overlayImage = nullptr;
+  }
+  _overlayViewport = nil;
 }
 
 /// The number does nothing until the next base map is drawn, since it is read
@@ -959,14 +1047,21 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // at: a base kept from a wider request still serves a narrower one, and a
   // settle frame that asked for no band replaces it with an exact one.
   const BOOL haveBase = _baseImage != nullptr && _baseViewport != nil;
+  double quadX[4], quadY[4];
+  const BOOL tilted = [viewport groundQuadX:quadX y:quadY];
   const BOOL baseServes =
       reuseBase && haveBase &&
-      pippin::BaseCovers(_baseViewport.projection, proj, _baseLimits);
+      pippin::BaseCovers(_baseViewport.projection, proj, _baseLimits,
+                         tilted ? quadX : nullptr, tilted ? quadY : nullptr);
 
   double baseMs = 0.0;
   if (!baseServes) {
     const CFAbsoluteTime b0 = CFAbsoluteTimeGetCurrent();
-    PPViewport* band = bandViewport != nil ? bandViewport : viewport;
+    // A tilted screen shows more ground than its own surface, so even the
+    // unbanded draw is the tilted footprint.
+    PPViewport* band = bandViewport != nil ? bandViewport
+                       : tilted          ? [viewport viewportGrownByMargin:0.0]
+                                         : viewport;
     const fv::MapProjection& bandProj = band.projection;
     const int bw = band.pixelWidth;
     const int bh = band.pixelHeight;
@@ -1032,21 +1127,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
   // --- The overlay layer -------------------------------------------------
   //
-  // Every frame, at the live camera, on the screen's own surface. No band,
-  // because it is redrawn every frame, so its preview transform covers only
-  // the milliseconds the draw took. Cleared to transparent, which is what
-  // `CpuCanvas::BlendPixel` composites onto.
-  const int w = viewport.pixelWidth;
-  const int h = viewport.pixelHeight;
-  if (w != _overlayCanvasWidth || h != _overlayCanvasHeight) {
-    _overlayCanvas = std::make_unique<fv::CpuCanvas>(w, h);
-    _overlayCanvasWidth = w;
-    _overlayCanvasHeight = h;
-    if (_hasLabelFont) _overlayCanvas->SetDefaultFont(_fontPath);
-  }
-  _overlayCanvas->Clear(fv::FvColor{0, 0, 0, 0});
-
-  // The moving map's tick happens here, at the top of the drawing rather than
+  // The route and points, at the band's camera, kept with the base and
+  // redrawn when the base is or when their content changes. The ship is not
+  // in it: `placeShipAt:` places it at the live camera for the shell's sprite.
+  //
+  // The moving map's tick comes first, at the top of the drawing rather than
   // on the main thread.
   //
   // MM4 put the camera on the overlay because an overlay is the only object
@@ -1056,9 +1141,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // touches it; what crosses is a `PPFix` in, through MM1's locked queue, and
   // a `PPOwnship` out.
   //
-  // The consequence is that the feed advances only when a frame is asked for.
-  // The shell's loop pauses when the camera stops moving, so `MapModel`'s
-  // content-dirty flag is what keeps it going for a running feed.
+  // The consequence is that the feed advances only when a frame or a step is
+  // asked for. The shell's loop pauses when the camera stops moving, so
+  // `MapModel`'s ship-dirty flag is what keeps it going for a running feed.
   //
   // Below the base map's `if` rather than inside it: the tick is the feed, the
   // trip computer and the camera, and thinning it along with the pixels would
@@ -1066,16 +1151,19 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   const fv::MovingMapTick tick = [self tickMovingMap:proj
                                        pixelsPerPoint:pixelsPerPoint];
 
-  _overlays->DrawAll(proj, *_overlayCanvas);
-
-  CGImageRef overlay = PPCreateCGImageFromPixelBuffer(_overlayCanvas->Buffer());
-  if (overlay == nullptr) {
+  // The tick sets the overlays' symbol scale, so the overlay draw follows it.
+  const BOOL upright = viewport.pitchDegrees > 0.0 ? YES : NO;
+  if (![self drawOverlayIfStale:upright]) {
     if (error) *error = MakeError(PPErrorRenderFailed, @"CGImage creation failed");
     return nil;
   }
+  [self placeShipAt:proj];
+
   return [[PPFrame alloc]
-        initWithOverlayImage:overlay
-            overlayViewport:viewport
+           initWithViewport:viewport
+               overlayImage:CGImageRetain(_overlayImage)
+            overlayViewport:_overlayViewport
+                 billboards:upright ? [self billboards] : @[]
                   baseImage:CGImageRetain(_baseImage)
                baseViewport:_baseViewport
               baseWasDrawn:(baseServes ? NO : YES)
@@ -1096,16 +1184,174 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   const double mmPerPixel = viewport.mmPerPixel;
   const double pixelsPerPoint =
       mmPerPixel > 0 ? viewport.mmPerPoint / mmPerPixel : 1.0;
-  // The overlay's apron stays as the last drawn frame computed it; the camera
-  // has moved less than the shell's redraw threshold since then.
+  // No pixels are drawn, but the ship is placed: the shell shows it as a
+  // sprite at this camera, so the apron is rebuilt from here.
   const fv::MovingMapTick tick = [self tickMovingMap:viewport.projection
                                       pixelsPerPoint:pixelsPerPoint];
+  [self placeShipAt:viewport.projection];
   return [[PPCameraStep alloc] initWithOwnship:[self ownshipOrNil]
                                           trip:[self tripOrNil]
                                       guidance:[self guidanceOrNil]
                                 guidanceEvents:[self takeGuidanceEvents]
-                                          slew:tick.slew
-                                        newFix:(tick.new_fix ? YES : NO)];
+                                          slew:tick.slew];
+}
+
+/// Redraws the route and point overlays into a band-sized transparent image
+/// at `_baseViewport` when the base moved on, their content changed, or the
+/// view tilted or flattened. `upright` leaves the markers out, for billboards.
+/// NO only when the image could not be made.
+- (BOOL)drawOverlayIfStale:(BOOL)upright {
+  if (_overlayImage != nullptr && _overlayViewport == _baseViewport &&
+      _overlayEpoch == _contentEpoch && _overlayUpright == upright)
+    return YES;
+  _routeStore->overlay()->SetDrawMarkers(!upright);
+  _pointStore->overlay()->SetDrawMarkers(!upright);
+  PPViewport* band = _baseViewport;
+  const int w = band.pixelWidth;
+  const int h = band.pixelHeight;
+  if (w != _overlayCanvasWidth || h != _overlayCanvasHeight) {
+    _overlayCanvas = std::make_unique<fv::CpuCanvas>(w, h);
+    _overlayCanvasWidth = w;
+    _overlayCanvasHeight = h;
+    if (_hasLabelFont) _overlayCanvas->SetDefaultFont(_fontPath);
+  }
+  _overlayCanvas->Clear(fv::FvColor{0, 0, 0, 0});
+  _overlays->DrawAll(band.projection, *_overlayCanvas);
+  CGImageRef image = PPCreateCGImageFromPixelBuffer(_overlayCanvas->Buffer());
+  if (image == nullptr) return NO;
+  if (_overlayImage != nullptr) CGImageRelease(_overlayImage);
+  _overlayImage = image;
+  _overlayViewport = band;
+  _overlayEpoch = _contentEpoch;
+  _overlayUpright = upright;
+  return YES;
+}
+
+/// The route's waypoints, then the points, as upright sprites at the current
+/// symbol scale. Cached until `_contentEpoch` moves; a hidden overlay has none.
+- (NSArray<PPBillboard*>*)billboards {
+  if (_billboards != nil && _billboardEpoch == _contentEpoch) return _billboards;
+  NSMutableArray<PPBillboard*>* out = [NSMutableArray array];
+  const auto& route = _routeStore->overlay();
+  if (route->IsVisible()) {
+    const auto& wps = route->waypoints();
+    // A route's names are a fixed 12 px, not scaled with the symbols.
+    const double reach = 9.0 * 1.6 / 2.0 * route->symbol_dpi_scale() + 6.0;
+    for (size_t i = 0; i < wps.size(); ++i) {
+      const std::string& name = route->show_labels() ? wps[i].label : std::string();
+      PPBillboard* b = [self billboardAt:wps[i].position
+                                   reach:reach
+                                   label:name
+                                labelPx:12.0
+                             labelStartX:10.0
+                                   scale:route->symbol_dpi_scale()
+                                   stamp:[&](const fv::MapProjection& proj,
+                                             fv::CpuCanvas& canvas, double x, double y) {
+                                     return route->DrawMarkerAt(proj, canvas, i, x, y);
+                                   }];
+      if (b != nil) [out addObject:b];
+    }
+  }
+  const auto& points = _pointStore->overlay();
+  if (points->IsVisible()) {
+    const double scale = points->symbol_dpi_scale();
+    const auto& pts = points->points();
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const double r = pts[i].size_px * scale / 2.0;
+      const std::string& name = points->show_labels() ? pts[i].name : std::string();
+      PPBillboard* b = [self billboardAt:pts[i].position
+                                   reach:r + scale + 6.0
+                                   label:name
+                                 labelPx:12.0 * scale
+                             labelStartX:r + 3.0
+                                   scale:scale
+                                   stamp:[&](const fv::MapProjection& proj,
+                                             fv::CpuCanvas& canvas, double x, double y) {
+                                     return points->DrawMarkerAt(proj, canvas, i, x, y);
+                                   }];
+      if (b != nil) [out addObject:b];
+    }
+  }
+  _billboards = [out copy];
+  _billboardEpoch = _contentEpoch;
+  return _billboards;
+}
+
+/// Stamps one marker at the centre of a canvas sized for its symbol (`reach`
+/// pixels each way, halo included) and its name, trims it to its ink, and
+/// wraps it. Nil when nothing was inked or no image could be made.
+- (nullable PPBillboard*)billboardAt:(const fv::GeoPoint&)position
+                               reach:(double)reach
+                               label:(const std::string&)label
+                             labelPx:(double)labelPx
+                         labelStartX:(double)labelStartX
+                               scale:(double)scale
+                               stamp:(const std::function<fv::Status(
+                                          const fv::MapProjection&, fv::CpuCanvas&,
+                                          double, double)>&)stamp {
+  // A generous text width: the byte count overstates a multibyte name, and
+  // the trim takes back whatever is unused.
+  double halfW = reach, halfH = reach;
+  if (!label.empty()) {
+    halfW = std::max(halfW, labelStartX + labelPx * 0.75 * label.size() + 8.0);
+    halfH = std::max(halfH, labelStartX + labelPx * 1.5);
+  }
+  const int cx = (int)std::ceil(halfW);
+  const int cy = (int)std::ceil(halfH);
+  const int w = 2 * cx + 1;
+  const int h = 2 * cy + 1;
+  fv::CpuCanvas canvas(w, h);
+  canvas.Clear(fv::FvColor{0, 0, 0, 0});
+  if (_hasLabelFont) canvas.SetDefaultFont(_fontPath);
+  fv::MapProjection proj;
+  if (!proj.SetSurfaceSize(w, h).ok()) return nil;
+  (void)proj.SetCenter(position);
+  (void)proj.SetScale(100000.0);
+  // A failed name still leaves the marker stamped, which is worth showing.
+  (void)stamp(proj, canvas, cx, cy);
+  const pippin::InkRect ink = pippin::InkBounds(canvas.Buffer());
+  if (ink.empty()) return nil;
+  CGImageRef image = PPCreateCGImageFromPixelBuffer(pippin::Crop(canvas.Buffer(), ink));
+  if (image == nullptr) return nil;
+  const double ppp = scale > 0.0 ? scale : 1.0;
+  const CGPoint offset = CGPointMake((ink.x + ink.width / 2.0 - (cx + 0.5)) / ppp,
+                                     (ink.y + ink.height / 2.0 - (cy + 0.5)) / ppp);
+  return [[PPBillboard alloc] initWithCoordinate:PPGeoPointMake(position.lat, position.lon)
+                                           image:image
+                                  pixelsPerPoint:ppp
+                                    centerOffset:offset];
+}
+
+/// Places the ship and rebuilds the moving map's apron at `proj`, the camera
+/// the shell shows the sprite against. Stamps nothing.
+- (void)placeShipAt:(const fv::MapProjection&)proj {
+  (void)_movingMap->OnDraw(proj, *_shipScratch);
+}
+
+/// The ownship symbol at angle 0 (nose up), centred on an odd-sized
+/// transparent square, at the moving map's current symbol scale. Cached;
+/// null if it could not be drawn.
+- (CGImageRef)shipSpriteImage {
+  const double scale = _movingMap->symbol_dpi_scale();
+  if (_shipImage != nullptr && scale == _shipImageScale) return _shipImage;
+  // `ownshipSymbolRadiusInPoints` is the whole size; the edge stamp is two
+  // authored pixels larger.
+  const double reach = (_movingMap->size_px() + 2.0) * scale;
+  const int n = 2 * (int)std::ceil(reach) + 1;
+  fv::CpuCanvas canvas(n, n);
+  canvas.Clear(fv::FvColor{0, 0, 0, 0});
+  fv::MapProjection proj;
+  if (!proj.SetSurfaceSize(n, n).ok()) return nullptr;
+  (void)proj.SetCenter(fv::GeoPoint{0.0, 0.0});
+  (void)proj.SetScale(100000.0);
+  const double c = (n - 1) / 2.0;
+  if (!_movingMap->DrawSymbolAt(proj, canvas, c, c, 0.0).ok()) return nullptr;
+  CGImageRef image = PPCreateCGImageFromPixelBuffer(canvas.Buffer());
+  if (image == nullptr) return nullptr;
+  if (_shipImage != nullptr) CGImageRelease(_shipImage);
+  _shipImage = image;
+  _shipImageScale = scale;
+  return _shipImage;
 }
 
 - (fv::MovingMapTick)tickMovingMap:(const fv::MapProjection&)proj
@@ -1142,6 +1388,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // like everything else this app draws, so a 22-px marker is 22 points wide
   // on any screen, and the hit test scales with it inside the overlay.
   _pointStore->overlay()->SetSymbolDpiScale(symbolScale);
+  if (symbolScale != _overlaySymbolScale) {
+    _overlaySymbolScale = symbolScale;
+    [self overlayContentChanged];
+  }
+  _tickRotation = proj.Rotation();
 
   // Where the map is, asked rather than remembered. The slew interpolates from
   // where it believes the map to be, so anything that moved the map without
@@ -1198,7 +1449,17 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     _movingMap->slew().RetargetTo(proj, here, 0.0);
   }
 
-  const fv::MovingMapTick tick = _movingMap->Tick(proj, dt);
+  fv::MovingMapTick tick = _movingMap->Tick(proj, dt);
+  // Back from the background: the map lands on the first fix instead of
+  // slewing across however far the rider went. `changed` is kept from the
+  // first `Advance`, which may already have arrived and reported the move.
+  if (_jumpCameraOnNextFix && tick.new_fix) {
+    _jumpCameraOnNextFix = NO;
+    const bool changed = tick.slew.changed;
+    _movingMap->slew().Finish();
+    tick.slew = _movingMap->slew().Advance(0.0);
+    tick.slew.changed = tick.slew.changed || changed;
+  }
   // Where the slew now believes the map to be, remembered so the next tick can
   // tell whether that belief survived. Recorded on every tick and not only on
   // a change, because the two differ exactly when the belief was corrected: a
@@ -1296,14 +1557,27 @@ static double PPEpochNow() {
   return [[PPGuidance alloc] initWithState:state road:road];
 }
 
+- (nullable PPGuidance*)currentGuidance {
+  return [self guidanceOrNil];
+}
+
+- (nullable PPTrip*)currentTrip {
+  return [self tripOrNil];
+}
+
 // Drains the buffer: every event belongs to exactly one frame, and calling
 // this twice for one frame would announce a turn twice.
 - (NSArray<PPGuidanceEvent*>*)takeGuidanceEvents {
   if (_pendingGuidanceEvents.empty()) return @[];
   NSMutableArray<PPGuidanceEvent*>* out =
       [NSMutableArray arrayWithCapacity:_pendingGuidanceEvents.size()];
+  const std::vector<fv::nav::Maneuver>& maneuvers = _guidance.maneuvers();
   for (const fv::nav::GuidanceEvent& e : _pendingGuidanceEvents) {
-    [out addObject:[[PPGuidanceEvent alloc] initWithEvent:e]];
+    NSString* road = @"";
+    if (e.maneuver_index < maneuvers.size() && !maneuvers[e.maneuver_index].road.empty()) {
+      road = @(maneuvers[e.maneuver_index].road.c_str());
+    }
+    [out addObject:[[PPGuidanceEvent alloc] initWithEvent:e road:road]];
   }
   _pendingGuidanceEvents.clear();
   return out;
@@ -1321,6 +1595,9 @@ static double PPEpochNow() {
                            : NO;
   return [[PPOwnship alloc] initWithFix:_movingMap->last_fix()
                          screenAngleDeg:_movingMap->screen_angle_deg()
+                           viewRotation:_tickRotation
+                            symbolImage:[self shipSpriteImage]
+                         pixelsPerPoint:_movingMap->symbol_dpi_scale()
                                 heading:_movingMap->heading()
                                 snapped:applied
                                roadName:applied ? snap.road_name : std::string()];
@@ -1357,11 +1634,19 @@ static double PPEpochNow() {
   _movingMap->PushFix(f);
 }
 
+- (void)resumeFromBackground {
+  // Events raised while the app was in the background name corners the rider
+  // has already reached; the banner is recomputed from the current state.
+  _pendingGuidanceEvents.clear();
+  _jumpCameraOnNextFix = YES;
+}
+
 #pragma mark - GPS mode
 
 - (BOOL)isGpsModeEnabled { return _gpsModeEnabled; }
 
 - (void)setGpsModeEnabled:(BOOL)enabled {
+  [self overlayContentChanged];
   if (enabled == _gpsModeEnabled) return;
   _gpsModeEnabled = enabled;
 
@@ -1540,6 +1825,7 @@ static double PPEpochNow() {
 }
 
 - (nullable PPRoute*)loadSavedRouteWithError:(NSError**)error {
+  [self overlayContentChanged];
   const fv::Status s = _routeStore->LoadAtLaunch();
   if (!s.ok()) {
     if (error) *error = ErrorFromStatus(PPErrorRouteFailed, s, @"saved route");
@@ -1557,6 +1843,7 @@ static double PPEpochNow() {
 
 - (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
                       profile:(NSString*)profile {
+  [self overlayContentChanged];
   const pippin::RouteSnapshot snapshot = _routeStore->SetWaypoints(
       PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "");
   return [self routeFromSnapshot:snapshot];
@@ -1565,6 +1852,7 @@ static double PPEpochNow() {
 - (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
                       profile:(NSString*)profile
                      beachUse:(PPBeachUse)beachUse {
+  [self overlayContentChanged];
   fv::RouteBeach beach = fv::RouteBeach::kNever;
   if (beachUse == PPBeachUseToSaveTime) beach = fv::RouteBeach::kToSaveTime;
   if (beachUse == PPBeachUseWheneverPossible) beach = fv::RouteBeach::kWheneverPossible;
@@ -1578,6 +1866,7 @@ static double PPEpochNow() {
 }
 
 - (void)setRouteDepartureOverride:(NSTimeInterval)t {
+  [self overlayContentChanged];
   _routeDepartureOverride = t;
   if (std::isfinite(t)) {
     _routeStore->set_clock([t] { return t; });
@@ -1591,6 +1880,7 @@ static double PPEpochNow() {
 }
 
 - (PPRoute*)clearRoute {
+  [self overlayContentChanged];
   return [self routeFromSnapshot:_routeStore->Clear()];
 }
 
@@ -1660,13 +1950,31 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
                         (int)std::lround(p.y * scale)};
 }
 
+/// `screenPoint` in the route overlay's drawn surface pixels. The overlay
+/// is drawn at the band's camera, and its hit test and drag read that
+/// projection, so a screen pixel goes through the ground to reach it.
+- (fv::PixelPoint)routePixel:(CGPoint)screenPoint
+                  inViewport:(PPViewport*)viewport {
+  const fv::PixelPoint live = PPSurfacePixel(screenPoint, viewport);
+  const auto& overlay = _routeStore->overlay();
+  if (!overlay->has_projection()) return live;
+  const double scale = viewport.displayScale > 0.0 ? viewport.displayScale : 1.0;
+  fv::GeoPoint g;
+  if (!viewport.projection.SurfaceToGeo(screenPoint.x * scale,
+                                        screenPoint.y * scale, &g).ok())
+    return live;
+  double x = 0.0, y = 0.0;
+  if (!overlay->last_projection().GeoToSurface(g, &x, &y).ok()) return live;
+  return fv::PixelPoint{(int)std::lround(x), (int)std::lround(y)};
+}
+
 - (nullable NSString*)routeWaypointLabelNear:(CGPoint)screenPoint
                                   inViewport:(PPViewport*)viewport
                                    tolerance:(double)tolerance {
   if (viewport == nil || !viewport.hasSurface) return nil;
   const double scale = viewport.displayScale > 0.0 ? viewport.displayScale : 1.0;
   const pippin::RouteStore::WaypointHit hit = _routeStore->WaypointNear(
-      PPSurfacePixel(screenPoint, viewport), tolerance * scale);
+      [self routePixel:screenPoint inViewport:viewport], tolerance * scale);
   if (!hit.found) return nil;
   return [NSString stringWithUTF8String:hit.label.c_str()];
 }
@@ -1689,6 +1997,7 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 - (BOOL)beginRouteWaypointDrag:(NSString*)label
                             at:(CGPoint)screenPoint
                     inViewport:(PPViewport*)viewport {
+  [self overlayContentChanged];
   if (label.length == 0 || viewport == nil || !viewport.hasSurface) return NO;
 
   // Set at the press rather than at construction, for the same reason the
@@ -1706,32 +2015,37 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
   _routeStore->set_drag_replan_budget_ms(
       _settings.GetDouble("routing.drag_replan_budget_ms", 30.0));
 
-  return _routeStore->BeginWaypointDrag(label.UTF8String,
-                                        PPSurfacePixel(screenPoint, viewport))
+  return _routeStore->BeginWaypointDrag(
+             label.UTF8String, [self routePixel:screenPoint inViewport:viewport])
              ? YES
              : NO;
 }
 
 - (BOOL)dragRouteWaypointTo:(CGPoint)screenPoint
                  inViewport:(PPViewport*)viewport {
+  [self overlayContentChanged];
   if (viewport == nil || !viewport.hasSurface) return NO;
-  return _routeStore->DragWaypointTo(PPSurfacePixel(screenPoint, viewport))
+  return _routeStore->DragWaypointTo(
+             [self routePixel:screenPoint inViewport:viewport])
              ? YES
              : NO;
 }
 
 - (PPRoute*)endRouteWaypointDragAt:(CGPoint)screenPoint
                         inViewport:(PPViewport*)viewport {
+  [self overlayContentChanged];
   if (viewport == nil || !viewport.hasSurface) {
     // No surface to release onto, and putting it back is the only answer that
     // cannot leave a waypoint somewhere nobody asked for.
     return [self routeFromSnapshot:_routeStore->CancelWaypointDrag()];
   }
   return [self routeFromSnapshot:_routeStore->EndWaypointDrag(
-                                     PPSurfacePixel(screenPoint, viewport))];
+                                     [self routePixel:screenPoint
+                                           inViewport:viewport])];
 }
 
 - (PPRoute*)cancelRouteWaypointDrag {
+  [self overlayContentChanged];
   return [self routeFromSnapshot:_routeStore->CancelWaypointDrag()];
 }
 
@@ -1922,6 +2236,7 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 }
 
 - (BOOL)loadPointsWithError:(NSError**)error {
+  [self overlayContentChanged];
   const fv::Status s = _pointStore->LoadAtLaunch();
   if (!s.ok()) {
     if (error) *error = ErrorFromStatus(PPErrorPointsFailed, s, @"saved points");
@@ -1951,6 +2266,7 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 - (BOOL)arePointsVisible { return _pointStore->visible() ? YES : NO; }
 
 - (void)setPointsVisible:(BOOL)visible {
+  [self overlayContentChanged];
   _pointStore->SetVisible(visible ? true : false);
   // Hiding the set drops the selection with it: a highlighted marker nobody
   // can see is a state the next tap on the button would restore for no reason
@@ -1961,6 +2277,7 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 - (int64_t)selectedPointId { return _pointStore->selected(); }
 
 - (void)setSelectedPointId:(int64_t)pointId {
+  [self overlayContentChanged];
   _pointStore->SetSelected(pointId);
 }
 
@@ -1986,6 +2303,7 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 }
 
 - (PPMapPoint*)addPoint:(PPMapPoint*)point {
+  [self overlayContentChanged];
   const int64_t id = _pointStore->AddPoint([point mapPoint]);
   const fv::MapPoint* stored = _pointStore->Find(id);
   // The point as stored, because the id is what every later edit and delete
@@ -1995,10 +2313,12 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 }
 
 - (BOOL)updatePoint:(PPMapPoint*)point {
+  [self overlayContentChanged];
   return _pointStore->UpdatePoint([point mapPoint]) ? YES : NO;
 }
 
 - (BOOL)removePointWithId:(int64_t)pointId {
+  [self overlayContentChanged];
   return _pointStore->RemovePoint(pointId) ? YES : NO;
 }
 

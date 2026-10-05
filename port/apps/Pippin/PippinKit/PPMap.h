@@ -66,8 +66,8 @@ typedef NS_ERROR_ENUM(PPErrorDomain, PPErrorCode) {
 ///
 /// Reported rather than asked for, because the overlay's tick happens on the
 /// render queue and this is the main thread's only honest view of it. The
-/// ownship is drawn rather than described, so nothing consumes this except
-/// the stats bar, the GPS button and the probes.
+/// shell draws the ship from it as a sprite (`symbolImage`), placed at
+/// `coordinate` against the live camera.
 NS_SWIFT_SENDABLE
 @interface PPOwnship : NSObject
 
@@ -80,6 +80,17 @@ NS_SWIFT_SENDABLE
 /// chart the two differ by exactly the turn — and this is the one the drawing
 /// is pinned against.
 @property(nonatomic, readonly) double screenAngleDegrees;
+
+/// The camera rotation `screenAngleDegrees` was computed against. On a live
+/// camera turned by `live.rotationDegrees - viewRotationDegrees`, the sprite
+/// turns by the same amount, as a drawn layer would.
+@property(nonatomic, readonly) double viewRotationDegrees;
+
+/// The ship, nose up, centred on a transparent square of device pixels; nil
+/// if it could not be drawn. Turned clockwise by the screen angle for display.
+@property(nonatomic, readonly, nullable) CGImageRef symbolImage;
+/// Device pixels per point in `symbolImage`.
+@property(nonatomic, readonly) double symbolPixelsPerPoint;
 
 /// YES when the heading came from the receiver's course, NO when
 /// `HeadingResolver` derived it from successive positions. The two are not
@@ -108,6 +119,25 @@ NS_SWIFT_SENDABLE
 
 @end
 
+/// A route waypoint or point marker shown upright over a tilted map: its
+/// diamond or badge and its name, as a sprite the shell places at
+/// `coordinate` through the perspective.
+NS_SWIFT_SENDABLE
+@interface PPBillboard : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@property(nonatomic, readonly) PPGeoPoint coordinate;
+/// The marker and its name, trimmed to their ink, in device pixels.
+@property(nonatomic, readonly) CGImageRef image;
+/// Device pixels per point in `image`.
+@property(nonatomic, readonly) double pixelsPerPoint;
+/// From the marker's own centre to the image's centre, in points. The name
+/// sits to the right, so the image is not centred on the marker.
+@property(nonatomic, readonly) CGPoint centerOffset;
+
+@end
+
 /// One drawn frame: the images, the viewports they were drawn at, and what
 /// they cost.
 NS_SWIFT_SENDABLE
@@ -116,38 +146,45 @@ NS_SWIFT_SENDABLE
 /// `baseImage` is the map, drawn into a surface larger than the screen (the
 /// guard band) and kept between frames, so a camera that has only panned,
 /// turned a little, or not moved gets the same pixels back for nothing.
-/// `overlayImage` is the route, the points and the ownship, drawn every frame
-/// at the live camera on a transparent surface exactly screen-sized.
+/// `overlayImage` is the route and the points, drawn on a transparent surface
+/// at the band's camera and kept with the base: it is redrawn when the base
+/// is, or when their content changes. The ownship is not in either layer; the
+/// shell draws it from `ownship.symbolImage`. On a tilted frame the overlay
+/// holds only the route line, and the markers arrive as `billboards`.
 ///
 /// The compositor puts them together, which is what makes the band cheap:
 /// `MapScreen`'s preview transform is applied twice, against two viewports,
 /// on the GPU. So there is no blitter in this app, rotation and scale cost
 /// nothing, and course-up is served like any other mode.
 ///
-/// `viewport` is the camera the frame was asked for and the one the overlay
-/// was drawn at; it is the frame's identity, which `applyCamera` and the
-/// loop's "already showing this" test read. `baseViewport` is the band — the
-/// same camera on a larger canvas — and is usually an older camera, because
-/// that is what a cache hit means.
+/// `viewport` is the camera the frame was asked for; it is the frame's
+/// identity, which `applyCamera` and the loop's "already showing this" test
+/// read. `baseViewport` is the band — the same camera on a larger canvas —
+/// and is usually an older camera, because that is what a cache hit means.
+/// `overlayViewport` is the band the overlay was drawn at, normally
+/// `baseViewport` itself.
 @interface PPFrame : NSObject
 
-/// The overlays, at `viewport`, on a transparent surface. Composited over
-/// `baseImage`.
+/// The route and points, at `overlayViewport`, on a transparent surface.
+/// Composited over `baseImage`.
 @property(nonatomic, readonly) CGImageRef overlayImage;
+@property(nonatomic, readonly) PPViewport *overlayViewport;
+/// The route's waypoints and the points, in draw order, when `viewport` is
+/// tilted; empty when it is flat and they are in `overlayImage`.
+@property(nonatomic, readonly) NSArray<PPBillboard *> *billboards;
 @property(nonatomic, readonly) PPViewport *viewport;
 
 /// The map, at `baseViewport`, opaque. Never nil on a frame that returned.
 @property(nonatomic, readonly) CGImageRef baseImage;
 @property(nonatomic, readonly) PPViewport *baseViewport;
 
-/// NO when this frame was served the cached base map, so it cost an overlay
-/// pass and nothing else.
+/// NO when this frame was served the cached base map.
 @property(nonatomic, readonly) BOOL baseWasDrawn;
 
 @property(nonatomic, readonly) NSUInteger featuresQueried;
 @property(nonatomic, readonly) NSUInteger drawsEmitted;
 @property(nonatomic, readonly) NSInteger queryZoom;
-/// The whole frame. On a base hit, the overlay pass alone.
+/// The whole frame. On a base hit, the tick and any overlay redraw.
 @property(nonatomic, readonly) double renderMilliseconds;
 /// The base map's share, and 0 on a hit. `featuresQueried`, `drawsEmitted`
 /// and `queryZoom` describe the base map, so on a hit they describe the
@@ -230,9 +267,6 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) PPGeoPoint cameraCenter;
 @property(nonatomic, readonly) double cameraRotationDegrees;
 @property(nonatomic, readonly) BOOL cameraIsAnimating;
-/// The tick consumed a fix, so the ownship on screen is out of date and the
-/// next frame has to be drawn.
-@property(nonatomic, readonly) BOOL sawNewFix;
 @end
 
 @interface PPMap : NSObject
@@ -282,6 +316,10 @@ NS_SWIFT_SENDABLE
 /// The fling's deceleration as the speed kept per millisecond, UIKit's unit.
 /// `display.fling_deceleration`, 0.998 (`DecelerationRate.normal`) by default.
 @property(nonatomic, readonly) double flingDecelerationRate;
+
+/// The tilt while following with "3D While Following" on, in degrees, from
+/// `display.follow_pitch_deg` (45). `PPViewport.pitched(_:)` clamps it.
+@property(nonatomic, readonly) double followPitchDegrees;
 
 /// Frames per second while following with no gesture, from
 /// `display.follow_fps` (20). Unclamped; `FramePolicy` clamps it.
@@ -366,6 +404,26 @@ NS_SWIFT_SENDABLE
 /// is why `MapModel` keeps the loop awake with a content-dirty flag while a
 /// feed is running.
 - (void)pushFix:(PPFix *)fix NS_SWIFT_NAME(push(_:));
+
+/// Prepares the moving map for the first frame after the app was in the
+/// background. Render queue only.
+///
+/// Discards guidance events queued while nothing could play them, and makes
+/// the next tick that consumes a fix land the camera on it rather than slew
+/// from where the map was when the app left.
+- (void)resumeFromBackground;
+
+/// Drains the guidance events raised since the last frame or the last call.
+/// Render queue only.
+///
+/// For the background, where no frame is drawn to carry them. Each event is
+/// returned once, by this or by a frame, never both.
+- (NSArray<PPGuidanceEvent *> *)takeGuidanceEvents;
+
+/// The guidance and trip as a frame would carry them, for the background,
+/// where no frame is drawn. Render queue only.
+- (nullable PPGuidance *)currentGuidance;
+- (nullable PPTrip *)currentTrip;
 
 /// Starts the demo feed: the recorded Kiawah ride in the pack, replayed at
 /// the speed it was ridden, through the machinery a live receiver uses

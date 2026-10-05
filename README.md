@@ -183,14 +183,17 @@ shell over `PippinKit`, an Objective-C++ layer that wraps FvKit. It does moving
 map with GPS, course-up follow, road-snapped routing with turn guidance, a
 point overlay, search, a trip computer and GPX ride recording, plus NOAA tide
 predictions, sunrise and sunset, and routes that ride or walk the beach when the
-tide allows — all against a bundled data pack. The network is used for two
+tide allows — all against a bundled data pack. A ride keeps tracking with the
+screen off, with the next turn on the lock screen and a paired watch, and
+following can tilt into a 2.5D view. A pack covers one region; a second region
+(Atlanta) builds as a separately installed app. The network is used for two
 things only: the wind forecast from api.weather.gov for a fixed point on the
 pack's beach, and resolving a place link shared in from Apple or Google Maps.
 See `port/apps/Pippin/TIDES_AND_WEATHER.md`.
 
 The source is complete here but you currently need to provide your own data pack so
 a clone builds and tests Pippin's C++ out of the box and needs its own data
-before the app has a map to draw.  In the long run I would like to build tools to assist in gathering OSM data ansd creating a data pack, but for now you can use the `fvpack` tool to build one from your own OSM extracts.  The tools are generally available in this repository but it is a bit piecemeal and not yet documented.  The `fvpack` tool is the most useful for creating a data pack from OSM extracts.
+before the app has a map to draw.  In the long run I would like to build tools to assist in gathering OSM data and creating a data pack, but for now you can use the `fvpack` tool to build one from your own OSM extracts.  The tools are generally available in this repository but it is a bit piecemeal and not yet documented.  The `fvpack` tool is the most useful for creating a data pack from OSM extracts.
 
 ```sh
 cmake --build build -j                     # includes Pippin's C++ tests
@@ -227,12 +230,9 @@ exists.
 
 ## Known limitations
 
-- **Linux is not yet verified.** The build is POSIX-clean and everything
-  platform-specific is behind `port/include/`, but only macOS has been
-  exercised. The known blocker is case sensitivity: FalconView sources include
-  `"stdafx.h"` while the files on disk are `StdAfx.h`, which resolves on
-  case-insensitive filesystems and will not on ext4. Data-file lookup already
-  handles this (`fv_win32_path.h`); the `#include` spellings do not yet.
+- **Linux builds but is not yet tested.** The tree compiles under GCC/glibc
+  (include case, SAL macros and the other fixes from PR #1), but the test suite
+  has so far been run only on macOS.
 - Rendering is CPU-only; there is no GPU. The desktop demo uses Tk; Pippin
   composites the CPU canvas into a SwiftUI view.
 - Pippin ships without its data pack, so a clone cannot run the app until it

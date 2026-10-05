@@ -195,6 +195,17 @@ class PointOverlay : public Overlay,
 
   Status OnDraw(const MapProjection& proj, ICanvas& canvas) override;
 
+  /// Off: `OnDraw` records its projection and draws nothing, for a shell that
+  /// shows the markers as upright sprites over a tilted map.
+  void SetDrawMarkers(bool on) { draw_markers_ = on; }
+  bool draw_markers() const { return draw_markers_; }
+
+  /// Stamps point `index`'s marker (edge, badge, icon, label) centred on
+  /// surface pixel (x, y): what `OnDraw` stamps for it, minus placement and
+  /// culling. kInvalidArg when `index` is past the end of `points()`.
+  Status DrawMarkerAt(const MapProjection& proj, ICanvas& canvas, size_t index,
+                      double x, double y);
+
   // --- editing ------------------------------------------------------------
 
   /// The gestures, the armed add-mode and the undo stack. Always present: an
@@ -421,6 +432,11 @@ class PointOverlay : public Overlay,
   static const char* SymbolIdFor(PointShape shape);
   BuiltinSymbolLibrary* LibraryFor(const FvColor& c);
 
+  /// `c` with the dimmed opacity applied when the overlay is dimmed.
+  FvColor Ink(FvColor c) const;
+  /// One point's marker at (sx, sy), through `draw`.
+  Status DrawMarker(GeoDraw& draw, const MapPoint& p, double sx, double sy);
+
   // The embedded palette as something GeoDraw can stamp from — an
   // ISymbolLibrary over the BLOBs, decoding each one at most once. Rebuilt
   // lazily after any change to `symbols_`, because the pixmap pointers it
@@ -450,6 +466,7 @@ class PointOverlay : public Overlay,
   int64_t next_symbol_id_ = 1;
   bool show_labels_ = false;
   bool dimmed_ = false;
+  bool draw_markers_ = true;
   double dpi_scale_ = 1.0;
 };
 

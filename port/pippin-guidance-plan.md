@@ -1,7 +1,9 @@
 # Pippin guidance plan (GD1–GD4, BG1–BG5) — turn alerts, then screen-off tracking
 
 **Status: THE GD HALF IS BUILT, 2026-09-09, on Chris's word lifting the 2026-09-04 deferral.
-GD1–GD4 are done; BG1–BG5 are open, refined 2026-09-25 with sizes and an optional BG6.**
+GD1–GD4 are done; BG1–BG5 are BUILT (2026-10-04), including the real ride with a paired watch.
+BG6 (Live Activity) is optional, NOT STARTED, and now Chris's call — its gating condition
+(revisit after BG5 has been ridden) is met.**
 
 **The order is Chris's and it is fixed**: guidance first, with the phone on and the screen lit —
 an arrow saying left/right/straight with a countdown to the turn — and background location
@@ -223,7 +225,11 @@ Sizes: BG1, BG2, BG3 and BG4 are small; BG5 is a session; BG6 is optional. The o
 BG1 stands alone, and **BG2 without BG3 is a battery regression** (see BG2). The battery baseline
 BG3 is judged against is BT1 in `port/pippin-plan.md` ("After 1.1"), which should land first.
 
-### BG1 — scene-phase gating in `MapModel` (S)
+### BG1 — scene-phase gating in `MapModel` (S) — **BUILT 2026-10-04**
+See `port/PORTING.md` §2a for what landed and the phase-only decision (following/recording do
+not change drawing, so the ctest table below is phase-only, not the three-axis one this section
+describes).
+
 Correct on its own merits and worth landing whether or not the rest of BG happens. Getting it
 loosely wrong means an occasional hard-to-reproduce app kill, so it goes first and alone.
 - `MapScreen` observes `scenePhase` and forwards it to `MapModel.setSceneActive(_:)`.
@@ -240,7 +246,9 @@ loosely wrong means an occasional hard-to-reproduce app kill, so it goes first a
 - Acceptance on the simulator with `-PPShowStats`: background the app during a demo ride; the
   frame counter freezes while fixes keep arriving; no CoreAnimation or GPU warnings in the log.
 
-### BG2 — the capability (S)
+### BG2 — the capability (S) — **BUILT 2026-10-04**
+See `port/PORTING.md` §2a for what landed, verified sim numbers, and the open phone acceptance.
+
 - `UIBackgroundModes = location`. In `PPLocationSource`, `allowsBackgroundLocationUpdates` and
   `showsBackgroundLocationIndicator` are YES only while following or recording.
 - **The hazard.** Today a backgrounded Pippin costs nothing: iOS suspends it and the receiver
@@ -259,9 +267,14 @@ loosely wrong means an occasional hard-to-reproduce app kill, so it goes first a
   and the two models should not be mixed in one step.
 - Acceptance on the phone: record, lock, ride five minutes, unlock — the GPX has no gap, and the
   location indicator showed while locked. With GPS off and not recording, backgrounding shows no
-  indicator.
+  indicator. **Partly done 2026-10-04** (real Atlanta ride, `ride-2026-10-04-1458.gpx`): 340
+  points, 1 Hz throughout, no gap over 2 s while the phone was locked. **Still open**: the
+  indicator-while-locked and no-indicator-when-off checks were not observed.
 
-### BG3 — `LocationPolicy` learns about the dark (S)
+### BG3 — `LocationPolicy` learns about the dark (S) — **BUILT 2026-10-04**
+See `port/PORTING.md` §2a for what landed, including the decision against this section's
+`stopFeed()` call site.
+
 - A third input, `isBackground`. Background with recording or following → navigation accuracy
   whatever the viewport says; background with neither → stopped. BG2's stop rule is then decided
   here, by the tested policy, rather than inline in `MapModel`.
@@ -269,7 +282,9 @@ loosely wrong means an occasional hard-to-reproduce app kill, so it goes first a
   A lit screen in a pocket costs more than the receiver.
 - The `location_policy` ctest gains the rows.
 
-### BG4 — the ride that outlived the app (S)
+### BG4 — the ride that outlived the app (S) — **BUILT 2026-10-04**
+See `port/PORTING.md` §2a for what landed and the clear-marker-synchronously decision.
+
 `recordingURL` is main-actor state that does not survive a jetsam kill, and under When-In-Use the
 app is not relaunched, so the ride file is left valid but orphaned and the app forgets it was
 recording.
@@ -281,7 +296,9 @@ recording.
 - The marker logic is a pure function tested on the mac; the acceptance is killing the app from
   Xcode mid-recording on the simulator.
 
-### BG5 — the events reach a pocket or a wrist (M)
+### BG5 — the events reach a pocket or a wrist (M) — **BUILT 2026-10-04**
+See `port/PORTING.md` §2a for what landed and the simulator verification.
+
 - GD2's events become `UNUserNotificationCenter` requests while the app is backgrounded, and are
   suppressed while it is frontmost (GD4 plays those). The mirror to a paired watch is the
   system's.
@@ -292,13 +309,38 @@ recording.
 - One notification per maneuver, replaced as it moves from heads-up to act-now (same identifier)
   rather than stacked; arrival clears the rest.
 - Acceptance: the simulator's lock screen during a `simctl location` ride, then a real ride with
-  a paired watch.
+  a paired watch. **Done 2026-10-04** (Atlanta): turn notifications mirrored to the watch and
+  worked as expected. Device signing with the time-sensitive entitlement works (development-
+  signed build installed and ran); an archive/.ipa build with the entitlement is still open.
 
 ### BG6 — a Live Activity (optional, M)
 The next turn and its countdown on the lock screen, the Always-On display and the Dynamic Island,
 so a rider can glance without lighting the whole screen — the battery answer on an iPhone with an
 Always-On display. A widget extension target and ActivityKit; `Activity.update` from the app on
-each GD2 event and every ~10 s of countdown. Revisit after BG5 has been ridden.
+each GD2 event and every ~10 s of countdown.
+
+**Started 2026-10-04 on Chris's word. Decisions (Chris's):**
+- Ships in Bike Kiawah 1.3 with BG1–BG5 and the 2.5D map; 1.2 is the current release.
+- Shown only while following a route — not for recording alone, not outside GPS mode.
+- Content is the next turn only: arrow, distance to the turn, time to the turn, and the road
+  being joined. No speed, no arrival time, no distance to the destination.
+- States: approaching (as the GD3 banner, including the staggered pair's second glyph), off
+  route, and arrived. Arrived is the final message and the activity then ends.
+- **Arrival stops background GPS.** Once the route is arrived and the app is in the background,
+  the receiver stops — for guidance and for recording alike. Frontmost, the app keeps the GPS
+  running as it does now. This changes BG3's `LocationPolicy` (a new `arrived` input) as well
+  as BG6.
+
+- At arrival in the background, a running recording is finished and saved (not paused). An
+  arrival in the foreground keeps recording until the app leaves the screen, which then saves
+  it. A new route or a new recording clears the arrived state and background GPS comes back.
+- The arrived card stays for the system default (up to four hours) rather than being removed
+  early: it is easy to dismiss, and it says why GPS and recording stopped.
+- Layout approved 2026-10-04.
+
+**Built 2026-10-04** — see `port/PORTING.md` §2a. The time to the turn is distance over the trip
+computer's speed, hidden below 1 m/s, and drawn as a self-running `Text(timerInterval:)` (m:ss);
+updates that change only distance or timer are held to one per 5 s.
 
 ## Deliberately not in this plan
 

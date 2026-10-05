@@ -49,7 +49,9 @@ class TilePackReal : public ::testing::Test {
     for (const auto& s : series)
       if (s.series_key == "LFC") lfc_ = s.id;
     ASSERT_NE(lfc_, 0);
-    pack_dir_ = (fs::temp_directory_path() / "fvkit_packs").string();
+    // Per test: ctest -j runs both cases at once, and they would share a file.
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    pack_dir_ = (fs::temp_directory_path() / "fvkit_packs" / info->name()).string();
     fs::create_directories(pack_dir_);
     pack_ = pack_dir_ + "/fvkit_test_pack.gpkg";
   }

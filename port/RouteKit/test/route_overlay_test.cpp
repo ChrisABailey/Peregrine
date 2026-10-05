@@ -17,7 +17,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -544,3 +546,80 @@ TEST(RouteOverlay, SelectionSurvivesAReplacementThatKeptTheLabel) {
 }
 
 }  // namespace
+
+namespace {
+
+/// Count of pixels that are not white.
+int InkCount(const fv::PixelBuffer& buf) {
+  int n = 0;
+  for (int y = 0; y < buf.Height(); ++y) {
+    const unsigned char* row = buf.Row(y);
+    for (int x = 0; x < buf.Width(); ++x)
+      if (row[x * 4] != 255 || row[x * 4 + 1] != 255 || row[x * 4 + 2] != 255) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST(RouteOverlay, WithMarkersOffTheLineIsDrawnAndThePickStillWorks) {
+  RouteOverlay ov("Route1");
+  ov.SetWaypoints(FixtureWaypoints());
+  ov.SetShowLabels(false);
+  const fv::MapProjection proj = KiawahProj();
+
+  fv::CpuCanvas all(800, 600);
+  all.Clear(fv::FvColor{255, 255, 255, 255});
+  ASSERT_TRUE(Draw(ov, proj, all).ok());
+
+  ov.SetDrawMarkers(false);
+  fv::CpuCanvas lines(800, 600);
+  lines.Clear(fv::FvColor{255, 255, 255, 255});
+  ASSERT_TRUE(Draw(ov, proj, lines).ok());
+
+  const int with = InkCount(all.Buffer());
+  const int without = InkCount(lines.Buffer());
+  EXPECT_GT(without, 0) << "the legs are still drawn";
+  EXPECT_LT(without, with) << "the diamonds are not";
+
+  double x = 0, y = 0;
+  ASSERT_TRUE(proj.GeoToSurface(ov.waypoints()[1].position, &x, &y).ok());
+  std::vector<fv::app::HitItem> hits;
+  ov.HitTestPoint(proj, fv::PixelPoint{(int)std::lround(x), (int)std::lround(y)},
+                  8.0, hits);
+  ASSERT_FALSE(hits.empty());
+  EXPECT_EQ("WP2", ov.LabelForFeature(hits[0].feature));
+}
+
+TEST(RouteOverlay, DrawMarkerAtStampsWhatOnDrawStamps) {
+  // One waypoint, so OnDraw draws a marker and no leg; selected and scaled so
+  // the highlight and the device scale are both in the comparison.
+  RouteOverlay ov("Route1");
+  ov.SetWaypoints({{"ONE", {32.5987, -80.1130}}});
+  ov.SetSelected("ONE");
+  ov.SetSymbolDpiScale(2.0);
+  const std::string font = SystemFont();
+  ov.SetShowLabels(!font.empty());
+  const fv::MapProjection proj = KiawahProj();
+
+  fv::CpuCanvas drawn(800, 600);
+  fv::CpuCanvas stamped(800, 600);
+  for (fv::CpuCanvas* c : {&drawn, &stamped}) {
+    c->Clear(fv::FvColor{255, 255, 255, 255});
+    if (!font.empty()) ASSERT_TRUE(c->SetDefaultFont(font).ok());
+  }
+  ASSERT_TRUE(Draw(ov, proj, drawn).ok());
+  double x = 0, y = 0;
+  ASSERT_TRUE(proj.GeoToSurface(ov.waypoints()[0].position, &x, &y).ok());
+  ASSERT_TRUE(ov.DrawMarkerAt(proj, stamped, 0, x, y).ok());
+
+  ASSERT_GT(InkCount(drawn.Buffer()), 0);
+  const fv::PixelBuffer& a = drawn.Buffer();
+  const fv::PixelBuffer& b = stamped.Buffer();
+  int differing = 0;
+  for (int row = 0; row < a.Height(); ++row)
+    if (std::memcmp(a.Row(row), b.Row(row), a.Width() * 4) != 0) ++differing;
+  EXPECT_EQ(0, differing);
+
+  EXPECT_FALSE(ov.DrawMarkerAt(proj, stamped, 1, x, y).ok());
+}

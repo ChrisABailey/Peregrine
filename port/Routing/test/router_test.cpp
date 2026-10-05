@@ -747,6 +747,58 @@ TEST(RouterTurnRestrictions, EveryPairAgreesBetweenTheTwoSearches) {
   }
 }
 
+/// A second, longer road from C to N (way 306, bending through a shape point)
+/// beside North Road, and no straight-on from North Road into South Road.
+/// Spliced into the crossroads, it makes C and N a parallel-arc pair.
+std::string ParallelNorthRoad() {
+  return R"( <node id="6" lat="32.7050000" lon="-79.9970000"/>
+ <way id="306"><nd ref="1"/><nd ref="6"/><nd ref="3"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Old North Road"/></way>
+ <relation id="901">
+  <member type="way" ref="302" role="from"/>
+  <member type="node" ref="1" role="via"/>
+  <member type="way" ref="301" role="to"/>
+  <tag k="type" v="restriction"/><tag k="restriction" v="no_straight_on"/>
+ </relation>
+)";
+}
+
+TEST(RouterTurnRestrictions, ParallelRoadsAreTwoApproaches) {
+  const RoadGraph g = BuildCrossroads("router-cross-parallel.osm", ParallelNorthRoad());
+  ASSERT_EQ(g.restriction_count(), 1u);
+  const uint32_t s = NodeForOsmId(g, 2), c = NodeForOsmId(g, 1), n = NodeForOsmId(g, 3);
+
+  // Every arc's twin runs back to it, and is the same road, not just the same
+  // pair of nodes.
+  int parallel = 0;
+  for (uint32_t u = 0; u < g.node_count(); ++u) {
+    for (uint32_t a = g.arc_begin(u); a < g.arc_end(u); ++a) {
+      const uint32_t t = g.TwinArc(u, a);
+      ASSERT_NE(t, fv::routing::kNoArc);
+      EXPECT_EQ(g.arc(t).target, u);
+      EXPECT_EQ(g.arc(t).geom_begin, g.arc(a).geom_begin);
+      EXPECT_EQ(g.TwinArc(g.arc(a).target, t), a);
+      if (g.ArcBetween(u, g.arc(a).target) != a) ++parallel;
+    }
+  }
+  EXPECT_EQ(parallel, 2) << "one of each direction of the C-N pair";
+
+  // N -> S straight down North Road is barred; Old North Road arrives at C
+  // along a different arc, and straight on from it is legal.
+  const Router router(g);
+  const std::vector<uint32_t> nodes = RouteBothWays(router, n, s, {});
+  ASSERT_EQ(nodes.size(), 3u);
+  EXPECT_EQ(nodes[1], c);
+  EXPECT_EQ(nodes[2], s);
+
+  RouteOptions ignore;
+  ignore.honor_turn_restrictions = false;
+  Route restricted, free_route;
+  ASSERT_EQ(router.RouteNodes(n, s, {}, &restricted).code, fv::kOk);
+  ASSERT_EQ(router.RouteNodes(n, s, ignore, &free_route).code, fv::kOk);
+  EXPECT_GT(restricted.length_m, free_route.length_m) << "took the longer parallel road";
+}
+
 TEST(RouterTurnRestrictions, KiawahsOwnRestrictionsChangeARouteAndNothingElseDoes) {
   SKIP_WITHOUT_KIAWAH();
   // The four exports carry five real restrictions. Build the graph twice —

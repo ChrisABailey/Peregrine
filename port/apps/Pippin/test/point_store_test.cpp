@@ -24,11 +24,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -187,65 +189,78 @@ TEST(PointStore, ADocumentThatWillNotReadIsReportedAndTheSeedIsNotUsedToHideIt) 
   EXPECT_FALSE(store.seeded());
 }
 
+/// Every `.fvpoints` seed in the staged pack, sorted. Empty when nothing is
+/// staged.
+std::vector<std::string> StagedSeeds() {
+  std::vector<std::string> seeds;
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(FV_PIPPIN_PACK_DIR, ec))
+    if (e.path().extension() == ".fvpoints") seeds.push_back(e.path().string());
+  std::sort(seeds.begin(), seeds.end());
+  return seeds;
+}
+
 TEST(PointStore, ThePacksOwnSetOpensThroughTheRealReader) {
-  // The one check that the two schemas agree. `stage_data.py` writes
-  // `kiawah.fvpoints` with Python's sqlite3 and its own copy of the CREATE
-  // TABLE text; this reads it with the C++ that runs on the phone. Drift
-  // would otherwise surface on the app's first launch.
-  const std::string seed = FV_PIPPIN_POINTS_SEED;
-  if (!std::filesystem::exists(seed))
-    GTEST_SKIP() << "no staged pack; run port/apps/Pippin/stage_data.py";
+  // The one check that the two schemas agree. `stage_data.py` writes each
+  // region's seed with Python's sqlite3 and its own copy of the CREATE TABLE
+  // text; this reads them with the C++ that runs on the phone. Drift would
+  // otherwise surface on the app's first launch. Which regions are staged is
+  // the working tree's business, so nothing here names one.
+  const std::vector<std::string> seeds = StagedSeeds();
+  if (seeds.empty()) GTEST_SKIP() << "no staged pack; run port/apps/Pippin/stage_data.py";
 
-  Scratch scratch("packseed");
-  PointStore store(seed, scratch.file("points.fvpoints"));
-  ASSERT_TRUE(store.LoadAtLaunch().ok());
-  EXPECT_TRUE(store.seeded());
-  ASSERT_FALSE(store.Points().empty());
+  int points = 0, with_phone = 0, with_url = 0, wearing = 0;
+  for (const std::string& seed : seeds) {
+    SCOPED_TRACE(seed);
+    Scratch scratch("packseed");
+    PointStore store(seed, scratch.file("points.fvpoints"));
+    ASSERT_TRUE(store.LoadAtLaunch().ok());
+    EXPECT_TRUE(store.seeded());
+    EXPECT_FALSE(store.overlay()->Name().empty());
 
-  // The document names itself, the markers are sized in authored pixels, and
-  // at least one of them carries the schema-3 columns the whole session is
-  // about — a seed with no phone and no URL in it would demonstrate nothing.
-  EXPECT_EQ("Kiawah", store.overlay()->Name());
-  int with_phone = 0, with_url = 0;
-  for (const MapPoint& p : store.Points()) {
-    EXPECT_GT(p.size_px, 0.0) << p.name;
-    EXPECT_FALSE(p.name.empty());
-    if (!p.phone.empty()) ++with_phone;
-    if (!p.url.empty()) ++with_url;
+    for (const MapPoint& p : store.Points()) {
+      ++points;
+      EXPECT_GT(p.size_px, 0.0) << p.name;
+      EXPECT_FALSE(p.name.empty());
+      if (!p.phone.empty()) ++with_phone;
+      if (!p.url.empty()) ++with_url;
+    }
+
+    // The embedded palette, and the property it exists for: the artwork is in
+    // the document, so a `.fvpoints` opens with its symbology on a machine
+    // that has never heard of maki. A seed with no points still carries it,
+    // since the editor's picker offers it. Every `symbol_id` a point carries
+    // must name a row that is there; a dangling one draws as the bare shape.
+    ASSERT_FALSE(store.Symbols().empty()) << "the seed embedded no artwork";
+    int worn_here = 0;
+    for (const MapPoint& p : store.Points()) {
+      if (p.symbol_id == 0) continue;
+      ++worn_here;
+      EXPECT_NE(nullptr, store.overlay()->FindSymbol(p.symbol_id))
+          << p.name << " wears symbol " << p.symbol_id << ", which is not in the"
+          << " palette";
+    }
+    wearing += worn_here;
+    // Rows nothing references are kept, so the palette offers more than is worn.
+    EXPECT_GT(store.Symbols().size(), (size_t)worn_here)
+        << "the palette offers nothing beyond what is already in use";
+
+    // A row that will not decode is not an error at the overlay's level (the
+    // point falls back to its shape), so a truncated blob would be silent
+    // everywhere else.
+    for (const fv::PointSymbol& sym : store.Symbols()) {
+      ASSERT_GE(sym.image.size(), 8u) << sym.name;
+      EXPECT_EQ(0x89, sym.image[0]) << sym.name << " is not a PNG";
+      EXPECT_EQ('P', sym.image[1]) << sym.name << " is not a PNG";
+    }
   }
-  EXPECT_GT(with_phone, 0);
-  EXPECT_GT(with_url, 0);
 
-  // The embedded palette, and the property it exists for: the artwork is in
-  // the document, so a `.fvpoints` opens with its symbology on a machine that
-  // has never heard of maki. Every `symbol_id` a point carries must name a
-  // row that is there, since a dangling one draws as the bare shape, which is
-  // a staging bug that looks like a style choice.
-  ASSERT_FALSE(store.Symbols().empty()) << "the seed embedded no artwork";
-  int wearing = 0;
-  for (const MapPoint& p : store.Points()) {
-    if (p.symbol_id == 0) continue;
-    ++wearing;
-    EXPECT_NE(nullptr, store.overlay()->FindSymbol(p.symbol_id))
-        << p.name << " wears symbol " << p.symbol_id << ", which is not in the"
-        << " palette";
-  }
+  // The schema-3 columns and the icons only mean something on seeds that have
+  // points; a region staged as a bare palette proves the schema and no more.
+  if (points == 0) return;
+  EXPECT_GT(with_phone, 0) << "no staged point carries a phone";
+  EXPECT_GT(with_url, 0) << "no staged point carries a URL";
   EXPECT_GT(wearing, 0) << "no point wears an icon";
-
-  // A palette rather than a projection of the points: rows nothing references
-  // are kept, saved and handed back, which lets the editor's picker offer a
-  // set the author assembled before any point wore it.
-  EXPECT_GT(store.Symbols().size(), (size_t)wearing)
-      << "the palette offers nothing beyond what is already in use";
-
-  // And the bytes are really PNGs — a row that will not decode is not an
-  // error at the overlay's level (the point falls back to its shape), so a
-  // truncated blob would be silent everywhere else.
-  for (const fv::PointSymbol& sym : store.Symbols()) {
-    ASSERT_GE(sym.image.size(), 8u) << sym.name;
-    EXPECT_EQ(0x89, sym.image[0]) << sym.name << " is not a PNG";
-    EXPECT_EQ('P', sym.image[1]) << sym.name << " is not a PNG";
-  }
 }
 
 // ---------------------------------------------------------------------------

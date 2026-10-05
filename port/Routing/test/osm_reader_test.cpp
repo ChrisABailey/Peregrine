@@ -21,7 +21,9 @@
 #include <gtest/gtest.h>
 #include <zlib.h>
 
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -52,13 +54,69 @@ std::string OsmPath(const char* name) {
   return (fs::path(TestDataDir()) / "OSM" / name).string();
 }
 
-// map.osm is map TEST DATA and is not in the repository: a clone without it
-// must SKIP rather than fail, which is the published tree's no-map-data
-// guarantee. (The .osm.pbf tests below already skip this way.)
-#define SKIP_WITHOUT_MAP_OSM()                                  \
-  const std::string map_osm = OsmPath("map.osm");               \
-  if (!fs::exists(map_osm)) GTEST_SKIP() << "no " << map_osm
+/// The first `map*.osm` export in TestData/OSM, or empty. Enumerated rather
+/// than named: the exports are refreshed by hand and their names change.
+std::string FirstMapOsm() {
+  std::vector<std::string> found;
+  std::error_code ec;
+  for (const fs::directory_entry& e : fs::directory_iterator(fs::path(TestDataDir()) / "OSM", ec)) {
+    const std::string name = e.path().filename().string();
+    if (e.path().extension() == ".osm" && name.compare(0, 3, "map") == 0)
+      found.push_back(e.path().string());
+  }
+  std::sort(found.begin(), found.end());
+  return found.empty() ? std::string() : found.front();
+}
 
+// The exports are map TEST DATA and are not in the repository: a clone
+// without them must SKIP rather than fail, which is the published tree's
+// no-map-data guarantee. (The .osm.pbf tests below already skip this way.)
+#define SKIP_WITHOUT_MAP_OSM()                    \
+  const std::string map_osm = FirstMapOsm();      \
+  if (map_osm.empty()) GTEST_SKIP() << "no map*.osm in " << TestDataDir() << "/OSM"
+
+/// What a line scan of an OSM API export finds: the API writes one element
+/// per line, so this is an oracle independent of the expat reader.
+struct ScannedOsm {
+  int nodes = 0, ways = 0, highway_ways = 0;
+  int64_t first_node_id = 0;
+  double min_lat = 90, max_lat = -90, min_lon = 180, max_lon = -180;
+};
+
+double AttrNumber(const std::string& line, const char* key) {
+  const size_t at = line.find(key);
+  return at == std::string::npos ? 0.0 : std::stod(line.substr(at + std::strlen(key)));
+}
+
+ScannedOsm ScanOsm(const std::string& path) {
+  ScannedOsm out;
+  std::ifstream in(path);
+  std::string line;
+  bool in_way = false, way_is_highway = false;
+  while (std::getline(in, line)) {
+    const size_t lead = line.find_first_not_of(" \t");
+    if (lead == std::string::npos) continue;
+    const std::string t = line.substr(lead);
+    if (t.rfind("<node ", 0) == 0) {
+      if (out.nodes++ == 0) out.first_node_id = static_cast<int64_t>(AttrNumber(t, " id=\""));
+      const double lat = AttrNumber(t, " lat=\""), lon = AttrNumber(t, " lon=\"");
+      out.min_lat = std::min(out.min_lat, lat);
+      out.max_lat = std::max(out.max_lat, lat);
+      out.min_lon = std::min(out.min_lon, lon);
+      out.max_lon = std::max(out.max_lon, lon);
+    } else if (t.rfind("<way ", 0) == 0) {
+      ++out.ways;
+      in_way = true;
+      way_is_highway = false;
+    } else if (in_way && t.rfind("<tag k=\"highway\"", 0) == 0) {
+      way_is_highway = true;
+    } else if (in_way && t.rfind("</way>", 0) == 0) {
+      if (way_is_highway) ++out.highway_ways;
+      in_way = false;
+    }
+  }
+  return out;
+}
 
 using fv::routing::OsmSink;
 using fv::routing::OsmWay;
@@ -262,53 +320,41 @@ std::string WriteSyntheticPbf(const char* name, bool compress_it) {
 TEST(OsmXmlReader, ReadsNodesWaysAndTags) {
   SKIP_WITHOUT_MAP_OSM();
   CountingSink sink;
-  const fv::Status s = fv::routing::ReadOsmFile(OsmPath("map.osm"), &sink);
+  const fv::Status s = fv::routing::ReadOsmFile(map_osm, &sink);
   ASSERT_EQ(s.code, fv::kOk) << s.message;
 
-  // Pinned against the file: 23,261 <node> and 1,236 <way>, 348 of them with a
-  // highway tag. (The count is taken from ways only; a grep for k="highway"
-  // counts more, because crossings and the like carry the tag on nodes.)
-  //
-  // RE-PINNED 2026-08-17, the second refresh of this extract: 30,799 / 1,605 /
-  // 493 on the 2026-08-12 cut, 14,450 / 747 / 245 before that. The counts are
-  // on ONE NAMED FILE, which is what the ledger's rule allows — but the file
-  // is one a person replaces, so if this fails again check the data before the
-  // reader. Both re-pins were confirmed by an independent ElementTree walk of
-  // the same file, so what moved was the extract and not this reader.
-  EXPECT_EQ(sink.nodes, 23261);
-  EXPECT_EQ(sink.ways, 1236);
-  EXPECT_EQ(sink.highway_ways, 348);
+  // Held against a line scan of the same file rather than pinned counts: the
+  // export is replaced by hand, and what is under test is the reader. (Ways
+  // only for highway: crossings and the like carry the tag on nodes too.)
+  const ScannedOsm expect = ScanOsm(map_osm);
+  ASSERT_GT(expect.nodes, 0);
+  ASSERT_GT(expect.highway_ways, 0);
+  EXPECT_EQ(sink.nodes, expect.nodes);
+  EXPECT_EQ(sink.ways, expect.ways);
+  EXPECT_EQ(sink.highway_ways, expect.highway_ways);
   EXPECT_GT(sink.refs, sink.ways);  // every way is a polyline
   EXPECT_GT(sink.tags, sink.ways);  // and carries tags
 
-  // NOTE: the node set reaches well past the file's own <bounds> — the API
-  // exports a way that crosses the bbox in full, nodes and all. That is why
-  // the map*.osm exports share nodes at all, and why nothing here pins the
-  // declared bounds.
-  //
-  // Every refresh so far has moved the SOUTH-WEST corner and nothing else:
-  // 2026-08-12 pushed min out to 32.5089149 / -80.2401359, and 2026-08-17
-  // pulled it back to 32.5591137 / -80.1965704, which are the numbers this
-  // test carried before 08-12. Both maxima have never moved across three cuts
-  // of this extract, which is the one thing here worth reading as a property
-  // rather than a pin.
-  EXPECT_NEAR(sink.min_lat, 32.5591137, 1e-6);
-  EXPECT_NEAR(sink.max_lat, 32.7179000, 1e-6);
-  EXPECT_NEAR(sink.min_lon, -80.1965704, 1e-6);
-  EXPECT_NEAR(sink.max_lon, -79.9666451, 1e-6);
+  // The node set reaches past the file's own <bounds>: the API exports a way
+  // that crosses the bbox in full, nodes and all. So the extremes are compared
+  // with the nodes, not the declared bounds.
+  EXPECT_NEAR(sink.min_lat, expect.min_lat, 1e-6);
+  EXPECT_NEAR(sink.max_lat, expect.max_lat, 1e-6);
+  EXPECT_NEAR(sink.min_lon, expect.min_lon, 1e-6);
+  EXPECT_NEAR(sink.max_lon, expect.max_lon, 1e-6);
 
   // Node IDs are real OSM identities, not indices.
-  EXPECT_EQ(sink.first_node_id, 110064724);
+  EXPECT_EQ(sink.first_node_id, expect.first_node_id);
 }
 
 TEST(OsmXmlReader, WantNodesFalseSkipsNodeRecords) {
   SKIP_WITHOUT_MAP_OSM();
   CountingSink sink;
   sink.want_nodes = false;
-  const fv::Status s = fv::routing::ReadOsmFile(OsmPath("map.osm"), &sink);
+  const fv::Status s = fv::routing::ReadOsmFile(map_osm, &sink);
   ASSERT_EQ(s.code, fv::kOk) << s.message;
   EXPECT_EQ(sink.nodes, 0);
-  EXPECT_EQ(sink.ways, 1236);  // re-pinned 2026-08-17, was 1605
+  EXPECT_EQ(sink.ways, ScanOsm(map_osm).ways);
 }
 
 TEST(OsmXmlReader, ContinueFalseStopsEarlyAndIsNotAnError) {
@@ -316,7 +362,7 @@ TEST(OsmXmlReader, ContinueFalseStopsEarlyAndIsNotAnError) {
   CountingSink sink;
   sink.want_nodes = false;
   sink.way_limit = 10;
-  const fv::Status s = fv::routing::ReadOsmFile(OsmPath("map.osm"), &sink);
+  const fv::Status s = fv::routing::ReadOsmFile(map_osm, &sink);
   ASSERT_EQ(s.code, fv::kOk) << s.message;
   EXPECT_EQ(sink.ways, 10);
 }

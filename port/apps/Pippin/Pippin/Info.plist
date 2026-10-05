@@ -6,6 +6,14 @@
 	     and the recorded rides get off the phone without a share sheet. -->
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- Location updates continue while locked or in another app, but only
+	     while following or recording: `PPLocationSource` allows background
+	     updates for those two and `LocationPolicy` stops the receiver
+	     otherwise. Authorization stays When In Use. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<!-- THE EXPORT-COMPLIANCE ANSWER, GIVEN ONCE HERE INSTEAD OF BY HAND ON
 	     EVERY UPLOAD. Without this key App Store Connect stops each build at
 	     "Missing Compliance" and waits for somebody to answer the same two

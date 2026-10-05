@@ -43,9 +43,11 @@ if(NOT FVW_IOS)
       test/camera_fit_test.cpp
       test/follow_cadence_test.cpp
       test/location_fix_test.cpp
+      test/perspective_test.cpp
       test/point_store_test.cpp
       test/route_store_test.cpp
       test/search_rules_test.cpp
+      test/sprite_test.cpp
       PippinKit/PPPointStore.cpp
       PippinKit/PPRouteStore.cpp)
     target_include_directories(fv_pippin_test PRIVATE
@@ -59,12 +61,12 @@ if(NOT FVW_IOS)
     # where its own module keeps it rather than copied here.
     target_compile_definitions(fv_pippin_test PRIVATE
       FV_ROUTE_RULES_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/route-weights.json"
-      # The pack's own point set, so the test can read the file stage_data.py
+      # The staged pack, so the test reads every `.fvpoints` stage_data.py
       # WROTE rather than one it built itself. That is the only check anywhere
       # that the Python schema in the staging script and the C++ reader still
-      # agree — see the note over `POINTS_SCHEMA`. The pack is git-ignored, so
-      # a tree that has never staged skips rather than fails.
-      FV_PIPPIN_POINTS_SEED="${CMAKE_CURRENT_SOURCE_DIR}/Data/kiawah.fvpoints")
+      # agree — see the note over `POINTS_SCHEMA`. Any region's seeds serve;
+      # the pack is git-ignored, so a tree that has never staged skips.
+      FV_PIPPIN_PACK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Data")
     gtest_discover_tests(fv_pippin_test
       PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
 
@@ -104,6 +106,18 @@ if(NOT FVW_IOS)
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_render_gate
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_render_gate_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_scene_policy
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_scene_policy_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_guidance_notice
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_guidance_notice_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_ride_activity
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_ride_activity_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_recording_marker
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_recording_marker_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_location_policy
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_location_policy_test.sh

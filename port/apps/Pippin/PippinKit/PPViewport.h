@@ -35,6 +35,7 @@
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#import <QuartzCore/QuartzCore.h>
 
 #import <PippinKit/PPGeometry.h>
 
@@ -47,6 +48,13 @@ typedef NS_ENUM(NSInteger, PPScreenCover) {
   PPScreenCoverUnderlay,    ///< some of the screen is the soft underlay
   PPScreenCoverBackground,  ///< some of the screen is the background colour
 };
+
+/// The haze over a tilted view's far ground, in points. See
+/// `pippin::Perspective::FarFade`. Both zero when the view is flat.
+typedef struct {
+  double endY;      ///< screen row, points, where the fade reaches zero
+  double topAlpha;  ///< opacity at the top of the screen
+} PPFarFade;
 
 /// `NS_SWIFT_SENDABLE` holds because every property is read-only, every
 /// derivation returns a new object, and nothing is mutated after `init`. That
@@ -68,6 +76,11 @@ NS_SWIFT_SENDABLE
 /// (`MapProjection::SetRotation`). Two writers: the two-finger rotate
 /// gesture, and GPS mode's track-up.
 @property(nonatomic, readonly) double rotationDegrees;
+/// Tilt of the screen from straight down, in [0, `pippin::kMaxPitchDeg`].
+/// The camera above (`center`, scale, rotation) stays the flat map's: every
+/// "point" in this interface is a point on the flat surface, and the screen
+/// shows that surface through `perspectiveTransform`. 0 is today's view.
+@property(nonatomic, readonly) double pitchDegrees;
 
 // --- the surface ---------------------------------------------------------
 
@@ -105,7 +118,36 @@ NS_SWIFT_SENDABLE
 /// And back. Positions outside the surface come back outside it.
 - (CGPoint)pointForGeo:(PPGeoPoint)geo NS_SWIFT_NAME(point(forGeo:));
 
+// --- the tilt (identities when `pitchDegrees` is 0) -----------------------
+
+/// The 3x3 projective transform, in points, from the flat surface to the
+/// screen, as Core Animation's 4x4 with z ignored. For `projectionEffect`.
+@property(nonatomic, readonly) CATransform3D perspectiveTransform;
+
+/// Where a flat-surface point shows on the tilted screen. NaN past the horizon.
+- (CGPoint)screenPointForFlatPoint:(CGPoint)flat NS_SWIFT_NAME(screenPoint(forFlat:));
+
+/// Which flat-surface point a screen point shows. NaN above the horizon.
+- (CGPoint)flatPointForScreenPoint:(CGPoint)screen NS_SWIFT_NAME(flatPoint(forScreen:));
+
+/// The on-screen size of ground at a screen point relative to its size at the
+/// follow anchor: 1 there and when flat, less than 1 farther away.
+- (double)depthScaleAtScreenPoint:(CGPoint)screen NS_SWIFT_NAME(depthScale(atScreen:));
+
+/// The haze over the far ground, in the map's background colour.
+@property(nonatomic, readonly) PPFarFade farFade;
+
+/// The flat-surface rectangle, in points, that the tilted screen shows,
+/// united with the screen itself (`pippin::Perspective::BandRect` unpadded).
+/// The screen's own rectangle when flat.
+@property(nonatomic, readonly) CGRect flatBounds;
+
 // --- derivations, all clamped, all returning a new value -----------------
+
+/// The same camera tilted by `degrees`, clamped to [0, 45]. Every other
+/// derivation keeps the pitch, except bands and the underlay, which are flat
+/// drawing surfaces.
+- (PPViewport *)viewportWithPitch:(double)degrees NS_SWIFT_NAME(pitched(_:));
 
 /// The screen changed size, rotated, or moved to another screen. The limits
 /// are recomputed, because how far out is useful depends on how much screen
@@ -209,6 +251,11 @@ NS_SWIFT_SENDABLE
 /// A margin of 0 returns the same surface, which is what a running pinch
 /// asks for: nothing is reusable during a zoom, so nothing should be paid
 /// for.
+///
+/// A tilted viewport grows instead to the flat rectangle the tilted screen
+/// shows (`pippin::Perspective::BandRect`) padded by `margin` of the short
+/// side, off-centre because the far ground lies above the screen. The band is
+/// flat, and `rotationSafe` does not apply.
 - (PPViewport *)viewportGrownByMargin:(double)margin
     NS_SWIFT_NAME(grown(byMargin:));
 
@@ -242,9 +289,10 @@ NS_SWIFT_SENDABLE
     NS_SWIFT_NAME(covers(_:maxTurnDegrees:));
 
 /// The camera the underlay is drawn at: this one two zoom levels out
-/// (`pippin::kUnderlayZoomOut`) on the same surface. The scale is not clamped
-/// to the zoom limits, so at the widest view the underlay still reaches past
-/// the screen; the limits are copied unchanged.
+/// (`pippin::kUnderlayZoomOut`), flat, on the same surface, or on a square
+/// of the long side when this one is tilted (`pippin::UnderlaySurfacePixels`).
+/// The scale is not clamped to the zoom limits, so at the widest view the
+/// underlay still reaches past the screen; the limits are copied unchanged.
 - (PPViewport *)viewportForUnderlay NS_SWIFT_NAME(forUnderlay());
 
 /// True while an underlay drawn at this viewport is still good for `live`;

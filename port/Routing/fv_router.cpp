@@ -452,7 +452,7 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
     // Arriving at v along this road is, from v's side, the arc pointing back
     // at u — the arc a restriction at v names as its `from`, and the same one
     // the search itself would have labelled the state with.
-    t.arc = graph_.ArcBetween(v, u);
+    t.arc = graph_.TwinArc(u, a.arc);
     t.cost = (1.0 - a.t) * cost;
     t.partial = true;
     t.step.arc = a.arc;
@@ -463,7 +463,7 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
   if (arc.backward() && seed.banned_toward != u) {
     Terminal t;
     t.node = u;
-    t.arc = graph_.ArcBetween(u, v);
+    t.arc = a.arc;
     t.cost = a.t * cost;
     t.partial = true;
     t.step.arc = a.arc;
@@ -493,7 +493,7 @@ void Router::TargetsFor(const RouteAnchor& a, const RouteOptions& o,
   if (arc.forward()) {
     Terminal t;
     t.node = u;
-    t.arc = graph_.ArcBetween(u, v);
+    t.arc = a.arc;
     t.cost = a.t * cost;
     t.partial = true;
     t.step.arc = a.arc;
@@ -504,7 +504,7 @@ void Router::TargetsFor(const RouteAnchor& a, const RouteOptions& o,
   if (arc.backward()) {
     Terminal t;
     t.node = v;
-    t.arc = graph_.ArcBetween(v, u);
+    t.arc = graph_.TwinArc(u, a.arc);
     t.cost = (1.0 - a.t) * cost;
     t.partial = true;
     t.step.arc = a.arc;
@@ -582,7 +582,7 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
       // Arriving at v along this arc is, from v's side, the arc that points
       // back at u — which is the arc a restriction at v names as its `from`.
       const uint32_t next =
-          space.split(v) ? space.StateOf(v, graph_.ArcBetween(v, u)) : v;
+          space.split(v) ? space.StateOf(v, graph_.TwinArc(u, a)) : v;
       const double nd = top.key + ArcCost(arc, o);
       if (nd < dist[next]) {
         dist[next] = nd;
@@ -724,7 +724,7 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
       // Either way round, the state at w records the arc of w that faces u:
       // forward that is what it arrived along, reverse what it will leave
       // along, and for this one step they are the same piece of road.
-      const uint32_t next = space.split(w) ? space.StateOf(w, graph_.ArcBetween(w, u)) : w;
+      const uint32_t next = space.split(w) ? space.StateOf(w, graph_.TwinArc(u, a)) : w;
       if (nd < dist[next]) {
         dist[next] = nd;
         parent_arc[next] = a;
@@ -969,21 +969,11 @@ bool Router::RouteLegBetween(const RouteAnchor& from, const RouteAnchor& to,
   return true;
 }
 
-// The arc of the route's final node that faces back along the route. That is
-// what the next leg inherits: a restriction at the stop names its `from` arc
-// from the stop's own side, and so does a U-turn.
-//
-// It is a lookup by node pair and NOT the last step's own arc, even though a
-// step walked against stored order already IS an arc of the node being entered
-// and would save the search. Where two nodes are joined by more than one arc
-// the two differ, and `ArcBetween` — first arc to that node — is the rule both
-// searches already label a state by. Taking the exact arc here instead made
-// the seed depend on which search ran, and the two disagreed on Kiawah by 50
-// seconds over the same node sequence: same road, the other carriageway.
-//
-// NOTE so a parallel-arc pair is approximated, and deliberately: one rule for
-// what "the arc I arrived along" means, used everywhere, is worth more than a
-// sharper answer in one of the three places that ask.
+// The arc of the route's final node that faces back along the route: the
+// last step's own arc if it was walked against stored order, else its twin.
+// That is what the next leg inherits, since a restriction at the stop names
+// its `from` arc from the stop's own side, and so does a U-turn. Exact where
+// two nodes are joined by more than one road, as the searches' labels are.
 //
 // kNoArc when the leg ended MID-ROAD, where there is no junction and so no
 // turn to inherit; the U-turn there is barred by LegSeed::banned_toward.
@@ -994,7 +984,7 @@ uint32_t Router::ArrivalArc(const std::vector<Step>& steps) const {
   if (arrived_at == kNoArc) return kNoArc;
   const uint32_t came_from = StepStartNode(last);
   if (came_from == kNoArc || came_from == arrived_at) return kNoArc;
-  return graph_.ArcBetween(arrived_at, came_from);
+  return last.stored_order() ? graph_.TwinArc(came_from, last.arc) : last.arc;
 }
 
 Status Router::RouteAnchorsVia(const std::vector<RouteAnchor>& stops,

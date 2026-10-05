@@ -30,3 +30,12 @@ target_link_libraries(msp_ccs PUBLIC Threads::Threads)
 
 # Third-party code, 2012 vintage: keep the build quiet but unmodified.
 target_compile_options(msp_ccs PRIVATE -w)
+
+# These three call sprintf without including <stdio.h>; Apple's libc++ pulls it
+# in transitively, glibc's headers do not. Force-include it rather than edit
+# the frozen sources.
+set_source_files_properties(
+  ${GEOTRANS_SRC}/dtcc/CoordinateSystems/datum/DatumLibraryImplementation.cpp
+  ${GEOTRANS_SRC}/dtcc/CoordinateSystems/mgrs/MGRS.cpp
+  ${GEOTRANS_SRC}/dtcc/CoordinateSystems/usng/USNG.cpp
+  PROPERTIES COMPILE_OPTIONS "-include;stdio.h")

@@ -229,6 +229,99 @@ do {
           "the return threshold scales down too")
 }
 
+// --- the background ---------------------------------------------------------
+
+/// One fix with the app in the background.
+@discardableResult
+func dark(_ p: inout LocationPolicy, following: Bool = false, recording: Bool = false,
+          _ x: CGFloat = 195, _ y: CGFloat = 400) -> LocationAccuracy {
+    p.accuracy(shipAt: CGPoint(x: x, y: y), inSurface: surface,
+               following: following, recording: recording, inBackground: true)
+}
+
+do {
+    // Neither job: the receiver stops, wherever the ship is and whatever the
+    // mode was. An allowed background run would otherwise keep the app alive.
+    var p = LocationPolicy()
+    check(dark(&p) == .stopped, "background, idle, ship on screen: stopped")
+    var q = LocationPolicy()
+    check(browsing(&q, -2000, 400) == .coarse, "idling coarse")
+    check(dark(&q, -2000, 400) == .stopped, "background from coarse: stopped")
+    check(p.accuracy(shipAt: nil, inSurface: .zero, following: false,
+                     recording: false, inBackground: true) == .stopped,
+          "background with no fix and no surface: still stopped")
+}
+
+do {
+    // Either job: navigation, never coarse. Coarse sets CoreLocation's
+    // automatic pause, and a paused background run has nobody to resume it.
+    var p = LocationPolicy()
+    check(browsing(&p, -2000, 400) == .coarse, "idling coarse")
+    check(dark(&p, following: true, -2000, 400) == .navigation,
+          "background following: navigation however far off screen")
+    check(browsing(&p, -2000, 400) == .coarse, "coarse again")
+    check(dark(&p, recording: true, -2000, 400) == .navigation,
+          "background recording: navigation however far off screen")
+    check(dark(&p, following: true, recording: true) == .navigation,
+          "background following and recording: navigation")
+}
+
+do {
+    // The return. A stopped receiver comes back sharp, as at launch, and the
+    // hysteresis takes over from the next fix.
+    var p = LocationPolicy()
+    check(dark(&p) == .stopped, "stopped in the background")
+    check(browsing(&p, -2000, 400) == .navigation,
+          "the first foreground fix after a stop is navigation, even far off screen")
+    check(browsing(&p, -2000, 400) == .coarse, "and the next one applies the leave rule")
+    check(dark(&p) == .stopped, "stopped again")
+    check(browsing(&p, 195, 400) == .navigation, "back on screen: navigation")
+}
+
+do {
+    // Recording ends while backgrounded: the next fix stops the receiver.
+    var p = LocationPolicy()
+    check(dark(&p, recording: true) == .navigation, "recording in the dark")
+    check(dark(&p) == .stopped, "recording over, still in the dark: stopped")
+    // And a demand from the dark (a mode starting before its flag) is
+    // undone by the next fix without one, as in the foreground.
+    p.demandNavigation()
+    check(p.current == .navigation, "a demand moves the bit")
+    check(dark(&p) == .stopped, "a demand with no mode behind it lasts one fix")
+}
+
+func arrivedDark(_ p: inout LocationPolicy, following: Bool = true,
+                 recording: Bool = false) -> LocationAccuracy {
+    p.accuracy(shipAt: CGPoint(x: 195, y: 400), inSurface: surface,
+               following: following, recording: recording,
+               inBackground: true, arrived: true)
+}
+
+do {
+    // Arrival ends following's claim on the background receiver.
+    var p = LocationPolicy()
+    check(dark(&p, following: true) == .navigation, "following in the dark")
+    check(arrivedDark(&p) == .stopped, "arrived, following, background: stopped")
+    check(arrivedDark(&p, recording: true) == .navigation,
+          "arrived but a recording is running: navigation")
+    check(arrivedDark(&p, following: false) == .stopped,
+          "arrived, neither job: stopped")
+}
+
+do {
+    // In the foreground an arrived ride keeps the receiver, as Chris asked.
+    var p = LocationPolicy()
+    check(p.accuracy(shipAt: CGPoint(x: -2000, y: 400), inSurface: surface,
+                     following: true, recording: false,
+                     inBackground: false, arrived: true) == .navigation,
+          "arrived, following, foreground: navigation even far off screen")
+    check(arrivedDark(&p) == .stopped, "then backgrounded: stopped")
+    check(p.accuracy(shipAt: CGPoint(x: 195, y: 400), inSurface: surface,
+                     following: true, recording: false,
+                     inBackground: false, arrived: true) == .navigation,
+          "back to the foreground: navigation again")
+}
+
 print("location_policy: \(checks - failures)/\(checks) checks passed")
 if failures > 0 {
     print("location_policy: \(failures) FAILED")

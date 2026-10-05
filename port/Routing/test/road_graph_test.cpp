@@ -581,7 +581,8 @@ TEST(RoadGraphArcSnap, SurvivesTheSaveLoadRoundTrip) {
 TEST(RoadGraphBuild, MergesInputsOnSharedNodeIds) {
   SKIP_WITHOUT_KIAWAH();
   RoadGraph one;
-  ASSERT_EQ(fv::routing::BuildRoadGraph({KiawahPath("map.osm")}, {}, &one, nullptr).code, fv::kOk);
+  const std::string& first = kiawah_inputs.front();
+  ASSERT_EQ(fv::routing::BuildRoadGraph({first}, {}, &one, nullptr).code, fv::kOk);
 
   // The load-bearing property: identity is the OSM node ID, not the file. The
   // same export listed twice must produce exactly the same graph, not two
@@ -589,8 +590,7 @@ TEST(RoadGraphBuild, MergesInputsOnSharedNodeIds) {
   // crosses the bbox in full — so this is not a hypothetical.)
   RoadGraph twice;
   ASSERT_EQ(
-      fv::routing::BuildRoadGraph({KiawahPath("map.osm"), KiawahPath("map.osm")}, {}, &twice,
-                                  nullptr)
+      fv::routing::BuildRoadGraph({first, first}, {}, &twice, nullptr)
           .code,
       fv::kOk);
   EXPECT_EQ(twice.node_count(), one.node_count());

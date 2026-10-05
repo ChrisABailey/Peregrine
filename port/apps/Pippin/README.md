@@ -1948,6 +1948,45 @@ Four things to know about the pack:
   sources the face from a copy already on the machine (matplotlib ships one) rather than from
   the network; with none it says what to download and stops.
 
+### Another region
+
+`stage_data.py --region atlanta` stages a pack for a 20-mile square of intown Atlanta
+(`-84.61,33.67,-84.25,33.97`) in place of Kiawah. `REGIONS` in the script holds each region's
+own rows; the styles, rules and font are shared. The Atlanta `pippin.ini` is the tracked one
+with `ATLANTA_INI`'s keys reset and `ATLANTA_DROP`'s removed — no tides, no beach, no demo
+ride — so a key added to `pippin.ini` reaches both packs. Switching regions deletes the other
+region's copied rows from `Data/` but never a `.fvpoints` seed, which may be hand-edited.
+
+The two sources, from the repository root (about 30 s in all):
+
+```sh
+osmium extract -b -84.61,33.67,-84.25,33.97 testdata/OSM/us-south-260728.osm.pbf -o testdata/OSM/atlanta.osm.pbf --overwrite
+```
+
+```sh
+build/port/Routing/fvgraph build -o testdata/OSM/atlanta.fvroad testdata/OSM/atlanta.osm.pbf
+```
+
+and the tiles, run from the tilemaker checkout because its config names the coastline by a
+relative path:
+
+```sh
+./tilemaker --input $FVW/testdata/OSM/atlanta.osm.pbf --output $FVW/testdata/OSM/atlanta.mbtiles --config config-peregrine.json --process process-peregrine.lua --bbox -84.61,33.67,-84.25,33.97
+```
+
+The pack is ~52 MB (23 MB of tiles, 29 MB of graph) against Kiawah's 4.
+
+**To install it beside the Kiawah build**, give it its own bundle id and name on the
+`xcodebuild` line; `PP_BUNDLE_ID` defaults to `org.peregrine.Pippin` in `Pippin.xcconfig`
+and the share extension follows it:
+
+```sh
+xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release -allowProvisioningUpdates PP_DISPLAY_NAME=Pippin PP_BUNDLE_ID=org.peregrine.Pippin.Atlanta -archivePath build-xcode/PippinATL.xcarchive archive
+```
+
+Both apps still claim the `pippin://` scheme, so a place shared from Apple Maps reaches
+whichever iOS picks. Restage with `--region kiawah` before the next Kiawah archive.
+
 ## The cross-build
 
 ```sh

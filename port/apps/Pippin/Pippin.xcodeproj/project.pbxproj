@@ -57,6 +57,10 @@
 		AA0100010000000000000054 /* Momentum.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000054 /* Momentum.swift */; };
 		AA010001000000000000002A /* PippinShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000C /* PippinShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA010001000000000000002B /* RenderGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000032 /* RenderGate.swift */; };
+		AA01000100000000000000F1 /* ScenePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F1 /* ScenePolicy.swift */; };
+		AA0100010000000000000F12 /* RecordingMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F12 /* RecordingMarker.swift */; };
+		AA0100010000000000000F13 /* GuidanceNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F13 /* GuidanceNotice.swift */; };
+		AA0100010000000000000F14 /* TurnNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F14 /* TurnNotifications.swift */; };
 		AA010001000000000000002C /* LocationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000033 /* LocationPolicy.swift */; };
 		AA010001000000000000002D /* PPSearch.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000034 /* PPSearch.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA010001000000000000002E /* PPSearch.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000036 /* PPSearch.mm */; };
@@ -74,6 +78,14 @@
 		AA0100010000000000000063 /* TideCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000064 /* TideCard.swift */; };
 		AA0100010000000000000038 /* AlertTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000041 /* AlertTone.swift */; };
 		AA0100010000000000000039 /* TurnAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000042 /* TurnAlerts.swift */; };
+		AA0100010000000000000F20 /* RideActivityContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F20 /* RideActivityContent.swift */; };
+		AA0100010000000000000F21 /* RideActivityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F21 /* RideActivityPolicy.swift */; };
+		AA0100010000000000000F22 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
+		AA0100010000000000000F23 /* RideActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F23 /* RideActivity.swift */; };
+		AA0100010000000000000F30 /* RideActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F24 /* RideActivityWidget.swift */; };
+		AA0100010000000000000F31 /* RideActivityContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F20 /* RideActivityContent.swift */; };
+		AA0100010000000000000F32 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
+		AA0100010000000000000F33 /* PippinActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000D /* PippinActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -90,6 +102,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = AA0700010000000000000003;
 			remoteInfo = PippinShare;
+		};
+		AA0F00010000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0E00010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0700010000000000000004;
+			remoteInfo = PippinActivity;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -112,6 +131,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				AA010001000000000000002A /* PippinShare.appex in Embed App Extensions */,
+				AA0100010000000000000F33 /* PippinActivity.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -175,6 +195,11 @@
 		AA0200010000000000000050 /* PlaceGeocoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceGeocoder.swift; sourceTree = "<group>"; };
 		AA0200010000000000000031 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AA0200010000000000000032 /* RenderGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderGate.swift; sourceTree = "<group>"; };
+		AA02000100000000000000F1 /* ScenePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScenePolicy.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F12 /* RecordingMarker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMarker.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F13 /* GuidanceNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidanceNotice.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F14 /* TurnNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnNotifications.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F15 /* Pippin.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Pippin.entitlements; sourceTree = "<group>"; };
 		AA0200010000000000000051 /* EnergyLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnergyLog.swift; sourceTree = "<group>"; };
 		AA0200010000000000000052 /* EnergyRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnergyRecorder.swift; sourceTree = "<group>"; };
 		AA0200010000000000000053 /* FramePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FramePolicy.swift; sourceTree = "<group>"; };
@@ -202,6 +227,13 @@
 		AA030001000000000000000A /* Pippin.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pippin.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA030001000000000000000B /* PippinKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PippinKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA030001000000000000000C /* PippinShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PippinShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0200010000000000000F20 /* RideActivityContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityContent.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F21 /* RideActivityPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityPolicy.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F22 /* RideActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityAttributes.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F23 /* RideActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivity.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F24 /* RideActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityWidget.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F25 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA030001000000000000000D /* PippinActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PippinActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -227,6 +259,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0400010000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -236,6 +275,7 @@
 				AA0500010000000000000002 /* PippinKit */,
 				AA0500010000000000000003 /* Pippin */,
 				AA0500010000000000000006 /* PippinShare */,
+				AA0500010000000000000007 /* PippinActivity */,
 				AA0500010000000000000005 /* Licensing */,
 				AA020001000000000000000B /* Data */,
 				AA020001000000000000003C /* Pippin.xcconfig */,
@@ -318,6 +358,15 @@
 				AA020001000000000000002E /* Sharing.swift */,
 				AA020001000000000000002F /* PlaceLink.swift */,
 				AA0200010000000000000032 /* RenderGate.swift */,
+				AA02000100000000000000F1 /* ScenePolicy.swift */,
+				AA0200010000000000000F12 /* RecordingMarker.swift */,
+				AA0200010000000000000F13 /* GuidanceNotice.swift */,
+				AA0200010000000000000F14 /* TurnNotifications.swift */,
+				AA0200010000000000000F20 /* RideActivityContent.swift */,
+				AA0200010000000000000F21 /* RideActivityPolicy.swift */,
+				AA0200010000000000000F22 /* RideActivityAttributes.swift */,
+				AA0200010000000000000F23 /* RideActivity.swift */,
+				AA0200010000000000000F15 /* Pippin.entitlements */,
 				AA0200010000000000000051 /* EnergyLog.swift */,
 				AA0200010000000000000052 /* EnergyRecorder.swift */,
 				AA0200010000000000000053 /* FramePolicy.swift */,
@@ -336,6 +385,7 @@
 				AA030001000000000000000B /* PippinKit.framework */,
 				AA030001000000000000000A /* Pippin.app */,
 				AA030001000000000000000C /* PippinShare.appex */,
+				AA030001000000000000000D /* PippinActivity.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -357,6 +407,15 @@
 				AA0200010000000000000050 /* PlaceGeocoder.swift */,
 			);
 			path = PippinShare;
+			sourceTree = "<group>";
+		};
+		AA0500010000000000000007 /* PippinActivity */ = {
+			isa = PBXGroup;
+			children = (
+				AA0200010000000000000F25 /* Info.plist */,
+				AA0200010000000000000F24 /* RideActivityWidget.swift */,
+			);
+			path = PippinActivity;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -419,6 +478,7 @@
 			dependencies = (
 				AA0D00010000000000000001 /* PBXTargetDependency */,
 				AA0D00010000000000000002 /* PBXTargetDependency */,
+				AA0D00010000000000000003 /* PBXTargetDependency */,
 			);
 			name = Pippin;
 			productName = Pippin;
@@ -441,6 +501,22 @@
 			productReference = AA030001000000000000000C /* PippinShare.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		AA0700010000000000000004 /* PippinActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0800010000000000000005 /* Build configuration list for PBXNativeTarget "PippinActivity" */;
+			buildPhases = (
+				AA0900010000000000000004 /* Sources */,
+				AA0400010000000000000004 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PippinActivity;
+			productName = PippinActivity;
+			productReference = AA030001000000000000000D /* PippinActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -458,6 +534,9 @@
 						CreatedOnToolsVersion = 26.0;
 					};
 					AA0700010000000000000003 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					AA0700010000000000000004 = {
 						CreatedOnToolsVersion = 26.0;
 					};
 				};
@@ -478,6 +557,7 @@
 				AA0700010000000000000001 /* PippinKit */,
 				AA0700010000000000000002 /* Pippin */,
 				AA0700010000000000000003 /* PippinShare */,
+				AA0700010000000000000004 /* PippinActivity */,
 			);
 		};
 /* End PBXProject section */
@@ -561,6 +641,14 @@
 				AA0100010000000000000026 /* Sharing.swift in Sources */,
 				AA0100010000000000000027 /* PlaceLink.swift in Sources */,
 				AA010001000000000000002B /* RenderGate.swift in Sources */,
+				AA01000100000000000000F1 /* ScenePolicy.swift in Sources */,
+				AA0100010000000000000F12 /* RecordingMarker.swift in Sources */,
+				AA0100010000000000000F13 /* GuidanceNotice.swift in Sources */,
+				AA0100010000000000000F14 /* TurnNotifications.swift in Sources */,
+				AA0100010000000000000F20 /* RideActivityContent.swift in Sources */,
+				AA0100010000000000000F21 /* RideActivityPolicy.swift in Sources */,
+				AA0100010000000000000F22 /* RideActivityAttributes.swift in Sources */,
+				AA0100010000000000000F23 /* RideActivity.swift in Sources */,
 				AA0100010000000000000051 /* EnergyLog.swift in Sources */,
 				AA0100010000000000000052 /* EnergyRecorder.swift in Sources */,
 				AA0100010000000000000053 /* FramePolicy.swift in Sources */,
@@ -582,6 +670,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0900010000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0100010000000000000F30 /* RideActivityWidget.swift in Sources */,
+				AA0100010000000000000F31 /* RideActivityContent.swift in Sources */,
+				AA0100010000000000000F32 /* RideActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -594,6 +692,11 @@
 			isa = PBXTargetDependency;
 			target = AA0700010000000000000003 /* PippinShare */;
 			targetProxy = AA0F00010000000000000002 /* PBXContainerItemProxy */;
+		};
+		AA0D00010000000000000003 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0700010000000000000004 /* PippinActivity */;
+			targetProxy = AA0F00010000000000000003 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -753,19 +856,21 @@
 		AA1000010000000000000005 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "$(PP_APP_ICON)";
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = Pippin/Pippin.entitlements;
 				INFOPLIST_FILE = Pippin/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "$(PP_DISPLAY_NAME)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Your position stays on this phone and is never sent anywhere.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Recording and turn alerts continue with the screen locked. Your position stays on this phone and is never sent anywhere.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
@@ -775,7 +880,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.peregrine.Pippin;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -785,19 +890,21 @@
 		AA1000010000000000000006 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "$(PP_APP_ICON)";
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = Pippin/Pippin.entitlements;
 				INFOPLIST_FILE = Pippin/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "$(PP_DISPLAY_NAME)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Your position stays on this phone and is never sent anywhere.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Recording and turn alerts continue with the screen locked. Your position stays on this phone and is never sent anywhere.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
@@ -807,7 +914,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.peregrine.Pippin;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -830,7 +937,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.peregrine.Pippin.Share;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Share";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -854,7 +961,55 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.peregrine.Pippin.Share;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Share";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		AA1000010000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PippinActivity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "$(PP_DISPLAY_NAME)";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Activity";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		AA100001000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PippinActivity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "$(PP_DISPLAY_NAME)";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Activity";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -897,6 +1052,15 @@
 			buildConfigurations = (
 				AA1000010000000000000007 /* Debug */,
 				AA1000010000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0800010000000000000005 /* Build configuration list for PBXNativeTarget "PippinActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA1000010000000000000009 /* Debug */,
+				AA100001000000000000000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

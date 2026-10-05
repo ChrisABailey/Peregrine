@@ -16,6 +16,7 @@
 
 #import <PippinKit/PPViewport.h>
 
+#include "PPPerspective.h"
 #include "fvkit/proj.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -40,6 +41,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (const fv::MapProjection &)projection;
 
 /// The pixel surface: `sizeInPoints * displayScale`, rounded once, here.
+/// The tilted camera over this viewport's surface, anchored where follow puts
+/// the ship. The identity camera when the pitch is 0.
+- (pippin::Perspective)perspective;
+
+/// The screen's corners on the ground in flat pixels (`GroundQuad`), for the
+/// coverage tests. NO when the viewport is not tilted, and callers then pass
+/// no quad.
+- (BOOL)groundQuadX:(double *)xs y:(double *)ys;
+
 @property(nonatomic, readonly) int pixelWidth;
 @property(nonatomic, readonly) int pixelHeight;
 

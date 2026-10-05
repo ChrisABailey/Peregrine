@@ -1515,9 +1515,10 @@ def _kiawah_osm():
     d = _testdata("OSM")
     if d is None:
         return None
-    paths = [os.path.join(d, n) for n in
-             ("map.osm", "map-2.osm", "map-3.osm", "map-4.osm")]
-    return paths if all(os.path.isfile(p) for p in paths) else None
+    # Enumerated, not named: the exports are refreshed by hand.
+    paths = sorted(os.path.join(d, n) for n in os.listdir(d)
+                   if n.startswith("map") and n.endswith(".osm"))
+    return paths or None
 
 
 @pytest.fixture(scope="module")

@@ -96,7 +96,9 @@ struct RecordedRide: Identifiable, Hashable {
 
     var title: String {
         let date = RideLibrary.titleFormatter.string(from: recordedAt)
-        return isEnergyLog ? "Energy log, " + date : date
+        if isEnergyLog { return "Energy log, " + date }
+        return RecordingMarker.isInterrupted(url.lastPathComponent)
+            ? date + " (interrupted)" : date
     }
 
     var subtitle: String {
@@ -147,6 +149,53 @@ enum RideLibrary {
 
     static func delete(_ ride: RecordedRide) {
         try? FileManager.default.removeItem(at: ride.url)
+    }
+
+    // MARK: Interrupted rides
+
+    private static var markerURL: URL? {
+        DocumentFolder.documents?.appendingPathComponent(RecordingMarker.fileName)
+    }
+
+    /// Records that `url` is being written, so a launch after a kill can find it.
+    static func markRecording(_ url: URL, startedAt: Date) {
+        guard let markerURL,
+              let data = RecordingMarker.encode(
+                InflightRecording(fileName: url.lastPathComponent, startedAt: startedAt))
+        else { return }
+        try? data.write(to: markerURL, options: .atomic)
+    }
+
+    /// Removes the marker: the ride ended, or never started.
+    static func clearRecordingMarker() {
+        guard let markerURL else { return }
+        try? FileManager.default.removeItem(at: markerURL)
+    }
+
+    /// Applies the launch decision for a marker left by a killed recording.
+    /// Returns the kept ride's start time, or nil when there was nothing to
+    /// keep. The marker is removed either way. Call before recording can start.
+    static func recoverInterruptedRide() -> Date? {
+        guard let markerURL, let directory = directory() else { return nil }
+        let marker = try? Data(contentsOf: markerURL)
+        let decision = RecordingMarker.recovery(marker: marker) { name in
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(name).path)
+        }
+        switch decision {
+        case .none:
+            return nil
+        case .discardMarker:
+            clearRecordingMarker()
+            return nil
+        case let .keep(from, to, startedAt):
+            // A failed rename leaves the ride under its own name, still listed.
+            try? FileManager.default.moveItem(
+                at: directory.appendingPathComponent(from),
+                to: directory.appendingPathComponent(to))
+            clearRecordingMarker()
+            return startedAt
+        }
     }
 }
 

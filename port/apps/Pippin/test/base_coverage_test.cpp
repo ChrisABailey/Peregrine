@@ -9,6 +9,7 @@
 // decision is a pure function over two projections and the cases are here.
 
 #include "PPBaseCoverage.h"
+#include "PPPerspective.h"
 
 #include <cmath>
 
@@ -414,6 +415,98 @@ TEST(UnderlayServes, AScaleTwiceAwayStalesIt) {
       under, Make(kScreenW, kScreenH, kHome, kRidingScale * 2.1, 0)));
   EXPECT_FALSE(pippin::UnderlayServes(
       under, Make(kScreenW, kScreenH, kHome, kRidingScale / 2.1, 0)));
+}
+
+// The ground quad of the 3x screen tilted to the cap, anchored where follow
+// puts the ship (5/6 down).
+struct Quad {
+  double xs[4], ys[4];
+};
+Quad TiltedQuad() {
+  pippin::PerspectiveParams p;
+  p.width = kScreenW;
+  p.height = kScreenH;
+  p.pitch_deg = pippin::kMaxPitchDeg;
+  p.anchor_x = (kScreenW - 1) / 2.0;
+  p.anchor_y = (kScreenH - 1) * (5.0 / 6.0);
+  Quad q;
+  EXPECT_TRUE(pippin::Perspective(p).GroundQuad(q.xs, q.ys));
+  return q;
+}
+
+// The underlay `PPMap` would build for that screen tilted.
+fv::MapProjection TiltedUnderlay(fv::GeoPoint center, double scale,
+                                 double rotation) {
+  const Quad q = TiltedQuad();
+  int w = 0, h = 0;
+  pippin::UnderlaySurfacePixels(kScreenW, kScreenH, q.xs, q.ys, &w, &h);
+  return Make(w, h, center, scale * pippin::kUnderlayZoomOut, rotation);
+}
+
+TEST(UnderlaySurface, FlatIsTheScreenAndTiltedIsASquareOfTheLongSide) {
+  int w = 0, h = 0;
+  pippin::UnderlaySurfacePixels(kScreenW, kScreenH, nullptr, nullptr, &w, &h);
+  EXPECT_EQ(w, kScreenW);
+  EXPECT_EQ(h, kScreenH);
+  const Quad q = TiltedQuad();
+  pippin::UnderlaySurfacePixels(kScreenW, kScreenH, q.xs, q.ys, &w, &h);
+  EXPECT_EQ(w, kScreenH);
+  EXPECT_EQ(h, kScreenH);
+  // A screen whose quad would not fit the long side gets a larger square.
+  const double far_x[4] = {-4000, 4000, 4000, -4000};
+  const double far_y[4] = {-4000, -4000, 4000, 4000};
+  pippin::UnderlaySurfacePixels(kScreenW, kScreenH, far_x, far_y, &w, &h);
+  EXPECT_GT(w, kScreenH);
+  EXPECT_EQ(w, h);
+}
+
+TEST(UnderlaySurface, TheScreenSizedUnderlayMissesATiltedScreenTurnedSideways) {
+  // Found on the simulator: the chart turned near 90 degrees under a
+  // screen-sized underlay showed background past its short axis.
+  const Quad q = TiltedQuad();
+  const fv::MapProjection live = Make(kScreenW, kScreenH, kHome, kRidingScale, 90);
+  const fv::MapProjection base = Make(kScreenW, kScreenH, kHome, kRidingScale, 90);
+  const fv::MapProjection narrow = Underlay(kHome, kRidingScale, 0);
+  const fv::MapProjection square = TiltedUnderlay(kHome, kRidingScale, 0);
+  EXPECT_EQ(pippin::ScreenCoverage(base, &narrow, live, q.xs, q.ys),
+            pippin::ScreenCover::kBackground);
+  EXPECT_EQ(pippin::ScreenCoverage(base, &square, live, q.xs, q.ys),
+            pippin::ScreenCover::kUnderlay);
+  EXPECT_FALSE(pippin::UnderlayServes(narrow, live, q.xs, q.ys))
+      << "so the narrow one is rebuilt";
+}
+
+TEST(UnderlayServes, ATiltedScreensSquareServesItAtEveryTurnAndFlattened) {
+  const Quad q = TiltedQuad();
+  for (int turn = 0; turn < 360; turn += 5) {
+    const fv::MapProjection under = TiltedUnderlay(kHome, kRidingScale, 0);
+    const fv::MapProjection live =
+        Make(kScreenW, kScreenH, kHome, kRidingScale, turn);
+    EXPECT_TRUE(pippin::UnderlayServes(under, live, q.xs, q.ys))
+        << "a fresh underlay is not stale at turn " << turn;
+    EXPECT_TRUE(pippin::UnderlayServes(under, live))
+        << "and still serves the screen flattened by a drag";
+  }
+}
+
+TEST(UnderlayServes, ATiltedScreenRunningAheadStalesItWhileStillCovered) {
+  const Quad q = TiltedQuad();
+  const fv::MapProjection under = TiltedUnderlay(kHome, kRidingScale, 0);
+  const fv::MapProjection seed = Make(kScreenW, kScreenH, kHome, kRidingScale, 0);
+  const fv::MapProjection base = seed;
+  int stale_at = -1;
+  for (int ahead = 0; ahead <= 2 * kScreenH; ahead += 20) {
+    const fv::MapProjection live = Make(
+        kScreenW, kScreenH, Shifted(seed, 0, -ahead), kRidingScale, 0);
+    if (!pippin::UnderlayServes(under, live, q.xs, q.ys)) {
+      stale_at = ahead;
+      EXPECT_EQ(pippin::ScreenCoverage(base, &under, live, q.xs, q.ys),
+                pippin::ScreenCover::kUnderlay)
+          << "stale before the far edge runs off it";
+      break;
+    }
+  }
+  EXPECT_GT(stale_at, 200) << "not rebuilt on every fix";
 }
 
 TEST(UnderlayServes, ANewScreenSizeStalesIt) {

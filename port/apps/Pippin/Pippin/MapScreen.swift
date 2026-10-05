@@ -20,6 +20,7 @@ struct MapScreen: View {
     @StateObject private var model = MapModel()
     @StateObject private var draft = RouteDraft()
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.scenePhase) private var scenePhase
     /// Opens Settings for a notice that offers it. See `openSettings()`.
     @Environment(\.openURL) private var openURL
 
@@ -125,6 +126,7 @@ struct MapScreen: View {
                 safeArea = Self.windowSafeArea()
                 symbolStepLabels = Self.symbolStepLabels(model.symbolZoomSteps)
                 model.resize(to: geo.size, scale: displayScale)
+                model.recoverInterruptedRide()
                 model.startFeed()
                 model.loadSavedRoute()
                 model.loadPoints()
@@ -135,6 +137,9 @@ struct MapScreen: View {
                     GestureDemo.run(on: model, size: geo.size)
                 }
                 #endif
+            }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                model.setScenePhase(SceneVisibility(phase))
             }
             .onChange(of: geo.size) { _, size in
                 // A size change is the one moment the insets can change too.
@@ -504,9 +509,10 @@ struct MapScreen: View {
         let dy = was.y - now.y
         // A band grows by whole pixels on each side, so one drawn at the live
         // camera, or panned from it by whole pixels, lands on the screen's.
+        // A tilted screen resamples every layer whatever the band.
         return Preview(k: k, turn: turn, dx: dx, dy: dy,
                        size: drawn.sizeInPoints, scale: drawn.displayScale,
-                       isLive: drawn.isPixelAligned(to: live))
+                       isLive: drawn.isPixelAligned(to: live) && live.pitchDegrees == 0)
     }
 
     @ViewBuilder
@@ -523,6 +529,80 @@ struct MapScreen: View {
             .offset(x: p.dx, y: p.dy)
     }
 
+    /// The ownship sprite at its position on the live camera, turned by the
+    /// screen angle it was computed with plus any turn of the camera since.
+    /// Placed by offset from the centre: the stack is band-sized, so its
+    /// origin is not the screen's, but its centre is. On a tilted screen it is
+    /// placed through the perspective, its heading follows the ground, and it
+    /// shrinks with depth.
+    @ViewBuilder
+    private static func ship(_ ship: PPOwnship, in live: PPViewport,
+                             screen: CGSize) -> some View {
+        if let image = ship.symbolImage {
+            let flat = live.point(forGeo: ship.coordinate)
+            let flatAngle = ship.screenAngleDegrees + live.rotationDegrees
+                - ship.viewRotationDegrees
+            let at = live.screenPoint(forFlat: flat)
+            if at.x.isFinite, at.y.isFinite {
+                Image(decorative: image, scale: ship.symbolPixelsPerPoint)
+                    .interpolation(.medium)
+                    .rotationEffect(.degrees(
+                        Self.screenAngle(flatAngle, at: flat, in: live)))
+                    .scaleEffect(live.depthScale(atScreen: at))
+                    .offset(x: at.x - screen.width / 2, y: at.y - screen.height / 2)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// An upright marker on a tilted map: placed at its ground point through
+    /// the perspective and shrunk with depth, but never foreshortened. Placed
+    /// by offset from the centre, as the ship is; off-screen ones are skipped.
+    @ViewBuilder
+    private static func billboard(_ board: PPBillboard, in live: PPViewport,
+                                  screen: CGSize) -> some View {
+        let at = live.screenPoint(forFlat: live.point(forGeo: board.coordinate))
+        let w = CGFloat(board.image.width) / board.pixelsPerPoint
+        let h = CGFloat(board.image.height) / board.pixelsPerPoint
+        if at.x.isFinite, at.y.isFinite,
+           at.x > -w, at.x < screen.width + w, at.y > -h, at.y < screen.height + h {
+            let d = live.depthScale(atScreen: at)
+            Image(decorative: board.image, scale: board.pixelsPerPoint)
+                .interpolation(.medium)
+                .scaleEffect(d)
+                .offset(x: at.x + board.centerOffset.x * d - screen.width / 2,
+                        y: at.y + board.centerOffset.y * d - screen.height / 2)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// A clockwise-from-up angle on the flat surface at `flat`, as it shows on
+    /// the screen. Unchanged when the view is flat.
+    private static func screenAngle(_ degrees: Double, at flat: CGPoint,
+                                    in live: PPViewport) -> Double {
+        guard live.pitchDegrees > 0 else { return degrees }
+        let r = degrees * .pi / 180
+        let ahead = CGPoint(x: flat.x + 10 * sin(r), y: flat.y - 10 * cos(r))
+        let a = live.screenPoint(forFlat: flat)
+        let b = live.screenPoint(forFlat: ahead)
+        guard a.x.isFinite, b.x.isFinite else { return degrees }
+        return atan2(Double(b.x - a.x), Double(a.y - b.y)) * 180 / .pi
+    }
+
+    /// The haze over a tilted view's far ground, in the map's background colour.
+    @ViewBuilder
+    private func farFade(_ live: PPViewport, size: CGSize) -> some View {
+        let fade = live.farFade
+        if fade.endY > 0 {
+            LinearGradient(colors: [mapBackground.opacity(fade.topAlpha),
+                                    mapBackground.opacity(0)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(width: size.width, height: fade.endY)
+                .frame(width: size.width, height: size.height, alignment: .top)
+                .allowsHitTesting(false)
+        }
+    }
+
     @ViewBuilder
     private func mapLayer(size: CGSize) -> some View {
         if let frame = model.frame, let live = model.viewport {
@@ -536,16 +616,30 @@ struct MapScreen: View {
             // band 1.5x the surface; without the frame, `.clipped()` clips to
             // the oversized bounds and the GeometryReader's top-leading
             // alignment shifts the whole stack by a quarter of the surface.
+            //
+            // The map layers are flat, top-down pictures, and one projection
+            // tilts them together (identity when flat). The background, the
+            // billboards, the fade and the ship are in screen space.
             ZStack {
                 mapBackground
-                if let underlay = model.underlay {
-                    Self.layer(underlay.image,
-                               Self.preview(of: underlay.viewport, in: live))
+                ZStack {
+                    if let underlay = model.underlay {
+                        Self.layer(underlay.image,
+                                   Self.preview(of: underlay.viewport, in: live))
+                    }
+                    Self.layer(frame.baseImage, Self.preview(of: frame.baseViewport,
+                                                             in: live))
+                    Self.layer(frame.overlayImage, Self.preview(of: frame.overlayViewport,
+                                                                in: live))
                 }
-                Self.layer(frame.baseImage, Self.preview(of: frame.baseViewport,
-                                                         in: live))
-                Self.layer(frame.overlayImage, Self.preview(of: frame.viewport,
-                                                            in: live))
+                .modifier(Tilt(live: live, screen: size))
+                ForEach(Array(frame.billboards.enumerated()), id: \.offset) { _, board in
+                    Self.billboard(board, in: live, screen: size)
+                }
+                farFade(live, size: size)
+                if let ship = model.ownship {
+                    Self.ship(ship, in: live, screen: size)
+                }
             }
             .frame(width: size.width, height: size.height)
             .clipped()
@@ -594,6 +688,8 @@ struct MapScreen: View {
                                             set: { model.setSymbolStep($0) }),
                         symbolStepLabels: symbolStepLabels,
                         units: $display.units,
+                        follow3D: Binding(get: { model.follow3D },
+                                          set: { model.setFollow3D($0) }),
                         onExportRide: {
                             model.refreshRides()
                             ridesShown = true
@@ -837,22 +933,9 @@ struct MapScreen: View {
         .allowsHitTesting(false)
     }
 
-    /// The SF Symbol for a turn. `arrow.turn.*` rather than the `arrowtriangle`
-    /// family: these are the shapes a rider already reads on a road sign.
+    /// The SF Symbol for a turn; the table is shared with the Live Activity.
     private static func maneuverSymbol(_ maneuver: PPManeuver) -> String {
-        switch maneuver {
-        case .depart: return "location.north.line"
-        case .straight: return "arrow.up"
-        case .slightLeft: return "arrow.up.left"
-        case .left: return "arrow.turn.up.left"
-        case .sharpLeft: return "arrow.uturn.left"
-        case .slightRight: return "arrow.up.right"
-        case .right: return "arrow.turn.up.right"
-        case .sharpRight: return "arrow.uturn.right"
-        case .uTurn: return "arrow.uturn.down"
-        case .arrive: return "flag.checkered"
-        @unknown default: return "arrow.up"
-        }
+        RideActivityPolicy.symbol(TurnNotifications.turn(maneuver))
     }
 
     /// The notice banner. Body type, since it carries the sentences that most
@@ -1160,6 +1243,30 @@ struct CircleButton: View {
     }
 }
 
+/// Shows flat map layers through the live viewport's perspective.
+///
+/// `projectionEffect` draws only what lies inside the view's own frame, and a
+/// tilted screen shows flat ground far above the screen. So the layers get a
+/// frame grown about the screen's centre to reach `flatBounds`, and the
+/// transform is conjugated by that frame's offset from the screen's origin.
+private struct Tilt: ViewModifier {
+    let live: PPViewport
+    let screen: CGSize
+
+    func body(content: Content) -> some View {
+        let r = live.flatBounds
+        let ex = max(0, -r.minX, r.maxX - screen.width)
+        let ey = max(0, -r.minY, r.maxY - screen.height)
+        let toFlat = CATransform3DMakeTranslation(-ex, -ey, 0)
+        let fromScreen = CATransform3DMakeTranslation(ex, ey, 0)
+        let m = CATransform3DConcat(CATransform3DConcat(toFlat, live.perspectiveTransform),
+                                    fromScreen)
+        content
+            .frame(width: screen.width + 2 * ex, height: screen.height + 2 * ey)
+            .projectionEffect(ProjectionTransform(m))
+    }
+}
+
 /// Evaluates its content under an observation of the per-frame map state, so
 /// a new frame redraws the content without invalidating the view that holds it.
 struct LiveMapReader<Content: View>: View {
@@ -1172,4 +1279,15 @@ struct LiveMapReader<Content: View>: View {
     }
 
     var body: some View { content() }
+}
+
+extension SceneVisibility {
+    /// Maps SwiftUI's phase; an unknown future phase is treated as visible.
+    init(_ phase: ScenePhase) {
+        switch phase {
+        case .active: self = .active
+        case .background: self = .background
+        default: self = .inactive
+        }
+    }
 }

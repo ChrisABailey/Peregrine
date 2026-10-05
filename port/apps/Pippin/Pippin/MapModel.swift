@@ -8,6 +8,7 @@ import CoreLocation
 import PippinKit
 import SwiftUI
 import UIKit
+import os
 
 /// The state that changes on every frame or camera step: the camera, the
 /// frame, and the readouts drawn from it. Written only by `MapModel`.
@@ -40,10 +41,11 @@ final class LiveMapState: ObservableObject {
 ///   * At most one render is in flight at a time.
 ///
 /// The `CADisplayLink` pauses itself when nothing is dirty; `setNeedsRender()`
-/// wakes it. Two dirty flags exist because a frame does not depend only on the
-/// camera: `needsRender` for camera moves and `contentDirty` for anything else
-/// (ownship fix, route edit, mode change). The "same viewport, skip the render"
-/// shortcut is only valid when `contentDirty` is clear.
+/// wakes it. Three dirty flags exist because a frame does not depend only on
+/// the camera: `needsRender` for camera moves, `contentDirty` for anything
+/// else drawn (route edit, mode change), and `shipDirty` for a fix, which a
+/// camera step serves because the ownship is a sprite. The "same viewport,
+/// skip the render" shortcut is only valid when `contentDirty` is clear.
 ///
 /// The base map is drawn into a guard band larger than the screen and kept at
 /// rest, so a drag starts covered. During a pan or turn the band is redrawn
@@ -118,16 +120,42 @@ final class MapModel: ObservableObject {
     /// queue, where both feeds have already become one stream.
     private(set) var guidance: PPGuidance? {
         get { live.guidance }
-        set { live.guidance = newValue }
+        set {
+            live.guidance = newValue
+            updateRideActivity(newValue, trip: trip)
+        }
     }
 
     /// What the guidance says, out loud and in the hand (GD4). Not published:
     /// the alerts are an effect of a frame arriving, not state a view draws.
     private let alerts = TurnAlerts()
 
+    /// The same events as notifications, while the app is in the background.
+    private let notices = TurnNotifications()
+
+    /// The next turn on the lock screen and Dynamic Island while following a
+    /// route.
+    private let rideActivity = RideActivity()
+
+    /// The planned route's end has been reached on this ride. Background GPS
+    /// stops for an arrived ride; cleared by a new route, a new recording or
+    /// leaving GPS mode.
+    private var arrivedRide = false
+
     /// The route on the map, or nil until one has been loaded or set. A
     /// snapshot taken on the render queue; see `PPRoute.h`.
-    @Published private(set) var route: PPRoute?
+    @Published private(set) var route: PPRoute? {
+        didSet {
+            if gpsMode && route != nil { notices.requestPermission() }
+            // A changed route is a new ride: the old card goes, and the next
+            // guidance snapshot starts a fresh one.
+            rideActivity.end()
+            if arrivedRide {
+                arrivedRide = false
+                ridingDidChange()
+            }
+        }
+    }
     /// A plan is in flight; bound to the sheet's spinner.
     @Published private(set) var isPlanning = false
     @Published private(set) var feedIsRunning = false
@@ -142,6 +170,28 @@ final class MapModel: ObservableObject {
     /// GPS mode: the map follows the ship and the road snapper is on. Whether
     /// the chart also turns with the rider is `courseUp`.
     @Published private(set) var gpsMode = false { didSet { ridingDidChange() } }
+
+    /// "3D While Following" in the map menu: GPS mode tilts the chart to
+    /// `followPitchDegrees`. Persisted; off by default. `-PPPitch <deg>` on
+    /// the launch line turns it on at that angle.
+    @Published private(set) var follow3D =
+        UserDefaults.standard.bool(forKey: MapModel.follow3DKey)
+            || MapModel.launchPitchDegrees > 0
+
+    private static let follow3DKey = "PPFollow3D"
+    private static let launchPitchDegrees = UserDefaults.standard.double(forKey: "PPPitch")
+
+    /// The tilt "3D While Following" applies: `-PPPitch` if given, else the
+    /// pack's `display.follow_pitch_deg`. Clamped to 45 by `PPViewport.pitched(_:)`.
+    var followPitchDegrees: Double {
+        Self.launchPitchDegrees > 0
+            ? Self.launchPitchDegrees : renderer?.followPitchDegrees ?? 45
+    }
+
+    /// A drag in GPS mode flattens the chart until the last finger lifts:
+    /// the pan arithmetic and the band are flat, and the next fix brings the
+    /// camera back to the ship anyway.
+    private var flattenedForDrag = false
 
     /// Course-up: the chart turns so the way ahead is up the screen, and the
     /// map recentres continuously. Remembered outside GPS mode so the next
@@ -196,9 +246,26 @@ final class MapModel: ObservableObject {
     /// same-viewport shortcut in `tick()`.
     private var contentDirty = false
 
+    /// A fix or a demo poll is waiting for the moving map's tick. The ship is
+    /// a sprite, so a camera step serves it without drawing a frame.
+    private var shipDirty = false
+
     /// Decides whether a fix is worth a frame. Stateful (remembers whether the
     /// ship was visible last time), so it is stored rather than made per fix.
     private var renderGate = RenderGate()
+
+    /// Whether the scene is visible enough to draw.
+    private var scenePolicy = ScenePolicy()
+
+    #if DEBUG
+    /// Frame and fix counters at each scene edge, for checking that drawing
+    /// stops in the background while fixes keep arriving.
+    private static let sceneLog = Logger(subsystem: "org.peregrine.Pippin", category: "scene")
+    #endif
+
+    /// The first frame after a return from the background is drawn exactly at
+    /// the screen, with no band, before anything else.
+    private var resumeFrameOwed = false
 
     /// Decides how hard the receiver should work. Stateful like `renderGate`.
     private var locationPolicy = LocationPolicy()
@@ -236,6 +303,9 @@ final class MapModel: ObservableObject {
     private var routeLoaded = false
     private var pointsLoaded = false
 
+    /// `recoverInterruptedRide` has run; a second `onAppear` must not.
+    private var rideRecoveryChecked = false
+
     init() {
         guard let pack = Bundle.main.url(forResource: "Data", withExtension: nil) else {
             renderer = nil
@@ -265,6 +335,7 @@ final class MapModel: ObservableObject {
         setSymbolStep(UserDefaults.standard.integer(forKey: Self.symbolStepKey),
                       persist: false)
         startDisplayLink()
+        rideActivity.endStale()
         // The cached base map is the only large allocation not currently
         // needed; dropping it costs one render.
         memoryWarning = NotificationCenter.default.addObserver(
@@ -343,6 +414,10 @@ final class MapModel: ObservableObject {
         gestureActive = false
         panVelocity = .zero
         turningThisGesture = false
+        if flattenedForDrag {
+            flattenedForDrag = false
+            applyPitch()
+        }
         applyFrameRate()
         // Settle frame: replace whatever the preview transform was showing.
         setNeedsRender()
@@ -374,6 +449,10 @@ final class MapModel: ObservableObject {
     /// in points per second; the band is drawn ahead of it.
     func pan(by translation: CGSize, velocity: CGVector = .zero) {
         panVelocity = velocity
+        if gestureActive, !flattenedForDrag, viewport?.pitchDegrees ?? 0 > 0 {
+            flattenedForDrag = true
+            applyPitch()
+        }
         guard let current = viewport else { return }
         viewport = current.panned(
             by: CGVector(dx: translation.width, dy: translation.height))
@@ -383,7 +462,8 @@ final class MapModel: ObservableObject {
     /// Zooms by `factor` (> 1 is in), keeping the position under `anchor` fixed.
     func zoom(by factor: CGFloat, about anchor: CGPoint) {
         guard let current = viewport else { return }
-        viewport = current.zoomed(by: Double(factor), about: anchor)
+        viewport = current.zoomed(by: Double(factor),
+                                  about: current.flatPoint(forScreen: anchor))
         setNeedsRender()
     }
 
@@ -414,7 +494,7 @@ final class MapModel: ObservableObject {
                 case .success:
                     model.feedIsRunning = true
                     model.startDemoTimer()
-                    model.setContentDirty()
+                    model.setShipDirty()
                 case .failure(let error):
                     model.feedRequested = false
                     model.failure = error.localizedDescription
@@ -436,6 +516,7 @@ final class MapModel: ObservableObject {
         // The source holds its delegate weakly; keep the proxy alive here.
         locationProxy = proxy
         source.delegate = proxy
+        source.allowsBackgroundUpdates = hasBackgroundJob
         locationSource = source
         locationAuthorization = source.authorization
         source.start()
@@ -467,16 +548,52 @@ final class MapModel: ObservableObject {
             applyZoomOutRule()
         }
         gpsMode = on
+        applyPitch()
         renderQueue.async { renderer.setGpsMode(on) }
+        // Asked when there is a route to be guided along, not at launch;
+        // `route`'s observer covers a route planned while following.
+        if on && route != nil { notices.requestPermission() }
+        if !on {
+            notices.clear()
+            rideActivity.end()
+            arrivedRide = false
+        }
         // Mode change without a camera move.
         setContentDirty()
     }
 
+    /// Turns "3D While Following" on or off and persists the choice.
+    func setFollow3D(_ on: Bool) {
+        guard on != follow3D else { return }
+        follow3D = on
+        UserDefaults.standard.set(on, forKey: Self.follow3DKey)
+        applyPitch()
+    }
+
+    /// Tilts the camera while following and flattens it otherwise. A pick is
+    /// flat even while following: its crosshair reads the flat centre.
+    private func applyPitch() {
+        guard let current = viewport else { return }
+        let tilted = gpsMode && follow3D && pickProfile == nil && !flattenedForDrag
+        let pitch = tilted ? followPitchDegrees : 0
+        guard current.pitchDegrees != pitch else { return }
+        viewport = current.pitched(pitch)
+        setNeedsRender()
+    }
+
     // MARK: - Riding state
 
-    /// Following or recording started or stopped.
+    /// Whether anything needs fixes with the app in the background: a
+    /// recording, or following a route that has not been arrived.
+    private var hasBackgroundJob: Bool {
+        isRecording || (gpsMode && !arrivedRide)
+    }
+
+    /// Following or recording started or stopped, or the route was arrived.
     private func ridingDidChange() {
         updateIdleTimer()
+        locationSource?.allowsBackgroundUpdates = hasBackgroundJob
+        reconsiderLocationAccuracy()
         applyFrameRate()
         #if DEBUG
         energy.update(following: gpsMode, recording: isRecording)
@@ -497,13 +614,13 @@ final class MapModel: ObservableObject {
 
     // MARK: - Auto-Lock
 
-    /// Keeps the screen awake while following or recording. The app has no
-    /// background location mode, so Auto-Lock would stop fix delivery: a
-    /// frozen moving map, or a hole in the recording. The flag only binds
-    /// while the app is frontmost, so nothing needs unwinding on a
-    /// scene-phase change. Low Power Mode overrides it.
+    /// Keeps the screen awake while following, so the moving map stays in
+    /// view. Recording alone does not: fixes reach the recorder in the
+    /// background, and a lit screen in a pocket costs more than the receiver.
+    /// The flag only binds while the app is frontmost, so nothing needs
+    /// unwinding on a scene-phase change. Low Power Mode overrides it.
     private func updateIdleTimer() {
-        let keepAwake = gpsMode || isRecording
+        let keepAwake = gpsMode
         guard UIApplication.shared.isIdleTimerDisabled != keepAwake else { return }
         UIApplication.shared.isIdleTimerDisabled = keepAwake
     }
@@ -598,9 +715,23 @@ final class MapModel: ObservableObject {
         guard let renderer else { return }
         // Every fix is forwarded: the heading resolver, trip computer and
         // recorder all need the full history. Only the frame is gated.
-        renderQueue.async { renderer.push(fix) }
+        if scenePolicy.draws {
+            renderQueue.async { renderer.push(fix) }
+        } else {
+            // No frame will carry this fix's events, so they are drained here.
+            renderQueue.async { [weak self] in
+                renderer.push(fix)
+                let events = renderer.takeGuidanceEvents()
+                let guidance = renderer.currentGuidance()
+                let trip = renderer.currentTrip()
+                Task { @MainActor in
+                    self?.deliver(events)
+                    self?.updateRideActivity(guidance, trip: trip)
+                }
+            }
+        }
         fixCount += 1
-        if renderIsWorthIt(for: fix) { setContentDirty() }
+        if renderIsWorthIt(for: fix) { setShipDirty() }
         reconsiderLocationAccuracy(for: fix)
     }
 
@@ -630,8 +761,9 @@ final class MapModel: ObservableObject {
     // MARK: - Receiver accuracy policy
 
     /// Re-evaluates the accuracy policy and tells the receiver. Called on
-    /// every fix and every camera move; costs one projection and no queue hop.
-    /// No-op for the demo feed, which has no receiver.
+    /// every fix, every camera move, every riding change and every scene
+    /// edge; costs one projection and no queue hop. No-op for the demo feed,
+    /// which has no receiver.
     private func reconsiderLocationAccuracy(for fix: PPFix? = nil) {
         guard let source = locationSource else { return }
         let ship = shipPosition(for: fix ?? source.lastFix)
@@ -639,8 +771,14 @@ final class MapModel: ObservableObject {
             shipAt: ship.point,
             inSurface: ship.surface,
             following: gpsMode,
-            recording: isRecording)
-        source.accuracyMode = wanted == .coarse ? .coarse : .navigation
+            recording: isRecording,
+            inBackground: !scenePolicy.draws,
+            arrived: arrivedRide)
+        switch wanted {
+        case .navigation: source.accuracyMode = .navigation
+        case .coarse: source.accuracyMode = .coarse
+        case .stopped: source.accuracyMode = .stopped
+        }
     }
 
     /// Forces navigation accuracy immediately. Called before entering GPS
@@ -674,7 +812,7 @@ final class MapModel: ObservableObject {
         demoTimer?.invalidate()
         let timer = Timer(timeInterval: demoPollInterval, repeats: true) {
             [weak self] _ in
-            MainActor.assumeIsolated { self?.setContentDirty() }
+            MainActor.assumeIsolated { self?.setShipDirty() }
         }
         // `.common` so the timer keeps firing while a gesture is tracking.
         RunLoop.main.add(timer, forMode: .common)
@@ -810,11 +948,12 @@ final class MapModel: ObservableObject {
             return
         }
         let tolerance = renderer.routeWaypointHitTolerance
+        let flat = vp.flatPoint(forScreen: screenPoint)
         onRenderQueue({ renderer -> String? in
-            guard let label = renderer.routeWaypointLabel(near: screenPoint,
+            guard let label = renderer.routeWaypointLabel(near: flat,
                                                           in: vp,
                                                           tolerance: tolerance),
-                  renderer.beginRouteWaypointDrag(label, at: screenPoint, in: vp)
+                  renderer.beginRouteWaypointDrag(label, at: flat, in: vp)
             else { return nil }
             return label
         }) { model, grabbed in
@@ -837,7 +976,8 @@ final class MapModel: ObservableObject {
               renderer != nil, let vp = viewport else { return }
         pendingDragPoint = nil
         dragHopInFlight = true
-        onRenderQueue({ $0.dragRouteWaypoint(to: point, in: vp) }) { model, _ in
+        let flat = vp.flatPoint(forScreen: point)
+        onRenderQueue({ $0.dragRouteWaypoint(to: flat, in: vp) }) { model, _ in
             model.dragHopInFlight = false
             model.setContentDirty()
             model.pumpWaypointDrag()
@@ -852,8 +992,9 @@ final class MapModel: ObservableObject {
         draggingWaypoint = nil
         pendingDragPoint = nil
         guard let vp = viewport else { return }
+        let flat = vp.flatPoint(forScreen: screenPoint)
         publishRoute(planning: true) {
-            $0.endRouteWaypointDrag(at: screenPoint, in: vp)
+            $0.endRouteWaypointDrag(at: flat, in: vp)
         }
     }
 
@@ -920,7 +1061,8 @@ final class MapModel: ObservableObject {
             handle(nil)
             return
         }
-        onRenderQueue({ $0.point(near: tap, in: vp) }) { _, hit in handle(hit) }
+        let flat = vp.flatPoint(forScreen: tap)
+        onRenderQueue({ $0.point(near: flat, in: vp) }) { _, hit in handle(hit) }
     }
 
     /// Highlights a point (or nothing) and opens/closes the sheet on it.
@@ -1131,28 +1273,28 @@ final class MapModel: ObservableObject {
             post(Self.authorizationNotice(locationAuthorization))
             return
         }
-        guard let url = RideLibrary.newRideURL() else {
+        // A recording started after arrival is a new job of its own.
+        arrivedRide = false
+        let started = Date()
+        guard let url = RideLibrary.newRideURL(at: started) else {
             post("Cannot make a file for the ride.")
             return
         }
-        let name = RideLibrary.titleFormatter.string(from: Date())
+        let name = RideLibrary.titleFormatter.string(from: started)
         isRecording = true
         recordingURL = url
         recordedPointCount = 0
+        RideLibrary.markRecording(url, startedAt: started)
         onRenderQueue({ $0.startRecording(to: url, name: name) }) { model, result in
             if case .failure(let error) = result {
                 // Roll back: the recorder never opened.
                 model.isRecording = false
                 model.recordingURL = nil
+                RideLibrary.clearRecordingMarker()
                 model.post("Could not start recording: \(error.localizedDescription)")
             } else {
-                // Every time, not once: the cost of not knowing is a hole in
-                // the ride. Auto-Lock is held off while recording, so the ways
-                // to lose fixes are the deliberate ones — and Low Power Mode,
-                // which overrides the idle timer. Delete this sentence when
-                // fixes survive the background.
-                model.post("Recording this ride. Locking the phone or "
-                           + "switching apps stops it.")
+                model.post("Recording this ride. It continues with the "
+                           + "phone locked.")
             }
         }
     }
@@ -1160,6 +1302,9 @@ final class MapModel: ObservableObject {
     func stopRecording() {
         guard renderer != nil, isRecording else { return }
         isRecording = false
+        // Cleared here, not in the completion: a recording restarted before
+        // the completion lands has already written its own marker.
+        RideLibrary.clearRecordingMarker()
         onRenderQueue({ renderer -> Int in
             let count = renderer.recordedPointCount()
             renderer.stopRecording()
@@ -1183,6 +1328,18 @@ final class MapModel: ObservableObject {
         onRenderQueue({ $0.recordedPointCount() }) { model, count in
             model.recordedPointCount = count
         }
+    }
+
+    /// Keeps a ride left open by a recording the app did not live to stop,
+    /// and says so once. Runs at the first appearance, before the feed and
+    /// before anything can start a recording.
+    func recoverInterruptedRide() {
+        guard !rideRecoveryChecked else { return }
+        rideRecoveryChecked = true
+        guard let started = RideLibrary.recoverInterruptedRide() else { return }
+        let when = RideLibrary.titleFormatter.string(from: started)
+        post("The ride started \(when) was cut short when the app closed. "
+             + "It is kept in Saved Rides.")
     }
 
     /// Re-reads `Documents/trips/`. Called when a ride ends or the sheet opens.
@@ -1281,6 +1438,7 @@ final class MapModel: ObservableObject {
     /// memory so the last pick's road does not get a head start elsewhere.
     func beginPick(profile: String) {
         pickProfile = profile
+        applyPitch()
         pickPlace = nil
         pickSnap = nil
         if let renderer {
@@ -1292,6 +1450,7 @@ final class MapModel: ObservableObject {
 
     func endPick() {
         pickProfile = nil
+        applyPitch()
         pickPlace = nil
         pickSnap = nil
     }
@@ -1418,6 +1577,89 @@ final class MapModel: ObservableObject {
         pickSnap?.coordinate ?? crosshairCoordinate
     }
 
+    // MARK: - Scene phase
+
+    /// Starts or stops drawing as the scene enters or leaves the background.
+    /// Fixes keep flowing to the trip computer, recorder and guidance either
+    /// way; only frames stop.
+    func setScenePhase(_ phase: SceneVisibility) {
+        let transition = scenePolicy.enter(phase)
+        #if DEBUG
+        defer {
+            if transition != .none {
+                let edge = transition == .suspend ? "suspend" : "resume"
+                let frames = baseHits + baseDraws + cameraSteps
+                let receiver = "\(locationPolicy.current)"
+                Self.sceneLog.info(
+                    "\(edge, privacy: .public) frames=\(frames) fixes=\(self.fixCount) receiver=\(receiver, privacy: .public)")
+            }
+        }
+        #endif
+        switch transition {
+        case .none:
+            break
+        case .suspend:
+            link?.isPaused = true
+            if coast != nil { stopCoast() }
+            // Arrived in the foreground and kept riding: leaving the screen
+            // ends the recording, as an arrival in the background does.
+            if arrivedRide && isRecording { stopRecording() }
+            reconsiderLocationAccuracy()
+        case .resume:
+            reconsiderLocationAccuracy()
+            notices.clear()
+            if let renderer { renderQueue.async { renderer.resumeFromBackground() } }
+            resumeFrameOwed = true
+            setContentDirty()
+        }
+    }
+
+    /// Hands guidance events to whichever of the two can be heard: the
+    /// alerts on screen, notifications off it.
+    private func deliver(_ events: [PPGuidanceEvent]) {
+        guard !events.isEmpty else { return }
+        #if DEBUG
+        if !scenePolicy.draws {
+            Self.sceneLog.info("notify \(events.map(\.description).joined(separator: " "), privacy: .public)")
+        }
+        #endif
+        if scenePolicy.draws {
+            alerts.play(events)
+        } else {
+            notices.post(events, units: DisplayUnits.shared.units)
+        }
+        if events.contains(where: { $0.kind == .arrived }) { routeArrived() }
+    }
+
+    /// The end of the planned route. The Live Activity shows its final card;
+    /// in the background the recording is saved and the receiver stops.
+    private func routeArrived() {
+        guard !arrivedRide else { return }
+        arrivedRide = true
+        rideActivity.arrive()
+        if !scenePolicy.draws && isRecording { stopRecording() }
+        ridingDidChange()
+    }
+
+    /// Hands the guidance snapshot to the Live Activity. Nil guidance is not
+    /// an end: it is also what the snapshot says on the frame that arrives.
+    private func updateRideActivity(_ guidance: PPGuidance?, trip: PPTrip?) {
+        guard gpsMode, route != nil, !arrivedRide, let guidance else { return }
+        guard guidance.onRoute else {
+            rideActivity.show(RideActivityPolicy.offRoute)
+            return
+        }
+        let speed = trip.flatMap { $0.hasSpeed ? $0.speedMetersPerSecond : nil }
+        rideActivity.show(RideActivityPolicy.approaching(
+            turn: TurnNotifications.turn(guidance.maneuver),
+            then: guidance.hasThen ? TurnNotifications.turn(guidance.thenManeuver) : nil,
+            distanceMeters: guidance.distanceMeters,
+            road: guidance.road,
+            speedMetersPerSecond: speed,
+            now: Date(),
+            units: DisplayUnits.shared.units))
+    }
+
     // MARK: - Render loop
 
     private func startDisplayLink() {
@@ -1451,12 +1693,23 @@ final class MapModel: ObservableObject {
 
     private func setNeedsRender() {
         needsRender = true
-        link?.isPaused = false
+        wakeLink()
+    }
+
+    /// Unpauses the display link, unless the scene is in the background.
+    private func wakeLink() {
+        if scenePolicy.draws { link?.isPaused = false }
     }
 
     /// Marks the picture stale without a camera move.
     private func setContentDirty() {
         contentDirty = true
+        setNeedsRender()
+    }
+
+    /// Asks for a moving-map tick without marking the picture stale.
+    private func setShipDirty() {
+        shipDirty = true
         setNeedsRender()
     }
 
@@ -1524,12 +1777,19 @@ final class MapModel: ObservableObject {
     /// Called where the loop has nothing to draw. Starts an underlay build
     /// when the current one no longer serves the camera, and otherwise pauses
     /// the display link. The render queue is serial, so the build runs only
-    /// here, never ahead of a frame that is already waiting.
+    /// here or in place of a follow step, never ahead of a frame that is
+    /// already waiting.
     private func pauseOrBuildUnderlay(_ vp: PPViewport?) {
+        if !buildUnderlayIfStale(vp) { link?.isPaused = true }
+    }
+
+    /// Starts an underlay build when the current one no longer serves `vp`.
+    /// Returns true when a build was started.
+    @discardableResult
+    private func buildUnderlayIfStale(_ vp: PPViewport?) -> Bool {
         guard !gestureActive, let renderer, let vp, vp.hasSurface, frame != nil,
               !(underlayKey?.underlayServes(vp) ?? false) else {
-            link?.isPaused = true
-            return
+            return false
         }
         underlayKey = vp.forUnderlay()
         renderInFlight = true
@@ -1539,15 +1799,21 @@ final class MapModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.renderInFlight = false
+                // Finished after the app left the screen: rebuilt on return.
+                guard self.scenePolicy.draws else {
+                    self.underlayKey = nil
+                    return
+                }
                 if generation == self.underlayGeneration,
                    case .success(let underlay) = result {
                     self.underlay = underlay
                     self.mapBackground = underlay.backgroundColor
                 }
                 // The next tick pauses if nothing else is due.
-                self.link?.isPaused = false
+                self.wakeLink()
             }
         }
+        return true
     }
 
     #if DEBUG
@@ -1610,6 +1876,10 @@ final class MapModel: ObservableObject {
     }
 
     private func tick() {
+        guard scenePolicy.draws else {
+            link?.isPaused = true
+            return
+        }
         advanceCoast()
         #if DEBUG
         if let vp = viewport, vp.hasSurface { countCoverage(vp) }
@@ -1626,6 +1896,14 @@ final class MapModel: ObservableObject {
             if !settle(renderer: renderer, viewport: viewport) {
                 pauseOrBuildUnderlay(viewport)
             }
+            return
+        }
+        if resumeFrameOwed {
+            resumeFrameOwed = false
+            needsRender = false
+            contentDirty = false
+            shipDirty = false
+            draw(vp, renderer: renderer, band: nil, reuseBase: false)
             return
         }
         var reuseBase = true
@@ -1645,21 +1923,34 @@ final class MapModel: ObservableObject {
         // Already showing this viewport and nothing else changed.
         if reuseBase, !contentDirty, let last = frame, vp.isEquivalent(to: last.viewport) {
             needsRender = false
+            if shipDirty {
+                shipDirty = false
+                step(vp, renderer: renderer)
+                return
+            }
             if !settle(renderer: renderer, viewport: vp) {
                 pauseOrBuildUnderlay(vp)
             }
             return
         }
+        // A step keeps the cached base, so it must still reach the screen. On
+        // a tilted view a small turn sweeps the far corners well past the band.
         if gpsMode, !gestureActive, !contentDirty, let last = frame,
            let moved = followMovement(from: last.viewport, to: vp),
-           !framePolicy.drawsFollowFrame(movement: moved) {
+           !framePolicy.drawsFollowFrame(movement: moved),
+           last.baseViewport.covers(vp, maxTurnDegrees: 180) {
+            // Following never lets the loop pause, so a stale underlay is
+            // built in place of this step; the step runs on the next tick.
+            if buildUnderlayIfStale(vp) { return }
             needsRender = false
+            shipDirty = false
             step(vp, renderer: renderer)
             return
         }
 
         needsRender = false
         contentDirty = false
+        shipDirty = false
         draw(vp, renderer: renderer, band: drawBand, reuseBase: reuseBase)
     }
 
@@ -1687,23 +1978,28 @@ final class MapModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.renderInFlight = false
+                // Finished after the app left the screen; the resume frame
+                // replaces it, but its events are still owed.
+                guard self.scenePolicy.draws else {
+                    self.deliver(step?.guidanceEvents ?? [])
+                    return
+                }
                 if let step {
                     self.cameraSteps += 1
-                    self.stepLeftFrameBehind = true
+                    // A step at the drawn camera leaves nothing to redraw.
+                    if !(self.frame?.viewport.isEquivalent(to: vp) ?? false) {
+                        self.stepLeftFrameBehind = true
+                    }
                     self.ownship = step.ownship
                     self.trip = step.trip
                     self.guidance = step.guidance
-                    if !step.guidanceEvents.isEmpty {
-                        self.alerts.play(step.guidanceEvents)
-                    }
+                    self.deliver(step.guidanceEvents)
                     self.applyCamera(hasUpdate: step.hasCameraUpdate,
                                      center: step.cameraCenter,
                                      rotation: step.cameraRotationDegrees,
                                      animating: step.cameraIsAnimating)
-                    // The ownship moved; the next frame is drawn.
-                    if step.sawNewFix { self.setContentDirty() }
                 }
-                self.link?.isPaused = false
+                self.wakeLink()
             }
         }
     }
@@ -1720,6 +2016,7 @@ final class MapModel: ObservableObject {
               !gestureActive else { return false }
         needsRender = false
         contentDirty = false
+        shipDirty = false
         let resting = vp.grown(byMargin: renderer.bandMargin)
         draw(vp, renderer: renderer, band: resting, reuseBase: false)
         return true
@@ -1744,6 +2041,12 @@ final class MapModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.renderInFlight = false
+                // Finished after the app left the screen; not published, and
+                // the resume frame replaces it, but its events are still owed.
+                guard self.scenePolicy.draws else {
+                    if case .success(let frame) = result { self.deliver(frame.guidanceEvents) }
+                    return
+                }
                 switch result {
                 case .success(let frame):
                     self.frame = frame
@@ -1761,9 +2064,7 @@ final class MapModel: ObservableObject {
                     self.guidance = frame.guidance
                     // After the banner, so the sound and the words a rider
                     // looks up to read describe the same corner.
-                    if !frame.guidanceEvents.isEmpty {
-                        self.alerts.play(frame.guidanceEvents)
-                    }
+                    self.deliver(frame.guidanceEvents)
                     #if DEBUG
                     if Self.showsStats { self.status = self.describe(frame) }
                     #endif
@@ -1777,7 +2078,7 @@ final class MapModel: ObservableObject {
                     self.settleOwed = false
                 }
                 // The next tick pauses the loop if nothing is dirty.
-                self.link?.isPaused = false
+                self.wakeLink()
             }
         }
     }
@@ -1881,6 +2182,8 @@ private final class Renderer: @unchecked Sendable {
     /// `display.fling_min_speed_pt` and `display.fling_deceleration`.
     let flingMinSpeedPoints: Double
     let flingDecelerationRate: Double
+    /// `display.follow_pitch_deg`: the tilt "3D While Following" applies.
+    let followPitchDegrees: Double
     /// `display.follow_fps` and `display.min_move_pt`, for `FramePolicy`.
     let followFramesPerSecond: Double
     let followMinMovePoints: Double
@@ -1910,6 +2213,7 @@ private final class Renderer: @unchecked Sendable {
         symbolZoomSteps = map.symbolZoomSteps.map(\.doubleValue)
         flingMinSpeedPoints = map.flingMinSpeedPoints
         flingDecelerationRate = map.flingDecelerationRate
+        followPitchDegrees = map.followPitchDegrees
         followFramesPerSecond = map.followFramesPerSecond
         followMinMovePoints = map.followMinMovePoints
         tide = map.tide
@@ -1945,6 +2249,22 @@ private final class Renderer: @unchecked Sendable {
     func push(_ fix: PPFix) {
         map.push(fix)
     }
+
+    /// Render queue only. See `PPMap.resumeFromBackground`.
+    func resumeFromBackground() {
+        map.resumeFromBackground()
+    }
+
+    /// Render queue only. See `PPMap.takeGuidanceEvents`.
+    func takeGuidanceEvents() -> [PPGuidanceEvent] {
+        map.takeGuidanceEvents()
+    }
+
+    /// Render queue only. See `PPMap.currentGuidance`.
+    func currentGuidance() -> PPGuidance? { map.currentGuidance() }
+
+    /// Render queue only.
+    func currentTrip() -> PPTrip? { map.currentTrip() }
 
     /// Render queue only.
     func setGpsMode(_ on: Bool) {

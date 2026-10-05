@@ -10,6 +10,7 @@
 
 #include "PPBaseCoverage.h"
 #include "PPCameraFit.h"
+#include "PPPerspective.h"
 #include "fv_web_mercator.h"
 
 namespace {
@@ -72,6 +73,8 @@ double Clamp(double v, double lo, double hi) {
   PPGeoPoint _center;
   double _scaleDenominator;
   double _rotationDegrees;
+  // The screen's tilt. Not part of `_proj`, which stays the flat camera.
+  double _pitchDegrees;
 
   // The surface.
   CGSize _sizeInPoints;
@@ -99,6 +102,7 @@ double Clamp(double v, double lo, double hi) {
                            (home.southWest.longitude + home.northEast.longitude) / 2.0);
   _scaleDenominator = 50.0e3;
   _rotationDegrees = 0.0;
+  _pitchDegrees = 0.0;
 
   _sizeInPoints = CGSizeZero;
   _displayScale = 1.0;
@@ -131,6 +135,7 @@ double Clamp(double v, double lo, double hi) {
   v->_pixelHeight = _pixelHeight;
   v->_minDen = _minDen;
   v->_maxDen = _maxDen;
+  v->_pitchDegrees = _pitchDegrees;
   [v setCamera:center scaleDenominator:den rotationDegrees:rot];
   return v;
 }
@@ -166,6 +171,7 @@ double Clamp(double v, double lo, double hi) {
 - (PPGeoPoint)center { return _center; }
 - (double)scaleDenominator { return _scaleDenominator; }
 - (double)rotationDegrees { return _rotationDegrees; }
+- (double)pitchDegrees { return _pitchDegrees; }
 - (CGSize)sizeInPoints { return _sizeInPoints; }
 - (CGFloat)displayScale { return _displayScale; }
 - (double)mmPerPixel { return _mmPerPixel; }
@@ -177,6 +183,21 @@ double Clamp(double v, double lo, double hi) {
 - (int)pixelWidth { return _pixelWidth; }
 - (int)pixelHeight { return _pixelHeight; }
 - (const fv::MapProjection &)projection { return _proj; }
+
+- (pippin::Perspective)perspective {
+  pippin::PerspectiveParams p;
+  p.width = _pixelWidth;
+  p.height = _pixelHeight;
+  p.pitch_deg = _pitchDegrees;
+  p.anchor_x = (_pixelWidth - 1) / 2.0;
+  p.anchor_y = (_pixelHeight - 1) * (0.5 + pippin::kTrackUpAheadFraction);
+  return pippin::Perspective(p);
+}
+
+- (BOOL)groundQuadX:(double *)xs y:(double *)ys {
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return NO;
+  return [self perspective].GroundQuad(xs, ys) ? YES : NO;
+}
 
 - (id)copyWithZone:(nullable NSZone *)zone {
   // Immutable: a copy is the same value, and the whole point of the class is
@@ -202,7 +223,82 @@ double Clamp(double v, double lo, double hi) {
   return CGPointMake((CGFloat)(sx / _displayScale), (CGFloat)(sy / _displayScale));
 }
 
+- (CGPoint)screenPointForFlatPoint:(CGPoint)flat {
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return flat;
+  const double k = (double)_displayScale;
+  double x = 0.0, y = 0.0;
+  if (![self perspective].FlatToScreen(flat.x * k, flat.y * k, &x, &y))
+    return CGPointMake(NAN, NAN);
+  return CGPointMake((CGFloat)(x / k), (CGFloat)(y / k));
+}
+
+- (CGPoint)flatPointForScreenPoint:(CGPoint)screen {
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return screen;
+  const double k = (double)_displayScale;
+  double x = 0.0, y = 0.0;
+  if (![self perspective].ScreenToFlat(screen.x * k, screen.y * k, &x, &y))
+    return CGPointMake(NAN, NAN);
+  return CGPointMake((CGFloat)(x / k), (CGFloat)(y / k));
+}
+
+- (double)depthScaleAtScreenPoint:(CGPoint)screen {
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return 1.0;
+  return [self perspective].DepthScale(screen.y * (double)_displayScale);
+}
+
+// Spelled out rather than `CATransform3DIdentity`: PippinKit uses the struct
+// but does not link QuartzCore.
+static CATransform3D IdentityTransform() {
+  CATransform3D t = {};
+  t.m11 = t.m22 = t.m33 = t.m44 = 1.0;
+  return t;
+}
+
+- (CATransform3D)perspectiveTransform {
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return IdentityTransform();
+  // H acts on device pixels and the compositor works in points; conjugating by
+  // the backing scale moves the translation and perspective terms across.
+  const double *h = [self perspective].flat_to_screen().m;
+  const double k = (double)_displayScale;
+  CATransform3D t = IdentityTransform();
+  // Core Animation multiplies row vectors: x' = x*m11 + y*m21 + m41, and the
+  // projective divisor is x*m14 + y*m24 + m44.
+  t.m11 = h[0];     t.m21 = h[1];     t.m41 = h[2] / k;
+  t.m12 = h[3];     t.m22 = h[4];     t.m42 = h[5] / k;
+  t.m14 = h[6] * k; t.m24 = h[7] * k; t.m44 = h[8];
+  return t;
+}
+
+- (PPFarFade)farFade {
+  PPFarFade out = {0.0, 0.0};
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return out;
+  const pippin::Perspective::Fade f = [self perspective].FarFade();
+  out.endY = f.end_y / (double)_displayScale;
+  out.topAlpha = f.top_alpha;
+  return out;
+}
+
+- (CGRect)flatBounds {
+  const CGRect screen = CGRectMake(0, 0, _sizeInPoints.width, _sizeInPoints.height);
+  if (_pitchDegrees == 0.0 || ![self hasSurface]) return screen;
+  const pippin::PixelRect r = [self perspective].BandRect(0);
+  if (r.width <= 0 || r.height <= 0) return screen;
+  const double k = (double)_displayScale;
+  return CGRectMake(r.x0 / k, r.y0 / k, r.width / k, r.height / k);
+}
+
 #pragma mark - Derivations
+
+- (PPViewport *)viewportWithPitch:(double)degrees {
+  const double d = std::isfinite(degrees)
+                       ? Clamp(degrees, 0.0, pippin::kMaxPitchDeg) : 0.0;
+  if (d == _pitchDegrees) return self;
+  PPViewport *v = [self derivedWithCenter:_center
+                         scaleDenominator:_scaleDenominator
+                          rotationDegrees:_rotationDegrees];
+  v->_pitchDegrees = d;
+  return v;
+}
 
 - (PPViewport *)viewportWithSurfaceSize:(CGSize)sizeInPoints
                            displayScale:(CGFloat)displayScale {
@@ -236,6 +332,7 @@ double Clamp(double v, double lo, double hi) {
 - (PPViewport *)viewportGrownByMargin:(double)margin
                          rotationSafe:(BOOL)rotationSafe {
   if (![self hasSurface]) return self;
+  if (_pitchDegrees != 0.0) return [self tiltedBandWithMargin:margin];
   int pw = 0, ph = 0;
   pippin::GrownSurfacePixels(_pixelWidth, _pixelHeight, margin,
                              rotationSafe ? true : false, &pw, &ph);
@@ -257,6 +354,37 @@ double Clamp(double v, double lo, double hi) {
   return v;
 }
 
+// The flat band a tilted screen's base is drawn into: the ground quad's
+// bounding box padded by `margin` of the short side, united with the screen
+// (`Perspective::BandRect`). Its pixels sit on the screen's at whole offsets,
+// so it is a band panned by whole pixels. The band itself is flat; the screen
+// carries the tilt. Rotation safety is not offered: a turn while tilted is
+// course-up's, which the turn limit redraws within 2.5 degrees anyway.
+- (PPViewport *)tiltedBandWithMargin:(double)margin {
+  const double m = (margin > 0.0 && std::isfinite(margin)) ? margin : 0.0;
+  const int pad = std::max(
+      1, (int)std::ceil(std::min(_pixelWidth, _pixelHeight) * m));
+  const pippin::PixelRect r = [self perspective].BandRect(pad);
+  if (r.width <= 0 || r.height <= 0) return self;
+  fv::GeoPoint g;
+  if (!_proj.SurfaceToGeo(r.x0 + (r.width - 1) / 2.0,
+                          r.y0 + (r.height - 1) / 2.0, &g).ok())
+    return self;
+  PPViewport *v = [self derivedWithCenter:_center
+                         scaleDenominator:_scaleDenominator
+                          rotationDegrees:_rotationDegrees];
+  // Set after the derivation: its centre clamp to the pack's box would move a
+  // band centred ahead of a ship near the edge off the screen's pixel grid.
+  v->_center = PPGeoPointMake(g.lat, g.lon);
+  v->_pitchDegrees = 0.0;
+  v->_pixelWidth = r.width;
+  v->_pixelHeight = r.height;
+  v->_sizeInPoints = CGSizeMake((double)r.width / (double)_displayScale,
+                                (double)r.height / (double)_displayScale);
+  [v reconfigure];
+  return v;
+}
+
 - (BOOL)isPixelAlignedToViewport:(PPViewport *)live {
   if (live == nil || ![self hasSurface] || ![live hasSurface]) return NO;
   if (_displayScale != live->_displayScale) return NO;
@@ -265,7 +393,10 @@ double Clamp(double v, double lo, double hi) {
 
 - (double)bandHeadroomForViewport:(PPViewport *)live {
   if (live == nil || ![self hasSurface] || ![live hasSurface]) return -1e300;
-  return pippin::BandHeadroomPx(_proj, live->_proj);
+  double xs[4], ys[4];
+  const BOOL tilted = [live groundQuadX:xs y:ys];
+  return pippin::BandHeadroomPx(_proj, live->_proj, tilted ? xs : nullptr,
+                                tilted ? ys : nullptr);
 }
 
 - (PPViewport *)viewportForUnderlay {
@@ -275,13 +406,26 @@ double Clamp(double v, double lo, double hi) {
                          scaleDenominator:_scaleDenominator
                           rotationDegrees:_rotationDegrees];
   v->_scaleDenominator = _scaleDenominator * pippin::kUnderlayZoomOut;
+  v->_pitchDegrees = 0.0;
+  double xs[4], ys[4];
+  const BOOL tilted = [self groundQuadX:xs y:ys];
+  int uw = 0, uh = 0;
+  pippin::UnderlaySurfacePixels(_pixelWidth, _pixelHeight, tilted ? xs : nullptr,
+                                tilted ? ys : nullptr, &uw, &uh);
+  v->_pixelWidth = uw;
+  v->_pixelHeight = uh;
+  v->_sizeInPoints = CGSizeMake((double)uw / (double)_displayScale,
+                                (double)uh / (double)_displayScale);
   [v reconfigure];
   return v;
 }
 
 - (BOOL)underlayServesViewport:(PPViewport *)live {
   if (live == nil || ![self hasSurface] || ![live hasSurface]) return NO;
-  return pippin::UnderlayServes(_proj, live->_proj) ? YES : NO;
+  double xs[4], ys[4];
+  const BOOL tilted = [live groundQuadX:xs y:ys];
+  return pippin::UnderlayServes(_proj, live->_proj, tilted ? xs : nullptr,
+                                tilted ? ys : nullptr) ? YES : NO;
 }
 
 - (PPScreenCover)coverageOfViewport:(PPViewport *)live
@@ -289,7 +433,10 @@ double Clamp(double v, double lo, double hi) {
   if (live == nil || ![live hasSurface]) return PPScreenCoverSharp;
   const fv::MapProjection *u =
       (underlay != nil && [underlay hasSurface]) ? &underlay->_proj : nullptr;
-  switch (pippin::ScreenCoverage(_proj, u, live->_proj)) {
+  double xs[4], ys[4];
+  const BOOL tilted = [live groundQuadX:xs y:ys];
+  switch (pippin::ScreenCoverage(_proj, u, live->_proj, tilted ? xs : nullptr,
+                                 tilted ? ys : nullptr)) {
     case pippin::ScreenCover::kSharp: return PPScreenCoverSharp;
     case pippin::ScreenCover::kUnderlay: return PPScreenCoverUnderlay;
     case pippin::ScreenCover::kBackground: return PPScreenCoverBackground;
@@ -494,7 +641,12 @@ double Clamp(double v, double lo, double hi) {
   if (other == nil) return NO;
   pippin::BaseCoverageLimits limits;
   limits.max_rotation_delta_deg = maxTurn;
-  return pippin::BaseCovers(_proj, other->_proj, limits) ? YES : NO;
+  double xs[4], ys[4];
+  const BOOL tilted = [other groundQuadX:xs y:ys];
+  return pippin::BaseCovers(_proj, other->_proj, limits, tilted ? xs : nullptr,
+                            tilted ? ys : nullptr)
+             ? YES
+             : NO;
 }
 
 - (BOOL)isEquivalentToViewport:(nullable PPViewport *)other {
@@ -505,13 +657,14 @@ double Clamp(double v, double lo, double hi) {
          other->_center.longitude == _center.longitude &&
          other->_scaleDenominator == _scaleDenominator &&
          other->_rotationDegrees == _rotationDegrees &&
+         other->_pitchDegrees == _pitchDegrees &&
          other->_mmPerPixel == _mmPerPixel;
 }
 
 - (NSString *)description {
-  return [NSString stringWithFormat:@"<PPViewport %.5f,%.5f 1:%.0f %.0f° %.0fx%.0f@%.0fx>",
+  return [NSString stringWithFormat:@"<PPViewport %.5f,%.5f 1:%.0f %.0f° pitch %.0f° %.0fx%.0f@%.0fx>",
                                     _center.latitude, _center.longitude,
-                                    _scaleDenominator, _rotationDegrees,
+                                    _scaleDenominator, _rotationDegrees, _pitchDegrees,
                                     _sizeInPoints.width, _sizeInPoints.height,
                                     (double)_displayScale];
 }

@@ -38,6 +38,15 @@ PP_DISPLAY_NAME = Pippin
 PP_REPORT_ADDRESS =
 PP_DEVELOPMENT_TEAM =
 
+// The app's bundle id; the share extension is this plus `.Share`. A second
+// region installs beside the first by overriding it on the xcodebuild line
+// (`PP_BUNDLE_ID=org.peregrine.Pippin.Atlanta`), since one id is one app.
+PP_BUNDLE_ID = org.peregrine.Pippin
+
+// The app icon set. `AppIconAtlanta` is the Atlanta build's, chosen on the
+// xcodebuild line beside its bundle id (BUILDING.md, "Another region").
+PP_APP_ICON = AppIcon
+
 // THE LOCAL OVERRIDE, and the `?` is the whole point: `#include?` is the
 // OPTIONAL spelling, so a checkout without the file builds silently rather
 // than warning "unable to open base configuration reference file" at everyone

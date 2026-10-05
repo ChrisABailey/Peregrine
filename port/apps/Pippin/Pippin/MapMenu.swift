@@ -54,6 +54,8 @@ struct MapMenuButton: View, Equatable {
     @Binding var symbolStep: Int
     let symbolStepLabels: [String]
     @Binding var units: DistanceUnits
+    /// "3D While Following": GPS mode tilts the chart.
+    @Binding var follow3D: Bool
     /// Opens the rides sheet, the same one the record button's long press
     /// opens, under the name a rider would look for.
     let onExportRide: () -> Void
@@ -79,6 +81,9 @@ struct MapMenuButton: View, Equatable {
                 }
             }
             .pickerStyle(.menu)
+            Toggle(isOn: $follow3D) {
+                Label("3D While Following", systemImage: "view.3d")
+            }
             if let onTides {
                 Button(action: onTides) {
                     Label("Tides", systemImage: "water.waves")
@@ -122,6 +127,7 @@ struct MapMenuButton: View, Equatable {
         a.symbolStep == b.symbolStep
             && a.symbolStepLabels == b.symbolStepLabels
             && a.units == b.units
+            && a.follow3D == b.follow3D
             && (a.onTides == nil) == (b.onTides == nil)
     }
 }

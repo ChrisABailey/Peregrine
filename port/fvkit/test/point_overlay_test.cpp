@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -1146,3 +1147,63 @@ TEST(PointOverlay, TheBuiltinRegistryOffersItAsAFileType) {
 }
 
 }  // namespace
+
+TEST(PointOverlay, WithMarkersOffNothingIsDrawnButTheProjectionIsKept) {
+  const fv::MapProjection proj = HarbourProj();
+  fv::CpuCanvas canvas(800, 600);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  PointOverlay o;
+  MapPoint p = MakePoint(1, "X", 32.74, -79.89);
+  p.color = fv::FvColor{0, 0, 255, 255};
+  o.SetPoints({p});
+  o.SetDrawMarkers(false);
+  ASSERT_TRUE(o.OnDraw(proj, canvas).ok());
+  EXPECT_TRUE(o.has_projection()) << "the pick needs it";
+  const unsigned char* px = canvas.Buffer().Row(300) + 400 * 4;
+  EXPECT_EQ(255, (int)px[0]);
+  EXPECT_EQ(255, (int)px[1]);
+  EXPECT_EQ(255, (int)px[2]);
+}
+
+TEST(PointOverlay, DrawMarkerAtStampsWhatOnDrawStamps) {
+  // Selected, dimmed and device-scaled, so every input DrawMarker reads is in
+  // the comparison. Placed off the centre to catch a stamp that ignores (x, y).
+  const fv::MapProjection proj = HarbourProj();
+  PointOverlay o;
+  MapPoint p = MakePoint(1, "X", 32.745, -79.885);
+  p.shape = PointShape::kTriangle;
+  p.size_px = 15;
+  p.color = fv::FvColor{0, 0, 255, 255};
+  o.SetPoints({MakePoint(2, "Y", 32.70, -79.95), p});
+  o.SetSelected(1);
+  o.SetDimmed(true);
+  o.SetSymbolDpiScale(2.0);
+
+  // OnDraw with only the second point present, so both canvases hold one marker.
+  PointOverlay only;
+  only.SetPoints({p});
+  only.SetSelected(1);
+  only.SetDimmed(true);
+  only.SetSymbolDpiScale(2.0);
+
+  fv::CpuCanvas drawn(800, 600);
+  fv::CpuCanvas stamped(800, 600);
+  drawn.Clear(fv::FvColor{255, 255, 255, 255});
+  stamped.Clear(fv::FvColor{255, 255, 255, 255});
+  ASSERT_TRUE(only.OnDraw(proj, drawn).ok());
+  double x = 0, y = 0;
+  ASSERT_TRUE(proj.GeoToSurface(p.position, &x, &y).ok());
+  ASSERT_TRUE(o.DrawMarkerAt(proj, stamped, 1, x, y).ok());
+
+  int differing = 0, inked = 0;
+  for (int row = 0; row < 600; ++row) {
+    const unsigned char* a = drawn.Buffer().Row(row);
+    const unsigned char* b = stamped.Buffer().Row(row);
+    if (std::memcmp(a, b, 800 * 4) != 0) ++differing;
+    for (int col = 0; col < 800; ++col)
+      if (a[col * 4] != 255 || a[col * 4 + 2] != 255) ++inked;
+  }
+  EXPECT_GT(inked, 0);
+  EXPECT_EQ(0, differing);
+  EXPECT_FALSE(o.DrawMarkerAt(proj, stamped, 2, x, y).ok());
+}
