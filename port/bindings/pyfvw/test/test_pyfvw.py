@@ -2580,7 +2580,7 @@ def test_grid_draws_a_real_graticule():
     assert interior.max() > 200
 
 # ---------------------------------------------------------------------------
-# The contour overlay (port/contour-plan.md)
+# The contour overlay (port/archive/contour-plan.md)
 # ---------------------------------------------------------------------------
 
 
@@ -2655,7 +2655,7 @@ def test_contour_draws_real_terrain_and_smoothing_only_changes_the_ink():
 
 
 # ---------------------------------------------------------------------------
-# The terrain avoidance mask (port/tamask-plan.md)
+# The terrain avoidance mask (port/archive/tamask-plan.md)
 # ---------------------------------------------------------------------------
 
 

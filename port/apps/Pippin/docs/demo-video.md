@@ -57,9 +57,11 @@ script — Xcode copies `Data/` into the bundle as it stands.
 
 ## Driving the device
 
-Location simulation on a physical device comes from Xcode; `devicectl` has no
-location command and `simctl location` is simulator-only. The iPhone stays
-tethered for the whole recording.
+The recording uses Xcode's GPX playback because it is the only device feed that
+honours the GPX timestamps, so the 15-second hold plays as written.
+`devicectl device simulate location route` also drives the phone, over Wi-Fi,
+but at one constant speed with no hold (BUILDING.md, Simulated GPS). The iPhone
+stays tethered for the whole recording.
 
 1. Connect the iPhone, open `port/apps/Pippin/Pippin.xcodeproj`, select the device.
 2. Product > Run. Grant location permission on the device if it asks.

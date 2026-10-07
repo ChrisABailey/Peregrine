@@ -106,6 +106,17 @@ do {
     check(needs(turn(366, speed: 0), a, 5), "moving again: the timer returns")
 }
 
+do {
+    func text(_ seconds: TimeInterval) -> String {
+        RideActivityContent.minutesText(until: t0.addingTimeInterval(seconds), now: t0)
+    }
+    check(text(6 * 60 + 40) == "7 min", "6:40 rounds to 7 min: \(text(400))")
+    check(text(6 * 60 + 20) == "6 min", "6:20 rounds to 6 min")
+    check(text(60) == "1 min", "a minute out")
+    check(text(59) == "<1 min", "inside the last minute")
+    check(text(-5) == "<1 min", "past due")
+}
+
 print("ride_activity: \(checks - failures)/\(checks) checks passed")
 if failures > 0 {
     print("ride_activity: \(failures) FAILED")

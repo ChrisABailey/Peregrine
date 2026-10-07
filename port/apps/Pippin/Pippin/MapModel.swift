@@ -171,17 +171,9 @@ final class MapModel: ObservableObject {
     /// the chart also turns with the rider is `courseUp`.
     @Published private(set) var gpsMode = false { didSet { ridingDidChange() } }
 
-    /// "3D While Following" in the map menu: GPS mode tilts the chart to
-    /// `followPitchDegrees`. Persisted; off by default. `-PPPitch <deg>` on
-    /// the launch line turns it on at that angle.
-    @Published private(set) var follow3D =
-        UserDefaults.standard.bool(forKey: MapModel.follow3DKey)
-            || MapModel.launchPitchDegrees > 0
-
-    private static let follow3DKey = "PPFollow3D"
     private static let launchPitchDegrees = UserDefaults.standard.double(forKey: "PPPitch")
 
-    /// The tilt "3D While Following" applies: `-PPPitch` if given, else the
+    /// The tilt course-up following applies: `-PPPitch` if given, else the
     /// pack's `display.follow_pitch_deg`. Clamped to 45 by `PPViewport.pitched(_:)`.
     var followPitchDegrees: Double {
         Self.launchPitchDegrees > 0
@@ -562,19 +554,12 @@ final class MapModel: ObservableObject {
         setContentDirty()
     }
 
-    /// Turns "3D While Following" on or off and persists the choice.
-    func setFollow3D(_ on: Bool) {
-        guard on != follow3D else { return }
-        follow3D = on
-        UserDefaults.standard.set(on, forKey: Self.follow3DKey)
-        applyPitch()
-    }
-
-    /// Tilts the camera while following and flattens it otherwise. A pick is
-    /// flat even while following: its crosshair reads the flat centre.
+    /// Tilts the camera while following course-up and flattens it otherwise.
+    /// North-up following is flat. A pick is flat even while following: its
+    /// crosshair reads the flat centre.
     private func applyPitch() {
         guard let current = viewport else { return }
-        let tilted = gpsMode && follow3D && pickProfile == nil && !flattenedForDrag
+        let tilted = gpsMode && courseUp && pickProfile == nil && !flattenedForDrag
         let pitch = tilted ? followPitchDegrees : 0
         guard current.pitchDegrees != pitch else { return }
         viewport = current.pitched(pitch)
@@ -643,6 +628,7 @@ final class MapModel: ObservableObject {
         guard let renderer, on != courseUp else { return }
         courseUp = on
         renderQueue.async { renderer.setCourseUp(on) }
+        applyPitch()
         setContentDirty()
     }
 
@@ -1406,6 +1392,16 @@ final class MapModel: ObservableObject {
         }
     }
 
+    /// Switches the base map between the pack's light and dark style sheets.
+    /// Packs without `osm.style_dark` keep the light sheet.
+    func setDarkMap(_ dark: Bool) {
+        guard let renderer, renderer.hasDarkStyle else { return }
+        dropUnderlay()
+        onRenderQueue({ $0.setDarkStyle(dark) }) { model, _ in
+            model.setContentDirty()
+        }
+    }
+
     // MARK: - Crosshair pick
 
     /// What is under the crosshair, or nil when no pick is running or before
@@ -2153,6 +2149,8 @@ private final class Renderer: @unchecked Sendable {
     private let map: PPMap
     let styleName: String
     let hasLabelFont: Bool
+    /// The pack names a dark style sheet. Fixed for the pack.
+    let hasDarkStyle: Bool
     let routeProfileNames: [String]
     /// The graph has beach arcs. Fixed for the pack.
     let beachAvailable: Bool
@@ -2182,7 +2180,7 @@ private final class Renderer: @unchecked Sendable {
     /// `display.fling_min_speed_pt` and `display.fling_deceleration`.
     let flingMinSpeedPoints: Double
     let flingDecelerationRate: Double
-    /// `display.follow_pitch_deg`: the tilt "3D While Following" applies.
+    /// `display.follow_pitch_deg`: the tilt course-up following applies.
     let followPitchDegrees: Double
     /// `display.follow_fps` and `display.min_move_pt`, for `FramePolicy`.
     let followFramesPerSecond: Double
@@ -2196,6 +2194,7 @@ private final class Renderer: @unchecked Sendable {
         // constants too.
         styleName = map.styleName
         hasLabelFont = map.hasLabelFont
+        hasDarkStyle = map.hasDarkStyle
         routeProfileNames = map.routeProfileNames
         beachAvailable = map.beachAvailable
         if let depart = TideClock.override { map.routeDepartureOverride = depart }
@@ -2228,6 +2227,11 @@ private final class Renderer: @unchecked Sendable {
     /// Render queue only. See `PPMap.stepCameraAtViewport:`.
     func stepCamera(at viewport: PPViewport) -> PPCameraStep? {
         map.stepCamera(at: viewport)
+    }
+
+    /// Render queue only. See `PPMap.darkStyle`.
+    func setDarkStyle(_ dark: Bool) {
+        map.darkStyle = dark
     }
 
     /// Render queue only. Drops the cached base map; see `PPMap.symbolZoom`.

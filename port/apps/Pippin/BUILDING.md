@@ -272,11 +272,8 @@ xcrun simctl launch booted org.peregrine.Pippin --args -PPShowStats YES
 `-PPShowStats YES` frame cost, plus the ownship's position, stamped angle and speed ·
 `-PPViewportProbe YES` P3's nine gesture checks · `-PPPixelProbe YES` P2's alpha measurement ·
 `-PPGestureDemo YES` drags and pinches on a timer · `-PPDemoFeed YES` replays the bundled ride
-(development pack only — see Step 2). To drive the live path instead, give CoreLocation a ride:
-
-```sh
-xcrun simctl location booted start --speed=8 32.6045,-80.0790 32.6055,-80.0740 32.6062,-80.0690
-```
+(development pack only — see Step 2). To drive the live CoreLocation path instead, see
+[Simulated GPS](#simulated-gps) below.
 
 ### A device, without an .ipa
 
@@ -310,6 +307,118 @@ its stdout, which is the device equivalent of the Xcode console.
 A build signed with a free Apple ID is refused on first launch until the profile is approved:
 **Settings → General → VPN & Device Management → Developer App → Trust**. A paid team profile
 skips this, so it does not apply to this tree.
+
+### Simulated GPS
+
+Four ways to move the ownship without riding. Three feed CoreLocation, so the app runs its
+real receiver path (permission prompt, accuracy, distance filter, background updates); the
+demo feed bypasses CoreLocation entirely.
+
+| Feed | Simulator | Phone | Path exercised |
+|---|---|---|---|
+| `simctl location` | yes | — | CoreLocation |
+| `devicectl simulate location` | — | yes, USB or Wi-Fi | CoreLocation |
+| Xcode GPX (Debug ▸ Simulate Location) | yes | yes, tethered under the debugger | CoreLocation |
+| `-PPDemoFeed YES` | yes | yes | the pack's `demo_track`, read in the render tick; Debug builds only |
+
+**The tracks.** `testdata/kiawah_cycle.gpx` is the recorded 28-minute ride;
+`testdata/sim/kiawah_{demo_1x,demo_2x,full_1x}.gpx` are cuts of it with a 15-second hold at the
+trailhead, made by `port/tools/make_sim_gpx.py` (see `docs/demo-video.md`). `testdata/` is
+git-ignored; the tracked copy of the 2x cut is `port/apps/Pippin/kiawah_demo_2x.gpx`.
+
+`simctl` and `devicectl` take waypoints and one constant speed, not a GPX, and ignore
+timestamps. `port/tools/gpx_route.py` converts: it drops repeated fixes (so the hold is lost),
+sets the speed to the track's own average unless `--speed` is given, and `--out-and-back`
+appends the reverse for runs longer than one pass.
+
+#### Simulator: `simctl location`
+
+A route from a GPX, at the track's speed (the tool prints it on stderr — pass the same value
+to `--speed`; `kiawah_full_1x` is 3.55 m/s):
+
+```sh
+python3 port/tools/gpx_route.py testdata/sim/kiawah_full_1x.gpx --format simctl | xcrun simctl location booted start --speed=3.55 -
+```
+
+A few waypoints by hand, or a fixed point:
+
+```sh
+xcrun simctl location booted start --speed=8 32.6045,-80.0790 32.6055,-80.0740 32.6062,-80.0690
+```
+
+```sh
+xcrun simctl location booted set 32.6045,-80.0790
+```
+
+Stop it (the last fix otherwise stays put):
+
+```sh
+xcrun simctl location booted clear
+```
+
+`booted` means the one booted simulator; with several, pass the UDID from
+`xcrun simctl list devices booted`. The Simulator app's own **Features ▸ Location** menu
+(City Run, Freeway Drive, Custom Location…) does the same from the UI.
+
+#### Phone: `devicectl simulate location`, over Wi-Fi
+
+Works with no debugger and no cable once the phone has been paired: unplug it and
+`xcrun devicectl device info details --device "$IPHONE"` shows `Transport Type: localNetwork`.
+The phone must be unlocked, on the same network, and have Developer Mode on. `$IPHONE` is set
+as in [A device, without an .ipa](#a-device-without-an-ipa).
+
+```sh
+python3 port/tools/gpx_route.py testdata/sim/kiawah_full_1x.gpx > "$TMPDIR/route.json"
+```
+
+```sh
+xcrun devicectl device simulate location route --device "$IPHONE" --route-file "$TMPDIR/route.json"
+```
+
+One fixed point:
+
+```sh
+xcrun devicectl device simulate location coordinate --device "$IPHONE" --latitude 32.6045 --longitude -80.0790
+```
+
+Stop it — the simulation outlives Pippin and keeps the phone's real GPS overridden for every app
+until cleared:
+
+```sh
+xcrun devicectl device simulate location clear --device "$IPHONE"
+```
+
+`--out-and-back` gives a ~57-minute run from `kiawah_full_1x` (BT1 and BT2 ran it that way).
+
+Afterwards, to pull the ride's logs back to the Mac (this copies files; it does not play
+anything):
+
+```sh
+xcrun devicectl device copy from --device "$IPHONE" --domain-type appDataContainer --domain-identifier org.peregrine.Pippin --source Documents/trips --destination "$TMPDIR/trips"
+```
+
+#### Either: Xcode GPX
+
+Run from Xcode (simulator or tethered phone), then in the debug bar click the location arrow ▸
+**Add GPX File to Workspace…** and pick a track. This is the only feed that honours the GPX
+timestamps, so a make_sim_gpx.py hold and speed-up play as written. To start with a track
+already playing, add the GPX to the project (no target membership) and pick it under
+Product ▸ Scheme ▸ Edit Scheme ▸ Run ▸ Options ▸ Default Location. It stops when the Xcode run
+stops. Details for the demo video are in `docs/demo-video.md`.
+
+#### Either: the demo feed
+
+```sh
+xcrun simctl launch booted org.peregrine.Pippin --args -PPDemoFeed YES
+```
+
+```sh
+xcrun devicectl device process launch --console --device "$IPHONE" org.peregrine.Pippin -PPDemoFeed YES
+```
+
+It replays the pack's `demo_track` (by default `kiawah_cycle.gpx` at `demo_time_scale = 4`).
+Development packs only, Debug builds only. To replay a hold-then-ride cut at real time instead,
+run `python3 port/tools/stage_demo_feed.py` after every `stage_data.py`.
 
 ## Step 4 — the .ipa
 

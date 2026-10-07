@@ -353,7 +353,7 @@ class RoadGraphOverlay : public Overlay,
   //
   // THE ROUTABLE ANSWER TO "WHERE IS X". The same road is very often in the
   // vector pack as well, and both rows are shown rather than deduped
-  // (search-plan-COMPLETE.md, "Explicitly deferred"): the tile knows what the
+  // (port/archive/search-plan-COMPLETE.md, "Explicitly deferred"): the tile knows what the
   // road is
   // CALLED and this knows what a bicycle may do on it, and they are not the
   // same fact. The `detail` line says which is which.

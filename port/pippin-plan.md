@@ -22,7 +22,7 @@ ships. Requirements:
 **Next, planned 2026-09-25**: the share fix (SH), battery and the night chart (BT), dragging
 without blank edges and with a fling (DR), tides (TD), beach routing (BR), elevation over an
 Atlanta pack (EL) and the 2.5D view (PV) are in **"After 1.1"** at the end of this file. Screen-off
-tracking stays BG1–BG5 in `port/pippin-guidance-plan.md`, refined the same day.
+tracking stays BG1–BG5 in `port/archive/pippin-guidance-plan.md`, refined the same day.
 
 **Goal**: an iOS app — offline cycling and walking navigation on Kiawah Island — built as the
 **third shell** over the Peregrine core, after PythonView and the CLIs. The pitch of this plan is
@@ -1425,7 +1425,7 @@ without the blank edges that show as the map slides and turns, and a fling that 
 the way Apple's scroll views do (DR); the night chart approved (BT4); and Atlanta, the next place
 to map, as the hilly test pack (EL5). This section records what the
 survey found and cuts the work into steps of one session or less. Background GPS was already
-planned as BG1–BG5 in `port/pippin-guidance-plan.md`; that section was refined in place the same
+planned as BG1–BG5 in `port/archive/pippin-guidance-plan.md`; that section was refined in place the same
 day and is only summarised here. The session protocol is unchanged: one step per session, mac
 tests first where the code allows, a simulator or phone artifact where it does not, commit per
 step, ledger row after.
@@ -1455,6 +1455,7 @@ step, ledger row after.
 | 19 | EL1–EL4 elevation | M each | — | mac, then sim |
 | 20 | EL5 the Atlanta pack | M | EL1–EL4; Chris's DTED2 | data + sim |
 | 21 | PV1–PV5 the 2.5D view | M each | BT4 before PV2, DR1 before PV5, BT3 before PV4 | mac, then sim |
+| 22 | DM the dark map | M | — | sim + phone |
 | — | TD4, BG6, RG1 | optional | | |
 
 S is well under a session, M is a session, L is a full session with no slack. The beach was the
@@ -1727,7 +1728,7 @@ Three facts set the priorities:
 - P18's settle rule applies to the static overlay too: at rest it must be exact.
 - This sprite is PV4's billboard layer, which is why BT3 comes first.
 
-**Built 2026-10-04** (simulator; phone acceptance pending). Required since 2026-10-04 (PV4's
+**Built 2026-10-04, phone-accepted 2026-10-05.** Required since 2026-10-04 (PV4's
 upright symbols), no longer optional.
 
 - fvkit `MovingMapOverlay`: `SetDrawSymbol(false)` places the ship and rebuilds the apron without
@@ -1750,7 +1751,35 @@ upright symbols), no longer optional.
   follow anchor in six consecutive captures; course-up and north-up angles right; route drawn in
   register; an End-waypoint drag moved it 2.5 km to the release point and the cached overlay
   redrew. GPS follow: 313/391 frames a base hit, 149 fixes served as steps.
-- Still open: phone acceptance — BT1's procedure against BT2's 14.4 CPU s/min following.
+- **ACCEPTED on the phone 2026-10-05.** Procedure: iPhone 14 Pro, bench, unplugged, half
+  brightness, `devicectl simulate location route` over Wi-Fi, `kiawah_full_1x` one pass per
+  test (~29 min at 3.58 m/s, 1 Hz). Build: Release archive with
+  `SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) DEBUG'` so the energy log (Debug-only
+  since 1.2) is compiled in while Swift stays optimised — comparable to BT1/BT2, which were
+  Release builds before the log became Debug-only. Kiawah pack, includes PV1–PV5.
+
+  Three tests, raw logs in `port/apps/Pippin/docs/`: `bt3-phone-1-following-screen-on-2026-10-05.csv`,
+  `bt3-phone-2-following-locked-2026-10-05.csv`, `bt3-phone-3-recording-locked-2026-10-05.csv`.
+
+  | State | Minutes | Frames | Base draws/min | CPU s/min | Fixes/min | Thermal |
+  |---|---|---|---|---|---|---|
+  | Following, screen on, no route | 25 | 7.7 /s | 20 | **9.2** vs BT2 14.4, BT1 43.5 | 39 | nominal |
+  | Following, screen on, route shown | 3 | 8.9 /s | 21 | 9.7 | 49 | nominal |
+  | Following, route open, screen locked (Live Activity) | 28 | 0 | 0 | **0.04** | ~40 | nominal |
+  | Recording only, screen locked | 28 | 0 | 0 | **0.026** vs BT2 screen-on recording 1.5 | 31 | nominal |
+
+  Following CPU fell about a third from BT2 while frames rose (7.7/s vs 4.7/s) — follow frames
+  are now mostly composite-only, which is BT3's premise. Showing the route costs ~0.5 CPU s/min
+  (cached static overlay). The locked rows are the app process only; the Live Activity is
+  rendered by the system and is not in `cpu_s`. Battery (5 % steps): 97 % at start (first row
+  already 0.95) → 90 % at minute 24 of test 2 (~56 min, screen-on following plus the start of
+  locked following), then 90 % held through the rest of test 2 and all of the 35-minute
+  recording (~75 min screen-locked without a 5 % step, so under ~4 %/h locked). Fixes ran
+  ~30/min on the simulated track in recording, as BT2 saw. The first attempt at test 3 stopped
+  42 s in (one fix in the GPX, a mode-change row, no crash); most likely a second tap on record
+  while the first fix took ~40 s to arrive; the rerun from 90 % ran clean.
+
+  The screen-off numbers are the first phone baseline for BG (release 1.3).
 
 #### BT4 — the night chart (M; approved by Chris 2026-09-25)
 
@@ -2712,6 +2741,13 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - Map menu toggle "3D While Following" (`view.3d` symbol) → `MapModel.follow3D`, persisted in
   user defaults `PPFollow3D`, off by default. `-PPPitch <deg>` still works: turns it on at that
   angle (overrides the pack key).
+  **Removed 2026-10-05 (Chris): following always tilts.** The map menu has no 3D option and
+  `PPFollow3D` is no longer read; GPS mode always tilts to `display.follow_pitch_deg`
+  (`-PPPitch` still overrides the angle).
+  **Changed same day (Chris): course-up only.** The tilt applies only in GPS mode with
+  course-up; north-up following is flat. `MapModel.applyPitch()` requires `courseUp`, and
+  `setCourseUp(_:)` re-applies the pitch, so the compass toggle tilts/flattens at once.
+  `pippin.ini`'s `follow_pitch_deg` comment says so.
 - Flatten-on-drag: the first `pan` of a gesture while tilted sets `flattenedForDrag` and
   flattens; `endGesture` clears it and re-tilts; the next fix brings the camera back to the ship.
   Pinch and picks unchanged (pick already flat since PV2). Resolves PV2's open item (d).
@@ -2820,6 +2856,45 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - gtests: 4 new in `test/base_coverage_test.cpp` (square size; the screen-sized underlay misses
   a sideways tilted screen and the square does not; the square serves at every 5° turn and
   flattened; running ahead stales it while still covered). `fv_pippin_test` 154/154.
+
+### DM — the dark map — **BUILT 2026-10-05**, release 1.3
+
+Chris asked for a dark-mode base map modelled on Apple Maps' dark look — dark blue water, dark
+green vegetation, dark brown sand — explicitly not a night palette: every feature class of
+Kiawah Trails stays.
+
+- `port/Osm/styles/kiawah-trails-dark.json` is GENERATED by `port/tools/make_dark_style.py` from
+  `kiawah-trails.json`: same 65 layers, filters, widths and zoom ranges, colours from the
+  script's PALETTE table. The script exits naming any colour property with no PALETTE entry.
+  Edit colours in the script, not the JSON — Chris's hand edits (ground #30342c, beach #54442e,
+  minor-road label halo #4d3e2e) were folded into the script.
+- Palette highlights: ground #30342c, water #33467a, beach #54442e, buildings #26221d fill with
+  grey outline (#5a5a5a z14, #8a8a8a z15+) so they stand out from the ground, road names
+  near-white (#f1ede6 minor / #f8f5ef major) on a brown halo, bike network still the strongest
+  line.
+- The marsh `fill-pattern` tufts were too bright on dark, and `fill-opacity` does not reach
+  pattern stamps (`ICanvas::DrawPixmap` has no alpha path; honouring it would be an ICanvas
+  change, not done here). So the dark style has its own sprite sheet
+  `symbols/kiawah-dark.{png,json}` — the shared osm-liberty-topo sheet with the marsh_pattern
+  tile recoloured to a muted olive (#6a8442 at 60% alpha), written by the same script. ~100 KB
+  in the pack.
+- Pack key `[osm] style_dark` in `pippin.ini`; removing it keeps the map light. `stage_data.py`
+  stages the dark style and sheet, lists `osm.style_dark` in PATH_KEYS and runs the sprite-pair
+  check for both styles.
+- `PPMap.darkStyle` (render queue only) reloads the sheet in place via `OsmStyleEngine::LoadFile`
+  (all-or-nothing; keeps ref latitude, mm/px and the label switch, bumps the style epoch so the
+  retained scene invalidates), drops the cached base, and bumps the overlay content epoch.
+  `PPMap.hasDarkStyle` says whether the pack names one. `MapModel.setDarkMap` is driven by
+  `MapScreen`'s `@Environment(\.colorScheme)` (`onChange(initial: true)`), so the map follows the
+  system appearance live.
+- Point names: fvkit `PointOverlay::SetLabelColors(text, halo)` added (default black on white, so
+  goldens unchanged); PPMap sets #f1ede6 on #4d3e2e with the dark sheet, black on white otherwise.
+- Same session: the "3D While Following" toggle was removed — see the PV section's note.
+- Known, left as is by Chris's choice: the About screen's style name is read once at launch;
+  there is no manual Light/Dark choice in the menu.
+- Proved: light/dark renders compared with pyfvw; simulator switched light→dark→light live;
+  macOS ctest 2299/2299; Release 1.2.0 (2) archive installed on Chris's iPhone and accepted
+  2026-10-05.
 
 ### Open for Chris
 

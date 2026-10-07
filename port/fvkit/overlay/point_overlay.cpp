@@ -673,15 +673,13 @@ Status PointOverlay::DrawMarker(GeoDraw& draw, const MapPoint& p, double sx,
     // beside a marker drawn three times its authored size is a caption a
     // third the height of the thing it names.
     ls.style.size = 12.0 * dpi_scale_;
-    ls.style.color = Ink(FvColor{0, 0, 0, 255});
+    ls.style.color = Ink(label_color_);
     ls.dx = (int)std::lround(r) + 3;
     ls.dy = -(int)std::lround(r);
-    // A white halo, which the hand-rolled version could not have had: a name
-    // over a chart is unreadable without one. Labels are still OFF by
-    // default — the halo makes a name legible, not un-overlapping, and label
-    // collision is still the ledger's open item.
+    // The halo makes a name legible over the chart; it does not stop names
+    // overlapping, which is still an open item in the ledger.
     ls.halo_width = 1.0;
-    ls.halo_color = Ink(FvColor{255, 255, 255, 255});
+    ls.halo_color = Ink(label_halo_color_);
     s = draw.DrawLabelAtPixel(sx, sy, p.name, ls);
     if (!s.ok()) return s;
   }

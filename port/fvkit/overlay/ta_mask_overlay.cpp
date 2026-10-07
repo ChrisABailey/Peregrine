@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // The Terrain Avoidance Mask overlay — see fvkit/overlay/ta_mask_overlay.h.
-// Plan: port/tamask-plan.md.
+// Plan: port/archive/tamask-plan.md.
 
 #include "fvkit/overlay/ta_mask_overlay.h"
 

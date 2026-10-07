@@ -66,5 +66,5 @@ if(FVW_BUILD_TESTS)
 target_link_libraries(fv_geosym_test PRIVATE fv_geosym fv_vpf fv_png
                                              GTest::gtest_main)
   gtest_discover_tests(fv_geosym_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

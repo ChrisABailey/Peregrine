@@ -85,6 +85,10 @@ class Catalog {
 
   Status Series(std::vector<SeriesRow>* out) const;
 
+  // The distinct formats that have at least one coverage row, sorted. A
+  // series outlives the removal of its data source; this does not.
+  Status CoveredFormats(std::vector<std::string>* out) const;
+
   // Coverage intersecting rect (antimeridian-aware), optionally restricted
   // to one series. Rows ordered by coverage id.
   Status SelectByGeoRect(const GeoRect& rect, std::vector<CoverageRow>* out,

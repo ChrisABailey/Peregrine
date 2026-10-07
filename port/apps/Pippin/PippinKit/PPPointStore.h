@@ -131,6 +131,10 @@ class PointStore {
   void SetShowLabels(bool on) { overlay_->SetShowLabels(on); }
   bool show_labels() const { return overlay_->show_labels(); }
 
+  void SetLabelColors(fv::FvColor text, fv::FvColor halo) {
+    overlay_->SetLabelColors(text, halo);
+  }
+
   // The selected point draws highlighted. Selection is display state too, and
   // `PointOverlay` does not dirty the document for it, so this does not
   // write.

@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// VectorMapOverlay over the REAL Kiawah pyramid (search-plan-COMPLETE.md, S2).
+// VectorMapOverlay over the REAL Kiawah pyramid (port/archive/search-plan-COMPLETE.md, S2).
 //
 // port/fvkit/test/vector_map_overlay_test.cpp pins everything the wrapper
 // decides above the source seam, against a fake that returns six features.

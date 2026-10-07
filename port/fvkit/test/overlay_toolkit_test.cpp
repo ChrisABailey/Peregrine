@@ -423,6 +423,17 @@ TEST(Properties, ResetToDefaults) {
   EXPECT_EQ(w.GetInt("width", -1), 2);
 }
 
+TEST(Properties, PathIsAStringWithAChooserKind) {
+  fv::app::PropertyValue p = fv::app::PropertyValue::Path("/data/a b.gpx");
+  EXPECT_EQ(p.type, fv::app::PropertyType::kPath);
+  EXPECT_EQ(p.ToString(), "/data/a b.gpx");
+  ASSERT_TRUE(p.FromString("~/tracks"));
+  EXPECT_EQ(p.s, "~/tracks");
+  fv::app::PropertySpec spec;
+  EXPECT_EQ(spec.path_kind, fv::app::PathKind::kFile);
+  EXPECT_TRUE(spec.path_filters.empty());
+}
+
 TEST(Properties, TypedGettersRefuseTheWrongType) {
   Widget w;
   EXPECT_EQ(w.GetInt("colour", -1), -1);

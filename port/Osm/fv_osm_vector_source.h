@@ -68,7 +68,7 @@ class OsmVectorSource : public IVectorSource {
   Status Query(const VectorQuery& q, std::vector<VectorFeature>* out) override;
   Status Describe(const FeatureRef& ref, FeatureDescription* out) override;
 
-  // --- the name index (search-plan-COMPLETE.md, S3) ------------------------
+  // --- the name index (port/archive/search-plan-COMPLETE.md, S3) ------------------------
   //
   // A pack built by port/Osm/tools/fvnames.cpp carries a `search_names` table
   // of everything it holds a name for, and these two are how a search reaches

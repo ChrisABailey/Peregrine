@@ -83,6 +83,13 @@ COMMON = [
     Item("port/Osm/styles/symbols/osm-liberty-topo.json",
          "symbols/osm-liberty-topo.json",
          "and its index, without which the artwork is one opaque bitmap"),
+    Item("port/Osm/styles/kiawah-trails-dark.json", "kiawah-trails-dark.json",
+         "the dark look, drawn while the phone is in dark mode"),
+    # The dark look's own sheet: the shared one with the marsh tufts muted.
+    Item("port/Osm/styles/symbols/kiawah-dark.png", "symbols/kiawah-dark.png",
+         "the dark look's icon artwork"),
+    Item("port/Osm/styles/symbols/kiawah-dark.json", "symbols/kiawah-dark.json",
+         "and its index"),
     Item("port/Osm/styles/peregrine-osm.json", "peregrine-osm.json",
          "the plainer look, and PPMap's compiled-in fallback if osm.style goes"),
     Item("port/Routing/rules/route-weights.json", "route-weights.json",
@@ -217,7 +224,7 @@ FONT_FILES = ["DejaVuSans.ttf", "LICENSE_DEJAVU"]
 
 # Settings keys whose value is a bundle-relative path into the pack. Checked
 # after staging, which is what keeps pippin.ini and MANIFEST from drifting.
-PATH_KEYS = ["pippin.mbtiles", "pippin.font", "osm.style",
+PATH_KEYS = ["pippin.mbtiles", "pippin.font", "osm.style", "osm.style_dark",
              "routing.graph", "routing.rules", "movingmap.demo_track",
              "points.seed", "tides.file"]
 
@@ -701,9 +708,10 @@ def main():
                 print("  DANGLING    %s = %s (not in the pack)" % (key, rel))
                 missing.append(rel)
         missing += check_tides(args.pack, values)
-        style_rel = values.get("osm.style")
-        if style_rel:
-            missing += check_sprite(args.pack, style_rel)
+        for style_key in ("osm.style", "osm.style_dark"):
+            style_rel = values.get(style_key)
+            if style_rel:
+                missing += check_sprite(args.pack, style_rel)
     else:
         missing.append("pippin.ini")
 

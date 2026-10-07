@@ -41,5 +41,5 @@ if(FVW_BUILD_TESTS)
   # convention as canvas_test and the GeoSym harbor golden.
   target_link_libraries(fv_enc_test PRIVATE fv_enc fv_png GTest::gtest_main)
   gtest_discover_tests(fv_enc_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

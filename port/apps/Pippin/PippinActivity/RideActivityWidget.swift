@@ -152,14 +152,11 @@ private struct CompactTrailing: View {
     }
 }
 
-/// A countdown to the turn that runs on its own between updates.
+/// The time to the turn in whole minutes, recomputed on each content update.
 private struct TurnTimer: View {
     let turnAt: Date
 
     var body: some View {
-        // A range that has already ended renders 0:00 rather than trapping.
-        let now = Date()
-        Text(timerInterval: min(now, turnAt)...max(now, turnAt), countsDown: true)
-            .multilineTextAlignment(.leading)
+        Text(RideActivityContent.minutesText(until: turnAt, now: Date()))
     }
 }

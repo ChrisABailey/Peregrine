@@ -137,6 +137,8 @@ bool ParseColor(const std::string& in, FvColor* out) {
   return true;
 }
 
+}  // namespace
+
 bool SameValue(const PropertyValue& a, const PropertyValue& b) {
   if (a.type != b.type) return false;
   switch (a.type) {
@@ -144,15 +146,14 @@ bool SameValue(const PropertyValue& a, const PropertyValue& b) {
     case PropertyType::kInt:
     case PropertyType::kChoice: return a.i == b.i;
     case PropertyType::kDouble: return a.d == b.d;
-    case PropertyType::kString: return a.s == b.s;
+    case PropertyType::kString:
+    case PropertyType::kPath: return a.s == b.s;
     case PropertyType::kColor:
       return a.color.r == b.color.r && a.color.g == b.color.g &&
              a.color.b == b.color.b && a.color.a == b.color.a;
   }
   return false;
 }
-
-}  // namespace
 
 // --- PropertyValue ---------------------------------------------------------
 
@@ -192,6 +193,12 @@ PropertyValue PropertyValue::Choice(long long index) {
   p.i = index;
   return p;
 }
+PropertyValue PropertyValue::Path(std::string v) {
+  PropertyValue p;
+  p.type = PropertyType::kPath;
+  p.s = std::move(v);
+  return p;
+}
 
 std::string PropertyValue::ToString() const {
   char buf[64];
@@ -208,6 +215,7 @@ std::string PropertyValue::ToString() const {
       std::snprintf(buf, sizeof(buf), "%.10g", d);
       return buf;
     case PropertyType::kString:
+    case PropertyType::kPath:
       return s;
     case PropertyType::kColor:
       std::snprintf(buf, sizeof(buf), "#%02X%02X%02X%02X", color.r, color.g,
@@ -247,6 +255,7 @@ bool PropertyValue::FromString(const std::string& text) {
       return true;
     }
     case PropertyType::kString:
+    case PropertyType::kPath:
       s = text;
       return true;
     case PropertyType::kColor:
@@ -372,7 +381,8 @@ double Properties::GetDouble(const std::string& key, double def) const {
 std::string Properties::GetString(const std::string& key,
                                   const std::string& def) const {
   PropertyValue v;
-  if (!GetProperty(key, &v).ok() || v.type != PropertyType::kString) return def;
+  if (!GetProperty(key, &v).ok()) return def;
+  if (v.type != PropertyType::kString && v.type != PropertyType::kPath) return def;
   return v.s;
 }
 FvColor Properties::GetColor(const std::string& key, FvColor def) const {

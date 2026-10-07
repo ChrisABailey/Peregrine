@@ -7,7 +7,7 @@
 //
 // ISO 8211 is the record container S-57 rides in; it is also the container of
 // an ENC exchange set's CATALOG.031, so the two parse with the same code (see
-// port/vpf-geosym-plan.md section 7). Nothing here knows about charts: a file
+// port/archive/vpf-geosym-plan.md section 7). Nothing here knows about charts: a file
 // is a sequence of records, a record is a set of fields, a field is one or
 // more rows of labelled subfields whose types come from the file's Data
 // Descriptive Record (DDR).

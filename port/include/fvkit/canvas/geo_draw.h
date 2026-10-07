@@ -64,7 +64,7 @@ namespace fv {
 //
 // DIMMING IS DEFERRED (Chris, 2026-08-13). Adding it later is one enum value
 // and one filter; the two decisions already worked out are parked in §3d of
-// port/fvkit-draw-plan-COMPLETE.md so they are not re-derived.
+// port/archive/fvkit-draw-plan-COMPLETE.md so they are not re-derived.
 enum class RenderState {
   kNormal,
   kHighlighted,

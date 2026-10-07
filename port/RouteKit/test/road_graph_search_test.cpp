@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// The road network as a search provider (port/search-plan-COMPLETE.md, S4).
+// The road network as a search provider (port/archive/search-plan-COMPLETE.md, S4).
 //
 // WHAT THESE PIN, and none of it is a pixel. The road graph is the ROUTABLE
 // answer to "where is X" — the same road is usually in the vector pack too,

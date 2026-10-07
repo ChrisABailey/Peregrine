@@ -6,7 +6,7 @@
 // fvkit/analysis/profile.h — the terrain profile along a path: what the
 // ground does under a line, a polyline, or a route.
 //
-// AN2 of port/analysis-plan.md.
+// AN2 of port/archive/analysis-plan.md.
 //
 // THIS IS A REPLACEMENT, NOT A TRANSCRIPTION, and the plan says why at
 // length. In one paragraph: Elevation_Chart::set_elevation_RB asks the map

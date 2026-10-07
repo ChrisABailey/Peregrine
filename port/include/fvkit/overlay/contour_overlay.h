@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/overlay/contour_overlay.h — the Contour Lines overlay, ported from
-// Applications/FalconView/Contour. Plan: port/contour-plan.md (C2 and C3).
+// Applications/FalconView/Contour. Plan: port/archive/contour-plan.md (C2 and C3).
 // The tracing lives next door in fvkit/geo/terrain_contour.h; this file is
 // everything around it — when to draw, what to sample, what to keep, and how
 // it looks.

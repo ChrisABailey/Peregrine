@@ -524,6 +524,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   PPWindSettings* _wind;
   NSTimeInterval _routeDepartureOverride;
   std::string _fontPath;
+  std::string _lightStylePath;  // `osm.style`
+  std::string _darkStylePath;   // `osm.style_dark`, empty when the pack has none
+  BOOL _darkStyle;
   double _mmPerPixelOverride;  // `display.mm_per_pixel`, 0 when unset
   int _baseCanvasWidth;
   int _baseCanvasHeight;
@@ -578,9 +581,13 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   }
 
   _style = std::make_shared<fv::OsmStyleEngine>();
+  _lightStylePath = packPath("osm.style", "peregrine-osm.json");
+  _darkStylePath = _settings.GetString("osm.style_dark", "").empty()
+                       ? std::string()
+                       : packPath("osm.style_dark", "");
+  _darkStyle = NO;
   std::string styleError;
-  const fv::Status ys =
-      _style->LoadFile(packPath("osm.style", "peregrine-osm.json"), &styleError);
+  const fv::Status ys = _style->LoadFile(_lightStylePath, &styleError);
   if (!ys.ok()) {
     if (error) *error = ErrorFromStatus(PPErrorPackIncomplete, ys, @"style");
     return nil;
@@ -937,6 +944,41 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   const double z = symbolZoom > 0.0 ? symbolZoom : 1.0;
   if (z == _symbolZoom) return;
   _symbolZoom = z;
+  [self invalidateBaseLayer];
+}
+
+- (BOOL)hasDarkStyle {
+  return _darkStylePath.empty() ? NO : YES;
+}
+
+- (BOOL)darkStyle {
+  return _darkStyle;
+}
+
+/// Reloads the style sheet in place. A failed load leaves the previous sheet
+/// drawing, because `LoadFile` commits nothing on error.
+- (void)setDarkStyle:(BOOL)dark {
+  if (dark == _darkStyle) return;
+  if (dark && _darkStylePath.empty()) return;
+  const std::string& path = dark ? _darkStylePath : _lightStylePath;
+  std::string styleError;
+  if (!_style->LoadFile(path, &styleError).ok()) {
+    NSLog(@"PPMap: style %s did not load: %s", path.c_str(), styleError.c_str());
+    return;
+  }
+  _darkStyle = dark;
+  _styleName = [NSString stringWithUTF8String:_style->style_name().c_str()];
+  // Point names: near-white on dark brown over the dark sheet, the overlay's
+  // own black on white otherwise. Matches the dark sheet's road names.
+  if (_pointStore) {
+    if (dark)
+      _pointStore->SetLabelColors(fv::FvColor{241, 237, 230, 255},
+                                  fv::FvColor{77, 62, 46, 255});
+    else
+      _pointStore->SetLabelColors(fv::FvColor{0, 0, 0, 255},
+                                  fv::FvColor{255, 255, 255, 255});
+  }
+  ++_contentEpoch;
   [self invalidateBaseLayer];
 }
 

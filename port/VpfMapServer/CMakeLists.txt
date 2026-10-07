@@ -37,5 +37,5 @@ if(FVW_BUILD_TESTS)
     test/vpf_identify_test.cpp)
   target_link_libraries(fv_vpf_test PRIVATE fv_vpf GTest::gtest_main)
   gtest_discover_tests(fv_vpf_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

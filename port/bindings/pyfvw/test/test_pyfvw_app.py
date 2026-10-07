@@ -700,7 +700,7 @@ def test_a_search_crosses_the_stack_and_the_caller_names_no_field(tmp_path):
     r = app.SearchSession(fx.manager).search(
         app.SearchQuery(text="Ruddy Turnstone"))
     # BOTH answers, and both are true. Cross-provider dedup is deferred on
-    # purpose (search-plan-COMPLETE.md): the caller tells them apart by
+    # purpose (port/archive/search-plan-COMPLETE.md): the caller tells them apart by
     # `detail`.
     assert len(r) == 2
     assert {x.detail for x in r} == {"note", "point"}

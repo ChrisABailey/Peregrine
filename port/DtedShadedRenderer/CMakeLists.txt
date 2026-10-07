@@ -37,5 +37,5 @@ if(FVW_BUILD_TESTS)
     test/solar_position_test.cpp)
   target_link_libraries(fv_dted_shaded_test PRIVATE fv_dted_shaded GTest::gtest_main)
   gtest_discover_tests(fv_dted_shaded_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

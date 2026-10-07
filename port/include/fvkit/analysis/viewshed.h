@@ -6,7 +6,7 @@
 // fvkit/analysis/viewshed.h — what can be seen from a point on the earth,
 // given the terrain in the way.
 //
-// AN3 of port/analysis-plan.md. Transcribed from
+// AN3 of port/archive/analysis-plan.md. Transcribed from
 // fvw_core/Intervisibility/{Viewshed,GeoPoint}.cs — the one piece of
 // FalconView written in C#, reached through COM by the Range & Bearing
 // overlay's CTerrainMaskObj, which is only a container for the array this

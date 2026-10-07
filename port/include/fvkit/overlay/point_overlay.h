@@ -247,6 +247,15 @@ class PointOverlay : public Overlay,
   void SetShowLabels(bool on) { show_labels_ = on; }
   bool show_labels() const { return show_labels_; }
 
+  /// Label text and halo colours. Black on a white halo by default; a shell
+  /// drawing over a dark base map sets light text on a dark halo.
+  void SetLabelColors(FvColor text, FvColor halo) {
+    label_color_ = text;
+    label_halo_color_ = halo;
+  }
+  FvColor label_color() const { return label_color_; }
+  FvColor label_halo_color() const { return label_halo_color_; }
+
   // THE DPI GAP, CLOSED THE WAY `RouteOverlay` CLOSES IT. The comment above
   // `PointShape` has said since G2 that this decision was deferred because
   // "the overlay does not know the device"; a shell that DOES can now say so,
@@ -465,6 +474,8 @@ class PointOverlay : public Overlay,
   int64_t next_id_ = 1;
   int64_t next_symbol_id_ = 1;
   bool show_labels_ = false;
+  FvColor label_color_{0, 0, 0, 255};
+  FvColor label_halo_color_{255, 255, 255, 255};
   bool dimmed_ = false;
   bool draw_markers_ = true;
   double dpi_scale_ = 1.0;

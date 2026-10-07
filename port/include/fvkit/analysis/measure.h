@@ -6,7 +6,7 @@
 // fvkit/analysis/measure.h — the measurement objects: range and bearing,
 // multi-point, total distance, area. What a user reads off the map.
 //
-// AN4 of port/analysis-plan.md. AN1 (`path.h`) already does every piece of
+// AN4 of port/archive/analysis-plan.md. AN1 (`path.h`) already does every piece of
 // geometry these four need, so what is left here is what the Windows Range &
 // Bearing overlay spends its `utils.cpp` on: A UNIT TABLE AND A SET OF
 // FORMATTING RULES. Those rules are transcribed, not improved, because they

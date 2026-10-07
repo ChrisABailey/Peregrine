@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fv_osm_name_index.h — the gazetteer that lives INSIDE the pack
-// (port/search-plan-COMPLETE.md, S3).
+// (port/archive/search-plan-COMPLETE.md, S3).
 //
 // WHY IT IS IN THE .MBTILES AND NOT BESIDE IT. An MBTiles file is pure SQLite,
 // extra tables are legal, and every other reader ignores what it does not

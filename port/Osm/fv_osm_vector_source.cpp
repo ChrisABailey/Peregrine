@@ -789,7 +789,7 @@ Status OsmVectorSource::Describe(const FeatureRef& ref,
 }
 
 // ---------------------------------------------------------------------------
-// The name index (search-plan-COMPLETE.md, S3)
+// The name index (port/archive/search-plan-COMPLETE.md, S3)
 // ---------------------------------------------------------------------------
 
 bool OsmVectorSource::HasNameIndex() const { return impl_->names.IsOpen(); }

@@ -63,5 +63,5 @@ if(FVW_BUILD_TESTS)
   target_compile_definitions(fv_routing_test PRIVATE
     FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}")
   gtest_discover_tests(fv_routing_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

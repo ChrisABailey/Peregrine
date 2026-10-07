@@ -35,7 +35,7 @@ if(FVW_BUILD_TESTS)
   # gtest_discover_tests, which needs '\;'). The earlier '\;' made one giant
   # PYTHONPATH value, so MSPCCS_DATA/FVW_TESTDATA_DIR were never set.
   set_tests_properties(pyfvw_pytest PROPERTIES ENVIRONMENT
-    "PYTHONPATH=$<TARGET_FILE_DIR:pyfvw>;MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    "PYTHONPATH=$<TARGET_FILE_DIR:pyfvw>;MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 
   # The PythonView application's own suite (AN6/AN7 — the analysis overlay,
   # its palette and the button bar). It lives here rather than under a
@@ -46,5 +46,5 @@ if(FVW_BUILD_TESTS)
   add_test(NAME pythonview_pytest
     COMMAND ${PYTHON_EXECUTABLE} -m pytest -q ${CMAKE_SOURCE_DIR}/port/apps/test)
   set_tests_properties(pythonview_pytest PROPERTIES ENVIRONMENT
-    "PYTHONPATH=$<TARGET_FILE_DIR:pyfvw>:${CMAKE_SOURCE_DIR}/port/apps;MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    "PYTHONPATH=$<TARGET_FILE_DIR:pyfvw>:${CMAKE_SOURCE_DIR}/port/apps;MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

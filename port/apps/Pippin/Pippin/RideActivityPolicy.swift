@@ -14,11 +14,11 @@ import Foundation
 enum RideActivityPolicy {
     /// Below this speed the time to the turn is not shown. 1 m/s is a walk.
     static let minSpeedForTime = 1.0
-    /// Shortest gap between two updates that change only the countdown. The
-    /// card's timer counts down on its own in between.
+    /// Shortest gap between two updates that change only the distance or the
+    /// time to the turn. The card's minutes are recomputed on each update.
     static let minUpdateInterval: TimeInterval = 5
     /// A re-estimated arrival at the turn that moves less than this is not
-    /// sent; the running timer is close enough.
+    /// sent; the card shows whole minutes.
     static let turnAtTolerance: TimeInterval = 3
 
     /// Content for the next turn.
@@ -46,7 +46,7 @@ enum RideActivityPolicy {
 
     /// Whether `next` should replace `shown`, `sinceLast` seconds after the
     /// previous update. A new phase, turn or road goes at once; a distance or
-    /// timer change waits out `minUpdateInterval`.
+    /// time-to-turn change waits out `minUpdateInterval`.
     static func needsUpdate(from shown: RideActivityContent?,
                             to next: RideActivityContent,
                             sinceLast: TimeInterval) -> Bool {

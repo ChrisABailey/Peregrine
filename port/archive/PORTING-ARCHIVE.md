@@ -2603,3 +2603,50 @@ finding, and O5c's route-profile UI)
   `geo_contour_test.cpp`. `route.py` accordingly draws its legs with one `polyline` call instead
   of the leg-by-leg workaround. Still NOT this defect and still correct: a point merely off the
   edge of the SURFACE projects to a coordinate outside `0..w` and is carried through.
+
+### DK1 — ViewKit core (2026-10-05)
+
+`port/ViewKit` (`fv::view`): `Viewport` (immutable; centre, 1:N, rotation, projection type,
+surface in points + display scale + mm/point, `ScaleLimits`, over `MapProjection` physical
+mode), `ScaleLadder`, `MapView` controller, `RenderScheduler`. 41 gtests, full suite 2299 green
+at -j8. Decisions:
+
+- The uniform ladder has no fixed lattice: a step is display ×/÷2 from the *current* scale; a
+  pinch release keeps the pinched scale and only re-picks the product. The series ladder settles
+  to the nearest native scale instead.
+- Ties: the series ladder at equal scale prefers the current format, then lower series id.
+  `NearestProduct` ties go to the current product, then the finer scale, then lower id.
+- In physical mode the x scale follows the centre latitude, so a single pan correction leaves a
+  residual (0.04 pt per 40 pt pan); anchors and drags use the iterated `Viewport::WithGeoAt`.
+  `Panned` only guarantees which position lands at the surface centre, not zero residual.
+
+### DK2 — DeskKit core (2026-10-05)
+
+`port/DeskKit` (`fv::desk`, lib `fv_deskkit`): `CommandRegistry`, `MenuModel`, `MapGroups`
+(from `port/DeskKit/map-groups.json`), `UserSettings`, `Workspace` (`.fvws`), `Desk` +
+`FakeDesk`/`FakeDeskShell`. 39 gtests. Decisions:
+
+- Shortcuts are spelled neutrally in the registry ("Primary+Shift+S"); `Primary` resolves to
+  Cmd on mac, Ctrl elsewhere. A shell never sees a raw modifier.
+- `UserSettings` (app-written `user-settings.json`, lower-cased keys like `fv::Settings`) wins
+  over `peregrine.ini` when both set a key — `ApplyTo(fv::Settings)` applies the user store
+  last. `peregrine.ini` is the factory default, not an override.
+- Internally "MapGroup"; UI-facing strings say "Map family" (`map-groups.json`'s `title`).
+- `MenuModel::Rebuild` fires only on a structural change (items/layout); enabled/checked state
+  is read live from the command, not signalled.
+
+### DK4 — mac skeleton (2026-10-07)
+
+`port/DeskKit/fv_desk_host.{h,cpp}`: `DeskHost`, the one object a native shell drives (owns
+Settings, a `QueuedShell`, `Desk`, a `RenderScheduler`; `Tick()`/`CopyFrame`/`Placement`/`GoTo`).
+`fv_desk_base_map.{h,cpp}`: `BaseMapRenderer` (raster only), factored out of `FakeDesk` and now
+shared with `DeskHost`. `port/apps/Peregrine/`: AppKit shell in Swift over `DeskHost` via Swift's
+C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper) factored out of
+`port/apps/Pippin/CMakeLists.txt` so both apps share it. 2365 gtests (up from 2358). Decisions:
+
+- **K2 proven**: Swift calls DeskKit C++ directly through `<swift/bridging>` (refcounted shared
+  reference) and a plain header (`fv_desk_host.h` includes nothing but the standard library); no
+  ObjC++ facade was needed. Drop the ObjC++ fallback from the desktop plan's K2 row.
+- `Desk::GoTo(center, scale)` re-chooses the product (as a group change does); plain panning
+  keeps the current product. `map.recenter` now goes through `GoTo`, so recentring can change
+  the product under the cursor.

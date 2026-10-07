@@ -55,5 +55,5 @@ if(FVW_BUILD_TESTS)
   # FVW_OSM_STYLE_DIR: the reference style ships with the source (styles/), not
   # with TestData — it is a deliverable of this module, not sample data.
   gtest_discover_tests(fv_osm_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData\;FVW_OSM_STYLE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/styles")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata\;FVW_OSM_STYLE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/styles")
 endif()

@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// fv::VectorMapOverlay tests (search-plan-COMPLETE.md S2) — the wrapper that
+// fv::VectorMapOverlay tests (port/archive/search-plan-COMPLETE.md S2) — the wrapper that
 // lets a
 // vector MAP be found by the same session that finds a point set.
 //
@@ -752,7 +752,7 @@ TEST(VectorMapOverlay, OneSessionFindsTheRoadAndThePointTogether) {
 }
 
 // ---------------------------------------------------------------------------
-// Tier 2 — the source's own name index (search-plan-COMPLETE.md, S3)
+// Tier 2 — the source's own name index (port/archive/search-plan-COMPLETE.md, S3)
 // ---------------------------------------------------------------------------
 //
 // Everything below is about the CHOICE between the two tiers and what the

@@ -5,7 +5,7 @@
 
 // fvkit/overlay/vector_map_overlay.h — a vector MAP source, wearing an
 // overlay's clothes so that "where is X" has ONE discovery path
-// (port/search-plan-COMPLETE.md, S2).
+// (port/archive/search-plan-COMPLETE.md, S2).
 //
 // WHY A MAP BECOMES AN OVERLAY. S1 built the aggregating session over
 // `OverlayManager`, and the alternative for map data was a second registry of
@@ -150,7 +150,7 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
 
   // The tags consulted, in order, for a feature's title; the first one present
   // and non-empty wins. THIS IS THE ONE PIECE OF PRODUCT KNOWLEDGE the search
-  // seam lets a provider keep (search-plan-COMPLETE.md §4), and it is a knob
+  // seam lets a provider keep (port/archive/search-plan-COMPLETE.md §4), and it is a knob
   // than a constant because this class wraps any `IVectorSource`: OSM spells
   // it `name`, an OpenMapTiles cut made with `name:latin` spells it that, ENC
   // spells it `OBJNAM` and DNC `nam`. The caller sees only `title`.
@@ -257,7 +257,7 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
 
   // --- provenance ----------------------------------------------------------
 
-  // THE MINT (search-plan-COMPLETE.md §3). A `SearchResult` names its feature
+  // THE MINT (port/archive/search-plan-COMPLETE.md §3). A `SearchResult` names its feature
   // with one
   // uint64 because `HitItem` does, and nothing crossing this seam — no
   // binding, no shell, no serialised bookmark — should have to hold a variant

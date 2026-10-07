@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/overlay/ta_mask_overlay.h — the Terrain Avoidance Mask overlay,
-// ported from Applications/FalconView/TAMask. Plan: port/tamask-plan.md.
+// ported from Applications/FalconView/TAMask. Plan: port/archive/tamask-plan.md.
 //
 // An aircraft is at some altitude MSL; this colours the ground by how much
 // room is left underneath it. Three named bands, tested from the top down:

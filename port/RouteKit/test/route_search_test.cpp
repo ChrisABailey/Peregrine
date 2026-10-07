@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // Global search, S1: the route's half, and the two-overlay acceptance
-// (port/search-plan-COMPLETE.md).
+// (port/archive/search-plan-COMPLETE.md).
 //
 // The plan's own acceptance criterion for S1 is a query that crosses a stack:
 // one search call, two overlay types that have never heard of each other, and

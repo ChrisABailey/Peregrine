@@ -39,6 +39,7 @@
 #define FVKIT_APP_PROPERTIES_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fvkit/canvas/canvas.h"  // FvColor
@@ -57,6 +58,13 @@ enum class PropertyType {
   kString,
   kColor,   // FvColor; a shell shows a colour well, a settings file "#RRGGBBAA"
   kChoice,  // one of PropertySpec::choices, carried as its INDEX
+  kPath,    // a file or directory, carried in `s`; a shell shows a chooser
+};
+
+/// What a kPath property names, and so which chooser a shell opens.
+enum class PathKind {
+  kFile = 0,
+  kDirectory,
 };
 
 // One property's value. A tagged struct rather than std::variant: it crosses
@@ -67,7 +75,7 @@ struct PropertyValue {
   bool b = false;
   long long i = 0;  // kInt and kChoice (the index)
   double d = 0.0;
-  std::string s;
+  std::string s;  // kString and kPath
   FvColor color;
 
   static PropertyValue Bool(bool v);
@@ -76,6 +84,7 @@ struct PropertyValue {
   static PropertyValue String(std::string v);
   static PropertyValue Color(FvColor v);
   static PropertyValue Choice(long long index);
+  static PropertyValue Path(std::string v);
 
   // "#RRGGBBAA" for kColor, "true"/"false" for kBool, the plain number or
   // string otherwise. This is the settings-file spelling, and it is stable:
@@ -86,6 +95,9 @@ struct PropertyValue {
   // default rather than zeroing the property.
   bool FromString(const std::string& text);
 };
+
+/// True when `a` and `b` have the same type and the same value in that type's field.
+bool SameValue(const PropertyValue& a, const PropertyValue& b);
 
 struct PropertySpec {
   // Stable, lowercase, underscore-separated. It is an .ini key and a binding
@@ -105,6 +117,11 @@ struct PropertySpec {
 
   // kChoice only, in display order. The VALUE is the index into this.
   std::vector<std::string> choices;
+
+  // kPath only. `path_filters` are FileTypeDesc-style pairs,
+  // {"GPX Files (*.gpx)", "*.gpx"}, for a file chooser; empty = any file.
+  PathKind path_kind = PathKind::kFile;
+  std::vector<std::pair<std::string, std::string>> path_filters;
 
   std::string help;  // tooltip; may be empty
 };

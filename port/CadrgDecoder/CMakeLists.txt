@@ -28,5 +28,5 @@ if(FVW_BUILD_TESTS)
   add_executable(fv_cadrg_test test/cadrg_test.cpp)
   target_link_libraries(fv_cadrg_test PRIVATE fv_cadrg GTest::gtest_main)
   gtest_discover_tests(fv_cadrg_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

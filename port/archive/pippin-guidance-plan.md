@@ -339,8 +339,12 @@ each GD2 event and every ~10 s of countdown.
 - Layout approved 2026-10-04.
 
 **Built 2026-10-04** — see `port/PORTING.md` §2a. The time to the turn is distance over the trip
-computer's speed, hidden below 1 m/s, and drawn as a self-running `Text(timerInterval:)` (m:ss);
-updates that change only distance or timer are held to one per 5 s.
+computer's speed, hidden below 1 m/s; updates that change only distance or the time to the turn
+are held to one per 5 s.
+- **Fixed 2026-10-05, accepted on the simulator:** the self-running `Text(timerInterval:)` card
+  showed "6:--" — the Always-On lock screen dims and iOS blanks the timer's seconds as "--". The
+  card now shows whole minutes ("7 min", "<1 min" in the last minute) via
+  `RideActivityContent.minutesText(until:now:)`, recomputed on each content update.
 
 ## Deliberately not in this plan
 

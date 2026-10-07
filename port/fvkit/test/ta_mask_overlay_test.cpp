@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// The Terrain Avoidance Mask overlay (port/tamask-plan.md): the classifier,
+// The Terrain Avoidance Mask overlay (port/archive/tamask-plan.md): the classifier,
 // the bands, the raster, the altitude seam and the peak. The elevation
 // sources here are analytic, so every count below is a fact about the
 // overlay's own rules rather than about a DTED file that might not be on this

@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// Global search, S1: the seam (port/search-plan-COMPLETE.md).
+// Global search, S1: the seam (port/archive/search-plan-COMPLETE.md).
 //
 // What has to be pinned here is not "a search returns something" -- it is the
 // handful of rules that only the AGGREGATOR can get right, because a provider

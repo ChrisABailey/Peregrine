@@ -9,10 +9,10 @@
 //
 // THE FIFTH PIECE OF THE SHARED OVERLAY TOOLKIT (port/PORTING.md §1a-bis),
 // and an EXTRACTION rather than new work. Every line here was written for the
-// contour overlay (port/contour-plan.md C2, 2026-08-29) and lived inside
+// contour overlay (port/archive/contour-plan.md C2, 2026-08-29) and lived inside
 // contour_overlay.cpp until the terrain-avoidance mask needed the same
 // lattice, the same sampling rule and the same hysteresis to sit on
-// (port/tamask-plan.md TA1). Both overlays now go through this file, which is
+// (port/archive/tamask-plan.md TA1). Both overlays now go through this file, which is
 // what makes it an extraction and not a guess.
 //
 // THE PAYLOAD IS NOT HERE, deliberately. Contours cache traced polylines and

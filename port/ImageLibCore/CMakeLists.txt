@@ -24,7 +24,7 @@ if(FVW_BUILD_TESTS)
   target_link_libraries(fv_imagelib_jpeg_wrapper_test
     PRIVATE fv_imagelib_jpeg_wrapper GTest::gtest_main)
   gtest_discover_tests(fv_imagelib_jpeg_wrapper_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()
 
 # --- slice 2: CGeoTiff reader (geotiff.cpp) + gif ---
@@ -80,5 +80,5 @@ if(FVW_BUILD_TESTS)
   target_link_libraries(fv_imagelib_geotiff_test
     PRIVATE fv_imagelib_geotiff fv_imagelib_gif GTest::gtest_main)
   gtest_discover_tests(fv_imagelib_geotiff_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

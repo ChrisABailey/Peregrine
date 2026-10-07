@@ -149,7 +149,7 @@ struct VectorQuery {
 };
 
 // ---------------------------------------------------------------------------
-// The name index (search-plan-COMPLETE.md, S3)
+// The name index (port/archive/search-plan-COMPLETE.md, S3)
 // ---------------------------------------------------------------------------
 
 // What a global text lookup asks of a source that has an index. There is no
@@ -224,7 +224,7 @@ class IVectorSource {
     return Status::Error(kUnsupported, "source does not implement Describe");
   }
 
-  // --- the name index (search-plan-COMPLETE.md, S3) ------------------------
+  // --- the name index (port/archive/search-plan-COMPLETE.md, S3) ------------------------
   //
   // "Where is X" over the WHOLE source, with no area to narrow it. A tile
   // pyramid cannot answer that by reading tiles — the honest cost of a

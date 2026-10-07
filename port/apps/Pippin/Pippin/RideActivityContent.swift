@@ -31,3 +31,14 @@ struct RideActivityContent: Codable, Hashable {
     /// The road being joined; empty for an unnamed way.
     var road: String = ""
 }
+
+extension RideActivityContent {
+    /// The time to the turn in whole minutes: "7 min", or "<1 min" inside the
+    /// last minute. Whole minutes because the dimmed lock screen redraws about
+    /// once a minute and shows a running timer's seconds as "--".
+    static func minutesText(until turnAt: Date, now: Date) -> String {
+        let seconds = turnAt.timeIntervalSince(now)
+        if seconds < 60 { return "<1 min" }
+        return "\(Int((seconds / 60).rounded())) min"
+    }
+}

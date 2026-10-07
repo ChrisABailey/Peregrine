@@ -38,5 +38,5 @@ if(FVW_BUILD_TESTS)
   # two ENVIRONMENT entries need an escaped list separator
   gtest_discover_tests(fv_geotiff_frame_test
     PROPERTIES ENVIRONMENT
-    "MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib\;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    "MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib\;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

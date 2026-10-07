@@ -113,6 +113,10 @@ add_subdirectory(port/fvkit)
 # RouteKit links BOTH fvkit and Routing, which is the one thing fvkit may not
 # do — hence a module of its own, and hence after both of them.
 add_subdirectory(port/RouteKit)
+# The interactive map view shared by the desktop shells.
+add_subdirectory(port/ViewKit)
+# The desktop application model over ViewKit and fv::app.
+add_subdirectory(port/DeskKit)
 # pyfvw embeds CPython; there is none on a phone.
 if(NOT FVW_IOS)
   add_subdirectory(port/bindings/pyfvw)
@@ -122,3 +126,9 @@ endif()
 # (`cmake --preset ios`); on the mac it builds one thing — the gtest over the
 # pure-C++ half of PippinKit — and returns.
 add_subdirectory(port/apps/Pippin)
+# The macOS desktop app's core archive (the app is an Xcode project over it).
+add_subdirectory(port/apps/Peregrine)
+# The Linux desktop app (GTK4), port/linux-plan.md.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS ${CMAKE_SOURCE_DIR}/port/apps/PeregrineGtk/CMakeLists.txt)
+  add_subdirectory(port/apps/PeregrineGtk)
+endif()

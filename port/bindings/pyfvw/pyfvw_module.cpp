@@ -620,6 +620,7 @@ const char* PropertyTypeName(fv::app::PropertyType t) {
     case fv::app::PropertyType::kString: return "str";
     case fv::app::PropertyType::kColor: return "color";
     case fv::app::PropertyType::kChoice: return "choice";
+    case fv::app::PropertyType::kPath: return "path";
   }
   return "unknown";
 }
@@ -630,7 +631,8 @@ py::object PropertyToPy(const fv::app::PropertyValue& v) {
     case fv::app::PropertyType::kInt:
     case fv::app::PropertyType::kChoice: return py::cast(v.i);
     case fv::app::PropertyType::kDouble: return py::cast(v.d);
-    case fv::app::PropertyType::kString: return py::cast(v.s);
+    case fv::app::PropertyType::kString:
+    case fv::app::PropertyType::kPath: return py::cast(v.s);
     case fv::app::PropertyType::kColor:
       return py::make_tuple(v.color.r, v.color.g, v.color.b, v.color.a);
   }
@@ -665,6 +667,8 @@ fv::app::PropertyValue PropertyFromPy(const fv::app::PropertySpec& spec,
       return fv::app::PropertyValue::Double(py::cast<double>(o));
     case fv::app::PropertyType::kString:
       return fv::app::PropertyValue::String(py::cast<std::string>(o));
+    case fv::app::PropertyType::kPath:
+      return fv::app::PropertyValue::Path(py::cast<std::string>(o));
     case fv::app::PropertyType::kColor: {
       py::sequence c = py::cast<py::sequence>(o);
       fv::FvColor col;
@@ -1361,13 +1365,21 @@ PYBIND11_MODULE(pyfvw, m) {
                  d["max"] = s.max;
                }
                if (!s.choices.empty()) d["choices"] = s.choices;
+               if (s.type == fv::app::PropertyType::kPath) {
+                 d["path_kind"] = s.path_kind == fv::app::PathKind::kDirectory
+                                      ? "directory" : "file";
+                 py::list filters;
+                 for (const auto& f : s.path_filters)
+                   filters.append(py::make_tuple(f.first, f.second));
+                 d["path_filters"] = filters;
+               }
                rows.append(d);
              }
              return rows;
            },
            "The overlay's settable properties, as a list of dicts (key, label, "
-           "group, type, default, help, and min/max or choices where they "
-           "apply). Empty for an overlay that declares none. This is what a UI "
+           "group, type, default, help, and min/max, choices or "
+           "path_kind/path_filters where they apply). Empty for an overlay that declares none. This is what a UI "
            "builds a property page from.")
       .def("get_property",
            [](fv::Overlay& o, const std::string& key) {
@@ -1777,7 +1789,7 @@ PYBIND11_MODULE(pyfvw, m) {
              std::shared_ptr<fv::VectorMapOverlay>>(
       ovl, "VectorMapOverlay",
       "A vector MAP source wearing an overlay's clothes, so that 'where is X' "
-      "has one discovery path (search-plan-COMPLETE.md S2/S3) and a chart can "
+      "has one discovery path (port/archive/search-plan-COMPLETE.md S2/S3) and a chart can "
       "be laid over another map. It draws once it has a STYLE as well as a "
       "source; with no style it is search-only. Two tiers, and the "
       "SOURCE decides which answers: the pack's own name index when the query "

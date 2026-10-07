@@ -3743,7 +3743,7 @@ class PythonView(pyfvw.app.AppShell):
             # The one degradation worth SAYING rather than leaving as a
             # mystery: a global text search reaches the chart only through the
             # pack's own name index, and a pack without one answers nothing at
-            # all rather than answering badly (search-plan-COMPLETE.md, tier 2).
+            # all rather than answering badly (port/archive/search-plan-COMPLETE.md, tier 2).
             if (not var_view.get() and self._search_map is not None
                     and self._search_map.source is not None
                     and not self._search_map.last_search_used_index):

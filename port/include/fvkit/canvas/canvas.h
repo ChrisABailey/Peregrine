@@ -6,7 +6,7 @@
 // fvkit/canvas/canvas.h — FvKit L2.5 drawing interface (contracts D1/D3).
 // Mirrors the primitive set of FalconView's IGraphicsContext2 (pens, brushes,
 // fonts, lines/polygons/ellipses/rectangles/text/blits), which is also
-// exactly the GDI surface the GeoSym renderer uses (see vpf-geosym-plan.md).
+// exactly the GDI surface the GeoSym renderer uses (see port/archive/vpf-geosym-plan.md).
 //
 // NOTE (plan deviation, documented): IGraphicsContext2 used GDI-style
 // factory objects (CreatePen/CreateBrush/SelectObject). This API passes

@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvkit/app/search.h — "where is X", asked of every data source at once
-// (port/search-plan-COMPLETE.md, S1).
+// (port/archive/search-plan-COMPLETE.md, S1).
 //
 // This is the SECOND aggregating capability, and it is deliberately not a
 // flavour of the first. Pick (app/pick.h) is pixel-space: it needs a
@@ -132,7 +132,7 @@ struct SearchQuery {
 // ---------------------------------------------------------------------------
 
 // PROVENANCE IS FLAT — `Overlay* + uint64_t`, exactly HitItem's shape, and
-// that is a decision rather than an economy (search-plan-COMPLETE.md §3). A
+// that is a decision rather than an economy (port/archive/search-plan-COMPLETE.md §3). A
 // vector
 // source names a feature with a 128-bit FeatureRef; minting that down to one
 // uint64 is PRIVATE to whatever wraps the source, the way fvkit/vector/pick.h

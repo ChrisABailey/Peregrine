@@ -15,5 +15,5 @@ if(FVW_BUILD_TESTS)
   add_executable(fv_dted_test test/dted_cell_test.cpp)
   target_link_libraries(fv_dted_test PRIVATE fv_dted GTest::gtest_main)
   gtest_discover_tests(fv_dted_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

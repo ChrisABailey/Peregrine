@@ -6,7 +6,7 @@
 // fvkit/analysis/path.h — a geographic path, and the arithmetic every
 // analysis tool does over one.
 //
-// AN1 of port/analysis-plan.md. Ported from the Windows Range & Bearing
+// AN1 of port/archive/analysis-plan.md. Ported from the Windows Range & Bearing
 // overlay (Plugins/LegacyOverlays/RangeBearing), where the same four lines of
 // GEO_calc_range_and_bearing are written out again in CRangeBearingObject,
 // CMultiPointRBObj, CTotalDistanceObj, AreaToolObj and Elevation_Chart —

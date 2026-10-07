@@ -46,8 +46,10 @@ ROOT_DOCS = {"port/COPYING": "COPYING",
 
 # Edited in the destination, never overwritten from here. PrivacyPolicy.md is
 # the document the App Store listing links to and has no upstream original, so
-# a closure diff would propose deleting it on every sync.
-DEST_OWNED = {"README.md", "CMakeLists.txt", ".gitignore", "PrivacyPolicy.md"}
+# a closure diff would propose deleting it on every sync. CLAUDE.md is the
+# instructions for sessions working in the destination (port/linux-plan.md).
+DEST_OWNED = {"README.md", "CMakeLists.txt", ".gitignore", "PrivacyPolicy.md",
+              "CLAUDE.md"}
 
 # Same, but whole subtrees: the README's screenshots are authored downstream and
 # have no upstream original, so a strict closure diff would propose deleting

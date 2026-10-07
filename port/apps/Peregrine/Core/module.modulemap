@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 Chris Bailey
+// Part of Peregrine, a cross-platform port of FalconView(tm).
+// See COPYING.LESSER and NOTICE.md for the full licensing picture.
+
+// The C++ surface the Swift app imports directly (desktop-plan K2).
+module PeregrineCore {
+  header "../../../DeskKit/fv_desk_host.h"
+  requires cplusplus
+  export *
+}

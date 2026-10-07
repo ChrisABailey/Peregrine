@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// MergeFeatureRows (search-plan-COMPLETE.md, S3) — "one named thing, one
+// MergeFeatureRows (port/archive/search-plan-COMPLETE.md, S3) — "one named thing, one
 // row", which S2 discovered inside VectorMapOverlay and S3 had to share,
 // because the live tile scan and the staged index must not hold two ideas of
 // what one road is.

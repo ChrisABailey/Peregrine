@@ -6,7 +6,7 @@
 // fvkit/geo/terrain_contour.h — elevation posts in, contour polylines out.
 // The tracing half of FalconView's Contour Lines overlay
 // (Applications/FalconView/Contour/ContourLists.cpp); the overlay itself is
-// fvkit/overlay/contour_overlay.h. Plan: port/contour-plan.md, step C1.
+// fvkit/overlay/contour_overlay.h. Plan: port/archive/contour-plan.md, step C1.
 //
 // NOT TO BE CONFUSED WITH fvkit/geo/contour.h, which is next door and is
 // about something else entirely: an `IGeoContour` there is a geographic CURVE
@@ -138,7 +138,7 @@ std::vector<ContourLine> TraceElevationContours(const ElevationGrid& grid,
 // multiple of an interval — FalconView's `CContourLists::TraceClearanceContours`,
 // which is the terrain-avoidance mask's half of ContourLists.cpp and is the
 // function above with three altitudes hard-coded into it (warning, caution,
-// OK) instead of a ladder. Plan: port/tamask-plan.md TA2.
+// OK) instead of a ladder. Plan: port/archive/tamask-plan.md TA2.
 //
 // `level_index` on each returned line is the INDEX INTO `levels_m` as the
 // caller wrote it, not a multiple of anything, so a caller with three named

@@ -4,7 +4,7 @@
 # See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 """The Analysis tools as a shell sees them — AN6 and AN7 of
-`port/analysis-plan.md`.
+`port/archive/analysis-plan.md`.
 
 WHAT IS AND IS NOT HERE. Every number in this file comes from
 `pyfvw.analysis`, which is AN1-AN5: the geodesy, the terrain profile, the XDraw

@@ -4,7 +4,7 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 // fvnames — build, inspect and query the name index INSIDE an .mbtiles pack
-// (port/search-plan-COMPLETE.md, S3). A host tool, in the fvpack/fvgraph
+// (port/archive/search-plan-COMPLETE.md, S3). A host tool, in the fvpack/fvgraph
 // pattern: it
 // makes the data a phone reads.
 //

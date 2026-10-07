@@ -52,5 +52,5 @@ if(FVW_BUILD_TESTS)
     FV_ROUTE_FIXTURE_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/Ruddy Turnstone to the beachclub.fvrte"
     FV_ROUTE_BEACH_FIXTURE_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/Boardwalk 29 to Boardwalk 41 by the beach.fvrte")
   gtest_discover_tests(fv_routekit_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

@@ -314,6 +314,19 @@ Status Catalog::Series(std::vector<SeriesRow>* out) const {
   return s;
 }
 
+Status Catalog::CoveredFormats(std::vector<std::string>* out) const {
+  if (out == nullptr) return Status::Error(kInvalidArg, "out is null");
+  out->clear();
+  detail::SqliteStmt sel;
+  Status s = sel.Prepare(db_,
+                         "SELECT DISTINCT s.format FROM map_series s WHERE "
+                         "EXISTS (SELECT 1 FROM coverage c WHERE c.series_id = s.id) "
+                         "ORDER BY s.format");
+  if (!s.ok()) return s;
+  while (sel.Step(&s)) out->push_back(sel.ColText(0));
+  return s;
+}
+
 Status Catalog::SelectByGeoRect(const GeoRect& rect,
                                 std::vector<CoverageRow>* out,
                                 int64_t series_id) const {

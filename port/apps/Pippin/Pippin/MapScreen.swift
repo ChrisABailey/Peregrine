@@ -21,6 +21,7 @@ struct MapScreen: View {
     @StateObject private var draft = RouteDraft()
     @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
     /// Opens Settings for a notice that offers it. See `openSettings()`.
     @Environment(\.openURL) private var openURL
 
@@ -140,6 +141,9 @@ struct MapScreen: View {
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 model.setScenePhase(SceneVisibility(phase))
+            }
+            .onChange(of: colorScheme, initial: true) { _, scheme in
+                model.setDarkMap(scheme == .dark)
             }
             .onChange(of: geo.size) { _, size in
                 // A size change is the one moment the insets can change too.
@@ -688,8 +692,6 @@ struct MapScreen: View {
                                             set: { model.setSymbolStep($0) }),
                         symbolStepLabels: symbolStepLabels,
                         units: $display.units,
-                        follow3D: Binding(get: { model.follow3D },
-                                          set: { model.setFollow3D($0) }),
                         onExportRide: {
                             model.refreshRides()
                             ridesShown = true

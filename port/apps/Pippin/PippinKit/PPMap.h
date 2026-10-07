@@ -317,7 +317,7 @@ NS_SWIFT_SENDABLE
 /// `display.fling_deceleration`, 0.998 (`DecelerationRate.normal`) by default.
 @property(nonatomic, readonly) double flingDecelerationRate;
 
-/// The tilt while following with "3D While Following" on, in degrees, from
+/// The tilt while following, in degrees, from
 /// `display.follow_pitch_deg` (45). `PPViewport.pitched(_:)` clamps it.
 @property(nonatomic, readonly) double followPitchDegrees;
 
@@ -1019,6 +1019,14 @@ NS_SWIFT_SENDABLE
 /// a map draws with no names on it.
 @property(nonatomic, readonly, copy) NSString *styleName;
 @property(nonatomic, readonly) BOOL hasLabelFont;
+
+/// Whether the pack names a dark style sheet (`osm.style_dark`).
+@property(nonatomic, readonly) BOOL hasDarkStyle;
+
+/// Draws with the dark sheet instead of `osm.style`. Reloads the sheet and
+/// drops the cached base map; a no-op when the pack has no dark sheet.
+/// Render queue only, like every other call on this class.
+@property(nonatomic) BOOL darkStyle;
 
 @end
 

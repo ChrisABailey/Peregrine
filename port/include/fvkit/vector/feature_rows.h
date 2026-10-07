@@ -5,7 +5,7 @@
 
 // fvkit/vector/feature_rows.h — "one named thing, one row", extracted so that
 // the live scan and the staged index cannot disagree about what one road is
-// (port/search-plan-COMPLETE.md, S3).
+// (port/archive/search-plan-COMPLETE.md, S3).
 //
 // S2 discovered the rule and implemented it inside VectorMapOverlay: a road is
 // cut at every tile seam it crosses and OSM had already split it at every

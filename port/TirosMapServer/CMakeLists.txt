@@ -15,5 +15,5 @@ if(FVW_BUILD_TESTS)
   add_executable(fv_tiros_frame_test test/tiros_frame_test.cpp)
   target_link_libraries(fv_tiros_frame_test PRIVATE fv_tiros_frame GTest::gtest_main)
   gtest_discover_tests(fv_tiros_frame_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/TestData")
+    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()
