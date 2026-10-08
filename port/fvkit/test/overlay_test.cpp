@@ -222,8 +222,8 @@ TEST_F(ManagerTest, DrawErrorNamesOverlay) {
 }
 
 // Repinned 2026-08-29 with the real graticule (the 2026-07-17 pin was the
-// 30-line sample). 0 = probe: set it to 0, run, and the test prints the hash
-// and writes overlay_grid.png for a human to look at.
+// 30-line sample). 0 = probe: set a font's hash to 0, run, and the test prints
+// the hash and writes overlay_grid.png for a human to look at.
 //
 // The VIEWPORT moved with it, and that is the substantive change. The old one
 // was 240x180 at 1:2M, which spans about half a degree — and the table's minor
@@ -232,7 +232,17 @@ TEST_F(ManagerTest, DrawErrorNamesOverlay) {
 // derived its interval from pixels; a cartographic table does not, and a
 // golden over an empty picture proves nothing. 1:5M over 640x480 is a few
 // degrees each way: major lines, minor lines, ticks and labels all present.
-constexpr uint64_t kHashGrid = 0x8ff2e4e5ade27e84ull;
+//
+// The labels make the hash depend on the font file, so each font carries its
+// own pin. The DejaVu pin is from fonts-dejavu-core 2.37 (Ubuntu 24.04).
+struct GridGolden {
+  const char* font;
+  uint64_t hash;
+};
+constexpr GridGolden kGridGoldens[] = {
+    {"/System/Library/Fonts/Supplemental/Arial.ttf", 0x8ff2e4e5ade27e84ull},
+    {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0x5ad46f617401dc2full},
+};
 
 TEST(GridOverlayGolden, GraticuleAtlanta) {
   fv::MapProjection proj;
@@ -244,11 +254,11 @@ TEST(GridOverlayGolden, GraticuleAtlanta) {
   canvas.Clear(fv::FvColor{0, 0, 32, 255});
   // Labels need a font; without one the grid still draws its lines, so the
   // golden would silently stop covering half the overlay.
-  const char* fonts[] = {"/System/Library/Fonts/Supplemental/Arial.ttf",
-                         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+  uint64_t want = 0;
   bool have_font = false;
-  for (const char* f : fonts)
-    if (canvas.SetDefaultFont(f).ok()) {
+  for (const GridGolden& g : kGridGoldens)
+    if (canvas.SetDefaultFont(g.font).ok()) {
+      want = g.hash;
       have_font = true;
       break;
     }
@@ -268,11 +278,11 @@ TEST(GridOverlayGolden, GraticuleAtlanta) {
   EXPECT_LT(inked, 640 * 480 / 4);
 
   uint64_t h = Fnv1a(canvas.Buffer());
-  if (kHashGrid == 0) {
+  if (want == 0) {
     printf("PROBE grid hash: 0x%llxull\n", (unsigned long long)h);
     fv::WritePng(canvas.Buffer(), "overlay_grid.png");
   } else {
-    EXPECT_EQ(h, kHashGrid);
+    EXPECT_EQ(h, want);
   }
 }
 
