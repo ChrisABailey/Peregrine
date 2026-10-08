@@ -10,8 +10,10 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "fv_desk_host.h"
+#include "main_menu.h"
 #include "map_canvas.h"
 
 namespace peregrine {
@@ -22,7 +24,8 @@ struct DeskHostRelease {
 };
 
 /// The map widget over a status bar showing the scale, the series drawn, the
-/// ladder's message and the position under the cursor.
+/// ladder's message and the position under the cursor, under the menu bar and
+/// with the toolbar in the header bar, both generated from DeskKit's model.
 class MapWindow : public Gtk::ApplicationWindow {
  public:
   MapWindow();
@@ -36,6 +39,11 @@ class MapWindow : public Gtk::ApplicationWindow {
   /// Moves the camera; a `scale` of 0 keeps the current one.
   void GoTo(double lat, double lon, double scale);
   void RefreshStatus();
+  /// Executes a DeskKit command; shows its error, and closes the window once
+  /// the quit command has closed every document.
+  void Execute(const std::string& command_id);
+  /// Regenerates the menu bar, toolbar and shortcuts when the model changed.
+  void UpdateMenus();
   /// Renders the current view and writes the window's content (map and
   /// status bar) to `path` as a PNG, then prints the status line to stderr.
   /// Returns the error message, or "".
@@ -47,12 +55,18 @@ class MapWindow : public Gtk::ApplicationWindow {
   bool OnCloseRequest();
   void PresentError(const std::string& message, const std::string& detail);
   void PresentNotice(const std::string& notice);
+  void RebuildToolbar();
 
   // Declared first so the host outlives the widgets that call it.
   std::unique_ptr<fv::desk::DeskHost, DeskHostRelease> host_;
   MapCanvas canvas_;
+  CommandMenus menus_;
   Gtk::HeaderBar header_;
+  Gtk::Box toolbar_{Gtk::Orientation::HORIZONTAL, 2};
+  std::vector<ToolbarItem> toolbar_items_;
+  std::vector<std::string> accelerated_actions_;
   Gtk::Box content_{Gtk::Orientation::VERTICAL};
+  Gtk::PopoverMenuBar menu_bar_;
   Gtk::Box status_bar_{Gtk::Orientation::HORIZONTAL, 16};
   Gtk::Label scale_label_;
   Gtk::Label product_label_;

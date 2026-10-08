@@ -31,6 +31,7 @@ void Application::on_activate() {
   }
   window_ = std::make_unique<MapWindow>();
   add_window(*window_);
+  window_->UpdateMenus();
   window_->present();
 
   if (!options_.catalog.empty() && window_->OpenCatalog(options_.catalog) &&
