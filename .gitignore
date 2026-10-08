@@ -5,11 +5,8 @@
 /build*/
 compile_commands.json
 
-# Map test data — large, separately distributed, never committed.
-# See "Test data" in README.md.
-TestData/
-test_data/
-testdata/
+# testdata/ is tracked: the small redistributable sample set described in
+# testdata/README.md. The full test tree lives only in FVW.
 
 # Python
 __pycache__/
