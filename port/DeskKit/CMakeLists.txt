@@ -25,6 +25,7 @@ add_library(fv_deskkit STATIC
   fv_desk_desk.cpp
   fv_desk_fake.cpp
   fv_desk_host.cpp
+  fv_desk_launch.cpp
   fv_desk_map_groups.cpp
   fv_desk_map_options.cpp
   fv_desk_menu_model.cpp
@@ -44,6 +45,7 @@ if(FVW_BUILD_TESTS)
     test/commands_test.cpp
     test/desk_test.cpp
     test/host_test.cpp
+    test/launch_test.cpp
     test/map_groups_test.cpp
     test/map_options_test.cpp
     test/menu_model_test.cpp
