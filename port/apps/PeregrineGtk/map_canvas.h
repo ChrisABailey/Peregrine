@@ -14,6 +14,10 @@
 
 namespace peregrine {
 
+/// The frame's placement (`DeskHost::Placement`) as a GSK transform that
+/// every GSK renderer draws; the caller unrefs it.
+GskTransform* PlacementTransform(const fv::desk::FramePlacement& p);
+
 /// Translates GTK input into `DeskHost` calls and paints the host's last
 /// frame through the host's preview transform, so a gesture moves the
 /// picture before the next frame is ready.

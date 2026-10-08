@@ -115,6 +115,26 @@ void MapCanvas::ShowFrame() {
   texture_height_pt_ = h / scale;
 }
 
+// Built as translate · rotate · skew · scale: GSK's cairo renderer, the
+// fallback without GL, draws such a transform but paints one made from a
+// general matrix pink.
+GskTransform* PlacementTransform(const fv::desk::FramePlacement& p) {
+  constexpr double kDegrees = 180.0 / 3.14159265358979323846;
+  // Columns (a, b) and (c, d) are R(angle) applied to (sx, 0) and (k, sy).
+  const double sx = std::hypot(p.a, p.b);
+  const double angle = std::atan2(p.b, p.a);
+  const double cos_a = std::cos(angle), sin_a = std::sin(angle);
+  const double k = cos_a * p.c + sin_a * p.d;
+  const double sy = -sin_a * p.c + cos_a * p.d;
+  const graphene_point_t offset =
+      GRAPHENE_POINT_INIT(static_cast<float>(p.tx), static_cast<float>(p.ty));
+  GskTransform* t = gsk_transform_translate(nullptr, &offset);
+  if (angle != 0) t = gsk_transform_rotate(t, static_cast<float>(angle * kDegrees));
+  if (k != 0 && sy != 0)
+    t = gsk_transform_skew(t, static_cast<float>(std::atan(k / sy) * kDegrees), 0.f);
+  return gsk_transform_scale(t, static_cast<float>(sx), static_cast<float>(sy));
+}
+
 /// Paints black, then the last frame where it belongs under the live view.
 void MapCanvas::snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot>& snapshot) {
   GtkSnapshot* s = snapshot->gobj();
@@ -124,13 +144,13 @@ void MapCanvas::snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot>& snapshot) {
   gtk_snapshot_append_color(s, &black, &bounds);
   const fv::desk::FramePlacement p = host_.Placement();
   if (!p.valid || !texture_) return;
-  graphene_matrix_t m;
-  graphene_matrix_init_from_2d(&m, p.a, p.b, p.c, p.d, p.tx, p.ty);
   const graphene_rect_t frame = GRAPHENE_RECT_INIT(0.f, 0.f, static_cast<float>(texture_width_pt_),
                                                    static_cast<float>(texture_height_pt_));
   gtk_snapshot_save(s);
-  gtk_snapshot_transform_matrix(s, &m);
-  gtk_snapshot_append_scaled_texture(s, texture_, GSK_SCALING_FILTER_LINEAR, &frame);
+  GskTransform* t = PlacementTransform(p);
+  gtk_snapshot_transform(s, t);
+  gsk_transform_unref(t);
+  gtk_snapshot_append_texture(s, texture_, &frame);
   gtk_snapshot_restore(s);
 }
 
