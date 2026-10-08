@@ -19,10 +19,11 @@ Pippin, built on the same core; see below.
 
 ## Build
 
-Requires CMake ≥ 3.21, a C++17 compiler, and SQLite (system library; present
-by default on macOS). Google Test is fetched automatically at configure time,
-so the first configure needs network access. Python bindings additionally need
-Python 3 development headers; pybind11 is fetched automatically.
+Requires CMake ≥ 3.22, a C++17 compiler, SQLite (system library; present by
+default on macOS) and Python 3 with its development headers for the `pyfvw`
+bindings. Google Test, pybind11, expat, zlib, nlohmann/json, protozero and
+vtzero are fetched from GitHub at configure time, so the first configure needs
+network access.
 
 ```sh
 cmake -B build          # configure
@@ -30,13 +31,45 @@ cmake --build build -j  # build
 ctest --test-dir build  # run tests
 ```
 
-Verified on macOS (Apple Silicon, AppleClang). See *Known limitations* for the
-state of Linux.
+`ctest` reports a skipped test as passing; the `(Skipped)` lines in its output
+show which tests skipped and why. With the sample data in `testdata/` (see
+*Test data*) the suite is **2396 tests on macOS, 179 of them skipped**, and
+**2402 on Linux, 182 skipped**: the skips need map data too large to ship
+(CADRG, DNC/GeoSym, the full OSM pyramid).
 
-Without sample map data you should see **1990 tests passing, none failing**, of
-which **401 skip themselves** at run time because they need real map data,
-which is not distributed here (`ctest` reports a skipped test as passing; the
-`(Skipped)` lines in its output show which).
+### macOS
+
+Verified on Apple Silicon with AppleClang and the Xcode command-line tools.
+The desktop app is an Xcode project; see `port/apps/Peregrine/README.md`.
+
+### Linux
+
+Verified on Ubuntu 24.04 (GCC 13, CMake 3.28). Install the toolchain, the
+libraries, and what the tests use (Xvfb for the GTK app's screenshot tests,
+NumPy, pytest and Tk for the Python suites, DejaVu fonts for the text goldens):
+
+```sh
+sudo apt-get install -y build-essential cmake ninja-build pkg-config git \
+    libsqlite3-dev libgtkmm-4.0-dev xvfb fonts-dejavu-core \
+    python3-dev python3-numpy python3-pytest python3-tk
+cmake -B build -G Ninja
+cmake --build build -j
+xvfb-run -a ctest --test-dir build -j8
+```
+
+- `xvfb-run` around `ctest` gives the Tk tests of the Python app a display;
+  without it they skip. The GTK app's own screenshot tests start their own
+  Xvfb either way.
+- `libgtkmm-4.0-dev` (gtkmm 4.10 or later) is needed only for the desktop app,
+  `peregrine-gtk`; without it the configure prints a message and the rest of
+  the tree builds and tests. See `port/apps/PeregrineGtk/README.md`.
+- The Python bindings are built for the first `python3` on the `PATH`. If that
+  is not the system interpreter the packages above installed into, point
+  CMake at it: `cmake -B build -DPYTHON_EXECUTABLE=/usr/bin/python3`.
+- To build without network access, download each dependency once and pass
+  its directory, e.g. `-DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/src/googletest-1.17.0`;
+  the versions are in the root `CMakeLists.txt` and
+  `port/third_party/CMakeLists.txt`.
 
 ## What works
 
@@ -221,9 +254,10 @@ out the same way.
 
 ## Known limitations
 
-- **Linux builds but is not yet tested.** The tree compiles under GCC/glibc
-  (include case, SAL macros and the other fixes from PR #1), but the test suite
-  has so far been run only on macOS.
+- **The Linux desktop app is behind the macOS one.** The whole suite runs
+  green on Ubuntu 24.04, and `peregrine-gtk` has the map window, menus,
+  toolbar and shortcuts, but no file dialogs or options windows yet: a
+  command that asks for a file or a choice does nothing on Linux.
 - Rendering is CPU-only; there is no GPU. The desktop demo uses Tk; Pippin
   composites the CPU canvas into a SwiftUI view.
 - Pippin ships without its data pack, so a clone cannot run the app until it

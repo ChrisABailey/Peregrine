@@ -20,14 +20,20 @@ explore the tree broadly.
 ## Build
 
 ```sh
-sudo apt-get install -y build-essential cmake ninja-build pkg-config libgtkmm-4.0-dev xvfb
+sudo apt-get install -y build-essential cmake ninja-build pkg-config git \
+    libsqlite3-dev libgtkmm-4.0-dev xvfb fonts-dejavu-core \
+    python3-dev python3-numpy python3-pytest python3-tk
 cmake -B build -G Ninja
 cmake --build build -j
-ctest --test-dir build -j8
+xvfb-run -a ctest --test-dir build -j8
 ```
 
-No map data ships. Tests that need it skip themselves (`ctest` counts a skip as a pass, so
-report the skip count too). Screenshots: `xvfb-run -a <binary> --shot out.png`.
+The root `README.md` (*Build ▸ Linux*) explains each package and the offline
+configure. `testdata/` holds a small sample data set and the build points the
+tests at it; tests pinned to larger data skip themselves (`ctest` counts a
+skip as a pass, so report the skip count too: 182 on Linux with the sample
+set). Screenshots: `xvfb-run -a <binary> --shot out.png`; for the app on the
+sample data see `port/apps/PeregrineGtk/README.md`.
 
 ## Hard rules
 
@@ -52,7 +58,8 @@ report the skip count too). Screenshots: `xvfb-run -a <binary> --shot out.png`.
   settings keys and paths, workspace files and command-line options come from DeskKit and
   match the mac app. Decisions go in C++ under `port/` with a gtest (FakeDesk first), never in
   the GTK shell. Look, HIG conventions and dev tooling may differ.
-- **The whole suite is green on Linux** before every PR.
+- **The whole suite is green on Linux** before every PR, run under `xvfb-run` so the Tk tests
+  of the Python app do not skip.
 - New files carry the SPDX header used throughout `port/` (`LGPL-3.0-or-later`,
   `Copyright (C) 2026 Chris Bailey`).
 
