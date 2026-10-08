@@ -54,6 +54,10 @@ if(FVW_BUILD_TESTS)
   target_link_libraries(fv_osm_test PRIVATE fv_osm fv_zlib fv_png GTest::gtest_main)
   # FVW_OSM_STYLE_DIR: the reference style ships with the source (styles/), not
   # with TestData — it is a deliverable of this module, not sample data.
+  # One variable per single-valued property: CMake 3.28-3.30 split an escaped
+  # '\;' ENVIRONMENT list and dropped every entry after the first.
   gtest_discover_tests(fv_osm_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata\;FVW_OSM_STYLE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/styles")
+    PROPERTIES
+    ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata"
+    ENVIRONMENT_MODIFICATION "FVW_OSM_STYLE_DIR=set:${CMAKE_CURRENT_SOURCE_DIR}/styles")
 endif()

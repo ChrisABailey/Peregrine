@@ -213,9 +213,11 @@ if(FVW_BUILD_TESTS)
     FV_FAMILIES_OSM="${CMAKE_SOURCE_DIR}/port/families/osm-families.json"
     FV_TIDE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/charleston-2026-03.json"
     FV_WIND_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/nws-chs-82-68-2026-09-26.json")
-  # MSPCCS_DATA: GEOTRANS data for the GeoTIFF datum shift (see
-  # GeoTIFFMapServer/CMakeLists.txt; escaped list separator)
+  # MSPCCS_DATA: GEOTRANS data for the GeoTIFF datum shift. Each variable is
+  # its own single-valued property: CMake 3.28-3.30 split an escaped '\;'
+  # list into separate arguments, which dropped every entry after the first.
   gtest_discover_tests(fv_fvkit_test
-    PROPERTIES ENVIRONMENT
-    "MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib\;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
+    PROPERTIES
+    ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata"
+    ENVIRONMENT_MODIFICATION "MSPCCS_DATA=set:${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib")
 endif()

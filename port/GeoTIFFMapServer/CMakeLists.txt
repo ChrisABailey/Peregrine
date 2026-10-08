@@ -35,8 +35,10 @@ target_link_libraries(fv_geotiff_frame PUBLIC fv_projsp fv_geo3 fv_compat)
 if(FVW_BUILD_TESTS)
   add_executable(fv_geotiff_frame_test test/geotiff_frame_test.cpp)
   target_link_libraries(fv_geotiff_frame_test PRIVATE fv_geotiff_frame GTest::gtest_main)
-  # two ENVIRONMENT entries need an escaped list separator
+  # One variable per single-valued property: CMake 3.28-3.30 split an escaped
+  # '\;' ENVIRONMENT list and dropped every entry after the first.
   gtest_discover_tests(fv_geotiff_frame_test
-    PROPERTIES ENVIRONMENT
-    "MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib\;FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
+    PROPERTIES
+    ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata"
+    ENVIRONMENT_MODIFICATION "MSPCCS_DATA=set:${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib")
 endif()
