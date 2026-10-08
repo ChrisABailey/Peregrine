@@ -89,6 +89,9 @@ Status Catalog::Open(const std::string& db_path) {
   needs_rescan_ = false;
   Status s = db_.Open(db_path);
   if (!s.ok()) return s;
+  // A scan on another connection holds the write lock; readers and writers
+  // wait for it rather than failing with SQLITE_BUSY.
+  sqlite3_busy_timeout(db_.get(), 10000);
 
   // Migration. The catalog is a cache, so an older schema is REBUILT rather
   // than converted: schema 1 keyed a series on (format, series_key) alone and
@@ -309,6 +312,27 @@ Status Catalog::Series(std::vector<SeriesRow>* out) const {
     r.scale_units = (int)sel.ColInt64(4);
     r.scale_denom = sel.ColDouble(5);
     r.display_name = SeriesDisplayName(r.series_key, r.scale, r.scale_units);
+    out->push_back(std::move(r));
+  }
+  return s;
+}
+
+Status Catalog::DataSources(std::vector<DataSourceRow>* out) const {
+  if (out == nullptr) return Status::Error(kInvalidArg, "out is null");
+  out->clear();
+  detail::SqliteStmt sel;
+  Status s = sel.Prepare(db_,
+                         "SELECT d.id, d.path, d.format, d.priority, "
+                         "(SELECT COUNT(*) FROM coverage c WHERE c.data_source_id = d.id) "
+                         "FROM data_sources d ORDER BY d.id");
+  if (!s.ok()) return s;
+  while (sel.Step(&s)) {
+    DataSourceRow r;
+    r.id = sel.ColInt64(0);
+    r.path = sel.ColText(1);
+    r.format = sel.ColText(2);
+    r.priority = static_cast<int>(sel.ColInt64(3));
+    r.frames = sel.ColInt64(4);
     out->push_back(std::move(r));
   }
   return s;

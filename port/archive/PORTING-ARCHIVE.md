@@ -2650,3 +2650,9 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
 - `Desk::GoTo(center, scale)` re-chooses the product (as a group change does); plain panning
   keeps the current product. `map.recenter` now goes through `GoTo`, so recentring can change
   the product under the cursor.
+
+### DK5b — overlay drawing (2026-10-07)
+
+- **K15 refined**: an overlay-only change does not interrupt the base pass — that pass holds no
+  stack lock and its result stays valid — so the UI never waits on a base frame, only on at most
+  one overlay.

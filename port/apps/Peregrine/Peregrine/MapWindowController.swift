@@ -8,17 +8,25 @@ import CxxStdlib
 import PeregrineCore
 
 /// One map window: the map widget over a status bar showing the scale, the
-/// series drawn, the ladder's message and the position under the cursor.
-final class MapWindowController: NSWindowController {
+/// series drawn, the ladder's message and the position under the cursor, with
+/// the toolbar, menus and dialogs DeskKit's model calls for.
+final class MapWindowController: NSWindowController, NSMenuItemValidation {
     let host: fv.desk.DeskHost
     let canvas: MapCanvasView
     private let scaleLabel = MapWindowController.label()
     private let productLabel = MapWindowController.label()
     private let messageLabel = MapWindowController.label()
     private let positionLabel = MapWindowController.label(monospaced: true)
+    private var toolbar: CommandToolbar!
+    private var jobSheet: JobSheet?
+    /// Open options windows, by HostOptionsKind.
+    private var optionsWindows: [Int32: OptionsWindowController] = [:]
+    /// Called after the menu model changed; the app rebuilds the menu bar.
+    var onMenusChanged: (() -> Void)?
 
     init() {
         host = fv.desk.DeskHost.Create()
+        let settingsError = String(host.LoadSettings(std.string("")))
         canvas = MapCanvasView(host: host)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -50,7 +58,22 @@ final class MapWindowController: NSWindowController {
         window.initialFirstResponder = canvas
         canvas.onStatusChange = { [weak self] in self?.refreshStatus() }
         canvas.onError = { [weak self] in self?.present(error: "Peregrine", detail: $0) }
+        canvas.onTick = { [weak self] in self?.handle($0) }
+        window.toolbarStyle = .unified
+        toolbar = CommandToolbar(host: host, target: self)
+        toolbar.update(window)
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        host.SetRequestHandler({ context in
+            guard let context else { return }
+            let me = Unmanaged<MapWindowController>.fromOpaque(context).takeUnretainedValue()
+            MainActor.assumeIsolated { Dialogs.answer(me.host) }
+        }, context)
         refreshStatus()
+        if !settingsError.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.present(error: "Settings could not be read", detail: settingsError)
+            }
+        }
     }
 
     @available(*, unavailable)
@@ -82,12 +105,70 @@ final class MapWindowController: NSWindowController {
             present(error: "Could not open the map catalog", detail: error)
             return false
         }
-        window?.title = "Peregrine — \(url.deletingPathExtension().lastPathComponent)"
-        window?.representedURL = url
-        NSDocumentController.shared.noteNewRecentDocumentURL(url)
-        UserDefaults.standard.set(url.path, forKey: "LastCatalog")
+        catalogDidChange()
         refreshStatus()
         return true
+    }
+
+    /// Titles the window after the open catalog and remembers it for the
+    /// next launch and the Open Recent menu.
+    private func catalogDidChange() {
+        let path = String(host.CatalogPath())
+        guard !path.isEmpty, path != ":memory:" else { return }
+        let url = URL(fileURLWithPath: path)
+        window?.title = "Peregrine \u{2014} \(url.deletingPathExtension().lastPathComponent)"
+        window?.representedURL = url
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        UserDefaults.standard.set(path, forKey: "LastCatalog")
+    }
+
+    /// Reacts to what the host reports each display refresh: menus, the
+    /// catalog, a background job and notices.
+    private func handle(_ t: fv.desk.HostTick) {
+        if t.menus_changed {
+            if let window { toolbar.update(window) }
+            onMenusChanged?()
+        }
+        if t.catalog_changed { catalogDidChange() }
+        if t.job_changed { updateJob() }
+        if t.options_requested {
+            let kind = host.TakeOptionsRequest()
+            if kind >= 0 { showOptions(kind) }
+        }
+        let notice = String(host.TakeNotice())
+        if !notice.isEmpty { present(notice: notice) }
+    }
+
+    /// Brings up the options window of `kind` on the model the core just
+    /// opened, reusing the window when it is already showing.
+    private func showOptions(_ kind: Int32) {
+        if let existing = optionsWindows[kind] {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = OptionsWindowController(host: host, kind: kind)
+        controller.onClose = { [weak self] in self?.optionsWindows[kind] = nil }
+        optionsWindows[kind] = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Shows, advances or dismisses the progress sheet of a catalog build.
+    private func updateJob() {
+        guard host.JobActive() else {
+            jobSheet?.end()
+            jobSheet = nil
+            return
+        }
+        if jobSheet == nil, let window {
+            let sheet = JobSheet(title: "Building the map catalog") { [weak self] in
+                self?.host.CancelJob()
+            }
+            sheet.begin(on: window)
+            jobSheet = sheet
+        }
+        jobSheet?.update(fraction: host.JobFraction(), text: String(host.JobText()))
     }
 
     /// Moves the camera; `scale` defaults to the current one.
@@ -113,6 +194,31 @@ final class MapWindowController: NSWindowController {
     func execute(_ command: String) {
         let error = String(host.Execute(std.string(command)))
         if !error.isEmpty { present(error: "Command failed", detail: error) }
+        if host.QuitRequested() { NSApp.terminate(nil) }
+    }
+
+    /// The action of every generated menu item and toolbar button: the
+    /// command id is the menu item's represented object or the button's
+    /// identifier.
+    @objc func runCommand(_ sender: Any?) {
+        if let item = sender as? NSMenuItem, let id = item.representedObject as? String {
+            execute(id)
+        } else if let view = sender as? NSView, let id = view.identifier?.rawValue {
+            execute(id)
+        }
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let id = item.representedObject as? String else { return true }
+        item.state = host.IsChecked(std.string(id)) ? .on : .off
+        return host.IsEnabled(std.string(id))
+    }
+
+    func present(notice: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = notice
+        if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
     func present(error message: String, detail: String) {

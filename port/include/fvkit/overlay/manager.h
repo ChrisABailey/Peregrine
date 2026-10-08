@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -231,11 +232,14 @@ class OverlayManager {
   // Bottom-up over visible overlays, then the top-most-flagged ones (also
   // bottom-up among themselves) so a crosshair or HUD lands over everything
   // even if the user has reordered it downwards. Stops at the first failure.
-  // Under declutter, only the current overlay draws.
+  // Under declutter, only the current overlay draws. `interrupted` is polled
+  // before each overlay; returning true stops with kInterrupted and the canvas
+  // keeps what was drawn (MapEngine::RenderBaseMap's contract).
   //
   // NOTE: OverlayTypeDesc::default_opacity is NOT applied -- ICanvas has no
   // layer alpha to apply it with. See the ledger's product-gap list.
-  Status DrawAll(const MapProjection& proj, ICanvas& canvas);
+  Status DrawAll(const MapProjection& proj, ICanvas& canvas,
+                 const std::function<bool()>& interrupted = {});
 
   // Three phases per event, in order (~ C_ovl_mgr::select, minus the
   // dynamic_casts and the re-entry flag):

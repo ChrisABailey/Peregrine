@@ -38,8 +38,10 @@ git -C ../Peregrine fetch
 git -C ../Peregrine format-patch <base>..<merge> --stdout -- . ':!CMakeLists.txt' | git am -3
 ```
 
-Safety net: if a sync dry run proposes removing or changing anything under
-`port/apps/PeregrineGtk/`, or reverting a Linux fix, stop and back-port first. A change to the
+Safety net: the sync script refuses `--apply` while any file changed in Peregrine since its
+last `Sync:` commit differs from FVW, or while anything under `port/apps/PeregrineGtk/` would
+change, and lists the paths; back-port first. `--overwrite-downstream` discards that work and
+is used only on Chris's word. A change to the
 Peregrine-owned root `CMakeLists.txt` is copied into FVW's root `CMakeLists.txt` by hand.
 
 ## Rules for the Linux session

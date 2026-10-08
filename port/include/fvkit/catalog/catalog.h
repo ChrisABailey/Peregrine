@@ -50,6 +50,15 @@ struct SeriesRow {
   std::string display_name;
 };
 
+// One registered data source, with how many frames its last scan catalogued.
+struct DataSourceRow {
+  int64_t id = 0;
+  std::string path;
+  std::string format;
+  int priority = 0;
+  int64_t frames = 0;
+};
+
 struct CoverageRow {
   int64_t id = 0;
   int64_t series_id = 0;
@@ -73,6 +82,9 @@ class Catalog {
   // True when Open() had to rebuild a pre-schema-2 catalog: the data sources
   // survived, their coverage did not. The caller should Scan() each one.
   bool NeedsRescan() const { return needs_rescan_; }
+
+  // Every data source, ordered by id.
+  Status DataSources(std::vector<DataSourceRow>* out) const;
 
   // Registers a data source (a directory tree of one format). Idempotent on
   // (path, format).

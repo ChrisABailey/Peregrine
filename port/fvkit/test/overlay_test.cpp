@@ -185,6 +185,15 @@ TEST_F(ManagerTest, InvisibleOverlaysSkipped) {
   EXPECT_EQ(log_, (std::vector<std::string>{"a:draw", "c:draw"}));
 }
 
+TEST_F(ManagerTest, DrawAllStopsBetweenOverlaysWhenInterrupted) {
+  fv::CpuCanvas canvas(100, 100);
+  int polls = 0;
+  // Interrupted after the bottom overlay has drawn.
+  const fv::Status s = mgr_.DrawAll(proj_, canvas, [&polls] { return ++polls > 1; });
+  EXPECT_EQ(s.code, fv::kInterrupted);
+  EXPECT_EQ(log_, (std::vector<std::string>{"a:draw"}));
+}
+
 TEST_F(ManagerTest, StackOps) {
   ASSERT_TRUE(mgr_.MoveToTop(a_).ok());
   EXPECT_TRUE(mgr_.RouteMouseDown({1, 1, 0}));

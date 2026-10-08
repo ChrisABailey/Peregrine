@@ -20,11 +20,13 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 
 add_library(fv_deskkit STATIC
   fv_desk_base_map.cpp
+  fv_desk_catalog_build.cpp
   fv_desk_commands.cpp
   fv_desk_desk.cpp
   fv_desk_fake.cpp
   fv_desk_host.cpp
   fv_desk_map_groups.cpp
+  fv_desk_map_options.cpp
   fv_desk_menu_model.cpp
   fv_desk_options.cpp
   fv_desk_overlay_manifest.cpp
@@ -38,10 +40,12 @@ target_compile_features(fv_deskkit PUBLIC cxx_std_17)
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_deskkit_test
+    test/catalog_build_test.cpp
     test/commands_test.cpp
     test/desk_test.cpp
     test/host_test.cpp
     test/map_groups_test.cpp
+    test/map_options_test.cpp
     test/menu_model_test.cpp
     test/options_test.cpp
     test/overlay_manifest_test.cpp

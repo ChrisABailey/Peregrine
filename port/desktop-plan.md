@@ -1,8 +1,9 @@
 # Desktop plan (DK) — a native FalconView-class app for macOS, then Linux and Windows
 
-**Status: APPROVED, 2026-10-05.** K1–K14 decided (Chris accepted every recommendation). DK1
+**Status: APPROVED, 2026-10-05.** K1–K15 decided (Chris accepted every recommendation); K16 made in DK5. DK1
 (ViewKit core), DK2 (DeskKit core) done 2026-10-05, DK3 (Overlay manifests) done 2026-10-06,
-DK4 (mac skeleton) done 2026-10-07. Next is DK5.
+DK4 (mac skeleton), DK5 (menus, toolbar, dialogs, catalog build), DK5b (overlay drawing) and
+DK6 (mac options dialogs, generated pages) done 2026-10-07. Next is DK7 (Linux spike, §5).
 
 ## Goal
 
@@ -275,6 +276,8 @@ concept is `MapGroup` (`map-groups.json`); the UI still says "Map family".
 | K11b | Vector ladder | **Decided (Chris, 2026-10-05): uniform steps; the product nearest the display scale is drawn** | §1d uniform ladder. Step factor ×2. |
 | K12 | Raster past the end of the ladder | **Stop, and say so in the status bar** | Alternative: magnify the last series, as the uniform ladder does. |
 | K13 | DTED | **Decided (Chris, 2026-10-05): an Elevation map family, plus Contour Lines and TA Mask as static overlays**, all three usable together | The overlays exist (`fv.contour`, `fv.tamask`). Open: nothing feeds the TA mask's altitude from the moving map yet (ledger §2a). |
+| K15 | Overlay drawing threading (Chris, 2026-10-07) | **Worker under a stack lock, with FalconView-style cooperative cancel** between base frames and between overlays; a drag moves the last frame | UI-thread compositing would stall on a heavy overlay; a plain lock would make a click wait for a whole render. DK5b. Refined in DK5b: an overlay-only change does not interrupt the base pass (it holds no lock and its result stays valid), so the UI waits on at most one overlay, never a base frame. |
+| K16 | Where editors are listed | **Overlay ▸ Edit ▸**, one check item per editor, as well as the toolbar | An editor whose type has no icon would otherwise be unreachable (the toolbar shows only commands with icons). |
 | K14 | Plug-in kinds in v1 | **`builtin` only; `library` next; `python` on request** | `builtin` proves the manifest; the other two add only a loader. |
 
 ## 5. Sessions
@@ -289,6 +292,7 @@ yet a seam.
 | DK3 | **Overlay manifests** — `overlays.json` loader over `OverlayTypeRegistry`, `builtin` registration, options model generated from `app::Properties`, the path property type | a test-only overlay registered by JSON alone shows up in menus, options and file-open dispatch |
 | DK4 | **mac skeleton** — AppKit window, ViewKit map widget, pan/zoom/pinch/wheel, status bar with scale, open a catalog | runs; screenshot; Page Up at a corner steps the map under the cursor |
 | DK5 | **mac menus, toolbar, dialogs** — generated menu bar incl. ‹Editor› menu, icon toolbar, DeskShell on NSOpenPanel/NSAlert, catalog build with progress | every command reachable; shortcuts per HIG |
+| DK5b | **Overlay drawing** — one worker draws base then overlays; base cached per view, overlay pass over a copy; a cancel token checked between base frames and between overlays, set by a new view or any UI-thread overlay change; the UI takes the stack lock after setting it (waits for at most one frame or overlay); fvkit engine gains a per-frame cancel hook, later the overlay draw context too | Grid toggled from the menu draws; a held Page Up renders only the last step; an overlay change does not re-render the base |
 | DK6 | **mac options dialogs** — Map and Overlay options, generated pages | Grid page changes colour and ticks with no Grid-specific UI code |
 | DK7 | **Linux spike** — GTK4 window, same map widget contract, generated menus | the same workspace renders on Linux; any Swift-shaped leak in DeskKit fixed here |
 | DK8 | **Panels and editing** — layers panel, points and route editors, search, undo | editor flows tested through FakeDesk first |

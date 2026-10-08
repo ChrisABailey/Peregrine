@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "fv_desk_map_options.h"
 #include "fv_desk_overlay_manifest.h"
 #include "fvkit/app/capabilities.h"
 #include "fvkit/catalog/catalog.h"
@@ -30,6 +31,17 @@ app::FileTypeDesc WorkspaceFileType() {
   d.save_filters = d.open_filters;
   return d;
 }
+
+app::FileTypeDesc CatalogFileType() {
+  app::FileTypeDesc d;
+  d.default_extension = "sqlite";
+  d.open_filters = {{"Peregrine Map Catalog (*.sqlite)", "*.sqlite"}, {"Database (*.db)", "*.db"}};
+  d.save_filters = {{"Peregrine Map Catalog (*.sqlite)", "*.sqlite"}};
+  return d;
+}
+
+/// True for a catalog a second connection can open: a file, not ":memory:".
+bool IsCatalogFile(const std::string& path) { return !path.empty() && path != ":memory:"; }
 
 Shortcut Keys(const char* text) {
   Shortcut s;
@@ -154,6 +166,7 @@ Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
 
   view_ = std::make_unique<view::MapView>(view::Viewport::Make(GeoPoint{0, 0}, 1.0e7),
                                           view::LadderKind::kUniform, nullptr);
+  map_options_ = BuiltinMapOptions();
   menus_.SetOnChange([this] { shell_.MenusChanged(); });
   RegisterStaticCommands();
   Refresh();
@@ -192,10 +205,11 @@ app::FlowResult Desk::Report(const Status& s) {
 void Desk::RegisterStaticCommands() {
   auto add = [this](const char* id, const char* label, const char* keys,
                     std::function<void()> action, std::function<bool()> enabled = nullptr,
-                    std::function<bool()> checked = nullptr) {
+                    std::function<bool()> checked = nullptr, const char* icon = "") {
     Command c;
     c.id = id;
     c.label = label;
+    c.icon = icon;
     c.shortcut = Keys(keys);
     c.action = std::move(action);
     c.enabled = std::move(enabled);
@@ -224,35 +238,12 @@ void Desk::RegisterStaticCommands() {
     if (session_->Exit() == app::FlowResult::kDone) shell_.Quit();
   });
 
-  add("map.zoom_in", "Zoom In", "PageUp", [this] { view_->Step(+1); });
-  add("map.zoom_out", "Zoom Out", "PageDown", [this] { view_->Step(-1); });
-  add("map.recenter", "Recenter on Data", "", [this] {
-    const MapGroup* g = CurrentGroup();
-    std::vector<CoverageRow> rows;
-    if (g == nullptr || !catalog_->SelectByGeoRect(GeoRect::World(), &rows).ok()) return;
-    bool any = false;
-    GeoRect box;
-    for (const CoverageRow& r : rows) {
-      if (std::find(g->formats.begin(), g->formats.end(), r.format) == g->formats.end())
-        continue;
-      // A frame across the antimeridian is unwrapped east; the camera
-      // normalizes the centre.
-      GeoRect b = r.bounds;
-      if (b.CrossesAntimeridian()) b.ur.lon += 360.0;
-      if (!any) {
-        box = b;
-        any = true;
-        continue;
-      }
-      box.ll.lat = std::min(box.ll.lat, b.ll.lat);
-      box.ll.lon = std::min(box.ll.lon, b.ll.lon);
-      box.ur.lat = std::max(box.ur.lat, b.ur.lat);
-      box.ur.lon = std::max(box.ur.lon, b.ur.lon);
-    }
-    if (!any) return;
-    GoTo(GeoPoint{(box.ll.lat + box.ur.lat) / 2, (box.ll.lon + box.ur.lon) / 2},
-         view_->View().ScaleDenom());
-  }, [this] { return CurrentGroup() != nullptr; });
+  add("map.zoom_in", "Zoom In", "Primary+=", [this] { view_->Step(+1); }, nullptr, nullptr,
+      "zoom_in");
+  add("map.zoom_out", "Zoom Out", "Primary+-", [this] { view_->Step(-1); }, nullptr, nullptr,
+      "zoom_out");
+  add("map.recenter", "Recenter on Data", "", [this] { Recenter(); },
+      [this] { return CurrentGroup() != nullptr; }, nullptr, "recenter");
 
   size_t n = 0;
   const ProjectionType* types = AllProjectionTypes(&n);
@@ -270,8 +261,113 @@ void Desk::RegisterStaticCommands() {
           if (d->file && !d->display_name.empty()) return true;
         return false;
       });
+  add("map.options", "Options…", "", [this] { shell_.ShowMapOptions(MapOptions()); },
+      [this] { return !map_options_.empty(); });
   add("overlay.options", "Options…", "",
       [this] { shell_.ShowOverlayOptions(OverlayOptions()); });
+  RegisterCatalogCommands();
+}
+
+void Desk::RegisterCatalogCommands() {
+  auto add = [this](const char* id, const char* label, const char* keys,
+                    std::function<void()> action, std::function<bool()> enabled) {
+    Command c;
+    c.id = id;
+    c.label = label;
+    c.shortcut = Keys(keys);
+    c.action = std::move(action);
+    c.enabled = std::move(enabled);
+    const Status s = commands_.Register(std::move(c));
+    if (!s.ok()) warnings_.push_back(s.message);
+  };
+  auto idle = [this] { return !Building(); };
+  auto idle_with_catalog = [this] { return !Building() && catalog_ != nullptr; };
+
+  add("map.catalog_open", "Open Map Catalog…", "Primary+Alt+O", [this] {
+    const std::vector<std::string> files = shell_.ChooseFilesToOpen(CatalogFileType());
+    if (files.empty()) return;
+    const Status s = OpenCatalog(files.front());
+    if (!s.ok()) {
+      Report(s);
+      return;
+    }
+    if (CurrentGroup() != nullptr) Recenter();
+  }, idle);
+
+  add("map.catalog_build", "Build Map Catalog…", "", [this] {
+    const std::string root =
+        shell_.ChooseDirectory("Choose a directory of map data to add to the catalog");
+    if (root.empty()) return;
+    if (!IsCatalogFile(catalog_path_)) {
+      const auto spec = shell_.ChooseSaveSpec(CatalogFileType(), "Peregrine Catalog.sqlite");
+      if (spec.first.empty()) return;
+      const Status s = UseCatalogFile(spec.first, true);
+      if (!s.ok()) {
+        Report(s);
+        return;
+      }
+    }
+    const Status s = StartCatalogBuild(root);
+    if (!s.ok()) Report(s);
+  }, idle);
+
+  add("map.catalog_rescan", "Rescan Map Catalog", "", [this] {
+    const Status s = StartCatalogRescan();
+    if (!s.ok()) Report(s);
+  }, [this] { return !Building() && IsCatalogFile(catalog_path_) && catalog_ != nullptr; });
+
+  add("map.sources", "Map Data Sources…", "", [this] {
+    std::vector<DataSourceRow> sources;
+    Status s = catalog_->DataSources(&sources);
+    if (!s.ok()) {
+      Report(s);
+      return;
+    }
+    if (sources.empty()) {
+      shell_.ShowNotice("The map catalog has no data sources.");
+      return;
+    }
+    std::vector<std::string> rows;
+    for (const DataSourceRow& r : sources)
+      rows.push_back(r.format + "  " + r.path + "  (" + std::to_string(r.frames) +
+                     (r.frames == 1 ? " frame)" : " frames)"));
+    const std::optional<int> pick =
+        shell_.ChooseFromList("Map data sources: choose one to remove", rows);
+    if (!pick || *pick < 0 || *pick >= static_cast<int>(sources.size())) return;
+    s = catalog_->RemoveDataSource(sources[*pick].id);
+    if (!s.ok()) {
+      Report(s);
+      return;
+    }
+    CatalogChanged();
+  }, idle_with_catalog);
+}
+
+void Desk::Recenter() {
+  const MapGroup* g = CurrentGroup();
+  std::vector<CoverageRow> rows;
+  if (g == nullptr || !catalog_->SelectByGeoRect(GeoRect::World(), &rows).ok()) return;
+  bool any = false;
+  GeoRect box;
+  for (const CoverageRow& r : rows) {
+    if (std::find(g->formats.begin(), g->formats.end(), r.format) == g->formats.end()) continue;
+    // A frame across the antimeridian is unwrapped east; the camera
+    // normalizes the centre.
+    GeoRect b = r.bounds;
+    if (b.CrossesAntimeridian()) b.ur.lon += 360.0;
+    if (!any) {
+      box = b;
+      any = true;
+      continue;
+    }
+    box.ll.lat = std::min(box.ll.lat, b.ll.lat);
+    box.ll.lon = std::min(box.ll.lon, b.ll.lon);
+    box.ur.lat = std::max(box.ur.lat, b.ur.lat);
+    box.ur.lon = std::max(box.ur.lon, b.ur.lon);
+  }
+  if (!any) return;
+  GoTo(GeoPoint{(box.ll.lat + box.ur.lat) / 2, (box.ll.lon + box.ur.lon) / 2},
+       view_->View().ScaleDenom());
 }
 
 void Desk::RegisterGroupCommands() {
@@ -426,6 +522,70 @@ Status Desk::OpenCatalog(const std::string& path) {
   if (!s.ok()) return s;
   SetCatalog(std::move(c), path);
   return Status::Ok();
+}
+
+Status Desk::UseCatalogFile(const std::string& path, bool create) {
+  if (!create) return OpenCatalog(path);
+  auto c = std::make_shared<Catalog>();
+  const Status s = c->Open(path);
+  if (!s.ok()) return s;
+  SetCatalog(std::move(c), path);
+  return Status::Ok();
+}
+
+Status Desk::StartCatalogBuild(const std::string& root) {
+  if (Building()) return Status::Error(kUnsupported, "a catalog build is already running");
+  if (!catalog_ || !IsCatalogFile(catalog_path_))
+    return Status::Error(kInvalidArg, "open or create a catalog file before building it");
+  std::error_code ec;
+  if (!std::filesystem::is_directory(root, ec))
+    return Status::Error(kNotFound, "no directory at " + root);
+  std::vector<ScanStep> steps = PlanScan(root);
+  if (steps.empty())
+    return Status::Error(kUnsupported, "no map format this app can scan is registered");
+  build_had_data_ = !available_.empty();
+  build_ = std::make_unique<CatalogBuild>(catalog_path_, std::move(steps));
+  return Status::Ok();
+}
+
+Status Desk::StartCatalogRescan() {
+  if (Building()) return Status::Error(kUnsupported, "a catalog build is already running");
+  if (!catalog_ || !IsCatalogFile(catalog_path_))
+    return Status::Error(kInvalidArg, "the catalog is not a file");
+  std::vector<DataSourceRow> sources;
+  const Status s = catalog_->DataSources(&sources);
+  if (!s.ok()) return s;
+  std::vector<ScanStep> steps;
+  for (const DataSourceRow& r : sources) {
+    ScanStep step;
+    step.format = r.format;
+    step.dirs = {r.path};
+    step.keep_if_empty = true;
+    steps.push_back(std::move(step));
+  }
+  build_had_data_ = !available_.empty();
+  build_ = std::make_unique<CatalogBuild>(catalog_path_, std::move(steps));
+  return Status::Ok();
+}
+
+void Desk::CancelCatalogBuild() {
+  if (build_) build_->Cancel();
+}
+
+bool Desk::PollCatalogBuild() {
+  if (!build_ || !build_->Progress().finished) return false;
+  const std::string summary = build_->Summary();
+  for (const std::string& e : build_->Errors()) warnings_.push_back("catalog build: " + e);
+  build_.reset();
+  CatalogChanged();
+  if (!build_had_data_ && CurrentGroup() != nullptr) Recenter();
+  shell_.ShowNotice(summary);
+  return true;
+}
+
+void Desk::WaitForCatalogBuild() {
+  if (build_) build_->Wait();
+  PollCatalogBuild();
 }
 
 void Desk::SetCatalog(std::shared_ptr<Catalog> catalog, const std::string& path) {
@@ -590,6 +750,42 @@ Status Desk::ApplyOverlayOptions(OptionsModel& model) {
   const Status s = model.Apply(settings_, overlays_, user_settings_, &warnings_);
   shell_.RequestInvalidate();
   return s;
+}
+
+std::shared_ptr<OptionsModel> Desk::MapOptions() const {
+  return std::make_shared<OptionsModel>(groups_, map_options_, settings_);
+}
+
+Status Desk::ApplyMapOptions(OptionsModel& model) {
+  const bool changed = model.dirty();
+  const Status s = model.Apply(settings_, overlays_, user_settings_, &warnings_);
+  if (changed) {
+    ++map_style_gen_;
+    shell_.RequestInvalidate();
+  }
+  return s;
+}
+
+void Desk::RegisterMapOptions(MapOptionsSource source) {
+  for (MapOptionsSource& m : map_options_) {
+    if (m.group_id == source.group_id) {
+      m = std::move(source);
+      return;
+    }
+  }
+  map_options_.push_back(std::move(source));
+}
+
+void Desk::SettingsLoaded() {
+  for (const MapOptionsSource& m : map_options_) {
+    if (!m.make || !m.apply) continue;
+    std::unique_ptr<app::Properties> props = m.make();
+    if (props == nullptr) continue;
+    props->LoadFrom(settings_, m.prefix, &warnings_);
+    m.apply(*props);
+  }
+  ++map_style_gen_;
+  shell_.RequestInvalidate();
 }
 
 // MARK: Status

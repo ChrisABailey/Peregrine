@@ -28,7 +28,8 @@ std::pair<std::string, int> FakeDeskShell::ChooseSaveSpec(const app::FileTypeDes
 }
 
 std::optional<int> FakeDeskShell::ChooseFromList(const std::string&,
-                                                 const std::vector<std::string>&) {
+                                                 const std::vector<std::string>& rows) {
+  list_rows = rows;
   return list_choice;
 }
 

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <set>
 
 #include "fv_desk_fake.h"
 #include "fv_map_enums.h"
@@ -403,6 +404,177 @@ TEST(DeskData, RendersAGeoTiffBaseMap) {
     }
   EXPECT_GT(lit, buf.Width() * buf.Height() / 4);
   fv::ClearFormatRegistryForTest();
+}
+
+// MARK: Reachability and shortcuts
+
+/// Every command id in `items` and their submenus.
+void CollectIds(const std::vector<MenuItem>& items, std::set<std::string>* out) {
+  for (const MenuItem& m : items) {
+    if (!m.command_id.empty()) out->insert(m.command_id);
+    CollectIds(m.children, out);
+  }
+}
+
+TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusOrToolbar) {
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  AddSource(*cat, "cadrg");
+  AddSource(*cat, "enc");
+  desk.SetCatalog(cat);
+  int hits = 0;
+  fv::app::OverlayTypeDesc d;
+  d.id = "test.sketch";
+  d.display_name = "Sketch";
+  d.factory = [] { return std::make_shared<fv::Overlay>("sketch"); };
+  d.editor_factory = [&hits] { return std::make_unique<ToolEditor>(&hits); };
+  ASSERT_TRUE(desk.types().Register(std::move(d)).ok());
+  desk.Refresh();
+  // A file overlay open and an editor active, so their commands exist too.
+  const std::vector<std::string> news = desk.commands().IdsWithPrefix("overlay.new.");
+  ASSERT_FALSE(news.empty());
+  ASSERT_TRUE(fd.Run({news.front(), "editor.mode.test.sketch"}).ok());
+  ASSERT_FALSE(desk.commands().IdsWithPrefix("overlay.instance.").empty());
+  ASSERT_FALSE(desk.commands().IdsWithPrefix("editor.tool.").empty());
+
+  std::set<std::string> reachable;
+  for (const Menu& m : desk.menus().Menus()) CollectIds(m.items, &reachable);
+  CollectIds(desk.menus().Toolbar(), &reachable);
+  for (const std::string& id : desk.commands().Ids())
+    EXPECT_TRUE(reachable.count(id)) << id << " is in no menu and not on the toolbar";
+}
+
+TEST_F(DeskTest, TheToolbarShowsOnlyCommandsWithIcons) {
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  int hits = 0;
+  fv::app::OverlayTypeDesc d;
+  d.id = "test.sketch";
+  d.display_name = "Sketch";
+  d.icon = "sketch";
+  d.factory = [] { return std::make_shared<fv::Overlay>("sketch"); };
+  d.editor_factory = [&hits] { return std::make_unique<ToolEditor>(&hits); };
+  ASSERT_TRUE(desk.types().Register(std::move(d)).ok());
+  desk.Refresh();
+  EXPECT_EQ(Ids(desk.menus().Toolbar()),
+            (std::vector<std::string>{"map.zoom_in", "map.zoom_out", "map.recenter",
+                                      "editor.mode.test.sketch"}));
+
+  // While editing, the tools with icons follow; "Locked" and "More ▸ Inner"
+  // have none and stay in the Sketch menu.
+  ASSERT_TRUE(fd.Run({"editor.mode.test.sketch"}).ok());
+  const std::vector<MenuItem>& bar = desk.menus().Toolbar();
+  ASSERT_FALSE(bar.empty());
+  EXPECT_EQ(bar.back().label, "Draw");
+  EXPECT_EQ(bar.back().icon, "pencil");
+  EXPECT_TRUE(bar[bar.size() - 2].is_separator());
+  for (const MenuItem& m : bar) EXPECT_TRUE(m.is_separator() || !m.icon.empty()) << m.label;
+}
+
+TEST_F(DeskTest, ShortcutsFollowThePlatformConventions) {
+  FakeDesk fd;
+  const fv::desk::CommandRegistry& c = fd.desk().commands();
+  EXPECT_TRUE(c.warnings().empty()) << c.warnings().front();
+  auto bound = [&c](const char* text) -> std::string {
+    fv::desk::Shortcut s;
+    EXPECT_TRUE(fv::desk::Shortcut::Parse(text, &s)) << text;
+    const fv::desk::Command* cmd = c.FindByShortcut(s);
+    return cmd ? cmd->id : std::string();
+  };
+  EXPECT_EQ(bound("Primary+S"), "file.save");
+  EXPECT_EQ(bound("Primary+Shift+S"), "file.save_as");
+  EXPECT_EQ(bound("Primary+W"), "file.close");
+  EXPECT_EQ(bound("Primary+O"), "overlay.open");
+  EXPECT_EQ(bound("Primary+Q"), "app.quit");
+  EXPECT_EQ(bound("Primary+="), "map.zoom_in");
+  EXPECT_EQ(bound("Primary+-"), "map.zoom_out");
+  EXPECT_EQ(bound("Primary+Alt+O"), "map.catalog_open");
+  // Held by the system or the app menu on macOS (hide, hide others,
+  // minimise, settings, cycle windows) or by the map widget (Page Up/Down).
+  for (const char* reserved :
+       {"Primary+H", "Primary+Alt+H", "Primary+M", "Primary+,", "Primary+`", "PageUp", "PageDown"})
+    EXPECT_EQ(bound(reserved), "") << reserved;
+}
+
+// MARK: Building the catalog
+
+TEST_F(DeskTest, BuildMapCatalogScansADirectoryIntoANewCatalog) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root);
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  ASSERT_TRUE(desk.AvailableGroups().empty());
+  EXPECT_FALSE(desk.commands().IsEnabled("map.catalog_rescan"));
+  EXPECT_FALSE(desk.commands().IsEnabled("map.sources"));
+
+  // Cancelling the directory chooser does nothing.
+  ASSERT_TRUE(fd.Run({"map.catalog_build"}).ok());
+  EXPECT_FALSE(desk.Building());
+  EXPECT_EQ(desk.catalog_path(), "");
+
+  fd.shell().directory = root;
+  fd.shell().save_spec = dir.Path("new.sqlite");
+  ASSERT_TRUE(fd.Run({"map.catalog_build"}).ok());
+  EXPECT_TRUE(desk.Building());
+  EXPECT_FALSE(desk.commands().IsEnabled("map.catalog_build"));
+  EXPECT_FALSE(desk.commands().IsEnabled("map.catalog_open"));
+  desk.WaitForCatalogBuild();
+  EXPECT_FALSE(desk.Building());
+  EXPECT_TRUE(fd.shell().errors.empty());
+
+  EXPECT_EQ(desk.catalog_path(), dir.Path("new.sqlite"));
+  EXPECT_EQ(GroupItems(desk), (std::vector<std::string>{"map.group.raster", "map.group.enc"}));
+  ASSERT_EQ(fd.shell().notices.size(), 1u);
+  EXPECT_EQ(fd.shell().notices[0], "Catalogued 4 frames from 2 sources.");
+  // The catalog had no data before, so the view moves onto it.
+  EXPECT_NEAR(desk.map_view().View().Center().lat, 32, 1e-9);
+  EXPECT_NEAR(desk.map_view().View().Center().lon, -80, 1e-9);
+  EXPECT_TRUE(desk.commands().IsEnabled("map.catalog_rescan"));
+
+  // A rescan keeps the sources and reports the same totals.
+  ASSERT_TRUE(fd.Run({"map.catalog_rescan"}).ok());
+  desk.WaitForCatalogBuild();
+  ASSERT_EQ(fd.shell().notices.size(), 2u);
+  EXPECT_EQ(fd.shell().notices[1], "Catalogued 4 frames from 2 sources.");
+}
+
+TEST_F(DeskTest, MapDataSourcesRemovesTheChosenSource) {
+  Scratch dir;
+  const std::string path = dir.Path("catalog.sqlite");
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(path).ok());
+    AddSource(cat, "cadrg");
+    AddSource(cat, "enc");
+  }
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  fd.shell().files_to_open = {path};
+  ASSERT_TRUE(fd.Run({"map.catalog_open"}).ok());
+  ASSERT_EQ(desk.catalog_path(), path);
+  ASSERT_FALSE(fd.shell().last_open_chooser.open_filters.empty());
+  EXPECT_EQ(fd.shell().last_open_chooser.open_filters[0].second, "*.sqlite");
+  ASSERT_EQ(GroupItems(desk).size(), 2u);
+
+  ASSERT_TRUE(fd.Run({"map.sources"}).ok());  // no choice: nothing removed
+  ASSERT_EQ(fd.shell().list_rows.size(), 2u);
+  EXPECT_EQ(fd.shell().list_rows[0], "cadrg  /stub/cadrg  (2 frames)");
+  ASSERT_EQ(GroupItems(desk).size(), 2u);
+
+  fd.shell().list_choice = 0;
+  ASSERT_TRUE(fd.Run({"map.sources"}).ok());
+  EXPECT_EQ(GroupItems(desk), std::vector<std::string>{"map.group.enc"});
+}
+
+TEST_F(DeskTest, OpenMapCatalogReportsAFileThatIsNotACatalog) {
+  FakeDesk fd;
+  fd.shell().files_to_open = {"/nonexistent/catalog.sqlite"};
+  ASSERT_TRUE(fd.Run({"map.catalog_open"}).ok());
+  ASSERT_EQ(fd.shell().errors.size(), 1u);
+  EXPECT_EQ(fd.desk().catalog_path(), "");
 }
 
 }  // namespace

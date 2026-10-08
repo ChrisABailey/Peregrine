@@ -326,6 +326,26 @@ TEST_F(CatalogSynthetic, RescanReplacesAndRemoveClears) {
   EXPECT_TRUE(rows.empty());
 }
 
+TEST_F(CatalogSynthetic, DataSourcesListsPathFormatAndFrames) {
+  int64_t empty = 0;
+  ASSERT_TRUE(cat_.AddDataSource("/stub/empty", "stub", 2, &empty).ok());
+  std::vector<fv::DataSourceRow> rows;
+  ASSERT_TRUE(cat_.DataSources(&rows).ok());
+  ASSERT_EQ(rows.size(), 2u);
+  EXPECT_EQ(rows[0].id, src_);
+  EXPECT_EQ(rows[0].path, "/stub/root");
+  EXPECT_EQ(rows[0].format, "stub");
+  EXPECT_EQ(rows[0].frames, 3);
+  EXPECT_EQ(rows[1].id, empty);
+  EXPECT_EQ(rows[1].priority, 2);
+  EXPECT_EQ(rows[1].frames, 0);
+
+  ASSERT_TRUE(cat_.RemoveDataSource(src_).ok());
+  ASSERT_TRUE(cat_.DataSources(&rows).ok());
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows[0].id, empty);
+}
+
 TEST_F(CatalogSynthetic, BestSeriesForScale) {
   fv::SeriesRow best;
   ASSERT_TRUE(cat_.BestSeriesForScale(900000.0, &best).ok());

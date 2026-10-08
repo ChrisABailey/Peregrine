@@ -30,6 +30,7 @@ struct MenuItem {
   std::string label;
   std::string icon;
   Shortcut shortcut;
+  bool checkable = false;  ///< the command has a checked state (a toggle or radio item)
   std::vector<MenuItem> children;
 
   bool is_separator() const { return command_id.empty() && children.empty(); }
@@ -72,17 +73,25 @@ struct MenuSpec {
 /// supplied per editor to `MenuModel::Rebuild`.
 std::vector<MenuSpec> DefaultMenuLayout();
 
+/// Zoom and recenter, the editor modes, then the active editor's tools.
+std::vector<MenuSlot> DefaultToolbarLayout();
+
 class MenuModel {
  public:
+  /// The toolbar shows only commands with an icon (desktop-plan §1b); its
+  /// submenus are flattened.
   explicit MenuModel(const CommandRegistry& commands,
-                     std::vector<MenuSpec> layout = DefaultMenuLayout());
+                     std::vector<MenuSpec> layout = DefaultMenuLayout(),
+                     std::vector<MenuSlot> toolbar = DefaultToolbarLayout());
 
-  /// Resolves the layout, plus `editor_menu` after it when non-null. When
-  /// the result differs from the current menus, replaces them, bumps
+  /// Resolves the layout, plus `editor_menu` after it when non-null, and the
+  /// toolbar. When either differs from the current one, replaces both, bumps
   /// `Generation()`, calls the change handler and returns true.
   bool Rebuild(const MenuSpec* editor_menu = nullptr);
 
   const std::vector<Menu>& Menus() const { return menus_; }
+  /// Commands and separators, no submenus.
+  const std::vector<MenuItem>& Toolbar() const { return toolbar_; }
   /// The menu with `id`, or null.
   const Menu* Find(const std::string& id) const;
   uint64_t Generation() const { return generation_; }
@@ -96,7 +105,9 @@ class MenuModel {
 
   const CommandRegistry& commands_;
   std::vector<MenuSpec> layout_;
+  std::vector<MenuSlot> toolbar_layout_;
   std::vector<Menu> menus_;
+  std::vector<MenuItem> toolbar_;
   uint64_t generation_ = 0;
   std::function<void()> on_change_;
 };

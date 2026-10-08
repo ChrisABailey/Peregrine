@@ -16,6 +16,8 @@ final class MapCanvasView: NSView {
     var onStatusChange: (() -> Void)?
     /// Called on the main thread with each error the core reported.
     var onError: ((String) -> Void)?
+    /// Called on the main thread with every tick, after the frame is shown.
+    var onTick: ((fv.desk.HostTick) -> Void)?
 
     private let frameLayer = CALayer()
     private var link: CADisplayLink?
@@ -104,6 +106,7 @@ final class MapCanvasView: NSView {
         if t.status_changed { onStatusChange?() }
         let error = String(host.TakeError())
         if !error.isEmpty { onError?(error) }
+        onTick?(t)
     }
 
     /// Puts the host's newest frame in the frame layer, sized in points.
@@ -200,6 +203,17 @@ final class MapCanvasView: NSView {
         } else {
             let dy = e.isDirectionInvertedFromDevice ? -e.scrollingDeltaY : e.scrollingDeltaY
             host.Scroll(p.x, p.y, 0, dy, false)
+        }
+    }
+
+    // MARK: Keys
+
+    /// Page Up and Page Down step the ladder about the cursor.
+    override func keyDown(with e: NSEvent) {
+        switch e.charactersIgnoringModifiers?.unicodeScalars.first.map({ Int($0.value) }) {
+        case NSPageUpFunctionKey: host.Step(1)
+        case NSPageDownFunctionKey: host.Step(-1)
+        default: super.keyDown(with: e)
         }
     }
 

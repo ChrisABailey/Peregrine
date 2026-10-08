@@ -41,7 +41,35 @@ directory the catalog was built in (`port/apps` for that one).
 
 Drag pans; a trackpad two-finger scroll pans; a mouse wheel notch, Page Up and
 Page Down step the map group's ladder about the cursor; a pinch zooms live and
-settles on the nearest step when it ends.
+settles on the nearest step when it ends. Map ▸ Zoom In / Zoom Out are ⌘= / ⌘-.
+
+## Menus, toolbar and dialogs
+
+The File, Map, Overlay and editor menus and the toolbar are generated from
+DeskKit's menu model (`DeskHost::MenuEntryAt`, `ToolbarEntryAt`) and rebuilt
+when it changes; `MainMenu.swift` adds only what macOS requires (the
+application menu, Edit, Window, Help) and moves `app.quit` into the
+application menu. The toolbar shows commands with an icon; `Toolbar.swift` maps
+DeskKit icon names to SF Symbols. Questions from the core (save changes?, open,
+save as, choose from a list, choose a directory) arrive through
+`DeskHost::SetRequestHandler` inside the call that asked, and `Dialogs.swift`
+answers them with modal panels. A catalog build runs in the background with a
+progress sheet and a Cancel button, which stops after the current data source.
+
+## Options and settings
+
+Map ▸ Options… and Overlay ▸ Options… open a window with one page per map
+group or overlay type that declares `app::Properties` (`DeskHost::Options*`).
+`OptionsWindow.swift` builds every page from the field list — a checkbox, a
+number field (with a stepper for a bounded integer), a text field, a colour
+well, a pop-up or a path with a Choose… button — so a new overlay's options
+need no Swift. Apply writes the values to the settings, to the open overlays
+or the map renderer, and to the user settings file; Cancel or closing the
+window discards what was not applied.
+
+At launch the app reads peregrine.ini (`fv::Settings::LoadDefault`) and lays
+the user settings over it: `~/Library/Application Support/Peregrine/user-settings.json`,
+which only the options window writes.
 
 ## AppKit notes
 

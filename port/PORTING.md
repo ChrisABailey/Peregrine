@@ -15,7 +15,7 @@ exists, the open work, and the rules that still constrain new code. It is delibe
   would re-litigate. Rules go in §3 only if violating them ships a silent bug.
 
 ```sh
-cmake -B build && cmake --build build -j && ctest --test-dir build   # 2365 tests as of 2026-10-07, all green at -j8
+cmake -B build && cmake --build build -j && ctest --test-dir build   # 2396 tests as of 2026-10-07, all green at -j8
 # ctest's "n/N" prefix runs 17 higher (the disabled GeoTrans tests). The default build type is
 # NOT optimised: configure -DCMAKE_BUILD_TYPE=Release before measuring performance.
 ```
@@ -111,7 +111,8 @@ controller, render scheduler/frame cache). Design and gaps: `port/desktop-plan.m
 
 The desktop application model: command registry, menu model, map groups, overlay manifests
 (`fv_desk_overlay_manifest.*`; only `builtin` registers), options model
-(`fv_desk_options.*`, generated from `app::Properties`), workspace, user settings, `Desk`,
+(`fv_desk_options.*`, generated from `app::Properties`, covering both the Overlay and the Map
+dialog; built-in map pages in `fv_desk_map_options.*`), workspace, user settings, `Desk`,
 `FakeDesk`. `DeskHost` (`fv_desk_host.*`) is the one object a native shell drives — owns
 Settings, a queued shell, `Desk` and a render scheduler; `BaseMapRenderer`
 (`fv_desk_base_map.*`, raster formats only) renders for both `FakeDesk` and `DeskHost`.
@@ -129,10 +130,8 @@ Rebuild recipes are in the archive.
 
 ## 2. Open work
 
-**Desktop app (DK)** — plan `port/desktop-plan.md`, approved 2026-10-05 (K1–K14 decided by Chris).
-DK1–DK3 done (2026-10-05/06); DK4 (mac skeleton) done 2026-10-07: `port/apps/Peregrine`
-(AppKit over `DeskHost`), proof screenshot + live headless probe on the real catalog.
-Next session: DK5 (menus, toolbar, dialogs).
+**Desktop app (DK)** — plan `port/desktop-plan.md`, approved 2026-10-05 (K1–K15 decided by Chris; K16 made in DK5).
+DK1–DK6 done (2026-10-05/07). Next session: DK7 (Linux spike, desktop-plan §5).
 
 **Linux app (LX)** — plan `port/linux-plan.md` (2026-10-07). `port/apps/PeregrineGtk` is built by
 a Claude cloud session in the Peregrine repo, delivered as `linux/*` PRs with Ledger notes.
@@ -148,11 +147,12 @@ sync deletes it. Peregrine's `CLAUDE.md` is dest-owned and holds that session's 
 | **ViewKit frame cache** | Last-frame only; Pippin's guard band/underlay (`PPBaseCoverage.h`) stays in Pippin until Pippin moves onto ViewKit (DK11 optional track). |
 | **ViewKit input** | Editor input routing, picking and hover hints (desktop-plan §2a last bullet) deferred to DK8. |
 | **ViewKit product stability** | `MapView` keeps its current product while panning; it re-chooses only on a ladder step, a pinch settle or a map-group change. |
-| **DeskKit command registry gaps** | `file.export_image`, `map.goto`, `map.catalog_build`, `map.sources`, `map.options` have menu layout slots but no registered command yet — each lands with its own session. |
+| **DeskKit command registry gaps** | `file.export_image`, `map.goto` have menu layout slots but no registered command yet — each lands with its own session. |
 | **BaseMapRenderer render path** | Raster formats only (shared by `FakeDesk` and `DeskHost`); OSM/ENC/DNC and Elevation need the vector render path before a screenshot proof covers them. |
-| **DK3 follow-ups** | fvkit's built-ins (grid, points, contour, tamask, scalebar, movingmap) still register in code, not via manifest (deliberate, avoids a drifting JSON copy); no bundled `overlays.json` yet; Map ▸ Options has no Properties source; a static-lib builtin registrar needs an explicit referencing object (dead-stripping). |
-| **DK4 overlay drawing** | `DeskHost` renders the base map only, on its worker; drawing the overlay stack needs a threading decision (UI-thread composite vs a lock) — DK5. |
-| **DK4 shell callbacks** | `QueuedShell` answers every modal question as cancel; `DeskShell`→Swift (NSOpenPanel/NSAlert) and menus from DeskKit's menu model are DK5; Peregrine's `AppDelegate.swift` menus are hand-built until then. |
+| **DK3 follow-ups** | fvkit's built-ins (grid, points, contour, tamask, scalebar, movingmap) still register in code, not via manifest (deliberate, avoids a drifting JSON copy); no bundled `overlays.json` yet; a static-lib builtin registrar needs an explicit referencing object (dead-stripping). |
+| **DK5 follow-ups** | A data source's scan can't be interrupted (cancel waits for it); readers wait up to 10s on the busy timeout during a big scan's commit; Map Data Sources is remove-only until a sources panel (DK8); progress sheet/Build panel not driven live (out-of-process open panel) — Chris to try by hand; GTK has no synchronous modal dialogs, so LX's shell needs a nested main loop for `SetRequestHandler`. |
+| **DK5b follow-ups** | `Execute`'s `StackEdit` lock is held across a modal request handler, so frames pause during a modal dialog; DK8 editor input routing must take `StackEdit` when a pointer event reaches an editor; overlays have no cancel inside their own `OnDraw` yet. |
+| **DK6 follow-ups** | Map ▸ Options has only Elevation — Raster pixel pitch, OSM style sheets, ENC mariner/data dir, DNC GeoSym dir pages are each a `MapOptionsSource` still to add; elevation breaks are a text field (a custom breakpoint editor is a later custom page); a newer options request replaces an open dialog's unapplied edits. |
 | **Peregrine core deployment target** | `libperegrine_core.a` builds for the host macOS (27) while the app targets 14.0 (ld warns) — set `CMAKE_OSX_DEPLOYMENT_TARGET=14.0` before DK10. |
 | **O5 routing** | Via-way restrictions (recognised, not applied); steps and elevation have no cost; ferry timetables unmodelled; "walk the bike" mixed-mode undecided. |
 | **MM5b** | Viterbi map-matching to remove along-track error (seam ready in `RoadCandidate`). |
@@ -197,6 +197,8 @@ picker, mariner panel, ENC data dir, OSM source knobs; route line style derived 
   Peregrine's Recenter on Data can land on such a seam when a world TIROS is in the catalog.
 - Windows sockets in `line_transport.cpp` never compiled. C++14 pins on `fv_jpeg`, `fv_jpeg12`,
   `fv_imagelib_gif`. `CDTEDInstance` stub in ImageLib `Util.cpp`.
+- `DeskHostStub.ACatalogBuildReportsProgressThroughTick` flakes (~3% of runs, "1 source failed");
+  spun off as a separate task.
 - Preserved originals (do not "fix"): VPF unaligned loads (UBSan), `VPFRecordset` reopen
   undercount, `CCGMPattern::IsSolid()` never true. Slow subsampled CADRG `ReadBlock`; polar CADRG
   unsupported.

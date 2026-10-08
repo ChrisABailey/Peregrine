@@ -31,6 +31,7 @@ class FakeDeskShell : public DeskShell {
   int save_format = 0;
   std::optional<int> list_choice;
   bool revert_answer = false;
+  std::string directory;                   ///< empty: cancelled
 
   // What was asked or shown.
   std::vector<std::string> asked_save;
@@ -40,7 +41,10 @@ class FakeDeskShell : public DeskShell {
   int quit_calls = 0;
   int invalidate_calls = 0;
   std::string editor_mode;
-  std::shared_ptr<OptionsModel> options_shown;  ///< the last options dialog
+  std::shared_ptr<OptionsModel> options_shown;      ///< the last overlay options dialog
+  std::shared_ptr<OptionsModel> map_options_shown;  ///< the last map options dialog
+  std::vector<std::string> list_rows;           ///< what the last list offered
+  std::vector<std::string> notices;
 
   SaveAnswer AskSave(const std::string& name) override;
   std::vector<std::string> ChooseFilesToOpen(const app::FileTypeDesc&) override;
@@ -59,6 +63,11 @@ class FakeDeskShell : public DeskShell {
   void ShowOverlayOptions(std::shared_ptr<OptionsModel> model) override {
     options_shown = std::move(model);
   }
+  void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
+    map_options_shown = std::move(model);
+  }
+  std::string ChooseDirectory(const std::string&) override { return directory; }
+  void ShowNotice(const std::string& text) override { notices.push_back(text); }
 };
 
 /// A Desk over a FakeDeskShell and its own Settings, with a fixed surface.

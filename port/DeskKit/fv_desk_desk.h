@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "fv_desk_catalog_build.h"
 #include "fv_desk_commands.h"
 #include "fv_desk_map_groups.h"
 #include "fv_desk_menu_model.h"
@@ -48,6 +49,13 @@ class DeskShell : public app::AppShell {
   /// Show the Overlay ▸ Options dialog over `model`; on OK the shell calls
   /// `Desk::ApplyOverlayOptions(*model)`.
   virtual void ShowOverlayOptions(std::shared_ptr<OptionsModel> model) = 0;
+  /// Show the Map ▸ Options dialog over `model`; on OK the shell calls
+  /// `Desk::ApplyMapOptions(*model)`.
+  virtual void ShowMapOptions(std::shared_ptr<OptionsModel> /*model*/) {}
+  /// Asks for a directory; "" when cancelled.
+  virtual std::string ChooseDirectory(const std::string& /*title*/) { return std::string(); }
+  /// An informational message for the user, such as a catalog build's result.
+  virtual void ShowNotice(const std::string& /*text*/) {}
 };
 
 /// The status bar content (port/desktop-plan.md §1d), as text.
@@ -102,6 +110,22 @@ class Desk {
   const std::shared_ptr<Catalog>& catalog() const { return catalog_; }
   const std::string& catalog_path() const { return catalog_path_; }
 
+  /// Starts an auto-detect scan of `root` into the current catalog, which
+  /// must be a file. kUnsupported while a build is running.
+  Status StartCatalogBuild(const std::string& root);
+  /// Starts rescanning every data source in the current catalog.
+  Status StartCatalogRescan();
+  /// The running or just-finished build, or null.
+  const CatalogBuild* catalog_build() const { return build_.get(); }
+  bool Building() const { return build_ != nullptr; }
+  void CancelCatalogBuild();
+  /// Picks up a finished build: refreshes the catalog's groups, recentres if
+  /// the catalog had no map data before, and shows the build's summary. Call
+  /// from the UI thread; true when a build finished.
+  bool PollCatalogBuild();
+  /// Blocks until a running build finishes, then polls it; for tests.
+  void WaitForCatalogBuild();
+
   /// The groups with coverage in the catalog, in table order.
   const std::vector<const MapGroup*>& AvailableGroups() const { return available_; }
   /// kNotFound for an unknown id; kUnsupported for a group without data.
@@ -131,8 +155,21 @@ class Desk {
   /// Applies `model` to the settings, the user settings (when set) and every
   /// open overlay, then repaints. Rejections go to `warnings()`.
   Status ApplyOverlayOptions(OptionsModel& model);
+  /// A fresh Map ▸ Options model over the map groups and current settings.
+  std::shared_ptr<OptionsModel> MapOptions() const;
+  /// Applies `model` like `ApplyOverlayOptions`, then bumps
+  /// `MapStyleGeneration()` so the base map is drawn afresh.
+  Status ApplyMapOptions(OptionsModel& model);
+  /// Adds the options of a map group, replacing any source for the same group.
+  void RegisterMapOptions(MapOptionsSource source);
+  /// Pushes the settings' map options into the renderers and bumps
+  /// `MapStyleGeneration()`. Call after loading or replacing the settings.
+  void SettingsLoaded();
+  /// Changes whenever map options change what a base map looks like.
+  uint64_t MapStyleGeneration() const { return map_style_gen_; }
   /// Where applied options persist. Null (the default) keeps them in memory.
   void SetUserSettings(UserSettings* user) { user_settings_ = user; }
+  UserSettings* user_settings() const { return user_settings_; }
 
   // MARK: Status
   StatusBar CurrentStatus() const;
@@ -144,6 +181,10 @@ class Desk {
   class StackHook;
 
   void RegisterStaticCommands();
+  void RegisterCatalogCommands();
+  /// Opens or creates the catalog file at `path`.
+  Status UseCatalogFile(const std::string& path, bool create);
+  void Recenter();
   void RegisterGroupCommands();
   void RegisterProjectionCommands();
   void RegisterOverlayTypeCommands();
@@ -177,6 +218,10 @@ class Desk {
   std::optional<MenuSpec> editor_menu_;
   std::vector<std::string> warnings_;
   UserSettings* user_settings_ = nullptr;
+  std::vector<MapOptionsSource> map_options_;
+  uint64_t map_style_gen_ = 0;
+  std::unique_ptr<CatalogBuild> build_;
+  bool build_had_data_ = false;
 };
 
 }  // namespace desk

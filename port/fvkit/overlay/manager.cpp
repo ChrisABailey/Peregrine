@@ -420,8 +420,11 @@ std::vector<Overlay*> OverlayManager::DrawOrder() const {
   return out;
 }
 
-Status OverlayManager::DrawAll(const MapProjection& proj, ICanvas& canvas) {
+Status OverlayManager::DrawAll(const MapProjection& proj, ICanvas& canvas,
+                               const std::function<bool()>& interrupted) {
   for (Overlay* o : DrawOrder()) {
+    if (interrupted && interrupted())
+      return Status::Error(kInterrupted, "overlay drawing interrupted");
     Status s = o->OnDraw(proj, canvas);
     if (!s.ok()) {
       s.message = "overlay '" + o->Name() + "': " + s.message;

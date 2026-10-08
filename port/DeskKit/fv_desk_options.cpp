@@ -5,6 +5,7 @@
 
 #include "fv_desk_options.h"
 
+#include "fv_desk_map_groups.h"
 #include "fv_desk_user_settings.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/settings.h"
@@ -27,21 +28,15 @@ bool OptionsField::changed() const { return !app::SameValue(value, applied); }
 
 // MARK: OptionsPage
 
-std::unique_ptr<OptionsPage> OptionsPage::ForType(const app::OverlayTypeDesc& type,
-                                                  const Settings& settings) {
-  if (type.display_name.empty() || !type.factory) return nullptr;
-  std::shared_ptr<Overlay> proto = type.factory();
-  app::Properties* props = proto ? proto->AsProperties() : nullptr;
+std::unique_ptr<OptionsPage> OptionsPage::Build(std::shared_ptr<app::Properties> props,
+                                                const std::string& prefix,
+                                                const Settings& settings) {
   if (props == nullptr || props->Describe().empty()) return nullptr;
-
   std::unique_ptr<OptionsPage> page(new OptionsPage());
-  page->id_ = type.id;
-  page->title_ = type.display_name;
-  page->icon_ = type.icon;
-  page->prefix_ = app::SettingsPrefixForTypeId(type.id);
+  page->prefix_ = prefix;
   // The same load OverlaySession::Instantiate does, so the page opens on what
   // a new overlay of the type would show.
-  props->LoadFrom(settings, page->prefix_);
+  props->LoadFrom(settings, prefix);
   for (const app::PropertySpec& spec : props->Describe()) {
     OptionsField f;
     f.spec = spec;
@@ -57,7 +52,35 @@ std::unique_ptr<OptionsPage> OptionsPage::ForType(const app::OverlayTypeDesc& ty
     }
     section->keys.push_back(spec.key);
   }
-  page->prototype_ = std::move(proto);
+  page->prototype_ = std::move(props);
+  return page;
+}
+
+std::unique_ptr<OptionsPage> OptionsPage::ForType(const app::OverlayTypeDesc& type,
+                                                  const Settings& settings) {
+  if (type.display_name.empty() || !type.factory) return nullptr;
+  std::shared_ptr<Overlay> proto = type.factory();
+  app::Properties* props = proto ? proto->AsProperties() : nullptr;
+  if (props == nullptr) return nullptr;
+  // Aliases the overlay, which owns the Properties it returns.
+  auto page = Build(std::shared_ptr<app::Properties>(proto, props),
+                    app::SettingsPrefixForTypeId(type.id), settings);
+  if (page == nullptr) return nullptr;
+  page->id_ = type.id;
+  page->title_ = type.display_name;
+  page->icon_ = type.icon;
+  return page;
+}
+
+std::unique_ptr<OptionsPage> OptionsPage::ForMapGroup(const std::string& title,
+                                                      const MapOptionsSource& source,
+                                                      const Settings& settings) {
+  if (!source.make) return nullptr;
+  auto page = Build(std::shared_ptr<app::Properties>(source.make()), source.prefix, settings);
+  if (page == nullptr) return nullptr;
+  page->id_ = source.group_id;
+  page->title_ = title;
+  page->apply_ = source.apply;
   return page;
 }
 
@@ -76,7 +99,7 @@ OptionsField* OptionsPage::MutableField(const std::string& key) {
 Status OptionsPage::Set(const std::string& key, const app::PropertyValue& value) {
   OptionsField* f = MutableField(key);
   if (f == nullptr) return Status::Error(kNotFound, "no option '" + key + "' on " + title_);
-  app::Properties* props = prototype_->AsProperties();
+  app::Properties* props = prototype_.get();
   const Status s = props->SetProperty(key, value);
   if (!s.ok()) return s;
   if (!props->GetProperty(key, &f->value).ok()) f->value = value;
@@ -92,7 +115,7 @@ Status OptionsPage::ResetToDefaults() {
 }
 
 void OptionsPage::Revert() {
-  app::Properties* props = prototype_->AsProperties();
+  app::Properties* props = prototype_.get();
   for (OptionsField& f : fields_) {
     props->SetProperty(f.spec.key, f.applied);
     f.value = f.applied;
@@ -123,6 +146,16 @@ OptionsModel::OptionsModel(const app::OverlayTypeRegistry& types, const Settings
     if (auto page = OptionsPage::ForType(*d, settings)) pages_.push_back(std::move(page));
 }
 
+OptionsModel::OptionsModel(const MapGroups& groups,
+                           const std::vector<MapOptionsSource>& sources,
+                           const Settings& settings) {
+  for (const MapGroup& g : groups.All())
+    for (const MapOptionsSource& src : sources)
+      if (src.group_id == g.id)
+        if (auto page = OptionsPage::ForMapGroup(g.title, src, settings))
+          pages_.push_back(std::move(page));
+}
+
 OptionsPage* OptionsModel::Page(const app::TypeId& id) {
   for (const auto& p : pages_)
     if (p->id() == id) return p.get();
@@ -146,6 +179,11 @@ Status OptionsModel::Apply(Settings& settings, OverlayManager& overlays, UserSet
     for (const auto& kv : page->PendingSettings()) {
       settings.Set(kv.first, kv.second);
       if (user != nullptr) user->Set(kv.first, kv.second);
+    }
+    if (page->apply_) {
+      page->apply_(*page->prototype_);
+      page->MarkApplied();
+      continue;
     }
     for (const std::shared_ptr<Overlay>& o : overlays.OfType(page->id())) {
       app::Properties* props = o->AsProperties();

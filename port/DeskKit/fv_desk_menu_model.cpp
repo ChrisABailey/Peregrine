@@ -15,6 +15,7 @@ MenuItem ItemFor(const Command& c) {
   m.label = c.label;
   m.icon = c.icon;
   m.shortcut = c.shortcut;
+  m.checkable = static_cast<bool>(c.checked);
   return m;
 }
 
@@ -29,11 +30,22 @@ void TidySeparators(std::vector<MenuItem>* items) {
   *items = std::move(out);
 }
 
+/// Appends the commands with an icon in `items`, submenus flattened in place.
+void IconItems(const std::vector<MenuItem>& items, std::vector<MenuItem>* out) {
+  for (const MenuItem& m : items) {
+    if (!m.children.empty()) {
+      IconItems(m.children, out);
+    } else if (m.is_separator() || !m.icon.empty()) {
+      out->push_back(m);
+    }
+  }
+}
+
 }  // namespace
 
 bool MenuItem::operator==(const MenuItem& o) const {
   return command_id == o.command_id && label == o.label && icon == o.icon &&
-         shortcut == o.shortcut && children == o.children;
+         shortcut == o.shortcut && checkable == o.checkable && children == o.children;
 }
 
 MenuSlot MenuSlot::Cmd(std::string id) {
@@ -70,17 +82,26 @@ std::vector<MenuSpec> DefaultMenuLayout() {
       {"map", "Map",
        {S::Expand("map.group."), S::Sep(), S::Sub("Projection", {S::Expand("map.projection.")}),
         S::Cmd("map.zoom_in"), S::Cmd("map.zoom_out"), S::Cmd("map.goto"),
-        S::Cmd("map.recenter"), S::Sep(), S::Cmd("map.catalog_build"),
-        S::Cmd("map.sources"), S::Sep(), S::Cmd("map.options")}},
+        S::Cmd("map.recenter"), S::Sep(), S::Cmd("map.catalog_open"),
+        S::Cmd("map.catalog_build"), S::Cmd("map.catalog_rescan"), S::Cmd("map.sources"),
+        S::Sep(), S::Cmd("map.options")}},
       {"overlay", "Overlay",
        {S::Expand("overlay.toggle."), S::Sep(), S::Sub("New", {S::Expand("overlay.new.")}),
-        S::Cmd("overlay.open"), S::Sep(), S::Expand("overlay.instance."), S::Sep(),
+        S::Cmd("overlay.open"), S::Sub("Edit", {S::Expand("editor.mode.")}), S::Sep(),
+        S::Expand("overlay.instance."), S::Sep(),
         S::Cmd("overlay.options")}},
   };
 }
 
-MenuModel::MenuModel(const CommandRegistry& commands, std::vector<MenuSpec> layout)
-    : commands_(commands), layout_(std::move(layout)) {}
+std::vector<MenuSlot> DefaultToolbarLayout() {
+  using S = MenuSlot;
+  return {S::Cmd("map.zoom_in"), S::Cmd("map.zoom_out"), S::Cmd("map.recenter"), S::Sep(),
+          S::Expand("editor.mode."), S::Sep(), S::Expand("editor.tool.")};
+}
+
+MenuModel::MenuModel(const CommandRegistry& commands, std::vector<MenuSpec> layout,
+                     std::vector<MenuSlot> toolbar)
+    : commands_(commands), layout_(std::move(layout)), toolbar_layout_(std::move(toolbar)) {}
 
 std::vector<MenuItem> MenuModel::ResolveSlots(const std::vector<MenuSlot>& slots) const {
   std::vector<MenuItem> out;
@@ -117,8 +138,12 @@ bool MenuModel::Rebuild(const MenuSpec* editor_menu) {
   std::vector<Menu> next;
   for (const MenuSpec& spec : layout_) next.push_back(Resolve(spec));
   if (editor_menu != nullptr) next.push_back(Resolve(*editor_menu));
-  if (next == menus_ && generation_ > 0) return false;
+  std::vector<MenuItem> bar;
+  IconItems(ResolveSlots(toolbar_layout_), &bar);
+  TidySeparators(&bar);
+  if (next == menus_ && bar == toolbar_ && generation_ > 0) return false;
   menus_ = std::move(next);
+  toolbar_ = std::move(bar);
   ++generation_;
   if (on_change_) on_change_();
   return true;

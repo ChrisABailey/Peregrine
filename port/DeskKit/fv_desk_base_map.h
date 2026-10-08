@@ -11,6 +11,7 @@
 /// canvas as it was.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -41,8 +42,9 @@ class BaseMapRenderer {
 
   /// Draws `product` at `view` onto `canvas`, which must be the view's pixel
   /// size. A product this renderer cannot draw, or no catalog, is a no-op.
+  /// `interrupted` is polled between frames; true stops with kInterrupted.
   Status Render(const view::Viewport& view, const view::LadderProduct& product,
-                ICanvas& canvas);
+                ICanvas& canvas, const std::function<bool()>& interrupted = {});
 
  private:
   std::shared_ptr<Catalog> catalog_;

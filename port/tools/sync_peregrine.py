@@ -26,6 +26,12 @@ the originals now carry them, so there is no transformation left to get wrong.
 Keep it that way — a new file under `port/` should be born with the SPDX header
 (see port/NOTICE.md), not acquire one here.
 
+Work done downstream is protected. The Linux app (`port/apps/PeregrineGtk`)
+and Linux fixes to shared code land in Peregrine by pull request and must be
+back-ported here before a sync (port/linux-plan.md). `--apply` refuses while
+any file changed in Peregrine since its last `Sync:` commit differs from this
+tree, or while anything under LINUX_OWNED would be overwritten or removed.
+
 Destination-owned files are never touched: Peregrine's root README.md and
 CMakeLists.txt describe the published repo and are edited there. COPYING,
 COPYING.LESSER and NOTICE.md are authored here under `port/` and are copied to
@@ -55,6 +61,11 @@ DEST_OWNED = {"README.md", "CMakeLists.txt", ".gitignore", "PrivacyPolicy.md",
 # have no upstream original, so a strict closure diff would propose deleting
 # them on every sync.
 DEST_OWNED_DIRS = ("Screenshots/",)
+
+# Owned by the Linux session in the destination; this tree only receives
+# back-ports of it, so a sync that would change or remove it is a missed
+# back-port.
+LINUX_OWNED = ("port/apps/PeregrineGtk/",)
 
 # Held back from publication on purpose — subtrees that exist upstream and are
 # deliberately not part of the published subset. This is a policy list, not a
@@ -165,12 +176,68 @@ def port_extras(repo):
             if p and not p.endswith((".pyc", ".DS_Store")) and not held_back(p)]
 
 
+def git(cwd, *argv):
+    """Stdout of a git command in `cwd`; empty on failure."""
+    r = subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def downstream_conflicts(repo, dest, mapping):
+    """Destination files a sync would clobber before they are back-ported.
+
+    Returns (problems, warnings). A problem is a path edited in the destination
+    since its last `Sync:` commit whose bytes differ from this tree, or a
+    LINUX_OWNED path the sync would change or delete.
+    """
+    problems, warnings = [], []
+    git(dest, "fetch", "-q")
+    behind = git(dest, "rev-list", "--count", "HEAD..@{u}").strip()
+    if behind not in ("", "0"):
+        problems.append(f"destination is {behind} commit(s) behind its upstream "
+                        "-- pull first, so merged pull requests are seen")
+
+    reverse = {d: s for s, d in mapping.items()}
+
+    def differs(rel):
+        dst = os.path.join(dest, rel)
+        src = reverse.get(rel)
+        if src is None:
+            return os.path.exists(dst)          # would be deleted
+        if not os.path.exists(dst):
+            return True                         # deleted downstream, would return
+        return open(os.path.join(repo, src), "rb").read() != open(dst, "rb").read()
+
+    base = git(dest, "log", "-1", "--format=%H", "--grep=^Sync:").strip()
+    if not base:
+        warnings.append("no `Sync:` commit in the destination; downstream edits "
+                        "not checked")
+        touched = []
+    else:
+        touched = [f for f in git(dest, "diff", "-z", "--name-only", base,
+                                  "HEAD").split("\0") if f]
+    for rel in sorted(touched):
+        if rel in DEST_OWNED or rel.startswith(DEST_OWNED_DIRS):
+            continue
+        if differs(rel):
+            problems.append(f"edited downstream since {base[:8]}, not back-ported: {rel}")
+
+    have = [f for f in git(dest, "ls-files", "-z", *LINUX_OWNED).split("\0") if f]
+    for rel in sorted(set(have) | {d for d in mapping.values()
+                                   if d.startswith(LINUX_OWNED)}):
+        if rel not in touched and differs(rel):
+            problems.append(f"Linux-owned path would change: {rel}")
+    return problems, warnings
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dest", required=True, help="Peregrine clone")
     ap.add_argument("--build", default="build", help="build dir (default: build)")
     ap.add_argument("--apply", action="store_true", help="write; default is a dry run")
+    ap.add_argument("--overwrite-downstream", action="store_true",
+                    help="apply even when downstream work is not back-ported "
+                         "(discards it in the destination)")
     args = ap.parse_args()
 
     repo = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -195,6 +262,20 @@ def main():
             print(f"  ! vanished from the tree, skipping: {rel}")
             continue
         mapping[real] = ROOT_DOCS.get(real, real)
+
+    problems, warnings = downstream_conflicts(repo, dest, mapping)
+    for w in warnings:
+        print(f"  ? {w}")
+    if problems:
+        print("\nDownstream work this sync would overwrite (port/linux-plan.md):")
+        for p in problems:
+            print(f"  ! {p}")
+        print("Back-port each merged pull request first:\n"
+              "  git -C <dest> format-patch <base>..<merge> --stdout -- . "
+              "':!CMakeLists.txt' | git am -3")
+        if args.apply and not args.overwrite_downstream:
+            sys.exit("\nrefusing --apply; nothing was written")
+        print()
 
     # -z, not a plain split(): the destination tracks
     # `port/Routing/rules/Ruddy Turnstone to the beachclub.fvrte`, and

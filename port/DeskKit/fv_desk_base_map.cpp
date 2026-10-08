@@ -29,7 +29,8 @@ bool BaseMapRenderer::CanDraw(const std::string& format) {
 }
 
 Status BaseMapRenderer::Render(const view::Viewport& v, const view::LadderProduct& product,
-                               ICanvas& canvas) {
+                               ICanvas& canvas,
+                               const std::function<bool()>& interrupted) {
   if (!engine_ || !CanDraw(product.format)) return Status::Ok();
   Status s = engine_->SetSurfaceDimensions(v.PixelWidth(), v.PixelHeight());
   if (s.ok()) s = engine_->SetProjectionType(v.Type());
@@ -39,7 +40,7 @@ Status BaseMapRenderer::Render(const view::Viewport& v, const view::LadderProduc
     s = engine_->SetPhysicalScale(v.ScaleDenom(), MAP_SCALE_DENOMINATOR,
                                   v.MmPerPoint() / v.DisplayScale());
   if (s.ok()) s = engine_->SetRotation(v.Rotation());
-  if (s.ok()) s = engine_->RenderBaseMap(canvas, product.series_id);
+  if (s.ok()) s = engine_->RenderBaseMap(canvas, product.series_id, interrupted);
   return s;
 }
 
