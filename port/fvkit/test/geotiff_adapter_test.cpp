@@ -85,6 +85,13 @@ const Block* BlockFor(const std::string& base) {
 
 const char* kPinnedQuad = "38076g81.tif";  // same frame the reader tests pin
 
+/** The geotiff directory, or empty when it or the pinned quad is absent. */
+std::string TestDataPinnedRoot() {
+  std::string root = TestDataGeoTiff();
+  if (root.empty() || !fs::exists(root + "/" + kPinnedQuad)) return {};
+  return root;
+}
+
 // ---------------------------------------------------------------------------
 // Registry (synthetic, always runs)
 // ---------------------------------------------------------------------------
@@ -190,7 +197,7 @@ TEST(GeoTiffEnumerate, AllQuadsRecognized) {
 // ---------------------------------------------------------------------------
 
 TEST(GeoTiffSource, OpenInfoBounds) {
-  std::string root = TestDataGeoTiff();
+  std::string root = TestDataPinnedRoot();
   if (root.empty()) GTEST_SKIP();
 
   fv::GeoTiffRasterSource src;
@@ -212,7 +219,7 @@ TEST(GeoTiffSource, OpenInfoBounds) {
 }
 
 TEST(GeoTiffSource, ReadBlockRgba) {
-  std::string root = TestDataGeoTiff();
+  std::string root = TestDataPinnedRoot();
   if (root.empty()) GTEST_SKIP();
 
   fv::GeoTiffRasterSource src;
@@ -261,7 +268,7 @@ TEST(GeoTiffSource, ReadBlockRgba) {
 }
 
 TEST(GeoTiffSource, TransformRoundTrip) {
-  std::string root = TestDataGeoTiff();
+  std::string root = TestDataPinnedRoot();
   if (root.empty()) GTEST_SKIP();
 
   fv::GeoTiffRasterSource src;

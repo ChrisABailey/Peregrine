@@ -50,7 +50,7 @@ TEST(TirosEnumerate, FindsTiles) {
   fv::FrameInfo info;
   while (e.Next(&info)) frames.push_back(info);
 
-  EXPECT_GT(frames.size(), 100u);
+  ASSERT_FALSE(frames.empty());
   for (const auto& f : frames) {
     EXPECT_LT(f.bounds.ll.lat, f.bounds.ur.lat) << f.path;
     EXPECT_FALSE(f.series_key.empty());

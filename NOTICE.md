@@ -113,8 +113,13 @@ U.S. Government works. The commercial TerraGo GeoPDF SDK headers and
 `pdfnet.res` that live alongside them in the upstream FalconView tree are
 **not** included in this repository.
 
-No map test data (DTED, CADRG, GeoTIFF, DNC/VPF, TIROS) is included. See
-"Test data" in `README.md`.
+`testdata/` holds a small sample map set (DTED, TIROS, GeoTIFF, NOAA ENC,
+OpenStreetMap, NOAA tides, GPX) for the tests and for trying the apps. It is
+not covered by the LGPL: each set keeps its own terms — public domain, the
+NOAA ENC user agreement, ODbL for the OpenStreetMap-derived files, GPL for
+the OpenCPN S-52 symbol library, MIT for the GDAL S-57 tables — as listed in
+`testdata/README.md`. CADRG, DNC/VPF and the larger sample sets are not
+included.
 
 ## 6. Linking Peregrine into your own application
 

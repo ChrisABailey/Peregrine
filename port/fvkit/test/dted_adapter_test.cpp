@@ -270,7 +270,8 @@ TEST(RealDtedSource, PinnedElevationsThroughFvKit) {
 
   // the prototype .DT3 is indexed but unreadable in this snapshot:
   // kIoError (file exists), NOT kOutOfCoverage
-  EXPECT_EQ(src.GetElevation({40.5, -105.5}, &e).code, fv::kIoError);
+  if (fs::exists(fs::path(root) / "w106" / "n40.DT3"))
+    EXPECT_EQ(src.GetElevation({40.5, -105.5}, &e).code, fv::kIoError);
 }
 
 // w081/n32 exists at BOTH levels (.dt1 plus the .dt2 added 2026-07-23), the

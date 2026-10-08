@@ -61,7 +61,8 @@ which is not distributed here (`ctest` reports a skipped test as passing; the
 | Tools | `fvrender` renders a map to PNG; `fvpack` builds offline GeoPackage tile packs; `fvgraph` builds and queries road graphs |
 | Overlays | Overlay Architecture modeled after the FalconView Overlay Interfaces but implemented in portable C++17, with a type registry and a Python subclassable base class. The overlay stack is headless and testable, and can be used to build a map application shell without Windows dependancies. | 
 
-Render a chart headlessly (needs map data — see *Test data* below):
+Render a chart headlessly (CADRG LFC needs the full map data — see *Test
+data* below):
 
 ```sh
 export FVW_TESTDATA_DIR=/path/to/TestData
@@ -207,26 +208,16 @@ in a git-ignored `local/Local.xcconfig` (`Pippin.xcconfig` documents all three).
 
 ## Test data
 
-No map data is included — the sample DTED, CADRG, GeoTIFF, DNC/VPF, ENC, OSM
-and TIROS sets are large and separately distributed. Tests that need it skip
-cleanly: a clone with no map data at all builds and runs the full suite green
-(most of it skipping itself).
+`testdata/` is a small sample set (about 60 MB) centred on Kiawah Island and
+Charleston SC, plus whole-world TIROS: DTED level 1, a Charleston orthophoto,
+eight NOAA ENC cells, OpenStreetMap vector tiles, a routing graph and XML
+exports, NOAA tide predictions and a recorded GPX ride. The build points the
+tests at it automatically. Tests pinned to larger data (CADRG, DNC/VPF, the
+full OSM US-south pyramid, the original Chesapeake and FAA GeoTIFF sheets)
+skip themselves. Sources and terms for each set are in `testdata/README.md`.
 
-To run them, point `FVW_TESTDATA_DIR` at a tree laid out as:
-
-```
-TestData/
-  dted/      w082/n30.dt1, ...
-  rpf/       <type>/<zone>/<frame>     CADRG frames
-  geotiff/   USGS DOQ quads
-  vpf/dnc17/ DNC 17 database
-  tiros3/    TIROS .WLD GeoJPEGs + .wld sidecars
-  ENC/       S-57 base editions
-  OSM/       map*.osm extracts, mbtiles/ vector-tile pyramids
-```
-
-The build passes this path to the tests automatically when the directory
-exists.
+`port/tools/make_sampledata.py` rebuilds the set from a full test tree laid
+out the same way.
 
 ## Known limitations
 
