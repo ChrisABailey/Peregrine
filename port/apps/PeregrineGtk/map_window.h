@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "data_sources_window.h"
+#include "dialogs.h"
 #include "fv_desk_host.h"
 #include "main_menu.h"
 #include "map_canvas.h"
@@ -44,6 +46,14 @@ class MapWindow : public Gtk::ApplicationWindow {
   void Execute(const std::string& command_id);
   /// Regenerates the menu bar, toolbar and shortcuts when the model changed.
   void UpdateMenus();
+  /// Help ▸ Show Log: opens today's log file in the default viewer.
+  void ShowLog();
+  /// Brings up the Map Data Sources window, reusing it when it is showing.
+  void ShowDataSources();
+  /// The Map Data Sources window, or null when it is not open.
+  DataSourcesWindow* data_sources_window() { return data_sources_.get(); }
+  /// The progress dialog of a running job, or null.
+  JobDialog* job_dialog() { return job_dialog_.get(); }
   /// Renders the current view and writes the window's content (map and
   /// status bar) to `path` as a PNG, then prints the status line to stderr.
   /// Returns the error message, or "".
@@ -52,8 +62,11 @@ class MapWindow : public Gtk::ApplicationWindow {
  private:
   void Handle(const fv::desk::HostTick& tick);
   void CatalogDidChange();
+  void UpdateJob();
+  void AnswerRequest();
   bool OnCloseRequest();
   void PresentError(const std::string& message, const std::string& detail);
+  void PresentError(const std::string& message, const std::string& detail, Gtk::Window& parent);
   void PresentNotice(const std::string& notice);
   void RebuildToolbar();
 
@@ -72,6 +85,8 @@ class MapWindow : public Gtk::ApplicationWindow {
   Gtk::Label product_label_;
   Gtk::Label message_label_;
   Gtk::Label position_label_;
+  std::unique_ptr<JobDialog> job_dialog_;
+  std::unique_ptr<DataSourcesWindow> data_sources_;
 };
 
 }  // namespace peregrine

@@ -35,7 +35,7 @@ void MapCanvas::size_allocate_vfunc(int width, int height, int baseline) {
 void MapCanvas::PushSurface() {
   const int w = get_width();
   const int h = get_height();
-  if (w <= 0 || h <= 0 || !get_native()) return;
+  if (w <= 0 || h <= 0 || !get_native() || held_) return;
   host_.Resize(w, h, DisplayScale(), MmPerPoint());
 }
 
@@ -82,7 +82,7 @@ void MapCanvas::on_unrealize() {
 }
 
 bool MapCanvas::OnTick(const Glib::RefPtr<Gdk::FrameClock>&) {
-  Pump();
+  if (!held_) Pump();
   return G_SOURCE_CONTINUE;
 }
 
@@ -152,6 +152,12 @@ void MapCanvas::snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot>& snapshot) {
   gsk_transform_unref(t);
   gtk_snapshot_append_texture(s, texture_, &frame);
   gtk_snapshot_restore(s);
+}
+
+void MapCanvas::SetHeld(bool held) {
+  if (held == held_) return;
+  held_ = held;
+  if (!held_) PushSurface();
 }
 
 void MapCanvas::RenderNow() {

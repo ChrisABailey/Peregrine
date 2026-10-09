@@ -51,6 +51,9 @@ std::string IconName(const std::string& icon) {
   return it == kIcons.end() ? std::string() : it->second;
 }
 
+/// The version the log's first line names; the app has no release number yet.
+constexpr char kAppVersion[] = "(unversioned)";
+
 }  // namespace
 
 MapWindow::MapWindow()
@@ -58,6 +61,8 @@ MapWindow::MapWindow()
       canvas_(*host_),
       menus_(*host_, [this](const std::string& id) { Execute(id); }) {
   const std::string settings_error = host_->LoadSettings(std::string());
+  const std::string log_error = host_->StartLog(std::string(), kAppVersion);
+  if (!log_error.empty()) std::cerr << "Peregrine: no log file: " << log_error << "\n";
   InstallCss();
   set_title("Peregrine");
   set_default_size(1100, 750);
@@ -65,7 +70,14 @@ MapWindow::MapWindow()
   set_titlebar(header_);
   header_.pack_start(toolbar_);
   insert_action_group(CommandMenus::kActionPrefix, menus_.actions());
-  menu_bar_.set_menu_model(menus_.menu_bar());
+  // DeskKit's menus, then Help, which the macOS app also adds in its shell.
+  add_action("show-log", sigc::mem_fun(*this, &MapWindow::ShowLog));
+  auto help = Gio::Menu::create();
+  help->append("Show Log", "win.show-log");
+  auto bar = Gio::Menu::create();
+  bar->append_section(menus_.menu_bar());
+  bar->append_submenu("Help", help);
+  menu_bar_.set_menu_model(bar);
   menu_bar_.add_css_class("menu-bar-row");
 
   for (Gtk::Label* l : {&scale_label_, &product_label_, &message_label_, &position_label_})
@@ -88,6 +100,8 @@ MapWindow::MapWindow()
   canvas_.signal_error().connect([this](const std::string& e) { PresentError("Peregrine", e); });
   canvas_.signal_tick().connect([this](const fv::desk::HostTick& t) { Handle(t); });
   signal_close_request().connect(sigc::mem_fun(*this, &MapWindow::OnCloseRequest), false);
+  host_->SetRequestHandler(
+      [](void* context) { static_cast<MapWindow*>(context)->AnswerRequest(); }, this);
   RefreshStatus();
   UpdateMenus();
   if (!settings_error.empty()) {
@@ -96,7 +110,7 @@ MapWindow::MapWindow()
   }
 }
 
-MapWindow::~MapWindow() = default;
+MapWindow::~MapWindow() { host_->SetRequestHandler(nullptr, nullptr); }
 
 void MapWindow::RefreshStatus() {
   scale_label_.set_text(host_->StatusScale());
@@ -130,10 +144,65 @@ void MapWindow::CatalogDidChange() {
 void MapWindow::Handle(const fv::desk::HostTick& t) {
   if (t.menus_changed) UpdateMenus();
   if (t.catalog_changed) CatalogDidChange();
+  if (t.job_changed) UpdateJob();
+  if (t.sources_requested && host_->TakeSourcesRequest()) ShowDataSources();
   if (t.new_frame || t.redraw || t.status_changed || t.catalog_changed || t.job_changed)
     menus_.Refresh();
   const std::string notice = host_->TakeNotice();
   if (!notice.empty()) PresentNotice(notice);
+}
+
+/// Answers the host's question with a modal dialog. The map holds still
+/// meanwhile: the host is inside the call that asked.
+void MapWindow::AnswerRequest() {
+  canvas_.SetHeld(true);
+  peregrine::AnswerRequest(*host_, *this);
+  canvas_.SetHeld(false);
+}
+
+/// Shows, advances or dismisses the progress dialog of a catalog build.
+void MapWindow::UpdateJob() {
+  if (data_sources_) data_sources_->Reload();
+  if (!host_->JobActive()) {
+    job_dialog_.reset();
+    return;
+  }
+  if (!job_dialog_) {
+    job_dialog_ = std::make_unique<JobDialog>(*this, "Building the map catalog",
+                                              [this] { host_->CancelJob(); });
+    job_dialog_->present();
+  }
+  job_dialog_->Update(host_->JobFraction(), host_->JobText());
+}
+
+void MapWindow::ShowDataSources() {
+  if (data_sources_) {
+    data_sources_->Reload();
+    data_sources_->present();
+    return;
+  }
+  data_sources_ = std::make_unique<DataSourcesWindow>(
+      *host_, *this,
+      [this](const std::string& message, const std::string& detail, Gtk::Window& parent) {
+        PresentError(message, detail, parent);
+      });
+  data_sources_->present();
+}
+
+void MapWindow::ShowLog() {
+  const std::string path = host_->LogFilePath();
+  if (path.empty()) {
+    PresentError("No log file", "The application log could not be started.");
+    return;
+  }
+  auto launcher = Gtk::FileLauncher::create(Gio::File::create_for_path(path));
+  launcher->launch(*this, [this, launcher](const Glib::RefPtr<Gio::AsyncResult>& result) {
+    try {
+      launcher->launch_finish(result);
+    } catch (const Glib::Error& e) {
+      PresentError("Could not open the log", e.what());
+    }
+  });
 }
 
 void MapWindow::GoTo(double lat, double lon, double scale) {
@@ -200,10 +269,15 @@ bool MapWindow::OnCloseRequest() {
 }
 
 void MapWindow::PresentError(const std::string& message, const std::string& detail) {
+  PresentError(message, detail, *this);
+}
+
+void MapWindow::PresentError(const std::string& message, const std::string& detail,
+                             Gtk::Window& parent) {
   std::cerr << message << ": " << detail << "\n";
   auto alert = Gtk::AlertDialog::create(message);
   alert->set_detail(detail);
-  alert->show(*this);
+  alert->show(parent);
 }
 
 void MapWindow::PresentNotice(const std::string& notice) {
