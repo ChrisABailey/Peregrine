@@ -2656,3 +2656,37 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
 - **K15 refined**: an overlay-only change does not interrupt the base pass — that pass holds no
   stack lock and its result stays valid — so the UI never waits on a base frame, only on at most
   one overlay.
+
+### DK6c — Elevation nominal scale (2026-10-08)
+
+- **Elevation ladder keys on `dted-shaded`, not `dted`**: Generate Coverage scans the cell tree as
+  both formats, each catalogued at scale 0, and raw `dted` has no raster source. Only `dted-shaded`
+  gets a `scales` entry, so `dted` series never join the ladder (otherwise the lower series id —
+  `dted`, scanned first — would win the tie and draw nothing). `dted` stays in the group's format
+  list for elevation queries, not display.
+- **Selecting a map group keeps the view** (Chris, 2026-10-08): users explore a place, not a data
+  type, so a group with no data under the view shows an empty map with "No ‹group› map here" in the
+  status bar — no automatic jump. A coverage overlay showing each group's extents is a possible
+  later aid, not planned. Map ▸ Recenter uses the nearest frame's centre when the data box's centre
+  falls in a gap between clusters (testdata's DTED: Georgia/Carolinas and w106).
+
+### DK6e — ENC and OSM formats in Peregrine (2026-10-08)
+
+- A `map-groups.json` nominal-scale entry may give only a `format` (no series/prefix), matching
+  every series of that format — needed for OSM, whose series keys are file stems and so have no
+  common prefix a per-series entry could cover.
+- During Generate Coverage, `kUnsupported` from a format's own enumerator (ENC/OSM: "no cells/no
+  .mbtiles under this root") is an empty scan result, not a failed source — every format probes
+  every root, so without this every root lacking ENC/OSM data reported a spurious failure.
+  "no enumerator registered for this format" still counts as a failure.
+- Fixed two upgrade paths to `SQLITE_BUSY` in `Catalog::Scan`/`RemoveDataSource`, both now
+  resolved (was: `DeskHostStub.ACatalogBuildReportsProgressThroughTick` flaking ~4/40 under
+  `--gtest_repeat`, §2d): (a) the `data_sources` SELECT stayed active (holding a read lock)
+  through enumeration and into `BEGIN`, so a concurrent writer forced the first `DELETE` to
+  upgrade the lock and fail at once — fixed with `sel.Reset()` before the enumerator runs;
+  (b) the R-tree virtual table writes through its own statements under the outer DELETE's read
+  lock, so a deferred `BEGIN` upgraded mid-transaction and also failed immediately — both
+  transactions now use `BEGIN IMMEDIATE`, which waits out the 10s busy timeout instead. Exposed
+  by ENC's slower enumeration. Verified 0/200 `--gtest_repeat` failures (was 4/40) and 0/40 for
+  `GenerateCoverageFindsEncAndOsm`; full ctest 2434/2434. A separately spun-off task for the
+  flake, if one exists, is now moot.

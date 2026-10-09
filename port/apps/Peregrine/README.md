@@ -53,8 +53,15 @@ application menu. The toolbar shows commands with an icon; `Toolbar.swift` maps
 DeskKit icon names to SF Symbols. Questions from the core (save changes?, open,
 save as, choose from a list, choose a directory) arrive through
 `DeskHost::SetRequestHandler` inside the call that asked, and `Dialogs.swift`
-answers them with modal panels. A catalog build runs in the background with a
-progress sheet and a Cancel button, which stops after the current data source.
+answers them with modal panels.
+
+Map ▸ Map Data Sources… (`DataSourcesWindow.swift`) lists the folders the
+catalog scans, stored in the catalog as absolute paths; Add… and Remove edit the
+list. Each folder is searched for every format in its conventional subdirectory
+(`rpf`, `tiros3`, `dted`, `geotiff`, …) and for VPF databases. Generate Coverage
+removes all of the catalog's coverage and rescans every folder in the
+background, with a progress sheet and a Cancel button that stops after the
+current data source. It refuses while a listed folder is unreachable.
 
 ## Options and settings
 

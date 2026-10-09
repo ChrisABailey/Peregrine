@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <filesystem>
 
+#include "fvkit/log.h"
+
 namespace fs = std::filesystem;
 
 namespace fv {
@@ -136,7 +138,7 @@ Status S57Cell::Open(const std::string& path) {
     }
   }
   if (!updates_.empty())
-    fprintf(stderr, "fv_s57: WARNING: %s\n", StalenessWarning().c_str());
+    FV_LOG_WARNING("S-57: " << StalenessWarning());
 
   is_open_ = true;
   return Status::Ok();

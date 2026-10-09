@@ -23,6 +23,17 @@ class Catalog;
 
 namespace desk {
 
+/// A display scale for series the catalog stores without one (a DTED level,
+/// a DNC library, an OSM pyramid). Matches `series` exactly or as a prefix,
+/// ignoring case; an entry with only a `format` matches every series of it.
+/// An empty `format` matches any of the group's formats.
+struct NominalScale {
+  std::string format;
+  std::string series;
+  bool prefix = false;
+  double scale_denom = 0;  // 1:N, > 0
+};
+
 /// One base-map choice: a title, the catalog formats it draws, and its ladder.
 struct MapGroup {
   std::string id;
@@ -30,6 +41,11 @@ struct MapGroup {
   std::vector<std::string> formats;
   view::LadderKind ladder = view::LadderKind::kUniform;
   double uniform_factor = 2.0;
+  /// Checked in order; the first match wins.
+  std::vector<NominalScale> nominal_scales;
+
+  /// The nominal 1:N for a series, or 0 when no entry matches.
+  double NominalScaleOf(const std::string& format, const std::string& series_key) const;
 };
 
 /// The ordered set of map groups.

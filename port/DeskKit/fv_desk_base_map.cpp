@@ -21,17 +21,21 @@ void BaseMapRenderer::SetCatalog(std::shared_ptr<Catalog> catalog) {
   engine_.reset();
   catalog_ = std::move(catalog);
   if (catalog_) engine_ = std::make_unique<MapEngine>(catalog_);
+  vector_.Reset(catalog_);
 }
 
 bool BaseMapRenderer::CanDraw(const std::string& format) {
+  if (VectorBaseMap::CanDraw(format)) return true;
   const FormatFactories* f = FindFormat(format);
   return f != nullptr && static_cast<bool>(f->make_raster_source);
 }
 
 Status BaseMapRenderer::Render(const view::Viewport& v, const view::LadderProduct& product,
                                ICanvas& canvas,
-                               const std::function<bool()>& interrupted) {
+                               const std::function<bool()>& interrupted,
+                               std::vector<SkippedFrame>* skipped) {
   if (!engine_ || !CanDraw(product.format)) return Status::Ok();
+  if (VectorBaseMap::CanDraw(product.format)) return vector_.Render(v, product, canvas);
   Status s = engine_->SetSurfaceDimensions(v.PixelWidth(), v.PixelHeight());
   if (s.ok()) s = engine_->SetProjectionType(v.Type());
   if (s.ok()) s = engine_->SetCenter(v.Center());
@@ -40,7 +44,7 @@ Status BaseMapRenderer::Render(const view::Viewport& v, const view::LadderProduc
     s = engine_->SetPhysicalScale(v.ScaleDenom(), MAP_SCALE_DENOMINATOR,
                                   v.MmPerPoint() / v.DisplayScale());
   if (s.ok()) s = engine_->SetRotation(v.Rotation());
-  if (s.ok()) s = engine_->RenderBaseMap(canvas, product.series_id, interrupted);
+  if (s.ok()) s = engine_->RenderBaseMap(canvas, product.series_id, interrupted, nullptr, skipped);
   return s;
 }
 

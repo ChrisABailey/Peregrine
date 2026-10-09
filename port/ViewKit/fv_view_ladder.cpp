@@ -135,7 +135,8 @@ LadderStep ScaleLadder::Settle(double display_denom, const LadderProduct* curren
 
 std::vector<LadderProduct> CatalogProductsAt(const Catalog& catalog,
                                              const GeoPoint& p,
-                                             const std::vector<std::string>& formats) {
+                                             const std::vector<std::string>& formats,
+                                             const SeriesScale& nominal) {
   std::vector<LadderProduct> out;
   std::vector<CoverageRow> rows;
   if (!catalog.SelectByGeoRect(GeoRect{p, p}, &rows).ok() || rows.empty())
@@ -150,12 +151,16 @@ std::vector<LadderProduct> CatalogProductsAt(const Catalog& catalog,
   for (const CoverageRow& r : rows) {
     if (!wanted.count(r.format) || !seen.insert(r.series_id).second) continue;
     auto it = by_id.find(r.series_id);
-    if (it == by_id.end() || !(it->second->scale_denom > 0)) continue;
+    if (it == by_id.end()) continue;
+    const SeriesRow& sr = *it->second;
+    double denom = sr.scale_denom;
+    if (!(denom > 0) && nominal) denom = nominal(sr.format, sr.series_key);
+    if (!(denom > 0)) continue;
     LadderProduct lp;
     lp.series_id = r.series_id;
-    lp.format = it->second->format;
-    lp.series_key = it->second->series_key;
-    lp.scale_denom = it->second->scale_denom;
+    lp.format = sr.format;
+    lp.series_key = sr.series_key;
+    lp.scale_denom = denom;
     out.push_back(lp);
   }
   std::sort(out.begin(), out.end(), [](const LadderProduct& a, const LadderProduct& b) {

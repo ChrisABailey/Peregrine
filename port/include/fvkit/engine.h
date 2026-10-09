@@ -42,6 +42,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "fvkit/canvas/canvas.h"
 #include "fvkit/catalog/catalog.h"
@@ -49,6 +50,12 @@
 #include "fvkit/proj.h"
 
 namespace fv {
+
+/// A frame RenderBaseMap left out because its file could not be read.
+struct SkippedFrame {
+  std::string path;
+  Status status;
+};
 
 class MapEngine {
  public:
@@ -92,10 +99,13 @@ class MapEngine {
   // to series_id when nonzero) into canvas, nearest frame data wins by
   // ascending coverage id (catalog order). `interrupted` is polled between
   // frames; returning true aborts with kInterrupted (canvas keeps whatever
-  // was drawn). frames_drawn may be null.
+  // was drawn). A frame whose file cannot be opened or read is left out and
+  // appended to `skipped`; the rest still draw and the call returns ok.
+  // Other failures stop the render and are returned. Out-params may be null.
   Status RenderBaseMap(ICanvas& canvas, int64_t series_id = 0,
                        const std::function<bool()>& interrupted = {},
-                       int* frames_drawn = nullptr);
+                       int* frames_drawn = nullptr,
+                       std::vector<SkippedFrame>* skipped = nullptr);
 
   // Optional elevation source (e.g. DtedElevationSource); meters/NaN per D4.
   void SetElevationSource(std::shared_ptr<IElevationSource> src);
@@ -132,6 +142,9 @@ class MapEngine {
   std::shared_ptr<IElevationSource> elevation_;
   MapProjection proj_;
   bool force_projected_ = false;
+  /// Set by CompositeRow and the blits when the frame's source failed
+  /// (open, Info, ReadBlock), so RenderBaseMap skips the frame.
+  bool row_unreadable_ = false;
 
   struct CacheEntry {
     std::string path;

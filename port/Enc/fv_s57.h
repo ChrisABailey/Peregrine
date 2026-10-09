@@ -15,7 +15,7 @@
 // BASE EDITION ONLY. `.001`, `.002`, … update files are NOT applied (phase E5).
 // A cell with unapplied updates on disk is STALE, which is the worst failure
 // mode a chart has, so `Open` reports them in `unapplied_updates()`, exposes
-// `StalenessWarning()`, and prints that warning to stderr. Callers that must
+// `StalenessWarning()`, and logs that warning (fvkit/log.h). Callers that must
 // not show stale charts should refuse to draw when it is non-empty.
 //
 // Coordinates are WGS-84 decimal degrees (D2): S-57 stores them as integers

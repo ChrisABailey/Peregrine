@@ -10,6 +10,7 @@
 /// the dialog and one written by hand are the same setting.
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,9 +28,28 @@ std::vector<int> ParseElevationBands(const std::string& text);
 /// The canonical spelling of `feet`: "2500,5000,7500".
 std::string FormatElevationBands(const std::vector<int>& feet);
 
+/// A `mariner.*` depth in metres: empty leaves `out` unset; false when
+/// `text` is not a non-negative number.
+bool ParseMarinerDepth(const std::string& text, std::optional<double>* out);
+
+/// A `mariner.*` switch: 1/on/yes/true or 0/off/no/false, any case; empty
+/// leaves `out` unset; false for anything else.
+bool ParseMarinerFlag(const std::string& text, std::optional<bool>* out);
+
 /// Elevation: `dted.elevation_bands_ft`, applied with
 /// `SetDtedShadedElevationBands`.
 MapOptionsSource ElevationMapOptions();
+
+/// DNC: `geosym.data_dir`, `geosym.brightness`, `geosym.contrast`, applied
+/// with `SetVectorMapConfig`.
+MapOptionsSource DncMapOptions();
+
+/// ENC: `enc.data_dir`, `enc.show_meta_objects` and the `mariner.*` keys,
+/// which DNC is drawn with too.
+MapOptionsSource EncMapOptions();
+
+/// OpenStreetMap: `osm.style`.
+MapOptionsSource OsmMapOptions();
 
 /// Every built-in source, in no particular order (pages follow the map
 /// group table).

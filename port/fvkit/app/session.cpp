@@ -129,7 +129,8 @@ std::shared_ptr<Overlay> OverlaySession::Instantiate(
   if (app::Properties* props = overlay->AsProperties()) {
     std::vector<std::string> w;
     props->LoadFrom(settings_, SettingsPrefixForTypeId(desc.id), &w);
-    for (const std::string& line : w) Warn(line);
+    // LoadFrom has logged them.
+    warnings_.insert(warnings_.end(), w.begin(), w.end());
   }
   return overlay;
 }

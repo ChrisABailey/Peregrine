@@ -25,6 +25,7 @@
 #include <string>
 #include <strings.h>  // strcasecmp / strncasecmp
 
+#include "fv_log_c.h"         // stubs below report through the application log
 #include "fv_win32_path.h"  // fv::FvResolveWin32Path (backslashes, case)
 
 // MSVC fixed-width integer spellings. A macro (not typedef) because MSVC's
@@ -568,7 +569,11 @@ inline DWORD GetTickCount() {
   return (DWORD)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
 }
 
-inline void OutputDebugString(const char* s) { fprintf(stderr, "%s", s); }
+// The log stubs below default their source location to the caller's.
+inline void OutputDebugString(const char* s, const char* file = __builtin_FILE(),
+                              int line = __builtin_LINE()) {
+  fv_log_write(FV_LOG_C_DEBUG, file, line, s);
+}
 
 inline BOOL DeleteFile(const char* path) { return remove(path) == 0; }
 inline BOOL MoveFile(const char* from, const char* to) {
@@ -585,13 +590,19 @@ inline int fopen_s(FILE** fp, const char* path, const char* mode) {
   return *fp == nullptr ? 2 : 0;  // ENOENT-ish nonzero on failure
 }
 
-// Headless stub: message boxes become stderr lines, "OK" is returned.
+// Headless stub: message boxes become application-log errors, "OK" is returned.
 #define MB_OK 0x0000
 #define MB_TASKMODAL 0x2000
 #define IDOK 1
 inline int MessageBox(void* /*hwnd*/, const char* text, const char* caption,
-                      unsigned /*type*/) {
-  fprintf(stderr, "[%s] %s\n", caption ? caption : "", text ? text : "");
+                      unsigned /*type*/, const char* file = __builtin_FILE(),
+                      int line_no = __builtin_LINE()) {
+  if (fv_log_enabled(FV_LOG_C_ERROR)) {
+    std::string text_line =
+        caption != nullptr && caption[0] != '\0' ? std::string(caption) + ": " : "";
+    text_line += text != nullptr ? text : "";
+    fv_log_write(FV_LOG_C_ERROR, file, line_no, text_line.c_str());
+  }
   return IDOK;
 }
 
@@ -609,9 +620,9 @@ typedef char TCHAR;    // narrow builds only, like the rest of this shim
 inline DWORD GetLastError() { return (DWORD)errno; }
 inline void SetLastError(DWORD e) { errno = (int)e; }
 
-inline int AfxMessageBox(const char* text, unsigned /*type*/ = 0,
-                         unsigned /*help*/ = 0) {
-  fprintf(stderr, "[AfxMessageBox] %s\n", text ? text : "");
+inline int AfxMessageBox(const char* text, unsigned /*type*/ = 0, unsigned /*help*/ = 0,
+                         const char* file = __builtin_FILE(), int line = __builtin_LINE()) {
+  fv_log_write(FV_LOG_C_ERROR, file, line, text);
   return 1;  // IDOK
 }
 
@@ -673,11 +684,16 @@ typedef int32_t HRESULT;
 struct fv_com_error {
   HRESULT hr;
 };
+inline void fv_log_c_error2(const char* file, int line, const char* fn, const char* msg) {
+  std::string text = fn != nullptr && fn[0] != '\0' ? std::string(fn) + ": " : "";
+  text += msg != nullptr ? msg : "";
+  fv_log_write(FV_LOG_C_ERROR, file, line, text.c_str());
+}
 #define TRY_BLOCK try
 #define THROW_ERROR_MSG(hr_, fn_, msg_)                          \
   {                                                              \
-    fprintf(stderr, "[%s] %s\n", (const char*)(fn_),            \
-            (const char*)(msg_));                                \
+    fv_log_c_error2(__FILE__, __LINE__, (const char*)(fn_),     \
+                    (const char*)(msg_));                        \
     throw fv_com_error{(HRESULT)(hr_)};                          \
   }
 #define THROW_ERROR_MSG2(hr_, msg_) THROW_ERROR_MSG(hr_, "", msg_)

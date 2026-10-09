@@ -5,6 +5,8 @@
 
 #include "fv_desk_map_groups.h"
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -22,7 +24,26 @@ namespace {
 
 using json = nlohmann::json;
 
+bool StartsWithNoCase(const std::string& s, const std::string& prefix) {
+  if (s.size() < prefix.size()) return false;
+  for (size_t i = 0; i < prefix.size(); ++i)
+    if (std::tolower(static_cast<unsigned char>(s[i])) !=
+        std::tolower(static_cast<unsigned char>(prefix[i])))
+      return false;
+  return true;
+}
+
 }  // namespace
+
+double MapGroup::NominalScaleOf(const std::string& format,
+                                const std::string& series_key) const {
+  for (const NominalScale& ns : nominal_scales) {
+    if (!ns.format.empty() && ns.format != format) continue;
+    if (!ns.prefix && ns.series.size() != series_key.size()) continue;
+    if (StartsWithNoCase(series_key, ns.series)) return ns.scale_denom;
+  }
+  return 0;
+}
 
 MapGroups MapGroups::Builtin() {
   MapGroups g;
@@ -73,6 +94,39 @@ Status MapGroups::LoadJson(const std::string& text, const std::string& name) {
       if (!jg["step"].is_number() || !(jg["step"].get<double>() > 1.0))
         return fail("group '" + g.id + "' step must be a number > 1");
       g.uniform_factor = jg["step"].get<double>();
+    }
+    if (jg.contains("scales")) {
+      if (!jg["scales"].is_array()) return fail("group '" + g.id + "' scales must be an array");
+      for (const json& js : jg["scales"]) {
+        const std::string where = "group '" + g.id + "' scale entry";
+        if (!js.is_object()) return fail(where + " must be an object");
+        NominalScale ns;
+        const bool has_series = js.contains("series"), has_prefix = js.contains("prefix");
+        if (has_series && has_prefix) return fail(where + " has both series and prefix");
+        if (has_series || has_prefix) {
+          const json& key = has_series ? js["series"] : js["prefix"];
+          if (!key.is_string() || key.get<std::string>().empty())
+            return fail(where + " has an empty series or prefix");
+          ns.series = key.get<std::string>();
+          ns.prefix = has_prefix;
+        } else if (!js.contains("format")) {
+          return fail(where + " needs a series, a prefix or a format");
+        } else {
+          ns.prefix = true;  // an empty prefix matches every series of the format
+        }
+        if (js.contains("format")) {
+          if (!js["format"].is_string()) return fail(where + " format must be a string");
+          ns.format = js["format"].get<std::string>();
+          if (std::find(g.formats.begin(), g.formats.end(), ns.format) == g.formats.end())
+            return fail(where + " names format '" + ns.format + "', not in the group");
+        }
+        if (!js.contains("scale") || !js["scale"].is_number() ||
+            !(js["scale"].get<double>() > 0))
+          return fail(where + " for '" + (ns.series.empty() ? ns.format : ns.series) +
+                      "' needs a scale > 0");
+        ns.scale_denom = js["scale"].get<double>();
+        g.nominal_scales.push_back(std::move(ns));
+      }
     }
     out.push_back(std::move(g));
   }

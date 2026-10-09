@@ -21,12 +21,19 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     private var jobSheet: JobSheet?
     /// Open options windows, by HostOptionsKind.
     private var optionsWindows: [Int32: OptionsWindowController] = [:]
+    private var dataSourcesWindow: DataSourcesWindowController?
     /// Called after the menu model changed; the app rebuilds the menu bar.
     var onMenusChanged: (() -> Void)?
 
     init() {
         host = fv.desk.DeskHost.Create()
         let settingsError = String(host.LoadSettings(std.string("")))
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "(unversioned)"
+        let logError = String(host.StartLog(std.string(""), std.string(version)))
+        if !logError.isEmpty {
+            FileHandle.standardError.write(Data("Peregrine: no log file: \(logError)\n".utf8))
+        }
         canvas = MapCanvasView(host: host)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -135,6 +142,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
             let kind = host.TakeOptionsRequest()
             if kind >= 0 { showOptions(kind) }
         }
+        if t.sources_requested && host.TakeSourcesRequest() { showDataSources() }
         let notice = String(host.TakeNotice())
         if !notice.isEmpty { present(notice: notice) }
     }
@@ -150,6 +158,27 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         let controller = OptionsWindowController(host: host, kind: kind)
         controller.onClose = { [weak self] in self?.optionsWindows[kind] = nil }
         optionsWindows[kind] = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the Map Data Sources window, reusing it when it is showing.
+    private func showDataSources() {
+        if let existing = dataSourcesWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = DataSourcesWindowController(host: host)
+        controller.onClose = { [weak self] in self?.dataSourcesWindow = nil }
+        controller.presentError = { message, detail, parent in
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = message
+            alert.informativeText = detail
+            if let parent { alert.beginSheetModal(for: parent) } else { alert.runModal() }
+        }
+        dataSourcesWindow = controller
         controller.window?.center()
         controller.showWindow(nil)
     }
@@ -195,6 +224,16 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         let error = String(host.Execute(std.string(command)))
         if !error.isEmpty { present(error: "Command failed", detail: error) }
         if host.QuitRequested() { NSApp.terminate(nil) }
+    }
+
+    /// Help ▸ Show Log: opens today's log file in the default viewer (Console).
+    @objc func showLog(_ sender: Any?) {
+        let path = String(host.LogFilePath())
+        guard !path.isEmpty else {
+            present(error: "No log file", detail: "The application log could not be started.")
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     /// The action of every generated menu item and toolbar button: the

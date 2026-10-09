@@ -71,6 +71,9 @@ enum MainMenu {
         NSApp.windowsMenu = window
 
         let help = NSMenu(title: "Help")
+        let showLog = help.addItem(withTitle: "Show Log", action: Selector(("showLog:")),
+                                   keyEquivalent: "")
+        showLog.target = target
         add(help, to: bar)
         NSApp.helpMenu = help
         return bar

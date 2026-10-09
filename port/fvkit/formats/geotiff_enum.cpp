@@ -15,6 +15,7 @@
 #include <system_error>
 
 #include "fv_geotiff_frame.h"
+#include "fvkit/log.h"
 
 namespace fs = std::filesystem;
 
@@ -64,8 +65,7 @@ Status GeoTiffFrameEnumerator::Begin(const std::string& dir) {
     HRESULT hr = frame.GetFrameProperties(dir_with_sep, name, &props);
     if (FAILED(hr) || !props.supported) {
       // Windows fell back to the ImageLib COM object / MrSID here (D6)
-      fprintf(stderr, "fvkit geotiff: skipping unsupported frame %s\n",
-              f.path().string().c_str());
+      FV_LOG_WARNING("geotiff: skipping unsupported frame " << f.path().string());
       continue;
     }
 

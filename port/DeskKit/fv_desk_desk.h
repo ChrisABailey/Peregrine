@@ -52,6 +52,9 @@ class DeskShell : public app::AppShell {
   /// Show the Map ▸ Options dialog over `model`; on OK the shell calls
   /// `Desk::ApplyMapOptions(*model)`.
   virtual void ShowMapOptions(std::shared_ptr<OptionsModel> /*model*/) {}
+  /// Show the Map Data Sources dialog; it works through `Desk::ScanRoots`,
+  /// `AddScanRoot`, `RemoveScanRoot` and `GenerateCoverage`.
+  virtual void ShowDataSources() {}
   /// Asks for a directory; "" when cancelled.
   virtual std::string ChooseDirectory(const std::string& /*title*/) { return std::string(); }
   /// An informational message for the user, such as a catalog build's result.
@@ -110,11 +113,20 @@ class Desk {
   const std::shared_ptr<Catalog>& catalog() const { return catalog_; }
   const std::string& catalog_path() const { return catalog_path_; }
 
-  /// Starts an auto-detect scan of `root` into the current catalog, which
-  /// must be a file. kUnsupported while a build is running.
-  Status StartCatalogBuild(const std::string& root);
-  /// Starts rescanning every data source in the current catalog.
-  Status StartCatalogRescan();
+  /// The directories Generate Coverage scans, absolute. A catalog that has
+  /// never saved a list offers the directories of its data sources.
+  std::vector<std::string> ScanRoots() const;
+  /// Adds a directory (made absolute) to the list and saves it in the
+  /// catalog. A directory already covered by the list is refused; one that
+  /// contains listed directories replaces them.
+  Status AddScanRoot(const std::string& path);
+  /// Removes a directory from the list and saves it. Coverage is unchanged
+  /// until the next Generate Coverage.
+  Status RemoveScanRoot(const std::string& path);
+  /// Removes every data source and its coverage, then scans each listed
+  /// directory in the background. Refused while a listed directory is
+  /// unreachable, so an unmounted volume does not lose its coverage.
+  Status GenerateCoverage();
   /// The running or just-finished build, or null.
   const CatalogBuild* catalog_build() const { return build_.get(); }
   bool Building() const { return build_ != nullptr; }
@@ -173,6 +185,7 @@ class Desk {
 
   // MARK: Status
   StatusBar CurrentStatus() const;
+  /// Warnings since the last ClearWarnings; each was also logged.
   const std::vector<std::string>& warnings() const { return warnings_; }
   void ClearWarnings() { warnings_.clear(); }
 
@@ -184,6 +197,8 @@ class Desk {
   void RegisterCatalogCommands();
   /// Opens or creates the catalog file at `path`.
   Status UseCatalogFile(const std::string& path, bool create);
+  /// Writes the scan list to the catalog.
+  Status SaveScanRoots(const std::vector<std::string>& roots);
   void Recenter();
   void RegisterGroupCommands();
   void RegisterProjectionCommands();
@@ -196,7 +211,10 @@ class Desk {
   Overlay* FileTarget() const;
   std::vector<view::LadderProduct> ProductsAt(const GeoPoint& p) const;
   void ApplyGroupToView();
+  /// Logs `s` and reports it through the shell.
   app::FlowResult Report(const Status& s);
+  /// Logs a warning at the caller's location and keeps it for `warnings()`.
+  void Warn(std::string w, const char* file = __builtin_FILE(), int line = __builtin_LINE());
 
   DeskShell& shell_;
   Settings& settings_;

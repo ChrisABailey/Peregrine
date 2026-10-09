@@ -12,6 +12,7 @@
 
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/formats/registry.h"
+#include "fvkit/log.h"
 
 namespace fv {
 namespace desk {
@@ -54,6 +55,12 @@ void WalkVpf(const fs::path& dir, int depth, int max_depth, std::vector<std::str
   }
 }
 
+std::string Lower(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return s;
+}
+
 std::string Thousands(int64_t n) {
   std::string digits = std::to_string(n);
   std::string out;
@@ -65,6 +72,62 @@ std::string Thousands(int64_t n) {
 }
 
 }  // namespace
+
+std::string AbsolutePath(const std::string& path) {
+  std::error_code ec;
+  fs::path p = fs::absolute(fs::path(path), ec);
+  if (ec) p = fs::path(path);
+  p = p.lexically_normal();
+  std::string out = p.string();
+  while (out.size() > 1 && (out.back() == '/' || out.back() == '\\') &&
+         p.root_path().string() != out)
+    out.pop_back();
+  return out;
+}
+
+bool PathWithin(const std::string& path, const std::string& root) {
+  const fs::path r(root);
+  std::error_code ec;
+  const bool root_exists = fs::exists(r, ec);
+  for (fs::path p(path); !p.empty(); p = p.parent_path()) {
+    if (p == r) return true;
+    if (root_exists && fs::equivalent(p, r, ec)) return true;
+    if (p == p.parent_path()) break;
+  }
+  return false;
+}
+
+std::vector<std::string> RootsFromSources(
+    const std::vector<std::pair<std::string, std::string>>& path_format) {
+  std::vector<std::string> abs;
+  for (const auto& [path, format] : path_format) {
+    fs::path p(AbsolutePath(path));
+    for (const ScanFormat& f : DefaultScanFormats()) {
+      if (f.format == format && !f.subdir.empty() && Lower(p.filename().string()) == Lower(f.subdir)) {
+        p = p.parent_path();
+        break;
+      }
+    }
+    abs.push_back(p.string());
+  }
+  // Shorter paths first, so a parent is kept before anything inside it.
+  std::sort(abs.begin(), abs.end(), [](const std::string& a, const std::string& b) {
+    const auto depth = [](const std::string& s) {
+      const fs::path p(s);
+      return std::distance(p.begin(), p.end());
+    };
+    const auto da = depth(a), db = depth(b);
+    return da != db ? da < db : a < b;
+  });
+  std::vector<std::string> roots;
+  for (const std::string& p : abs) {
+    const bool inside = std::any_of(roots.begin(), roots.end(),
+                                    [&](const std::string& r) { return PathWithin(p, r); });
+    if (!inside) roots.push_back(p);
+  }
+  std::sort(roots.begin(), roots.end());
+  return roots;
+}
 
 const std::vector<ScanFormat>& DefaultScanFormats() {
   static const std::vector<ScanFormat> table = {
@@ -102,8 +165,11 @@ std::vector<ScanStep> PlanScan(const std::string& root, const std::vector<ScanFo
   return steps;
 }
 
-CatalogBuild::CatalogBuild(std::string catalog_path, std::vector<ScanStep> steps)
-    : catalog_path_(std::move(catalog_path)), steps_(std::move(steps)) {
+CatalogBuild::CatalogBuild(std::string catalog_path, std::vector<ScanStep> steps,
+                           bool replace_existing)
+    : catalog_path_(std::move(catalog_path)),
+      steps_(std::move(steps)),
+      replace_existing_(replace_existing) {
   progress_.total = static_cast<int>(steps_.size());
   worker_ = std::thread([this] { Run(); });
 }
@@ -155,21 +221,46 @@ std::string CatalogBuild::Summary() const {
 }
 
 void CatalogBuild::Run() {
+  SetLogThreadName("catalog");
+  FV_LOG_INFO("catalog build: " << steps_.size() << " steps into " << catalog_path_);
   Catalog cat;
   const Status opened = cat.Open(catalog_path_);
   auto finish = [this] {
     std::lock_guard<std::mutex> lock(mu_);
     progress_.current.clear();
+    progress_.removing = false;
     progress_.finished = true;
     progress_.cancelled = cancel_;
   };
   if (!opened.ok()) {
+    FV_LOG_ERROR("catalog build: " << opened.message);
     {
       std::lock_guard<std::mutex> lock(mu_);
       errors_.push_back(opened.message);
     }
     finish();
     return;
+  }
+
+  if (replace_existing_) {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      progress_.removing = true;
+    }
+    std::vector<DataSourceRow> old;
+    Status s = cat.DataSources(&old);
+    for (size_t i = 0; s.ok() && i < old.size(); ++i) s = cat.RemoveDataSource(old[i].id);
+    if (!s.ok()) {
+      FV_LOG_ERROR("catalog build: clearing the old coverage: " << s.message);
+      {
+        std::lock_guard<std::mutex> lock(mu_);
+        errors_.push_back(s.message);
+      }
+      finish();
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mu_);
+    progress_.removing = false;
   }
 
   for (const ScanStep& step : steps_) {
@@ -183,11 +274,20 @@ void CatalogBuild::Run() {
       Status s = cat.AddDataSource(dir, step.format, 0, &id);
       int frames = 0;
       if (s.ok()) s = cat.Scan(id, &frames);
+      // ENC and OSM enumerators report a tree with none of their files as
+      // kUnsupported; every format probes every root, so that is an empty result.
+      if (s.code == kUnsupported && CanScan(step.format)) {
+        FV_LOG_DEBUG("catalog build: " << step.format << " " << dir << ": " << s.message);
+        s = Status::Ok();
+      }
       if (!s.ok()) {
+        FV_LOG_WARNING("catalog build: " << step.format << " " << dir << ": " << s.message);
         std::lock_guard<std::mutex> lock(mu_);
         errors_.push_back(step.format + " " + dir + ": " + s.message);
       }
       if (frames > 0) {
+        FV_LOG_INFO("catalog build: " << step.format << " " << dir << ": " << frames
+                                      << " frames");
         std::lock_guard<std::mutex> lock(mu_);
         results_.push_back(ScanResult{step.format, dir, frames});
         break;
@@ -197,6 +297,7 @@ void CatalogBuild::Run() {
     std::lock_guard<std::mutex> lock(mu_);
     ++progress_.done;
   }
+  if (cancel_) FV_LOG_INFO("catalog build: cancelled");
   finish();
 }
 

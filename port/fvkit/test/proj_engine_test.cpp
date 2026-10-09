@@ -588,6 +588,67 @@ TEST(EngineSynthetic, DatelineFrameCompositesBothSides) {
   fv::ClearFormatRegistryForTest();
 }
 
+/// StubRaster whose file fails to open under a directory named "missing" and
+/// fails to read under one named "corrupt".
+class FlakyRaster : public StubRaster {
+ public:
+  fv::Status Open(const std::string& path) override {
+    corrupt_ = path.find("/corrupt/") != std::string::npos;
+    if (path.find("/missing/") != std::string::npos)
+      return fv::Status::Error(fv::kNotFound, "no such file: " + path);
+    return fv::Status::Ok();
+  }
+  fv::Status ReadBlock(const fv::PixelRect& r, fv::PixelBuffer* out) override {
+    if (corrupt_) return fv::Status::Error(fv::kInternal, "bad block");
+    return StubRaster::ReadBlock(r, out);
+  }
+
+ private:
+  bool corrupt_ = false;
+};
+
+TEST(EngineSynthetic, UnreadableFramesAreSkippedAndTheRestDraw) {
+  fv::ClearFormatRegistryForTest();
+  fv::FormatFactories f;
+  f.format_key = "stubr";
+  f.make_enumerator = [] { return std::make_shared<StubEnum>(); };
+  f.make_raster_source = [] { return std::make_shared<FlakyRaster>(); };
+  ASSERT_TRUE(fv::RegisterFormat(f).ok());
+
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  // Catalog order puts both bad frames ahead of the good one.
+  for (const char* dir : {"/missing", "/corrupt", "/good"}) {
+    int64_t id = 0;
+    int n = 0;
+    ASSERT_TRUE(cat->AddDataSource(dir, "stubr", 0, &id).ok());
+    ASSERT_TRUE(cat->Scan(id, &n).ok());
+  }
+
+  fv::MapEngine engine(cat);
+  ASSERT_TRUE(engine.SetSurfaceDimensions(200, 150).ok());
+  ASSERT_TRUE(engine.SetCenter({-17.5, 178.5}).ok());
+  ASSERT_TRUE(engine.SetScale(40000000.0).ok());
+
+  fv::CpuCanvas canvas(200, 150);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  int drawn = 0;
+  std::vector<fv::SkippedFrame> skipped;
+  const fv::Status s = engine.RenderBaseMap(canvas, 0, {}, &drawn, &skipped);
+  ASSERT_TRUE(s.ok()) << s.message;
+  EXPECT_EQ(drawn, 1);
+  ASSERT_EQ(skipped.size(), 2u);
+  EXPECT_EQ(skipped[0].path, "/missing/stub.frame");
+  EXPECT_EQ(skipped[0].status.code, fv::kNotFound);
+  EXPECT_EQ(skipped[1].path, "/corrupt/stub.frame");
+  EXPECT_EQ(skipped[1].status.message, "bad block");
+
+  double sx = 0, sy = 0;
+  ASSERT_TRUE(engine.CurrentProj().GeoToSurface({-17.5, 176.0}, &sx, &sy).ok());
+  EXPECT_EQ(canvas.Buffer().Row((int)sy)[4 * (int)sx], 200);
+  fv::ClearFormatRegistryForTest();
+}
+
 // ---------------------------------------------------------------------------
 // MapEngine, the TURNED raster path (PR3)
 // ---------------------------------------------------------------------------

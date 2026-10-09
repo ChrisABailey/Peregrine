@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include "fvkit/log.h"
+
 namespace fv {
 namespace desk {
 namespace {
@@ -78,6 +80,7 @@ Status CommandRegistry::Register(Command c) {
     if (const Command* holder = FindByShortcut(c.shortcut)) {
       warnings_.push_back("shortcut " + c.shortcut.ToString() + " of '" + c.id +
                           "' is already held by '" + holder->id + "'");
+      FV_LOG_WARNING(warnings_.back());
       c.shortcut = Shortcut();
     }
   }

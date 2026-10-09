@@ -87,11 +87,17 @@ const LadderProduct* NearestProduct(double display_denom,
                                     const LadderProduct* current,
                                     const std::vector<LadderProduct>& candidates);
 
+/// A display 1:N for a series the catalog stores at scale 0, or 0 for none.
+using SeriesScale =
+    std::function<double(const std::string& format, const std::string& series_key)>;
+
 /// The catalog's series in `formats` with coverage holding `p`, one entry per
-/// series, finest first. Series without a comparable scale are left out.
+/// series, finest first. A series catalogued at scale 0 takes its scale from
+/// `nominal`; one with neither is left out.
 std::vector<LadderProduct> CatalogProductsAt(const Catalog& catalog,
                                              const GeoPoint& p,
-                                             const std::vector<std::string>& formats);
+                                             const std::vector<std::string>& formats,
+                                             const SeriesScale& nominal = nullptr);
 
 }  // namespace view
 }  // namespace fv

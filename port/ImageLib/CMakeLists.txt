@@ -83,7 +83,7 @@ target_include_directories(fv_tiff PRIVATE
   ${CMAKE_SOURCE_DIR}/third_party/gdal_1.9.1/frmts/jpeg/libjpeg)
 # tif_config.h spells 64-bit types as MSVC's (unsigned) __int64 keyword
 target_compile_definitions(fv_tiff PRIVATE "__int64=long long")
-target_link_libraries(fv_tiff PUBLIC fv_z fv_gdal_jpeg)
+target_link_libraries(fv_tiff PUBLIC fv_z fv_gdal_jpeg PRIVATE fv_log)
 target_compile_options(fv_tiff PRIVATE -w)
 
 if(FVW_BUILD_TESTS)

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "fvkit/log.h"
 #include "fvkit/settings.h"
 
 namespace fv {
@@ -305,6 +306,10 @@ bool ChoiceIndexForName(const PropertySpec& spec, const std::string& text,
 
 Status Properties::LoadFrom(const Settings& settings, const std::string& prefix,
                             std::vector<std::string>* warnings) {
+  auto warn = [warnings](const std::string& w) {
+    FV_LOG_WARNING("settings: " << w);
+    if (warnings != nullptr) warnings->push_back(w);
+  };
   for (const PropertySpec& spec : Describe()) {
     const std::string full = prefix + spec.key;
     if (!settings.Has(full)) continue;
@@ -314,19 +319,15 @@ Status Properties::LoadFrom(const Settings& settings, const std::string& prefix,
     if (spec.type == PropertyType::kChoice &&
         ChoiceIndexForName(spec, raw, &v.i)) {
       Status s = SetProperty(spec.key, v);
-      if (!s.ok() && warnings != nullptr)
-        warnings->push_back(full + " = " + raw + " rejected: " + s.message);
+      if (!s.ok()) warn(full + " = " + raw + " rejected: " + s.message);
       continue;
     }
     if (!v.FromString(raw)) {
-      if (warnings != nullptr)
-        warnings->push_back(full + " = " + raw +
-                            " is not a valid value, keeping current");
+      warn(full + " = " + raw + " is not a valid value, keeping current");
       continue;
     }
     Status s = SetProperty(spec.key, v);
-    if (!s.ok() && warnings != nullptr)
-      warnings->push_back(full + " = " + raw + " rejected: " + s.message);
+    if (!s.ok()) warn(full + " = " + raw + " rejected: " + s.message);
   }
   return Status::Ok();
 }

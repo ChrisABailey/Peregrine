@@ -234,6 +234,9 @@ Status Catalog::Scan(int64_t data_source_id, int* frames_added) {
     return s.ok() ? Status::Error(kNotFound, "unknown data source id") : s;
   std::string src_path = sel.ColText(0);
   std::string format = sel.ColText(1);
+  // An active statement keeps a read lock, which a write would then have to
+  // upgrade (see BEGIN IMMEDIATE below).
+  sel.Reset();
 
   const FormatFactories* fmt = FindFormat(format);
   if (fmt == nullptr || !fmt->make_enumerator)
@@ -243,8 +246,11 @@ Status Catalog::Scan(int64_t data_source_id, int* frames_added) {
   s = e->Begin(src_path);
   if (!s.ok()) return s;
 
-  // replace this source's coverage atomically
-  s = db_.Exec("BEGIN");
+  // Replaces this source's coverage atomically. IMMEDIATE takes the write lock
+  // up front: the R-tree writes through its own statements under the outer
+  // statement's read lock, and SQLite fails that upgrade with SQLITE_BUSY at
+  // once rather than waiting on the busy timeout.
+  s = db_.Exec("BEGIN IMMEDIATE");
   if (!s.ok()) return s;
   {
     detail::SqliteStmt del;
@@ -429,9 +435,33 @@ Status Catalog::BestSeriesForScale(double target_scale_denom,
   return Status::Ok();
 }
 
+Status Catalog::Meta(const std::string& key, std::string* value) const {
+  if (value == nullptr) return Status::Error(kInvalidArg, "value is null");
+  if (!db_.IsOpen()) return Status::Error(kInvalidArg, "catalog not open");
+  detail::SqliteStmt q;
+  Status s = q.Prepare(db_, "SELECT value FROM meta WHERE key=?");
+  if (!s.ok()) return s;
+  q.BindText(1, key);
+  if (!q.Step(&s)) return s.ok() ? Status::Error(kNotFound, "no meta key " + key) : s;
+  *value = q.ColText(0);
+  return Status::Ok();
+}
+
+Status Catalog::SetMeta(const std::string& key, const std::string& value) {
+  if (!db_.IsOpen()) return Status::Error(kInvalidArg, "catalog not open");
+  detail::SqliteStmt q;
+  Status s = q.Prepare(db_, "INSERT OR REPLACE INTO meta(key, value) VALUES(?,?)");
+  if (!s.ok()) return s;
+  q.BindText(1, key);
+  q.BindText(2, value);
+  q.Step(&s);
+  return s;
+}
+
 Status Catalog::RemoveDataSource(int64_t data_source_id) {
   if (!db_.IsOpen()) return Status::Error(kInvalidArg, "catalog not open");
-  Status s = db_.Exec("BEGIN");
+  // IMMEDIATE for the R-tree delete; see Scan.
+  Status s = db_.Exec("BEGIN IMMEDIATE");
   if (!s.ok()) return s;
   detail::SqliteStmt del_rt;
   s = del_rt.Prepare(db_,

@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "fv_desk_user_settings.h"
+#include "fvkit/log.h"
 
 namespace fv {
 namespace desk {
@@ -242,6 +243,7 @@ std::vector<app::TypeId> RegisterOverlayManifests(app::OverlayTypeRegistry& regi
                                                   const std::vector<std::string>& dirs,
                                                   std::vector<std::string>* warnings) {
   auto warn = [warnings](const std::string& w) {
+    FV_LOG_WARNING("overlay manifest: " << w);
     if (warnings != nullptr) warnings->push_back(w);
   };
   std::vector<app::TypeId> registered;

@@ -39,13 +39,13 @@ TEST(ElevationBands, ParseLikePythonView) {
   EXPECT_EQ(FormatElevationBands({}), "");
 }
 
-TEST(MapOptions, MapOptionsShowsAnElevationPage) {
+TEST(MapOptions, MapOptionsLeadsWithTheElevationPage) {
   fv::desk::FakeDesk fake;
   ASSERT_TRUE(fake.desk().commands().IsEnabled("map.options"));
   ASSERT_TRUE(fake.desk().Execute("map.options").ok());
   ASSERT_NE(fake.shell().map_options_shown, nullptr);
   const auto& pages = fake.shell().map_options_shown->pages();
-  ASSERT_EQ(pages.size(), 1u);
+  ASSERT_EQ(pages.size(), 4u);
   EXPECT_EQ(pages[0]->id(), "elevation");
   EXPECT_EQ(pages[0]->title(), "Elevation");
   ASSERT_EQ(pages[0]->sections().size(), 1u);
@@ -104,7 +104,7 @@ TEST(MapOptions, ARegisteredSourceReplacesTheBuiltinForItsGroup) {
   fv::desk::MapOptionsSource none;
   none.group_id = "elevation";
   fake.desk().RegisterMapOptions(none);
-  EXPECT_TRUE(fake.desk().MapOptions()->pages().empty());
+  EXPECT_EQ(fake.desk().MapOptions()->Page("elevation"), nullptr);
 }
 
 }  // namespace

@@ -595,3 +595,13 @@ simplify_pixels = 0.5
 # at most five. Empty = FalconView's 2500/5000/7500/10000/12500. PythonView's
 # Tools > DTED Colour Breaks... edits this key.
 # elevation_bands_ft = "2500,5000,7500,10000,12500"
+
+[log]
+# The application log (Help > Show Log). Peregrine writes it to
+# ~/Library/Logs/Peregrine (macOS), $XDG_STATE_HOME/peregrine (Linux) or
+# %LOCALAPPDATA%\Peregrine\Logs (Windows), one Peregrine-YYYY-MM-DD.log per day.
+# level: error, warning, info or debug. Default info (debug in debug builds).
+# level = "info"
+# A file over max_mb starts a new one; only the newest keep_files are kept.
+# max_mb = 5
+# keep_files = 5

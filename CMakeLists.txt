@@ -84,9 +84,12 @@ endif()
 # untouched for the Windows product build.
 add_subdirectory(port/third_party)
 
-# Shared portability shim (header-only for now)
+# Shared portability shim, and the application log every library writes to
+# (fvkit/log.h; fv_compat.h's POSIX stubs log through it).
+add_subdirectory(port/log)
 add_library(fv_compat INTERFACE)
 target_include_directories(fv_compat INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/port/include)
+target_link_libraries(fv_compat INTERFACE fv_log)
 
 # --- Ported modules, in porting order. Uncomment as each lands. ---
 add_subdirectory(port/geoid)

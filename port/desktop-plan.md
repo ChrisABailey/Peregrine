@@ -190,11 +190,51 @@ v1 is `CpuCanvas` → RGBA → platform image (CGImage / cairo surface / D2D bit
 where it is measured adequate. The escape hatch is the same: V7 native `ICanvas` backends, a
 new backend rather than a new architecture.
 
+`BaseMapRenderer` draws raster formats only, so of the five map groups only Raster displays.
+Three gaps, found 2026-10-08 against a `testdata` catalog that PythonView draws in full:
+
+- **No scale for DTED and DNC.** Their series are catalogued at scale 0 (an elevation cell or a
+  DNC library has no chart scale) and `CatalogProductsAt` drops scale-0 series, so the
+  Elevation and DNC groups never choose a product. PythonView gives DTED levels fixed display
+  scales (`DTED_DEFAULT_SCALE`) and fits a DNC library to the window. The renderer already draws
+  `dted-shaded`; only the product choice is missing.
+- **No vector path.** DNC, ENC and OSM draw through fvkit's `VectorRenderer` over a vector source
+  (`VpfVectorSource`, `EncVectorSource`, the OSM tile source) and a style engine
+  (`GeoSymStyleEngine`, `S52StyleEngine`, `OsmStyleEngine`), as PythonView's `_open_vector` does.
+  Each engine needs its data directory or style sheet from settings.
+- **ENC and OSM are not registered.** Their formats live in `port/Enc` and `port/Osm`
+  (`RegisterEncFormat`, `RegisterOsmFormat`), which Peregrine neither links nor calls, so
+  Generate Coverage skips `enc/` and `OSM/` and those groups never appear.
+
 ### 2d. Build
 
 The core stays the root CMake build. Linux and Windows apps are CMake targets. The mac app is an
 Xcode project over a CMake-built core, as Pippin does it (`cmake --preset`, then Xcode), so
 signing and notarization use Apple's tools.
+
+### 2e. Application log
+
+One log for the whole application, in place of today's scattered sinks: `Desk::warnings()` and
+`CommandRegistry::warnings()` vectors nobody reads, catalog build errors, `ReportError` and
+`ShowNotice` text that exists only as an alert, `RenderBaseMap`'s skipped frames, and direct
+`stderr` writes in about 30 `port/` and 26 `fvw_core/` files (GeoTrans's `MSPCCS_DATA` lines,
+for one). It is the port's counterpart of FalconView's `ERR_report` / `INFO_report`
+(`Applications/FalconView/include/err.h`), which write file and line to an error log.
+
+- **API** — `fvkit/log.h` in namespace `fv`, the lowest layer every library links: levels Error,
+  Warning, Info, Debug; macros `FV_LOG_ERROR(...)` … `FV_LOG_DEBUG(...)` that carry `__FILE__`
+  and `__LINE__` and skip formatting when the level is filtered out. Thread-safe: the render
+  worker and the catalog build thread log directly.
+- **Sinks** — registered by the application, none by the library: a file sink at the platform
+  log path (macOS `~/Library/Logs/Peregrine/`, Linux `$XDG_STATE_HOME/peregrine/`, Windows
+  `%LOCALAPPDATA%\Peregrine\Logs\`); stderr for the CLIs and debug builds; `os_log` on Apple
+  platforms; an in-memory ring a shell can show. The first line of each launch records version,
+  OS, settings file and catalog, as `ERR_writeStartupInfoToLog` does.
+- **Routing** — DeskKit sends every warning, error and notice through it, and `DeskHost`'s
+  render worker logs each skipped frame with its path and reason. The status bar and alerts keep
+  showing what the user must act on; the log records everything. `fvw_core`'s `stderr` writes go
+  through a C-callable shim, guarded so the Windows product keeps its own `err.lib`.
+- **Later** — Pippin routes to `os_log`, pyfvw to Python's `logging`.
 
 ---
 
@@ -278,6 +318,7 @@ concept is `MapGroup` (`map-groups.json`); the UI still says "Map family".
 | K13 | DTED | **Decided (Chris, 2026-10-05): an Elevation map family, plus Contour Lines and TA Mask as static overlays**, all three usable together | The overlays exist (`fv.contour`, `fv.tamask`). Open: nothing feeds the TA mask's altitude from the moving map yet (ledger §2a). |
 | K15 | Overlay drawing threading (Chris, 2026-10-07) | **Worker under a stack lock, with FalconView-style cooperative cancel** between base frames and between overlays; a drag moves the last frame | UI-thread compositing would stall on a heavy overlay; a plain lock would make a click wait for a whole render. DK5b. Refined in DK5b: an overlay-only change does not interrupt the base pass (it holds no lock and its result stays valid), so the UI waits on at most one overlay, never a base frame. |
 | K16 | Where editors are listed | **Overlay ▸ Edit ▸**, one check item per editor, as well as the toolbar | An editor whose type has no icon would otherwise be unreachable (the toolbar shows only commands with icons). |
+| K17 | Application log (implemented DK6b 2026-10-08; defaults awaiting Chris's confirmation) | **One `fvkit/log.h` facility with app-registered sinks; file at the platform log path; Info and above in release, Debug in debug builds; keep the last 5 files of 5 MB; Help ▸ Show Log** | §2e. Open: retention numbers, whether Info goes to the file by default, and whether the Windows product ever routes `ERR_report` through it (proposed no). Built in DK6b exactly as proposed, with the numbers as settings (`log.level`, `log.max_mb`, `log.keep_files`) so Chris can change them without a rebuild; `ERR_report` is not routed through it. Still open: Chris's sign-off on the defaults. |
 | K14 | Plug-in kinds in v1 | **`builtin` only; `library` next; `python` on request** | `builtin` proves the manifest; the other two add only a loader. |
 
 ## 5. Sessions
@@ -294,6 +335,10 @@ yet a seam.
 | DK5 | **mac menus, toolbar, dialogs** — generated menu bar incl. ‹Editor› menu, icon toolbar, DeskShell on NSOpenPanel/NSAlert, catalog build with progress | every command reachable; shortcuts per HIG |
 | DK5b | **Overlay drawing** — one worker draws base then overlays; base cached per view, overlay pass over a copy; a cancel token checked between base frames and between overlays, set by a new view or any UI-thread overlay change; the UI takes the stack lock after setting it (waits for at most one frame or overlay); fvkit engine gains a per-frame cancel hook, later the overlay draw context too | Grid toggled from the menu draws; a held Page Up renders only the last step; an overlay change does not re-render the base |
 | DK6 | **mac options dialogs** — Map and Overlay options, generated pages | Grid page changes colour and ticks with no Grid-specific UI code |
+| DK6b | **Application log** (§2e, K17) — `fvkit/log.h` levels, macros and sinks; file sink at the platform log path with a startup line; DeskKit warnings, errors, notices and skipped frames routed through it; `fvw_core` stderr shim; mac Help ▸ Show Log | gtests: a message from the render worker and one from the catalog build thread both reach the file sink with file:line; a filtered Debug message does no formatting; mac: Show Log opens today's file |
+| DK6c | **Nominal scales for scale-less series** (§2c) — `map-groups.json` gains per-series display scales: DTED0–3 at 1:2M, 1:500k, 1:150k, 1:50k (PythonView's table); DNC libraries by type, General 1:1M, Coastal 1:300k, Approach 1:50k, Harbour 1:15k, WVS `wvs012m`/`wvs040m`/`wvs120m` at 1:12M/1:40M/1:120M; the ladder uses them where the catalog says 0 | gtest: the Elevation group picks DTED1 at 1:500k over Charleston and steps to DTED2; mac: Elevation shows shaded relief from a regenerated `testdata` catalog |
+| DK6d | **Vector base map** (§2c) — `BaseMapRenderer` draws DNC (VPF + GeoSym), ENC (S-57 + S-52) and OSM (MVT + style sheet) through `VectorRenderer`, one style engine per product as PythonView keeps them; Map ▸ Options pages for the GeoSym directory, ENC data directory and mariner settings, and OSM style sheets (DK6 follow-ups) | gtests over the test data, skipped without it; mac: DNC at Nantucket and ENC at Charleston match PythonView's `--shot` of the same view |
+| DK6e | **ENC and OSM formats in Peregrine** (§2c) — link `port/Enc` and `port/Osm` into the core, call `RegisterEncFormat` / `RegisterOsmFormat` in `DeskHost`, so Generate Coverage finds `enc/` and `OSM/` | Generate Coverage on `testdata` lists the ENC and OpenStreetMap groups; both draw (after DK6d) |
 | DK7 | **Linux spike** — GTK4 window, same map widget contract, generated menus | the same workspace renders on Linux; any Swift-shaped leak in DeskKit fixed here |
 | DK8 | **Panels and editing** — layers panel, points and route editors, search, undo | editor flows tested through FakeDesk first |
 | DK9 | **Moving map** — NMEA/GPX/demo feed, follow modes | GPX replay end to end |

@@ -67,11 +67,74 @@ TEST(MapGroups, RejectsBadTablesAndKeepsTheOldOne) {
       R"({"groups":[{"id":"a","formats":["x"]},{"id":"b","formats":["x"]}]})",
       R"({"groups":[{"id":"a","formats":["x"]},{"id":"a","formats":["y"]}]})",
       R"({"groups":[{"id":"a","formats":["x"],"step":1}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":{}}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"scale":1000}]}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"series":"s","prefix":"s","scale":1000}]}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"series":"s","scale":0}]}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"series":"s"}]}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"format":"y","series":"s","scale":1}]}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"format":"x"}]}]})",
+      R"({"groups":[{"id":"a","formats":["x"],"scales":[{"format":"x","prefix":"","scale":1}]}]})",
   };
   for (const char* text : bad) {
     EXPECT_FALSE(g.LoadJson(text).ok()) << text;
     EXPECT_EQ(g.All().size(), 5u) << text;
   }
+}
+
+TEST(MapGroups, NominalScalesForScaleLessSeries) {
+  const MapGroups g = MapGroups::Builtin();
+  const MapGroup& elev = *g.Find("elevation");
+  EXPECT_DOUBLE_EQ(elev.NominalScaleOf("dted-shaded", "DTED0"), 2e6);
+  EXPECT_DOUBLE_EQ(elev.NominalScaleOf("dted-shaded", "DTED1"), 500e3);
+  EXPECT_DOUBLE_EQ(elev.NominalScaleOf("dted-shaded", "DTED2"), 150e3);
+  EXPECT_DOUBLE_EQ(elev.NominalScaleOf("dted-shaded", "DTED3"), 50e3);
+  // The elevation-query format draws nothing, so it never joins the ladder.
+  EXPECT_EQ(elev.NominalScaleOf("dted", "DTED1"), 0);
+  EXPECT_EQ(elev.NominalScaleOf("dted-shaded", "DTED12"), 0);
+
+  // DNC library names carry their type; case is not significant.
+  const MapGroup& dnc = *g.Find("dnc");
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "gen17a"), 1e6);
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "COA17C"), 300e3);
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "a1707300"), 50e3);
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "h1707290"), 15e3);
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "WVS012M"), 12e6);
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "wvs040m"), 40e6);
+  EXPECT_DOUBLE_EQ(dnc.NominalScaleOf("vpf", "wvs120m"), 120e6);
+  EXPECT_EQ(dnc.NominalScaleOf("vpf", "browse"), 0);
+  EXPECT_EQ(g.Find("raster")->NominalScaleOf("cadrg", "GNC"), 0);
+
+  // An OSM series is a file stem, so one entry covers the whole format.
+  const MapGroup& osm = *g.Find("osm");
+  EXPECT_DOUBLE_EQ(osm.NominalScaleOf("osm", "kiawah"), 50e3);
+  EXPECT_DOUBLE_EQ(osm.NominalScaleOf("osm", "us-south"), 50e3);
+}
+
+TEST(MapGroups, AFormatOnlyScaleMatchesEverySeriesOfIt) {
+  MapGroups g;
+  ASSERT_TRUE(g.LoadJson(R"({"groups":[{"id":"a","formats":["x","y"],"scales":[
+      {"format":"x","series":"big","scale":1000},
+      {"format":"x","scale":2000}]}]})")
+                  .ok());
+  const MapGroup& a = *g.Find("a");
+  EXPECT_DOUBLE_EQ(a.NominalScaleOf("x", "big"), 1000);
+  EXPECT_DOUBLE_EQ(a.NominalScaleOf("x", "anything"), 2000);
+  EXPECT_EQ(a.NominalScaleOf("y", "anything"), 0);
+}
+
+TEST(MapGroups, FirstMatchingScaleWins) {
+  MapGroups g;
+  ASSERT_TRUE(g.LoadJson(R"({"groups":[{"id":"a","formats":["x","y"],"scales":[
+      {"series":"hx","scale":1000},
+      {"format":"y","prefix":"h","scale":2000},
+      {"prefix":"h","scale":3000}]}]})")
+                  .ok());
+  const MapGroup& a = *g.Find("a");
+  EXPECT_DOUBLE_EQ(a.NominalScaleOf("y", "HX"), 1000);
+  EXPECT_DOUBLE_EQ(a.NominalScaleOf("y", "hy"), 2000);
+  EXPECT_DOUBLE_EQ(a.NominalScaleOf("x", "hy"), 3000);
+  EXPECT_EQ(a.NominalScaleOf("x", "z"), 0);
 }
 
 }  // namespace

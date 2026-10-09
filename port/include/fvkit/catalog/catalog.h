@@ -113,6 +113,12 @@ class Catalog {
   // Removes the source and all its coverage.
   Status RemoveDataSource(int64_t data_source_id);
 
+  // A value of the meta table; kNotFound when the key is absent. Keys other
+  // than schema_version belong to the application.
+  Status Meta(const std::string& key, std::string* value) const;
+  // Inserts or replaces a meta value.
+  Status SetMeta(const std::string& key, const std::string& value);
+
  private:
   Status InsertCoverage(int64_t data_source_id, int64_t series_id,
                         const FrameInfo& f);

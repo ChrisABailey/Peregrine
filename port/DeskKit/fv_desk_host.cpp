@@ -5,21 +5,28 @@
 
 #include "fv_desk_host.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <mutex>
+#include <set>
 
 #include "fv_desk_base_map.h"
 #include "fv_desk_desk.h"
 #include "fv_desk_user_settings.h"
+#include "fv_enc_format.h"
+#include "fv_osm_format.h"
 #include "fv_view_scheduler.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/catalog/catalog.h"
+#include "fvkit/engine.h"
 #include "fvkit/formats/registry.h"
+#include "fvkit/log.h"
 #include "fvkit/settings.h"
 
 void fv_desk_host_retain(fv::desk::DeskHost* host) {
@@ -54,6 +61,7 @@ class HostShell : public DeskShell {
 
   std::shared_ptr<OptionsModel> options_shown[2];  // by HostOptionsKind
   int options_requested = -1;
+  bool sources_requested = false;
 
   HostRequestFn handler = nullptr;
   void* handler_context = nullptr;
@@ -126,6 +134,7 @@ class HostShell : public DeskShell {
     options_shown[kOptionsOverlay] = std::move(model);
     options_requested = kOptionsOverlay;
   }
+  void ShowDataSources() override { sources_requested = true; }
   void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
     options_shown[kOptionsMap] = std::move(model);
     options_requested = kOptionsMap;
@@ -255,9 +264,18 @@ struct DeskHost::Impl {
   std::mutex jobs_mu;
   std::map<uint64_t, Job> jobs;  // by request number; pruned as frames render
 
+  /// Why the base map is incomplete ("" when it drew fully); written by the
+  /// worker, read by the status bar.
+  mutable std::mutex base_note_mu;
+  std::string base_note;
+
+  std::shared_ptr<FileLogSink> log_file;
+  std::vector<int> log_sinks;  // ids to remove with the host
+
   // Touched only by the render worker.
   BaseMapRenderer base;
   std::string worker_catalog_path;
+  std::set<std::string> logged_skips;  // unreadable files already logged for this catalog
   uint64_t worker_map_style = 0;
   PixelBuffer base_px;  // the base map of `base_px_seq`
   uint64_t base_px_seq = 0;
@@ -270,6 +288,8 @@ struct DeskHost::Impl {
 
   std::shared_ptr<const view::Frame> Render(const view::Viewport& v, uint64_t seq);
   std::string StatusLine() const;
+  /// The desk's status message with the base map's note appended.
+  std::string Message(const StatusBar& bar) const;
   /// The page of the open dialog `kind`, or null.
   OptionsPage* OptionsPageAt(int kind, int page) const;
   /// Re-flattens the menus and toolbar when the model changed.
@@ -309,14 +329,20 @@ std::shared_ptr<const view::Frame> DeskHost::Impl::Render(const view::Viewport& 
     if (it != jobs.end()) job = it->second;
     jobs.erase(jobs.begin(), jobs.upper_bound(seq));
   }
+  SetLogThreadName("render");
   // The worker keeps its own catalog connection; the UI thread's is not
   // shared across threads.
   if (job.catalog_path != worker_catalog_path) {
     worker_catalog_path = job.catalog_path;
+    logged_skips.clear();
     std::shared_ptr<Catalog> c;
     if (!job.catalog_path.empty()) {
       c = std::make_shared<Catalog>();
-      if (!c->Open(job.catalog_path).ok()) c.reset();
+      const Status opened = c->Open(job.catalog_path);
+      if (!opened.ok()) {
+        FV_LOG_ERROR("render: catalog " << job.catalog_path << ": " << opened.message);
+        c.reset();
+      }
     }
     base.SetCatalog(std::move(c));
     worker_map_style = job.map_style;
@@ -331,10 +357,30 @@ std::shared_ptr<const view::Frame> DeskHost::Impl::Render(const view::Viewport& 
     base_px_valid = false;
     CpuCanvas canvas(v.PixelWidth(), v.PixelHeight());
     canvas.Clear(FvColor{0, 0, 0, 255});
+    std::string note;
     if (job.has_product) {
       const auto stale = [this, &job] { return latest_base_seq.load() != job.base_seq; };
-      // Any other failure keeps what was drawn; the next view retries.
-      if (base.Render(v, job.product, canvas, stale).code == kInterrupted) return nullptr;
+      std::vector<SkippedFrame> skipped;
+      const Status s = base.Render(v, job.product, canvas, stale, &skipped);
+      if (s.code == kInterrupted) return nullptr;
+      // Each unreadable file is logged once per catalog, not once per frame.
+      for (const SkippedFrame& f : skipped)
+        if (logged_skips.insert(f.path).second)
+          FV_LOG_WARNING("render: skipped " << f.path << ": " << f.status.message);
+      // A failed render keeps what was drawn; the next view retries.
+      if (!s.ok()) {
+        note = "Map not fully drawn: " + s.message;
+        FV_LOG_WARNING("render: " << job.product.format << " " << job.product.series_key << ": "
+                                  << s.message);
+      }
+      else if (skipped.size() == 1)
+        note = "1 map file could not be read: " + skipped[0].path;
+      else if (skipped.size() > 1)
+        note = std::to_string(skipped.size()) + " map files could not be read";
+    }
+    {
+      std::lock_guard<std::mutex> lock(base_note_mu);
+      base_note = std::move(note);
     }
     base_px = std::move(canvas.Buffer());
     base_px_seq = job.base_seq;
@@ -366,7 +412,14 @@ std::shared_ptr<const view::Frame> DeskHost::Impl::Render(const view::Viewport& 
 
 std::string DeskHost::Impl::StatusLine() const {
   const StatusBar bar = desk->CurrentStatus();
-  return bar.scale + '\n' + bar.product + '\n' + bar.message + '\n';
+  return bar.scale + '\n' + bar.product + '\n' + Message(bar) + '\n';
+}
+
+std::string DeskHost::Impl::Message(const StatusBar& bar) const {
+  std::lock_guard<std::mutex> lock(base_note_mu);
+  if (bar.message.empty()) return base_note;
+  if (base_note.empty()) return bar.message;
+  return bar.message + " · " + base_note;
 }
 
 /// Scope in which the UI thread may change the overlay stack: interrupts the
@@ -392,6 +445,9 @@ DeskHost* DeskHost::Create() { return new DeskHost(); }
 
 DeskHost::DeskHost() : impl_(std::make_unique<Impl>()) {
   RegisterBuiltinFormats();
+  // ENC and OSM register outside fvkit, which they link.
+  RegisterEncFormat();
+  RegisterOsmFormat();
   impl_->desk = std::make_unique<Desk>(impl_->shell, impl_->settings);
   Impl* impl = impl_.get();
   impl_->scheduler = std::make_unique<view::RenderScheduler>(
@@ -404,13 +460,18 @@ DeskHost::~DeskHost() {
   impl_->latest_seq.store(UINT64_MAX);
   impl_->latest_base_seq.store(UINT64_MAX);
   impl_->scheduler.reset();
+  for (int id : impl_->log_sinks) RemoveLogSink(id);
 }
 
 // MARK: Catalog and commands
 
 std::string DeskHost::OpenCatalog(const std::string& path) {
   const Status s = impl_->desk->OpenCatalog(path);
-  if (!s.ok()) return s.message;
+  if (!s.ok()) {
+    FV_LOG_ERROR("catalog " << path << ": " << s.message);
+    return s.message;
+  }
+  FV_LOG_INFO("catalog opened: " << path);
   if (impl_->desk->CurrentGroup() != nullptr) return Execute("map.recenter");
   return std::string();
 }
@@ -665,6 +726,84 @@ std::string DeskHost::LoadSettings(const std::string& user_settings_path) {
   return error;
 }
 
+// MARK: Application log
+
+std::string DeskHost::StartLog(const std::string& directory, const std::string& app_version) {
+  Impl& m = *impl_;
+  if (m.log_file) return std::string();
+#ifdef NDEBUG
+  LogLevel level = LogLevel::kInfo;
+#else
+  LogLevel level = LogLevel::kDebug;
+#endif
+  const std::string configured = m.settings.GetString("log.level", "");
+  const bool level_ok = configured.empty() || ParseLogLevel(configured, &level);
+  const std::string dir = directory.empty() ? DefaultLogDirectory("Peregrine") : directory;
+  if (dir.empty()) return "no log directory: HOME is not set";
+  const int max_mb = std::max(1, m.settings.GetInt("log.max_mb", 5));
+  const int keep = std::max(1, m.settings.GetInt("log.keep_files", 5));
+  Status s;
+  m.log_file = FileLogSink::Open(dir, "Peregrine", &s, static_cast<uint64_t>(max_mb) << 20, keep);
+  if (!m.log_file) return s.message;
+  m.log_sinks.push_back(AddLogSink(m.log_file, level));
+#ifndef NDEBUG
+  m.log_sinks.push_back(AddLogSink(std::make_shared<StderrLogSink>(), level));
+#endif
+  const std::string& catalog = m.desk->catalog_path();
+  std::error_code ec;
+  const std::string ini =
+      m.settings.path().empty() ? "(none)" : std::filesystem::absolute(m.settings.path(), ec).string();
+  LogBanner(__FILE__, __LINE__,
+            "Peregrine " + app_version + " started on " + OperatingSystemDescription() +
+                "; settings " + ini +
+                "; user settings " + (m.user_path.empty() ? "(none)" : m.user_path) +
+                "; catalog " + (catalog.empty() ? "(none)" : catalog) + "; log level " +
+                LogLevelName(level));
+  if (!level_ok)
+    FV_LOG_WARNING("log.level = " << configured << " is not error, warning, info or debug");
+  return std::string();
+}
+
+std::string DeskHost::LogFilePath() const {
+  return impl_->log_file ? impl_->log_file->Path() : std::string();
+}
+
+// MARK: Map Data Sources dialog
+
+bool DeskHost::TakeSourcesRequest() {
+  const bool asked = impl_->shell.sources_requested;
+  impl_->shell.sources_requested = false;
+  return asked;
+}
+
+int DeskHost::ScanRootCount() const {
+  return static_cast<int>(impl_->desk->ScanRoots().size());
+}
+
+std::string DeskHost::ScanRootAt(int index) const {
+  const std::vector<std::string> roots = impl_->desk->ScanRoots();
+  if (index < 0 || index >= static_cast<int>(roots.size())) return std::string();
+  return roots[static_cast<size_t>(index)];
+}
+
+bool DeskHost::ScanRootReachable(int index) const {
+  const std::string root = ScanRootAt(index);
+  std::error_code ec;
+  return !root.empty() && std::filesystem::is_directory(root, ec);
+}
+
+std::string DeskHost::AddScanRoot(const std::string& path) {
+  return impl_->desk->AddScanRoot(path).message;
+}
+
+std::string DeskHost::RemoveScanRoot(const std::string& path) {
+  return impl_->desk->RemoveScanRoot(path).message;
+}
+
+std::string DeskHost::GenerateCoverage() {
+  return impl_->desk->GenerateCoverage().message;
+}
+
 // MARK: Background jobs
 
 bool DeskHost::JobActive() const { return impl_->desk->Building(); }
@@ -680,6 +819,7 @@ std::string DeskHost::JobText() const {
   const CatalogBuild* b = impl_->desk->catalog_build();
   if (b == nullptr) return std::string();
   const BuildProgress p = b->Progress();
+  if (p.removing) return "Removing the old coverage";
   if (p.current.empty()) return "Building the map catalog";
   return "Scanning " + p.current;
 }
@@ -750,6 +890,7 @@ HostTick DeskHost::Tick() {
     t.menus_changed = true;
   }
   if (m.shell.options_requested >= 0) t.options_requested = true;
+  if (m.shell.sources_requested) t.sources_requested = true;
   if (m.desk->catalog_path() != m.ticked_catalog) {
     m.ticked_catalog = m.desk->catalog_path();
     t.catalog_changed = true;
@@ -844,7 +985,9 @@ uint64_t DeskHost::FramesRendered() const { return impl_->scheduler->FramesRende
 
 std::string DeskHost::StatusScale() const { return impl_->desk->CurrentStatus().scale; }
 std::string DeskHost::StatusProduct() const { return impl_->desk->CurrentStatus().product; }
-std::string DeskHost::StatusMessage() const { return impl_->desk->CurrentStatus().message; }
+std::string DeskHost::StatusMessage() const {
+  return impl_->Message(impl_->desk->CurrentStatus());
+}
 
 std::string DeskHost::StatusPosition() const {
   const view::MapView& mv = impl_->desk->map_view();

@@ -59,8 +59,9 @@ DEST_OWNED = {"README.md", "CMakeLists.txt", ".gitignore", "PrivacyPolicy.md",
 
 # Same, but whole subtrees: the README's screenshots are authored downstream and
 # have no upstream original, so a strict closure diff would propose deleting
-# them on every sync.
-DEST_OWNED_DIRS = ("Screenshots/",)
+# them on every sync. testdata/ is the redistributable sample set built by
+# make_sampledata.py; FVW's own testdata/ is the full, untracked tree.
+DEST_OWNED_DIRS = ("Screenshots/", "testdata/")
 
 # Owned by the Linux session in the destination; this tree only receives
 # back-ports of it, so a sync that would change or remove it is a missed

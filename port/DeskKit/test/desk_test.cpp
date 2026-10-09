@@ -154,6 +154,104 @@ TEST_F(DeskTest, GroupChoosesTheProductUnderTheView) {
   EXPECT_EQ(mv.Product().series_key, "Coastal");
 }
 
+// DTED levels and DNC libraries are catalogued at scale 0; the group's
+// nominal scales put them on the ladder.
+TEST_F(DeskTest, ElevationStepsFromDted1ToDted2) {
+  const GeoRect wide{{30, -82}, {34, -78}};
+  const GeoRect cell{{32, -80}, {33, -79}};
+  StubFrames()["dted"] = {Frame("e1", wide, "DTED1", 0), Frame("e2", cell, "DTED2", 0)};
+  StubFrames()["dted-shaded"] = StubFrames()["dted"];
+  for (const char* key : {"dted", "dted-shaded"})
+    ASSERT_TRUE(fv::desk::test::RegisterStubFormat(key).ok());
+
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  AddSource(*cat, "dted");
+  AddSource(*cat, "dted-shaded");
+  auto& mv = desk.map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.78, -79.93}, 500e3, 0));
+  desk.SetCatalog(cat);
+  ASSERT_EQ(desk.CurrentGroup()->id, "elevation");
+  ASSERT_TRUE(mv.HasProduct());
+  EXPECT_EQ(mv.Product().format, "dted-shaded");
+  EXPECT_EQ(mv.Product().series_key, "DTED1");
+  EXPECT_EQ(desk.CurrentStatus().scale, "1:500,000");
+
+  // 1:250k is nearer DTED2's 1:150k (×1.67) than DTED1's 1:500k (×2).
+  ASSERT_TRUE(desk.Execute("map.zoom_in").ok());
+  EXPECT_EQ(desk.CurrentStatus().scale, "1:250,000");
+  EXPECT_EQ(mv.Product().format, "dted-shaded");
+  EXPECT_EQ(mv.Product().series_key, "DTED2");
+
+  // Nothing coarser than DTED1: zooming out magnifies it down.
+  ASSERT_TRUE(desk.Execute("map.zoom_out").ok());
+  ASSERT_TRUE(desk.Execute("map.zoom_out").ok());
+  EXPECT_EQ(desk.CurrentStatus().scale, "1:1,000,000");
+  EXPECT_EQ(mv.Product().series_key, "DTED1");
+}
+
+// Two clusters of DTED with nothing between them, as in testdata. Selecting
+// Elevation keeps the view; Recenter lands on data, not the gap.
+TEST_F(DeskTest, SelectingAGroupKeepsTheViewAndRecenterAvoidsGaps) {
+  StubFrames()["dted-shaded"] = {Frame("east", GeoRect{{32, -81}, {33, -80}}, "DTED1", 0),
+                                 Frame("west", GeoRect{{35, -106}, {36, -105}}, "DTED1", 0)};
+  ASSERT_TRUE(fv::desk::test::RegisterStubFormat("dted-shaded").ok());
+
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  AddSource(*cat, "cadrg");
+  AddSource(*cat, "dted-shaded");
+  desk.SetCatalog(cat);
+  ASSERT_TRUE(desk.Execute("map.group.raster").ok());
+  auto& mv = desk.map_view();
+  desk.GoTo(GeoPoint{0, 0}, 1e7);
+
+  ASSERT_TRUE(desk.Execute("map.group.elevation").ok());
+  EXPECT_FALSE(mv.HasProduct());
+  EXPECT_NEAR(mv.View().Center().lat, 0, 1e-9);
+  EXPECT_NEAR(mv.View().Center().lon, 0, 1e-9);
+  EXPECT_EQ(desk.CurrentStatus().message, "No Elevation map here");
+
+  // The box centre (34, -93) is over nothing; the nearer cell's centre is used.
+  ASSERT_TRUE(desk.Execute("map.recenter").ok());
+  ASSERT_TRUE(mv.HasProduct());
+  EXPECT_EQ(mv.Product().series_key, "DTED1");
+  EXPECT_NEAR(mv.View().Center().lat, 32.5, 1e-9);
+  EXPECT_NEAR(mv.View().Center().lon, -80.5, 1e-9);
+  EXPECT_EQ(desk.CurrentStatus().message, "");
+}
+
+TEST_F(DeskTest, DncLibrariesTakeTheirTypeScale) {
+  const GeoRect wide{{30, -82}, {34, -78}};
+  const GeoRect harbour{{32.7, -80.0}, {32.9, -79.8}};
+  StubFrames()["vpf"] = {Frame("g", wide, "gen17a", 0), Frame("c", wide, "coa17c", 0),
+                         Frame("h", harbour, "h1707290", 0), Frame("b", wide, "browse", 0)};
+  ASSERT_TRUE(fv::desk::test::RegisterStubFormat("vpf").ok());
+
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  AddSource(*cat, "vpf");
+  auto& mv = desk.map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.8, -79.9}, 300e3, 0));
+  desk.SetCatalog(cat);
+  ASSERT_EQ(desk.CurrentGroup()->id, "dnc");
+  EXPECT_EQ(mv.Product().series_key, "coa17c");
+  const fv::desk::MapGroup* dnc = desk.CurrentGroup();
+  const auto at = fv::view::CatalogProductsAt(
+      *cat, GeoPoint{32.8, -79.9}, dnc->formats,
+      [dnc](const std::string& f, const std::string& k) { return dnc->NominalScaleOf(f, k); });
+  std::vector<std::string> keys;
+  for (const auto& p : at) keys.push_back(p.series_key);
+  // Finest first; the browse library has no scale and stays off the ladder.
+  EXPECT_EQ(keys, (std::vector<std::string>{"h1707290", "coa17c", "gen17a"}));
+}
+
 TEST(FormatScale, GroupsThousands) {
   EXPECT_EQ(fv::desk::FormatScale(50000), "1:50,000");
   EXPECT_EQ(fv::desk::FormatScale(999.6), "1:1,000");
@@ -500,48 +598,58 @@ TEST_F(DeskTest, ShortcutsFollowThePlatformConventions) {
 
 // MARK: Building the catalog
 
-TEST_F(DeskTest, BuildMapCatalogScansADirectoryIntoANewCatalog) {
+TEST_F(DeskTest, MapDataSourcesCreatesACatalogAndGeneratesCoverage) {
   Scratch dir;
   const std::string root = dir.Path("data");
-  std::filesystem::create_directories(root);
+  std::filesystem::create_directories(root + "/sub");
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
   ASSERT_TRUE(desk.AvailableGroups().empty());
-  EXPECT_FALSE(desk.commands().IsEnabled("map.catalog_rescan"));
-  EXPECT_FALSE(desk.commands().IsEnabled("map.sources"));
+  EXPECT_FALSE(desk.commands().IsEnabled("map.generate_coverage"));
 
-  // Cancelling the directory chooser does nothing.
-  ASSERT_TRUE(fd.Run({"map.catalog_build"}).ok());
-  EXPECT_FALSE(desk.Building());
+  // Cancelling the new-catalog chooser shows nothing.
+  ASSERT_TRUE(fd.Run({"map.sources"}).ok());
+  EXPECT_EQ(fd.shell().data_sources_shown, 0);
   EXPECT_EQ(desk.catalog_path(), "");
 
-  fd.shell().directory = root;
   fd.shell().save_spec = dir.Path("new.sqlite");
-  ASSERT_TRUE(fd.Run({"map.catalog_build"}).ok());
+  ASSERT_TRUE(fd.Run({"map.sources"}).ok());
+  EXPECT_EQ(fd.shell().data_sources_shown, 1);
+  EXPECT_EQ(desk.catalog_path(), dir.Path("new.sqlite"));
+  EXPECT_TRUE(desk.ScanRoots().empty());
+
+  ASSERT_TRUE(desk.AddScanRoot(root + "/").ok());
+  EXPECT_EQ(desk.ScanRoots(), std::vector<std::string>{root});
+  EXPECT_FALSE(desk.AddScanRoot(root + "/sub").ok());
+  EXPECT_FALSE(desk.AddScanRoot(dir.Path("missing")).ok());
+  EXPECT_EQ(desk.ScanRoots(), std::vector<std::string>{root});
+
+  ASSERT_TRUE(fd.Run({"map.generate_coverage"}).ok());
   EXPECT_TRUE(desk.Building());
-  EXPECT_FALSE(desk.commands().IsEnabled("map.catalog_build"));
+  EXPECT_FALSE(desk.commands().IsEnabled("map.generate_coverage"));
+  EXPECT_FALSE(desk.commands().IsEnabled("map.sources"));
   EXPECT_FALSE(desk.commands().IsEnabled("map.catalog_open"));
   desk.WaitForCatalogBuild();
-  EXPECT_FALSE(desk.Building());
   EXPECT_TRUE(fd.shell().errors.empty());
-
-  EXPECT_EQ(desk.catalog_path(), dir.Path("new.sqlite"));
   EXPECT_EQ(GroupItems(desk), (std::vector<std::string>{"map.group.raster", "map.group.enc"}));
   ASSERT_EQ(fd.shell().notices.size(), 1u);
   EXPECT_EQ(fd.shell().notices[0], "Catalogued 4 frames from 2 sources.");
   // The catalog had no data before, so the view moves onto it.
   EXPECT_NEAR(desk.map_view().View().Center().lat, 32, 1e-9);
   EXPECT_NEAR(desk.map_view().View().Center().lon, -80, 1e-9);
-  EXPECT_TRUE(desk.commands().IsEnabled("map.catalog_rescan"));
 
-  // A rescan keeps the sources and reports the same totals.
-  ASSERT_TRUE(fd.Run({"map.catalog_rescan"}).ok());
+  // Generating again replaces the coverage rather than adding to it.
+  ASSERT_TRUE(fd.Run({"map.generate_coverage"}).ok());
   desk.WaitForCatalogBuild();
   ASSERT_EQ(fd.shell().notices.size(), 2u);
   EXPECT_EQ(fd.shell().notices[1], "Catalogued 4 frames from 2 sources.");
+  std::vector<fv::DataSourceRow> sources;
+  ASSERT_TRUE(desk.catalog()->DataSources(&sources).ok());
+  ASSERT_EQ(sources.size(), 2u);
+  for (const fv::DataSourceRow& r : sources) EXPECT_EQ(r.path, root);
 }
 
-TEST_F(DeskTest, MapDataSourcesRemovesTheChosenSource) {
+TEST_F(DeskTest, AnOldCatalogOffersItsSourceDirectories) {
   Scratch dir;
   const std::string path = dir.Path("catalog.sqlite");
   {
@@ -552,21 +660,44 @@ TEST_F(DeskTest, MapDataSourcesRemovesTheChosenSource) {
   }
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
-  fd.shell().files_to_open = {path};
-  ASSERT_TRUE(fd.Run({"map.catalog_open"}).ok());
-  ASSERT_EQ(desk.catalog_path(), path);
-  ASSERT_FALSE(fd.shell().last_open_chooser.open_filters.empty());
-  EXPECT_EQ(fd.shell().last_open_chooser.open_filters[0].second, "*.sqlite");
+  ASSERT_TRUE(desk.OpenCatalog(path).ok());
+  ASSERT_EQ(GroupItems(desk).size(), 2u);
+  // enc sits in its conventional enc/ subdirectory, so /stub is the root.
+  EXPECT_EQ(desk.ScanRoots(), std::vector<std::string>{"/stub"});
+
+  // An unreachable directory refuses the whole generation; nothing is lost.
+  ASSERT_TRUE(fd.Run({"map.generate_coverage"}).ok());
+  EXPECT_FALSE(desk.Building());
+  ASSERT_EQ(fd.shell().errors.size(), 1u);
+  EXPECT_NE(fd.shell().errors[0].message.find("/stub"), std::string::npos);
   ASSERT_EQ(GroupItems(desk).size(), 2u);
 
-  ASSERT_TRUE(fd.Run({"map.sources"}).ok());  // no choice: nothing removed
-  ASSERT_EQ(fd.shell().list_rows.size(), 2u);
-  EXPECT_EQ(fd.shell().list_rows[0], "cadrg  /stub/cadrg  (2 frames)");
-  ASSERT_EQ(GroupItems(desk).size(), 2u);
+  // Emptying the list and generating leaves an empty catalog.
+  ASSERT_TRUE(desk.RemoveScanRoot("/stub").ok());
+  EXPECT_TRUE(desk.ScanRoots().empty());
+  ASSERT_TRUE(desk.GenerateCoverage().ok());
+  desk.WaitForCatalogBuild();
+  std::vector<fv::DataSourceRow> sources;
+  ASSERT_TRUE(desk.catalog()->DataSources(&sources).ok());
+  EXPECT_TRUE(sources.empty());
+  EXPECT_TRUE(GroupItems(desk).empty());
+  EXPECT_EQ(fd.shell().notices.back(), "No map data found.");
+}
 
-  fd.shell().list_choice = 0;
+TEST_F(DeskTest, AddingAParentReplacesTheDirectoriesInsideIt) {
+  Scratch dir;
+  std::filesystem::create_directories(dir.Path("data/a"));
+  std::filesystem::create_directories(dir.Path("data/b"));
+  std::filesystem::create_directories(dir.Path("other"));
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  fd.shell().save_spec = dir.Path("new.sqlite");
   ASSERT_TRUE(fd.Run({"map.sources"}).ok());
-  EXPECT_EQ(GroupItems(desk), std::vector<std::string>{"map.group.enc"});
+  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data/b")).ok());
+  ASSERT_TRUE(desk.AddScanRoot(dir.Path("other")).ok());
+  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data/a")).ok());
+  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data")).ok());
+  EXPECT_EQ(desk.ScanRoots(), (std::vector<std::string>{dir.Path("data"), dir.Path("other")}));
 }
 
 TEST_F(DeskTest, OpenMapCatalogReportsAFileThatIsNotACatalog) {

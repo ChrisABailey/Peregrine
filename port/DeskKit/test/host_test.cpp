@@ -11,13 +11,17 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <thread>
 #include <vector>
 
+#include "fv_desk_catalog_build.h"
 #include "fv_desk_user_settings.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/formats/dted_shaded.h"
@@ -376,14 +380,25 @@ TEST_F(DeskHostStub, ACatalogBuildReportsProgressThroughTick) {
   h->SetRequestHandler(&Answer, &a);
   Tick(h.host);
 
-  ASSERT_EQ(h->Execute("map.catalog_build"), "");
-  ASSERT_EQ(a.asked.size(), 2u);
-  EXPECT_EQ(a.asked[0].kind, fv::desk::kRequestChooseDirectory);
-  EXPECT_EQ(a.asked[1].kind, fv::desk::kRequestChooseSave);
-  EXPECT_TRUE(h->JobActive());
-  EXPECT_FALSE(h->IsEnabled("map.catalog_build"));
+  ASSERT_EQ(h->Execute("map.sources"), "");
+  ASSERT_EQ(a.asked.size(), 1u);
+  EXPECT_EQ(a.asked[0].kind, fv::desk::kRequestChooseSave);
+  const HostTick asked = h->Tick();
+  EXPECT_TRUE(asked.sources_requested);
+  EXPECT_TRUE(h->TakeSourcesRequest());
+  EXPECT_FALSE(h->TakeSourcesRequest());
+  EXPECT_EQ(h->ScanRootCount(), 0);
+  ASSERT_EQ(h->AddScanRoot(root), "");
+  ASSERT_EQ(h->ScanRootCount(), 1);
+  EXPECT_EQ(h->ScanRootAt(0), root);
+  EXPECT_TRUE(h->ScanRootReachable(0));
+  EXPECT_NE(h->AddScanRoot(root), "");
 
-  bool job_changed = false, catalog_changed = false, menus_changed = false;
+  ASSERT_EQ(h->GenerateCoverage(), "");
+  EXPECT_TRUE(h->JobActive());
+  EXPECT_FALSE(h->IsEnabled("map.generate_coverage"));
+
+  bool job_changed = false, catalog_changed = asked.catalog_changed, menus_changed = false;
   for (int i = 0; i < 2000 && h->JobActive(); ++i) {
     const HostTick t = h->Tick();
     job_changed |= t.job_changed;
@@ -435,6 +450,72 @@ class DeskHostDrawn : public DeskHostStub {
     return std::vector<uint8_t>(px, px + static_cast<size_t>(h->FrameWidth()) * h->FrameHeight() * 4);
   }
 };
+
+TEST_F(DeskHostDrawn, AnUnreadableFrameIsSkippedAndNamedInTheStatusBar) {
+  Scratch dir;
+  const std::string path = MakeCatalog(dir);
+  // S3_11 is in view at 32.5, -80.5 but its file no longer opens.
+  auto& frames = StubFrames()["cadrg"];
+  frames.erase(std::remove_if(frames.begin(), frames.end(),
+                              [](const fv::FrameInfo& f) { return f.path == "S3_11"; }),
+               frames.end());
+  HostRef h;
+  h->Resize(400, 300, 1.0, 0.25);
+  ASSERT_EQ(h->OpenCatalog(path), "");
+  h->GoTo(32.5, -80.5, 5e5);
+  ASSERT_TRUE(Settle(h.host).new_frame);
+  // The frames that do open still draw.
+  const std::vector<uint8_t> px = Pixels(h.host);
+  EXPECT_EQ(px[(150u * 400u + 300u) * 4u + 2], 200);
+  const std::string message = h->StatusMessage();
+  EXPECT_EQ(message.rfind("1 map file could not be read: ", 0), 0u) << message;
+  EXPECT_NE(message.find("S3_11"), std::string::npos) << message;
+}
+
+TEST_F(DeskHostDrawn, TheRenderWorkerAndCatalogBuildLogToTheFile) {
+  Scratch dir;
+  EmptyIni ini(dir);
+  HostRef h;
+  EXPECT_EQ(h->LogFilePath(), "");
+  ASSERT_EQ(h->LoadSettings(dir.Path("user.ini")), "");
+  ASSERT_EQ(h->StartLog(dir.Path("logs"), "9.9-test"), "");
+  const std::string log = h->LogFilePath();
+  EXPECT_EQ(log.rfind(dir.Path("logs") + "/Peregrine-", 0), 0u) << log;
+
+  // The catalog build thread: one source that scans, one format nobody knows.
+  const std::string path = dir.Path("catalog.sqlite");
+  {
+    fv::desk::CatalogBuild build(path, {{"cadrg", {"/stub/cadrg"}}, {"nosuch", {"/stub/x"}}},
+                                 false);
+    build.Wait();
+  }
+  // The render worker: S3_11 is in view at 32.5, -80.5 but no longer opens.
+  auto& frames = StubFrames()["cadrg"];
+  frames.erase(std::remove_if(frames.begin(), frames.end(),
+                              [](const fv::FrameInfo& f) { return f.path == "S3_11"; }),
+               frames.end());
+  h->Resize(400, 300, 1.0, 0.25);
+  ASSERT_EQ(h->OpenCatalog(path), "");
+  h->GoTo(32.5, -80.5, 5e5);
+  ASSERT_TRUE(Settle(h.host).new_frame);
+  Settle(h.host);  // a second frame over the same file does not log it again
+
+  std::vector<std::string> lines;
+  std::ifstream in(log);
+  for (std::string line; std::getline(in, line);) lines.push_back(line);
+  ASSERT_FALSE(lines.empty());
+  EXPECT_NE(lines[0].find("Peregrine 9.9-test started on "), std::string::npos) << lines[0];
+  EXPECT_NE(lines[0].find("user settings " + dir.Path("user.ini")), std::string::npos);
+  auto count = [&lines](const std::string& a, const std::string& b) {
+    return std::count_if(lines.begin(), lines.end(), [&](const std::string& l) {
+      return l.find(a) != std::string::npos && l.find(b) != std::string::npos;
+    });
+  };
+  EXPECT_EQ(count(" I catalog fv_desk_catalog_build.cpp:", "cadrg /stub/cadrg: 64 frames"), 1);
+  EXPECT_EQ(count(" W catalog fv_desk_catalog_build.cpp:", "nosuch /stub/x"), 1);
+  EXPECT_EQ(count(" W render fv_desk_host.cpp:", "render: skipped S3_11"), 1);
+  EXPECT_EQ(count(" I ", "catalog opened: " + path), 1);
+}
 
 TEST_F(DeskHostDrawn, AGridToggledFromTheMenuDrawsOverTheSameBaseMap) {
   Scratch dir;
@@ -536,7 +617,7 @@ TEST_F(DeskHostDrawn, AMapOptionChangeRedrawsTheBaseMap) {
   ASSERT_EQ(h->Execute("map.options"), "");
   ASSERT_EQ(h->TakeOptionsRequest(), fv::desk::kOptionsMap);
   const int kind = fv::desk::kOptionsMap;
-  ASSERT_EQ(h->OptionsPageCount(kind), 1);
+  ASSERT_EQ(h->OptionsPageCount(kind), 4);
   EXPECT_EQ(std::string(h->OptionsPageTitle(kind, 0)), "Elevation");
   ASSERT_EQ(h->SetOptionValue(kind, 0, "elevation_bands_ft", "5000, 2500"), "");
   EXPECT_EQ(std::string(h->OptionsFieldAt(kind, 0, 0).value), "2500,5000");
@@ -708,6 +789,89 @@ TEST(DeskHostData, DrawsAGeoTiffBaseMap) {
   h->Resize(128, 128, 2.0, 0.25);
   ASSERT_EQ(h->OpenCatalog(path), "");
   EXPECT_EQ(h->StatusProduct().rfind("geotiff ", 0), 0u) << h->StatusProduct();
+  ASSERT_TRUE(Settle(h.host).new_frame);
+  ASSERT_EQ(h->FrameWidth(), 256);
+  const uint8_t* px = h->FramePixels();
+  int lit = 0;
+  for (int i = 0; i < 256 * 256; ++i) lit += (px[4 * i] | px[4 * i + 1] | px[4 * i + 2]) != 0;
+  EXPECT_GT(lit, 256 * 256 / 4);
+  fv::ClearFormatRegistryForTest();
+}
+
+TEST(DeskHostData, GenerateCoverageFindsEncAndOsm) {
+  const char* root = std::getenv("FVW_TESTDATA_DIR");
+  const std::string enc = root ? std::string(root) + "/enc" : std::string();
+  const std::string osm = root ? std::string(root) + "/OSM/kiawah.mbtiles" : std::string();
+  if (enc.empty() || !std::filesystem::exists(enc) || !std::filesystem::exists(osm))
+    GTEST_SKIP() << "no testdata/enc or testdata/OSM/kiawah.mbtiles";
+  fv::ClearFormatRegistryForTest();
+  Scratch dir;
+  // A scan root of just the two trees; the full OSM directory holds a large pyramid.
+  const std::string data = dir.Path("data");
+  std::filesystem::create_directories(data + "/OSM");
+  std::filesystem::create_directory_symlink(enc, data + "/enc");
+  std::filesystem::create_symlink(osm, data + "/OSM/kiawah.mbtiles");
+
+  HostRef h;  // registers the formats
+  h->Resize(400, 300, 1.0, 0.25);
+  Answers a;
+  a.host = h.host;
+  a.path = dir.Path("built.sqlite");
+  h->SetRequestHandler(&Answer, &a);
+  ASSERT_EQ(h->Execute("map.sources"), "");
+  ASSERT_EQ(h->AddScanRoot(data), "");
+  ASSERT_EQ(h->GenerateCoverage(), "");
+  for (int i = 0; i < 6000 && h->JobActive(); ++i) {
+    h->Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_FALSE(h->JobActive());
+  EXPECT_EQ(h->TakeError(), "");
+  EXPECT_EQ(h->TakeNotice(), "Catalogued 9 frames from 2 sources.");
+  EXPECT_TRUE(h->IsEnabled("map.group.enc"));
+  EXPECT_TRUE(h->IsEnabled("map.group.osm"));
+
+  // Charleston harbour, then Kiawah Island.
+  ASSERT_EQ(h->Execute("map.group.enc"), "");
+  h->GoTo(32.78, -79.93, 20e3);
+  EXPECT_EQ(h->StatusProduct().rfind("enc ", 0), 0u) << h->StatusProduct();
+  ASSERT_EQ(h->Execute("map.group.osm"), "");
+  h->GoTo(32.61, -80.08, 50e3);
+  EXPECT_EQ(h->StatusProduct(), "osm kiawah");
+  h->SetRequestHandler(nullptr, nullptr);
+  fv::ClearFormatRegistryForTest();
+}
+
+TEST(DeskHostData, DrawsShadedReliefFromDted) {
+  const char* root = std::getenv("FVW_TESTDATA_DIR");
+  const std::string dir = root ? std::string(root) + "/dted" : std::string();
+  if (dir.empty() || !std::filesystem::exists(dir)) GTEST_SKIP() << "no testdata/dted";
+  // The published sample set carries DTED1 only.
+  if (!std::filesystem::exists(dir + "/w081/n32.dt2")) GTEST_SKIP() << "no DTED2 cell w081/n32";
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  Scratch scratch;
+  const std::string path = scratch.Path("catalog.sqlite");
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(path).ok());
+    // Generate Coverage scans the cell tree twice, as elevation and as relief.
+    for (const char* format : {"dted", "dted-shaded"}) {
+      int64_t src = 0;
+      int added = 0;
+      ASSERT_TRUE(cat.AddDataSource(dir, format, 0, &src).ok());
+      ASSERT_TRUE(cat.Scan(src, &added).ok());
+      ASSERT_GT(added, 0);
+    }
+  }
+  HostRef h;
+  h->Resize(128, 128, 2.0, 0.25);
+  ASSERT_EQ(h->OpenCatalog(path), "");
+  // Inland of Charleston, in the one cell with both DTED1 and DTED2.
+  h->GoTo(32.5, -80.5, 500e3);
+  EXPECT_EQ(h->StatusProduct(), "dted-shaded DTED1");
+  ASSERT_EQ(h->Execute("map.zoom_in"), "");
+  EXPECT_EQ(h->StatusProduct(), "dted-shaded DTED2");
   ASSERT_TRUE(Settle(h.host).new_frame);
   ASSERT_EQ(h->FrameWidth(), 256);
   const uint8_t* px = h->FramePixels();

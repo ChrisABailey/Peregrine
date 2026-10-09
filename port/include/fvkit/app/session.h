@@ -46,6 +46,7 @@
 #include "fvkit/app/shell.h"
 #include "fvkit/app/type_registry.h"
 #include "fvkit/geo.h"
+#include "fvkit/log.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/settings.h"
 
@@ -236,7 +237,12 @@ class OverlaySession {
   std::shared_ptr<Overlay> Shared(const Overlay& overlay) const;
 
   FlowResult Fail(const Status& s);
-  void Warn(const std::string& text) { warnings_.push_back(text); }
+  /// Logs `text` at the caller's location and keeps it for warnings().
+  void Warn(const std::string& text, const char* file = __builtin_FILE(),
+            int line = __builtin_LINE()) {
+    LogWrite(LogLevel::kWarning, file, line, text);
+    warnings_.push_back(text);
+  }
 
   OverlayTypeRegistry& registry_;
   OverlayManager& manager_;

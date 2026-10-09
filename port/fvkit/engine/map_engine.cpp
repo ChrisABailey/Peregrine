@@ -125,10 +125,16 @@ Status MapEngine::OverlapToSurface(double lat, double lon, double* sx,
 Status MapEngine::CompositeRow(const CoverageRow& row, ICanvas& canvas) {
   Status s;
   auto src = SourceFor(row, &s);
-  if (src == nullptr) return s;
+  if (src == nullptr) {
+    row_unreadable_ = true;
+    return s;
+  }
   ImageInfo info;
   s = src->Info(&info);
-  if (!s.ok()) return s;
+  if (!s.ok()) {
+    row_unreadable_ = true;
+    return s;
+  }
 
   const GeoRect view = proj_.VmapBounds();
   const double ref = proj_.Center().lon;
@@ -230,7 +236,10 @@ Status MapEngine::CompositeRowStraight(IRasterSource& src_ref,
 
   PixelBuffer block;
   s = src->ReadBlock({rx, ry, rw, rh}, &block);
-  if (!s.ok()) return s;
+  if (!s.ok()) {
+    row_unreadable_ = true;
+    return s;
+  }
 
   // nearest-neighbor resample into a target-sized buffer
   PixelBuffer out(tw, th);
@@ -340,7 +349,10 @@ Status MapEngine::CompositeRowTurned(IRasterSource& src, const ImageInfo& info,
 
   PixelBuffer block;
   s = src.ReadBlock({rx, ry, rw, rh}, &block);
-  if (!s.ok()) return s;
+  if (!s.ok()) {
+    row_unreadable_ = true;
+    return s;
+  }
 
   PixelBuffer out(tw, th);  // zero-filled: alpha 0 everywhere until written
   for (int y = 0; y < th; ++y) {
@@ -442,7 +454,10 @@ Status MapEngine::CompositeRowProjected(IRasterSource& src,
 
   PixelBuffer block;
   Status s = src.ReadBlock({rx, ry, rx1 - rx + 1, ry1 - ry + 1}, &block);
-  if (!s.ok()) return s;
+  if (!s.ok()) {
+    row_unreadable_ = true;
+    return s;
+  }
 
   PixelBuffer out(tw, th);  // zero-filled: alpha 0 everywhere until written
   size_t k = 0;
@@ -459,7 +474,8 @@ Status MapEngine::CompositeRowProjected(IRasterSource& src,
 
 Status MapEngine::RenderBaseMap(ICanvas& canvas, int64_t series_id,
                                 const std::function<bool()>& interrupted,
-                                int* frames_drawn) {
+                                int* frames_drawn,
+                                std::vector<SkippedFrame>* skipped) {
   if (frames_drawn != nullptr) *frames_drawn = 0;
   if (!proj_.Ready())
     return Status::Error(kInvalidArg,
@@ -475,8 +491,13 @@ Status MapEngine::RenderBaseMap(ICanvas& canvas, int64_t series_id,
   for (const CoverageRow& row : rows) {
     if (interrupted && interrupted())
       return Status::Error(kInterrupted, "render interrupted");
+    row_unreadable_ = false;
     s = CompositeRow(row, canvas);
-    if (!s.ok()) return s;
+    if (!s.ok()) {
+      if (!row_unreadable_) return s;
+      if (skipped != nullptr) skipped->push_back(SkippedFrame{row.path, s});
+      continue;
+    }
     ++drawn;
   }
   if (frames_drawn != nullptr) *frames_drawn = drawn;

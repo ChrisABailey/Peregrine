@@ -2,9 +2,30 @@
   "version": 1,
   "groups": [
     { "id": "raster",    "title": "Raster",        "formats": ["cadrg", "geotiff", "tiros", "gpkg"], "ladder": "series" },
-    { "id": "elevation", "title": "Elevation",     "formats": ["dted-shaded", "dted"],              "ladder": "uniform" },
-    { "id": "osm",       "title": "OpenStreetMap", "formats": ["osm"],                              "ladder": "uniform" },
+    { "id": "elevation", "title": "Elevation",     "formats": ["dted-shaded", "dted"],              "ladder": "uniform",
+      "scales": [
+        { "format": "dted-shaded", "series": "DTED0", "scale": 2000000 },
+        { "format": "dted-shaded", "series": "DTED1", "scale": 500000 },
+        { "format": "dted-shaded", "series": "DTED2", "scale": 150000 },
+        { "format": "dted-shaded", "series": "DTED3", "scale": 50000 }
+      ] },
+    { "id": "osm",       "title": "OpenStreetMap", "formats": ["osm"],                              "ladder": "uniform",
+      "scales": [
+        { "format": "osm", "scale": 50000 }
+      ] },
     { "id": "enc",       "title": "ENC",           "formats": ["enc"],                              "ladder": "uniform" },
-    { "id": "dnc",       "title": "DNC",           "formats": ["vpf"],                              "ladder": "uniform" }
+    { "id": "dnc",       "title": "DNC",           "formats": ["vpf"],                              "ladder": "uniform",
+      "scales": [
+        { "prefix": "gen",     "scale": 1000000 },
+        { "prefix": "coa",     "scale": 300000 },
+        { "series": "wvs250k", "scale": 250000 },
+        { "series": "wvs001m", "scale": 1000000 },
+        { "series": "wvs003m", "scale": 3000000 },
+        { "series": "wvs012m", "scale": 12000000 },
+        { "series": "wvs040m", "scale": 40000000 },
+        { "series": "wvs120m", "scale": 120000000 },
+        { "prefix": "a",       "scale": 50000 },
+        { "prefix": "h",       "scale": 15000 }
+      ] }
   ]
 }

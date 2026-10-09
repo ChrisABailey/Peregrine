@@ -7,6 +7,7 @@
 
 #include "fv_desk_map_groups.h"
 #include "fv_desk_user_settings.h"
+#include "fvkit/log.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/settings.h"
 
@@ -191,8 +192,10 @@ Status OptionsModel::Apply(Settings& settings, OverlayManager& overlays, UserSet
       for (const OptionsField& f : page->fields()) {
         if (!f.changed()) continue;
         const Status s = props->SetProperty(f.spec.key, f.value);
-        if (!s.ok() && warnings != nullptr)
-          warnings->push_back(o->Name() + ": " + f.spec.key + " rejected: " + s.message);
+        if (s.ok()) continue;
+        const std::string w = o->Name() + ": " + f.spec.key + " rejected: " + s.message;
+        FV_LOG_WARNING(w);
+        if (warnings != nullptr) warnings->push_back(w);
       }
     }
     page->MarkApplied();

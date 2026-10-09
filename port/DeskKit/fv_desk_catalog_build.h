@@ -16,6 +16,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fv {
@@ -52,6 +53,25 @@ std::vector<std::string> FindVpfDatabases(const std::string& root, int max_depth
 std::vector<ScanStep> PlanScan(const std::string& root,
                                const std::vector<ScanFormat>& formats = DefaultScanFormats());
 
+/// The catalog meta key holding the directories Generate Coverage scans, one
+/// absolute path per line.
+inline constexpr char kScanRootsMetaKey[] = "scan_roots";
+
+/// `path` made absolute against the working directory and lexically
+/// normalised, without a trailing separator.
+std::string AbsolutePath(const std::string& path);
+
+/// True when `path` is `root` or lies under it. Spellings that differ only in
+/// case match when both exist and name the same directory.
+bool PathWithin(const std::string& path, const std::string& root);
+
+/// The directories to scan for an existing catalog's data sources, given as
+/// (path, format): each made absolute, a format's conventional subdirectory
+/// ("…/dted" for dted) replaced by its parent, and any path inside another
+/// dropped. Sorted.
+std::vector<std::string> RootsFromSources(
+    const std::vector<std::pair<std::string, std::string>>& path_format);
+
 /// What one step catalogued.
 struct ScanResult {
   std::string format;
@@ -64,6 +84,7 @@ struct BuildProgress {
   int done = 0;          ///< steps finished
   int total = 0;         ///< steps planned
   std::string current;   ///< "cadrg  /data/rpf" while scanning; "" between steps
+  bool removing = false;  ///< clearing the old coverage before the first step
   bool finished = false;
   bool cancelled = false;
 };
@@ -71,8 +92,10 @@ struct BuildProgress {
 class CatalogBuild {
  public:
   /// Starts running `steps` against the catalog database at `catalog_path`
-  /// (a file; a second connection cannot see a ":memory:" database).
-  CatalogBuild(std::string catalog_path, std::vector<ScanStep> steps);
+  /// (a file; a second connection cannot see a ":memory:" database). With
+  /// `replace_existing`, every data source and its coverage is removed first.
+  CatalogBuild(std::string catalog_path, std::vector<ScanStep> steps,
+               bool replace_existing = false);
   /// Cancels and joins.
   ~CatalogBuild();
   CatalogBuild(const CatalogBuild&) = delete;
@@ -95,6 +118,7 @@ class CatalogBuild {
 
   const std::string catalog_path_;
   const std::vector<ScanStep> steps_;
+  const bool replace_existing_;
   std::atomic<bool> cancel_{false};
 
   mutable std::mutex mu_;

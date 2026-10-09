@@ -79,10 +79,11 @@ class _bstr_t {
   std::string m_s;
 };
 
-// Headless stub for FalconView's app-level log sink (POSIX policy, as with
-// MessageBox in fv_compat.h): log lines go to stderr.
-inline void WriteToLogFile(const char* msg) {
-  fprintf(stderr, "[log] %s\n", msg ? msg : "");
+// Headless stub for FalconView's app-level log sink: lines go to the
+// application log (fv_log_c.h, via fv_compat.h) at the caller's location.
+inline void WriteToLogFile(const char* msg, const char* file = __builtin_FILE(),
+                           int line = __builtin_LINE()) {
+  fv_log_write(FV_LOG_C_INFO, file, line, msg);
 }
 
 #endif  // !_WIN32

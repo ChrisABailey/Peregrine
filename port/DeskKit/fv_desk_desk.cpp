@@ -15,6 +15,7 @@
 #include "fv_desk_overlay_manifest.h"
 #include "fvkit/app/capabilities.h"
 #include "fvkit/catalog/catalog.h"
+#include "fvkit/log.h"
 #include "fvkit/settings.h"
 
 namespace fv {
@@ -123,7 +124,10 @@ class Desk::ShellTap : public app::AppShell {
     desk_.RegisterEditorCommands();
     desk_.RebuildMenus();
   }
-  void ReportError(const Status& s) override { Shell().ReportError(s); }
+  void ReportError(const Status& s) override {
+    FV_LOG_ERROR(s.message);
+    Shell().ReportError(s);
+  }
 
  private:
   DeskShell& Shell() { return desk_.shell_; }
@@ -162,7 +166,7 @@ Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
   overlays_.AddObserver(stack_hook_.get());
 
   const Status s = app::RegisterBuiltinOverlayTypes(types_);
-  if (!s.ok()) warnings_.push_back("built-in overlay types: " + s.message);
+  if (!s.ok()) Warn("built-in overlay types: " + s.message);
 
   view_ = std::make_unique<view::MapView>(view::Viewport::Make(GeoPoint{0, 0}, 1.0e7),
                                           view::LadderKind::kUniform, nullptr);
@@ -195,7 +199,13 @@ Status Desk::Execute(const std::string& id) { return commands_.Execute(id); }
 
 void Desk::RebuildMenus() { menus_.Rebuild(editor_menu_ ? &*editor_menu_ : nullptr); }
 
+void Desk::Warn(std::string w, const char* file, int line) {
+  LogWrite(LogLevel::kWarning, file, line, w);
+  warnings_.push_back(std::move(w));
+}
+
 app::FlowResult Desk::Report(const Status& s) {
+  FV_LOG_ERROR(s.message);
   shell_.ReportError(s);
   return app::FlowResult::kFailed;
 }
@@ -215,7 +225,7 @@ void Desk::RegisterStaticCommands() {
     c.enabled = std::move(enabled);
     c.checked = std::move(checked);
     const Status s = commands_.Register(std::move(c));
-    if (!s.ok()) warnings_.push_back(s.message);
+    if (!s.ok()) Warn(s.message);
   };
   auto has_target = [this] { return FileTarget() != nullptr; };
 
@@ -278,7 +288,7 @@ void Desk::RegisterCatalogCommands() {
     c.action = std::move(action);
     c.enabled = std::move(enabled);
     const Status s = commands_.Register(std::move(c));
-    if (!s.ok()) warnings_.push_back(s.message);
+    if (!s.ok()) Warn(s.message);
   };
   auto idle = [this] { return !Building(); };
   auto idle_with_catalog = [this] { return !Building() && catalog_ != nullptr; };
@@ -294,10 +304,7 @@ void Desk::RegisterCatalogCommands() {
     if (CurrentGroup() != nullptr) Recenter();
   }, idle);
 
-  add("map.catalog_build", "Build Map Catalog…", "", [this] {
-    const std::string root =
-        shell_.ChooseDirectory("Choose a directory of map data to add to the catalog");
-    if (root.empty()) return;
+  add("map.sources", "Map Data Sources…", "", [this] {
     if (!IsCatalogFile(catalog_path_)) {
       const auto spec = shell_.ChooseSaveSpec(CatalogFileType(), "Peregrine Catalog.sqlite");
       if (spec.first.empty()) return;
@@ -307,47 +314,20 @@ void Desk::RegisterCatalogCommands() {
         return;
       }
     }
-    const Status s = StartCatalogBuild(root);
-    if (!s.ok()) Report(s);
+    shell_.ShowDataSources();
   }, idle);
 
-  add("map.catalog_rescan", "Rescan Map Catalog", "", [this] {
-    const Status s = StartCatalogRescan();
+  add("map.generate_coverage", "Generate Coverage", "", [this] {
+    const Status s = GenerateCoverage();
     if (!s.ok()) Report(s);
   }, [this] { return !Building() && IsCatalogFile(catalog_path_) && catalog_ != nullptr; });
-
-  add("map.sources", "Map Data Sources…", "", [this] {
-    std::vector<DataSourceRow> sources;
-    Status s = catalog_->DataSources(&sources);
-    if (!s.ok()) {
-      Report(s);
-      return;
-    }
-    if (sources.empty()) {
-      shell_.ShowNotice("The map catalog has no data sources.");
-      return;
-    }
-    std::vector<std::string> rows;
-    for (const DataSourceRow& r : sources)
-      rows.push_back(r.format + "  " + r.path + "  (" + std::to_string(r.frames) +
-                     (r.frames == 1 ? " frame)" : " frames)"));
-    const std::optional<int> pick =
-        shell_.ChooseFromList("Map data sources: choose one to remove", rows);
-    if (!pick || *pick < 0 || *pick >= static_cast<int>(sources.size())) return;
-    s = catalog_->RemoveDataSource(sources[*pick].id);
-    if (!s.ok()) {
-      Report(s);
-      return;
-    }
-    CatalogChanged();
-  }, idle_with_catalog);
 }
 
 void Desk::Recenter() {
   const MapGroup* g = CurrentGroup();
   std::vector<CoverageRow> rows;
   if (g == nullptr || !catalog_->SelectByGeoRect(GeoRect::World(), &rows).ok()) return;
-  bool any = false;
+  std::vector<GeoRect> frames;
   GeoRect box;
   for (const CoverageRow& r : rows) {
     if (std::find(g->formats.begin(), g->formats.end(), r.format) == g->formats.end()) continue;
@@ -355,19 +335,34 @@ void Desk::Recenter() {
     // normalizes the centre.
     GeoRect b = r.bounds;
     if (b.CrossesAntimeridian()) b.ur.lon += 360.0;
-    if (!any) {
-      box = b;
-      any = true;
-      continue;
-    }
+    if (frames.empty()) box = b;
     box.ll.lat = std::min(box.ll.lat, b.ll.lat);
     box.ll.lon = std::min(box.ll.lon, b.ll.lon);
     box.ur.lat = std::max(box.ur.lat, b.ur.lat);
     box.ur.lon = std::max(box.ur.lon, b.ur.lon);
+    frames.push_back(b);
   }
-  if (!any) return;
-  GoTo(GeoPoint{(box.ll.lat + box.ur.lat) / 2, (box.ll.lon + box.ur.lon) / 2},
-       view_->View().ScaleDenom());
+  if (frames.empty()) return;
+  GeoPoint c{(box.ll.lat + box.ur.lat) / 2, (box.ll.lon + box.ur.lon) / 2};
+  // Separate clusters of data leave the box centre over nothing; use the
+  // centre of the frame nearest it instead.
+  const auto holds = [&c](const GeoRect& b) {
+    return b.ll.lat <= c.lat && c.lat <= b.ur.lat && b.ll.lon <= c.lon && c.lon <= b.ur.lon;
+  };
+  if (std::none_of(frames.begin(), frames.end(), holds)) {
+    double best = 0;
+    GeoPoint nearest = c;
+    for (const GeoRect& b : frames) {
+      const GeoPoint m{(b.ll.lat + b.ur.lat) / 2, (b.ll.lon + b.ur.lon) / 2};
+      const double d = (m.lat - c.lat) * (m.lat - c.lat) + (m.lon - c.lon) * (m.lon - c.lon);
+      if (&b == &frames.front() || d < best) {
+        best = d;
+        nearest = m;
+      }
+    }
+    c = nearest;
+  }
+  GoTo(c, view_->View().ScaleDenom());
 }
 
 void Desk::RegisterGroupCommands() {
@@ -533,38 +528,89 @@ Status Desk::UseCatalogFile(const std::string& path, bool create) {
   return Status::Ok();
 }
 
-Status Desk::StartCatalogBuild(const std::string& root) {
-  if (Building()) return Status::Error(kUnsupported, "a catalog build is already running");
+std::vector<std::string> Desk::ScanRoots() const {
+  if (!catalog_) return {};
+  std::string saved;
+  if (catalog_->Meta(kScanRootsMetaKey, &saved).ok()) {
+    std::vector<std::string> roots;
+    size_t at = 0;
+    while (at <= saved.size()) {
+      const size_t nl = std::min(saved.find('\n', at), saved.size());
+      if (nl > at) roots.push_back(saved.substr(at, nl - at));
+      at = nl + 1;
+    }
+    return roots;
+  }
+  std::vector<DataSourceRow> sources;
+  if (!catalog_->DataSources(&sources).ok()) return {};
+  std::vector<std::pair<std::string, std::string>> paths;
+  for (const DataSourceRow& r : sources) paths.emplace_back(r.path, r.format);
+  return RootsFromSources(paths);
+}
+
+Status Desk::SaveScanRoots(const std::vector<std::string>& roots) {
+  std::string text;
+  for (const std::string& r : roots) text += r + "\n";
+  return catalog_->SetMeta(kScanRootsMetaKey, text);
+}
+
+Status Desk::AddScanRoot(const std::string& path) {
+  if (Building()) return Status::Error(kUnsupported, "a catalog build is running");
   if (!catalog_ || !IsCatalogFile(catalog_path_))
-    return Status::Error(kInvalidArg, "open or create a catalog file before building it");
+    return Status::Error(kInvalidArg, "open or create a catalog file first");
+  const std::string root = AbsolutePath(path);
   std::error_code ec;
   if (!std::filesystem::is_directory(root, ec))
     return Status::Error(kNotFound, "no directory at " + root);
-  std::vector<ScanStep> steps = PlanScan(root);
-  if (steps.empty())
-    return Status::Error(kUnsupported, "no map format this app can scan is registered");
-  build_had_data_ = !available_.empty();
-  build_ = std::make_unique<CatalogBuild>(catalog_path_, std::move(steps));
-  return Status::Ok();
+  std::vector<std::string> roots = ScanRoots();
+  for (const std::string& r : roots) {
+    if (PathWithin(root, r))
+      return Status::Error(kInvalidArg, root + " is already scanned as part of " + r);
+  }
+  roots.erase(std::remove_if(roots.begin(), roots.end(),
+                             [&](const std::string& r) { return PathWithin(r, root); }),
+              roots.end());
+  roots.push_back(root);
+  std::sort(roots.begin(), roots.end());
+  return SaveScanRoots(roots);
 }
 
-Status Desk::StartCatalogRescan() {
+Status Desk::RemoveScanRoot(const std::string& path) {
+  if (Building()) return Status::Error(kUnsupported, "a catalog build is running");
+  if (!catalog_ || !IsCatalogFile(catalog_path_))
+    return Status::Error(kInvalidArg, "open or create a catalog file first");
+  std::vector<std::string> roots = ScanRoots();
+  const auto it = std::find(roots.begin(), roots.end(), path);
+  if (it == roots.end()) return Status::Error(kNotFound, path + " is not in the list");
+  roots.erase(it);
+  return SaveScanRoots(roots);
+}
+
+Status Desk::GenerateCoverage() {
   if (Building()) return Status::Error(kUnsupported, "a catalog build is already running");
   if (!catalog_ || !IsCatalogFile(catalog_path_))
-    return Status::Error(kInvalidArg, "the catalog is not a file");
-  std::vector<DataSourceRow> sources;
-  const Status s = catalog_->DataSources(&sources);
-  if (!s.ok()) return s;
+    return Status::Error(kInvalidArg, "open or create a catalog file first");
+  const std::vector<std::string> roots = ScanRoots();
+  std::string missing;
   std::vector<ScanStep> steps;
-  for (const DataSourceRow& r : sources) {
-    ScanStep step;
-    step.format = r.format;
-    step.dirs = {r.path};
-    step.keep_if_empty = true;
-    steps.push_back(std::move(step));
+  for (const std::string& root : roots) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(root, ec)) {
+      missing += (missing.empty() ? "" : ", ") + root;
+      continue;
+    }
+    for (ScanStep& step : PlanScan(root)) steps.push_back(std::move(step));
   }
+  if (!missing.empty())
+    return Status::Error(kNotFound, "cannot reach " + missing +
+                                        "; reconnect it or remove it from Map Data Sources");
+  if (!roots.empty() && steps.empty())
+    return Status::Error(kUnsupported, "no map format this app can scan is registered");
+  // A list derived from the old data sources becomes the saved list.
+  const Status s = SaveScanRoots(roots);
+  if (!s.ok()) return s;
   build_had_data_ = !available_.empty();
-  build_ = std::make_unique<CatalogBuild>(catalog_path_, std::move(steps));
+  build_ = std::make_unique<CatalogBuild>(catalog_path_, std::move(steps), true);
   return Status::Ok();
 }
 
@@ -575,10 +621,12 @@ void Desk::CancelCatalogBuild() {
 bool Desk::PollCatalogBuild() {
   if (!build_ || !build_->Progress().finished) return false;
   const std::string summary = build_->Summary();
+  // The build thread logged these as they happened.
   for (const std::string& e : build_->Errors()) warnings_.push_back("catalog build: " + e);
   build_.reset();
   CatalogChanged();
   if (!build_had_data_ && CurrentGroup() != nullptr) Recenter();
+  FV_LOG_INFO(summary);
   shell_.ShowNotice(summary);
   return true;
 }
@@ -631,7 +679,11 @@ void Desk::GoTo(const GeoPoint& center, double scale_denom) {
 std::vector<view::LadderProduct> Desk::ProductsAt(const GeoPoint& p) const {
   const MapGroup* g = CurrentGroup();
   if (g == nullptr || !catalog_) return {};
-  return view::CatalogProductsAt(*catalog_, p, g->formats);
+  return view::CatalogProductsAt(
+      *catalog_, p, g->formats,
+      [g](const std::string& format, const std::string& series_key) {
+        return g->NominalScaleOf(format, series_key);
+      });
 }
 
 void Desk::ApplyGroupToView() {
@@ -670,8 +722,9 @@ Workspace Desk::CaptureWorkspace() {
       if (!IsStaleRow(rest, count)) w.overlays[rest] = settings_.GetString(key);
     }
   } else {
-    warnings_.push_back("overlay configuration: " + s.message);
+    Warn("overlay configuration: " + s.message);
   }
+  // The session logged these as it recorded them.
   for (const std::string& line : session_->warnings()) warnings_.push_back(line);
   session_->ClearWarnings();
   w.active_editor = editors_->CurrentMode();
@@ -685,11 +738,11 @@ app::FlowResult Desk::ApplyWorkspace(const Workspace& w) {
 
   if (!w.catalog_path.empty() && w.catalog_path != catalog_path_) {
     const Status s = OpenCatalog(w.catalog_path);
-    if (!s.ok()) warnings_.push_back("catalog: " + s.message);
+    if (!s.ok()) Warn("catalog: " + s.message);
   }
   if (!w.map_group.empty()) {
     const Status s = SelectGroup(w.map_group);
-    if (!s.ok()) warnings_.push_back(s.message);
+    if (!s.ok()) Warn(s.message);
   }
 
   // The group is re-applied at the restored camera so the ladder chooses
@@ -710,21 +763,22 @@ app::FlowResult Desk::ApplyWorkspace(const Workspace& w) {
       }
     }
     if (!found)
-      warnings_.push_back("series " + w.product_format + " " + w.product_series_key +
+      Warn("series " + w.product_format + " " + w.product_series_key +
                           " has no data at the saved view");
   }
 
   if (w.overlays.count("count")) {
     for (const auto& kv : w.overlays) settings_.Set(kWorkspacePrefix + kv.first, kv.second);
     const Status s = session_->RestoreConfiguration(kWorkspaceConfig);
-    if (!s.ok()) warnings_.push_back("overlays: " + s.message);
+    if (!s.ok()) Warn("overlays: " + s.message);
+    // The session logged these as it recorded them.
     for (const std::string& line : session_->warnings()) warnings_.push_back(line);
     session_->ClearWarnings();
   }
 
   if (!w.active_editor.empty() &&
       editors_->SetMode(w.active_editor) != app::FlowResult::kDone)
-    warnings_.push_back("editor '" + w.active_editor + "' could not be resumed");
+    Warn("editor '" + w.active_editor + "' could not be resumed");
   return app::FlowResult::kDone;
 }
 
@@ -799,6 +853,9 @@ StatusBar Desk::CurrentStatus() const {
     bar.message = "No map data in the catalog";
   } else if (view_->LastOutcome() == view::LadderOutcome::kEndOfLadder) {
     bar.message = "No further map at this point";
+  } else if (!view_->HasProduct()) {
+    const MapGroup* g = CurrentGroup();
+    if (g != nullptr) bar.message = "No " + g->title + " map here";
   }
   return bar;
 }

@@ -45,6 +45,7 @@ class FakeDeskShell : public DeskShell {
   std::shared_ptr<OptionsModel> map_options_shown;  ///< the last map options dialog
   std::vector<std::string> list_rows;           ///< what the last list offered
   std::vector<std::string> notices;
+  int data_sources_shown = 0;
 
   SaveAnswer AskSave(const std::string& name) override;
   std::vector<std::string> ChooseFilesToOpen(const app::FileTypeDesc&) override;
@@ -66,6 +67,7 @@ class FakeDeskShell : public DeskShell {
   void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
     map_options_shown = std::move(model);
   }
+  void ShowDataSources() override { ++data_sources_shown; }
   std::string ChooseDirectory(const std::string&) override { return directory; }
   void ShowNotice(const std::string& text) override { notices.push_back(text); }
 };

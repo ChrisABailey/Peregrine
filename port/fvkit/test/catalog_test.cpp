@@ -20,6 +20,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "fv_map_enums.h"
@@ -178,6 +179,55 @@ TEST(CatalogSeriesIdentity, OneKeyAtThreeScalesIsThreeSeries) {
     EXPECT_EQ(rows.size(), 1u) << entry.first;
   }
   fv::ClearFormatRegistryForTest();
+}
+
+/// Enumerator whose Begin leaves a second connection to `db_path` holding the
+/// write lock, released by a thread after a short delay.
+class LockingStubEnumerator : public StubEnumerator {
+ public:
+  static std::string db_path;
+  static std::thread committer;
+
+  fv::Status Begin(const std::string& dir) override {
+    auto other = std::make_shared<fv::detail::SqliteDb>();
+    fv::Status s = other->Open(db_path);
+    if (s.ok()) s = other->Exec("BEGIN IMMEDIATE");
+    if (s.ok()) s = other->Exec("INSERT OR REPLACE INTO meta VALUES('other','1')");
+    if (!s.ok()) return s;
+    committer = std::thread([other] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      other->Exec("COMMIT");
+    });
+    return StubEnumerator::Begin(dir);
+  }
+};
+std::string LockingStubEnumerator::db_path;
+std::thread LockingStubEnumerator::committer;
+
+// A writer on another connection while the enumerator runs makes Scan wait
+// for the lock rather than fail with SQLITE_BUSY.
+TEST(CatalogScan, WaitsForAnotherConnectionsWrite) {
+  fs::path db = fs::temp_directory_path() / "fvkit_catalog_lock_test.sqlite";
+  fs::remove(db);
+  fv::ClearFormatRegistryForTest();
+  fv::FormatFactories f;
+  f.format_key = "locking";
+  f.make_enumerator = [] { return std::make_shared<LockingStubEnumerator>(); };
+  ASSERT_TRUE(fv::RegisterFormat(f).ok());
+  LockingStubEnumerator::db_path = db.string();
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(db.string()).ok());
+    int64_t src = 0;
+    int added = 0;
+    ASSERT_TRUE(cat.AddDataSource("/locking/root", "locking", 0, &src).ok());
+    const fv::Status s = cat.Scan(src, &added);
+    LockingStubEnumerator::committer.join();
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_EQ(added, 3);
+  }
+  fv::ClearFormatRegistryForTest();
+  fs::remove(db);
 }
 
 // A schema-1 catalog on disk is REBUILT, not converted: its map_series rows

@@ -58,6 +58,7 @@ struct HostTick {
   bool catalog_changed = false;  ///< a different catalog file is open
   bool job_changed = false;      ///< a background job started, progressed or ended
   bool options_requested = false;  ///< show an options dialog; see TakeOptionsRequest
+  bool sources_requested = false;  ///< show Map Data Sources; see TakeSourcesRequest
 };
 
 /// Shortcut modifier bits (`fv::desk::Modifier`). Primary is Command on
@@ -243,6 +244,21 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// Discards the dialog's model (unapplied changes are lost).
   void CloseOptions(int kind);
 
+  // MARK: Map Data Sources dialog
+
+  /// True once after the core asked to show the Map Data Sources dialog.
+  bool TakeSourcesRequest();
+  /// The directories Generate Coverage scans, absolute (`Desk::ScanRoots`).
+  int ScanRootCount() const;
+  std::string ScanRootAt(int index) const;
+  /// False when the directory does not exist now, such as an unmounted volume.
+  bool ScanRootReachable(int index) const;
+  /// Each returns the error message, or "".
+  std::string AddScanRoot(const std::string& path);
+  std::string RemoveScanRoot(const std::string& path);
+  /// Removes all coverage and rescans every listed directory as a background job.
+  std::string GenerateCoverage();
+
   // MARK: Settings
 
   /// Loads peregrine.ini (`fv::Settings::LoadDefault`) and the user settings
@@ -251,6 +267,16 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// are saved to that file, unless it exists and would not read. Returns the
   /// first error message, or "".
   std::string LoadSettings(const std::string& user_settings_path);
+
+  // MARK: Application log
+
+  /// Starts the log file in `directory` ("" for the platform's log directory)
+  /// at the `log.level` setting, and writes a first line with `app_version`,
+  /// the OS, the settings files and the catalog. Call after LoadSettings; a
+  /// second call does nothing. Returns the error message, or "".
+  std::string StartLog(const std::string& directory, const std::string& app_version);
+  /// The file the log is writing now, or "" before StartLog.
+  std::string LogFilePath() const;
 
   // MARK: Background jobs
 

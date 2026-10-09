@@ -24,6 +24,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "fv_log_c.h"
 #include "tiffiop.h"
 #include "tiffvers.h"
 
@@ -159,24 +160,33 @@ _TIFFmemcmp(const tdata_t p1, const tdata_t p2, tsize_t c)
 	return (memcmp(p1, p2, (size_t) c));
 }
 
+/* libtiff's messages go to the application log as "module: text". */
+static void
+logTiff(int level, const char* module, const char* fmt, va_list ap)
+{
+	char text[1024];
+	char line[1200];
+	if (!fv_log_enabled(level))
+		return;
+	vsnprintf(text, sizeof text, fmt, ap);
+	if (module != NULL)
+		snprintf(line, sizeof line, "%s: %s", module, text);
+	else
+		snprintf(line, sizeof line, "%s", text);
+	fv_log_write(level, __FILE__, __LINE__, line);
+}
+
 static void
 unixWarningHandler(const char* module, const char* fmt, va_list ap)
 {
-	if (module != NULL)
-		fprintf(stderr, "%s: ", module);
-	fprintf(stderr, "Warning, ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, ".\n");
+	logTiff(FV_LOG_C_WARNING, module, fmt, ap);
 }
 TIFFErrorHandler _TIFFwarningHandler = unixWarningHandler;
 
 static void
 unixErrorHandler(const char* module, const char* fmt, va_list ap)
 {
-	if (module != NULL)
-		fprintf(stderr, "%s: ", module);
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, ".\n");
+	logTiff(FV_LOG_C_ERROR, module, fmt, ap);
 }
 TIFFErrorHandler _TIFFerrorHandler = unixErrorHandler;
 

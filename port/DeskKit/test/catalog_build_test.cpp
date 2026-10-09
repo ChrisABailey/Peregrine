@@ -209,3 +209,52 @@ TEST_F(CatalogBuildTest, CancelStopsBetweenSources) {
 }
 
 }  // namespace
+
+namespace {
+
+TEST_F(CatalogBuildTest, ReplaceExistingRemovesEverySourceFirst) {
+  Scratch dir;
+  const std::string catalog = dir.Path("catalog.sqlite");
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(catalog).ok());
+    int64_t id = 0;
+    int frames = 0;
+    ASSERT_TRUE(cat.AddDataSource("../relative/data", "cadrg", 0, &id).ok());
+    ASSERT_TRUE(cat.Scan(id, &frames).ok());
+  }
+  const std::string root = dir.Path("data");
+  fs::create_directories(root);
+  CatalogBuild build(catalog, PlanScan(root), true);
+  build.Wait();
+  EXPECT_TRUE(build.Errors().empty());
+  const auto sources = Sources(catalog);
+  ASSERT_EQ(sources.size(), 1u);
+  EXPECT_EQ(sources[0].path, root);
+  EXPECT_EQ(sources[0].frames, 2);
+}
+
+TEST(ScanRoots, AbsolutePathResolvesAgainstTheWorkingDirectory) {
+  const std::string cwd = fs::current_path().string();
+  EXPECT_EQ(fv::desk::AbsolutePath("a/../b/"), (fs::path(cwd) / "b").string());
+  EXPECT_EQ(fv::desk::AbsolutePath("/x/y/"), "/x/y");
+  EXPECT_EQ(fv::desk::AbsolutePath("/"), "/");
+}
+
+TEST(ScanRoots, NestedSourcePathsFoldIntoTheirParent) {
+  EXPECT_EQ(fv::desk::RootsFromSources({{"/x/y/dted", "dted"},
+                                         {"/z/w", "cadrg"},
+                                         {"/x/y", "cadrg"},
+                                         {"/x/y/vpf/dnc17", "vpf"}}),
+            (std::vector<std::string>{"/x/y", "/z/w"}));
+  // A format's conventional subdirectory stands for the directory above it.
+  EXPECT_EQ(fv::desk::RootsFromSources({{"/d/TestData/dted", "dted-shaded"},
+                                         {"/d/TestData/OSM", "osm"},
+                                         {"/d/TestData/rpf", "cadrg"}}),
+            std::vector<std::string>{"/d/TestData"});
+  EXPECT_TRUE(fv::desk::PathWithin("/x/y/z", "/x/y"));
+  EXPECT_TRUE(fv::desk::PathWithin("/x/y", "/x/y"));
+  EXPECT_FALSE(fv::desk::PathWithin("/x/yz", "/x/y"));
+}
+
+}  // namespace

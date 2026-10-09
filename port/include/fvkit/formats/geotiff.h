@@ -13,7 +13,7 @@
 // each file's header via GetFrameProperties — exactly what the Windows
 // GenerateCoverage did. Frames the frame reader can't identify
 // (props.supported == false: the Windows build fell back to the ImageLib
-// COM object / MrSID) are SKIPPED with a stderr note, per D6.
+// COM object / MrSID) are SKIPPED with a logged warning, per D6.
 //
 // Source: whole-frame reader; get_rgb_subimage output (interleaved RGB,
 // grayscale DOQs come back replicated) converts to RGBA8 with alpha 255.

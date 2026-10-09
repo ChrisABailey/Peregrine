@@ -83,7 +83,7 @@ std::vector<MenuSpec> DefaultMenuLayout() {
        {S::Expand("map.group."), S::Sep(), S::Sub("Projection", {S::Expand("map.projection.")}),
         S::Cmd("map.zoom_in"), S::Cmd("map.zoom_out"), S::Cmd("map.goto"),
         S::Cmd("map.recenter"), S::Sep(), S::Cmd("map.catalog_open"),
-        S::Cmd("map.catalog_build"), S::Cmd("map.catalog_rescan"), S::Cmd("map.sources"),
+        S::Cmd("map.sources"), S::Cmd("map.generate_coverage"),
         S::Sep(), S::Cmd("map.options")}},
       {"overlay", "Overlay",
        {S::Expand("overlay.toggle."), S::Sep(), S::Sub("New", {S::Expand("overlay.new.")}),
