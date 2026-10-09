@@ -2690,3 +2690,20 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
   by ENC's slower enumeration. Verified 0/200 `--gtest_repeat` failures (was 4/40) and 0/40 for
   `GenerateCoverageFindsEncAndOsm`; full ctest 2434/2434. A separately spun-off task for the
   flake, if one exists, is now moot.
+
+### LX1–LX3 — Linux CI baseline, GTK skeleton, generated menus (2026-10-09, back-ported)
+
+- GSK's cairo renderer (the fallback without GL, used by the `--shot` ctests) does not draw a
+  general graphene-matrix transform over a scaled-texture node — it painted the frame pink.
+  `map_canvas.cpp` places the frame with a 2D translate/rotate/skew/scale chain over a plain
+  texture node instead; any future GSK placement code must stay on that path, not the matrix one.
+- `peregrine-gtk` links with `--exclude-libs,ALL` so the core's static libpng 1.2 does not
+  interpose GTK's libpng16 at runtime — needed again if another static image lib is added to the
+  core.
+- `gtest_discover_tests`' `ENVIRONMENT`/`ENVIRONMENT_MODIFICATION` must be set one variable per
+  property call: CMake 3.28–3.30 (Ubuntu 24.04 ships 3.28) splits an escaped `\;` list and drops
+  entries after the first, silently skipping tests that need `FVW_TESTDATA_DIR`/`FVW_OSM_STYLE_DIR`
+  (246 tests on Linux). Fixed in `fvkit`, `GeoTIFFMapServer`, `Osm`; any new module doing the same
+  must follow the one-property-per-variable form.
+- The geotrans forced `<stdio.h>` include (`port/geotrans/CMakeLists.txt`) is confirmed sufficient
+  on GCC 13.3 as well as clang; `third_party/` stayed untouched.

@@ -140,6 +140,12 @@ K17 open: Chris's confirmation of the shipped defaults (Info/Debug, 5×5 MB); Wi
 a Claude cloud session in the Peregrine repo, delivered as `linux/*` PRs with Ledger notes.
 Back-port each merged PR into FVW (`format-patch | git am -3`) **before** the next sync, or the
 sync deletes it. Peregrine's `CLAUDE.md` is dest-owned and holds that session's rules.
+**LX1–LX3 back-ported 2026-10-09** (PR #3 `linux/ci-baseline` + an unreviewed branch): suite
+green on Ubuntu 24.04/GCC 13.3 (2382 tests, 438 skip for no map data, 17 disabled, all 718
+targets build); GTK4 skeleton (`application`/`map_window`/`map_canvas`) and generated
+menus/toolbar/shortcuts over `DeskHost`; `DeskKit::ParseLaunchOptions` shared by both shells
+(Swift still has its own parser — candidate to switch). Mac re-verified clean, 2440/2440, 3
+skips, 17 disabled. Next: LX4 (dialogs, DK5) once the sample-testdata run is recorded for Linux.
 
 ### 2a. Open threads (each optional; pick on Chris's word)
 
@@ -154,6 +160,7 @@ sync deletes it. Peregrine's `CLAUDE.md` is dest-owned and holds that session's 
 | **DK3 follow-ups** | fvkit's built-ins (grid, points, contour, tamask, scalebar, movingmap) still register in code, not via manifest (deliberate, avoids a drifting JSON copy); no bundled `overlays.json` yet; a static-lib builtin registrar needs an explicit referencing object (dead-stripping). |
 | **DK5 follow-ups** | A data source's scan can't be interrupted (cancel waits for it); readers wait up to 10s on the busy timeout during a big scan's commit; progress sheet/Build panel not driven live (out-of-process open panel) — Chris to try by hand; GTK has no synchronous modal dialogs, so LX's shell needs a nested main loop for `SetRequestHandler`. |
 | **LX Map Data Sources** | GTK shell needs its own dialog over the new `DeskHost` calls; `map.catalog_build` removed, `map.catalog_rescan` → `map.generate_coverage`. |
+| **LX1–LX3 follow-ups** | DejaVu graticule golden is pinned to `fonts-dejavu-core` 2.37, will need re-pinning on a newer Ubuntu; the cloud session's FetchContent of googletest/pybind11/protozero/vtzero from GitHub `/archive/` is blocked by its proxy (worked around with `FETCHCONTENT_SOURCE_DIR_*`) — a CI runner behind a proxy needs the same; Linux run of the sample testdata still to be recorded here. |
 | **Generate Coverage all-or-nothing** | No incremental rescan; a cancelled generation leaves a partial catalog. |
 | **DK5b follow-ups** | `Execute`'s `StackEdit` lock is held across a modal request handler, so frames pause during a modal dialog; DK8 editor input routing must take `StackEdit` when a pointer event reaches an editor; overlays have no cancel inside their own `OnDraw` yet. |
 | **DK6 follow-ups** | Raster pixel pitch is still a `MapOptionsSource` to add; elevation breaks are a text field (a custom breakpoint editor is a later custom page); a newer options request replaces an open dialog's unapplied edits. |
