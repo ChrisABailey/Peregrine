@@ -25,6 +25,14 @@ down to `fill-opacity` 0.35 and leaves buildings as an outline — a `fill` laye
 drawn down to tees and bunkers. It reads the extra golf, crossing and boardwalk attributes the
 peregrine tilemaker profile writes, and degrades to tag heuristics on tiles without them.
 
+`atlanta-streets.json` is Pippin's base map for a city grid. Each road's casing is coloured by
+riding comfort — trail, signed route, quiet, moderate, busy, avoid, no bicycles — from `class`
+and `bicycle`, the only riding signals the tiles carry. Interstates are drawn as indigo
+landmarks from z5, and state lines, state names and ranked city names fill the low zooms.
+Sidewalks, parking lots and lodging wait for close zooms. The `bike-lane` layer reads a
+`cycleway` attribute the profile does not yet write, and stays empty until it does.
+`atlanta-streets-dark.json` is generated from it by `port/tools/make_atlanta_dark_style.py`.
+
 ## The one rule that shapes everything else
 
 **Anything outside the subset FAILS THE LOAD, naming the layer and the property.** It is never
