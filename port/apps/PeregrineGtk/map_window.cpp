@@ -35,22 +35,6 @@ void SetUpLabel(Gtk::Label& label) {
   label.set_single_line_mode(true);
 }
 
-/// The freedesktop symbolic icon for a DeskKit icon name; "" when there is
-/// none, so the button shows its label instead.
-std::string IconName(const std::string& icon) {
-  static const std::map<std::string, std::string> kIcons = {
-      {"zoom_in", "zoom-in-symbolic"},
-      {"zoom_out", "zoom-out-symbolic"},
-      {"recenter", "find-location-symbolic"},
-      {"grid", "view-grid-symbolic"},
-      {"points", "mark-location-symbolic"},
-      {"tamask", "dialog-warning-symbolic"},
-      {"pencil", "document-edit-symbolic"},
-  };
-  const auto it = kIcons.find(icon);
-  return it == kIcons.end() ? std::string() : it->second;
-}
-
 /// The version the log's first line names; the app has no release number yet.
 constexpr char kAppVersion[] = "(unversioned)";
 
@@ -80,16 +64,23 @@ MapWindow::MapWindow()
   menu_bar_.set_menu_model(bar);
   menu_bar_.add_css_class("menu-bar-row");
 
-  for (Gtk::Label* l : {&scale_label_, &product_label_, &message_label_, &position_label_})
+  // Three equal thirds keep the scale centred whatever the sides hold.
+  for (Gtk::Label* l : {&feedback_label_, &scale_label_, &product_label_, &position_label_,
+                        &elevation_label_})
     SetUpLabel(*l);
-  position_label_.add_css_class("numeric");
-  position_label_.set_hexpand(true);
-  position_label_.set_xalign(1);
+  for (Gtk::Label* l : {&position_label_, &elevation_label_}) l->add_css_class("numeric");
+  status_left_.append(feedback_label_);
+  status_centre_.set_halign(Gtk::Align::CENTER);
+  status_centre_.append(scale_label_);
+  status_centre_.append(product_label_);
+  status_right_.set_halign(Gtk::Align::END);
+  status_right_.append(position_label_);
+  status_right_.append(elevation_label_);
+  status_bar_.set_homogeneous(true);
   status_bar_.add_css_class("status-bar");
-  status_bar_.append(scale_label_);
-  status_bar_.append(product_label_);
-  status_bar_.append(message_label_);
-  status_bar_.append(position_label_);
+  status_bar_.append(status_left_);
+  status_bar_.append(status_centre_);
+  status_bar_.append(status_right_);
   content_.append(menu_bar_);
   content_.append(canvas_);
   content_.append(status_bar_);
@@ -112,11 +103,19 @@ MapWindow::MapWindow()
 
 MapWindow::~MapWindow() { host_->SetRequestHandler(nullptr, nullptr); }
 
+/// Copies the host's status bar text and hover tool tip into the window.
 void MapWindow::RefreshStatus() {
+  feedback_label_.set_text(host_->StatusFeedback());
   scale_label_.set_text(host_->StatusScale());
   product_label_.set_text(host_->StatusProduct());
-  message_label_.set_text(host_->StatusMessage());
   position_label_.set_text(host_->StatusPosition());
+  elevation_label_.set_text(host_->StatusElevation());
+  const std::string tip = host_->HoverToolTip();
+  if (tip != tooltip_) {
+    tooltip_ = tip;
+    canvas_.set_tooltip_text(tip);
+    canvas_.set_has_tooltip(!tip.empty());
+  }
 }
 
 // MARK: Catalog and commands
@@ -132,24 +131,77 @@ bool MapWindow::OpenCatalog(const std::string& path) {
   return true;
 }
 
-/// Titles the window after the open catalog.
+/// Remembers the catalog's name for the title.
 void MapWindow::CatalogDidChange() {
   const std::string path = host_->CatalogPath();
   if (path.empty() || path == ":memory:") return;
-  set_title("Peregrine — " + std::filesystem::path(path).stem().string());
+  catalog_title_ = "Peregrine — " + std::filesystem::path(path).stem().string();
+  UpdateTitle();
+}
+
+/// Titles the window after the current or topmost overlay file, or the
+/// catalog when no overlay file is open.
+void MapWindow::UpdateTitle() {
+  const std::string document = host_->DocumentName();
+  const std::string title = document.empty() ? catalog_title_ : document;
+  if (get_title().raw() != title) set_title(title);
 }
 
 /// Reacts to what the host reports each frame: menus, the catalog, notices,
 /// and anything that can change a command's enabled or checked state.
 void MapWindow::Handle(const fv::desk::HostTick& t) {
+  UpdateTitle();
   if (t.menus_changed) UpdateMenus();
   if (t.catalog_changed) CatalogDidChange();
   if (t.job_changed) UpdateJob();
+  if (t.options_requested) {
+    const int kind = host_->TakeOptionsRequest();
+    if (kind == fv::desk::kOptionsMap || kind == fv::desk::kOptionsOverlay) {
+      ShowPanel(kind == fv::desk::kOptionsMap ? map_options_ : overlay_options_,
+                [this, kind] { return std::make_unique<OptionsWindow>(*host_, kind, *this); });
+    }
+  }
   if (t.sources_requested && host_->TakeSourcesRequest()) ShowDataSources();
+  if (t.profile_requested && host_->TakeRouteProfileRequest())
+    ShowPanel(profile_, [this] { return std::make_unique<ProfileWindow>(*host_, *this); });
+  if (t.profile_changed && profile_ && profile_->get_visible()) profile_->Reload();
+  if (t.layers_requested && host_->TakeLayersRequest())
+    ShowPanel(layers_, [this] { return std::make_unique<LayersWindow>(*host_, *this); });
+  if (t.layers_changed && layers_ && layers_->get_visible()) layers_->Reload();
+  if (t.form_requested && host_->TakeFeatureFormRequest())
+    ShowPanel(feature_form_, [this] { return std::make_unique<FeatureFormWindow>(*host_, *this); });
+  if (t.table_requested && host_->TakeAttributeTableRequest())
+    ShowPanel(attribute_table_, [this] { return std::make_unique<AttributeTableWindow>(*host_, *this); });
+  if (t.style_requested && host_->TakeLayerStyleRequest())
+    ShowPanel(layer_style_, [this] { return std::make_unique<LayerStyleWindow>(*host_, *this); });
+  if (t.fields_requested && host_->TakeLayerFieldsRequest())
+    ShowPanel(layer_fields_, [this] { return std::make_unique<LayerFieldsWindow>(*host_, *this); });
+  if (t.new_layer_requested && host_->TakeNewLayerRequest())
+    ShowPanel(new_layer_, [this] { return std::make_unique<NewLayerWindow>(*host_, *this); });
+  if (t.features_changed) FeaturesDidChange();
   if (t.new_frame || t.redraw || t.status_changed || t.catalog_changed || t.job_changed)
     menus_.Refresh();
   const std::string notice = host_->TakeNotice();
   if (!notice.empty()) PresentNotice(notice);
+}
+
+template <typename W, typename Make>
+void MapWindow::ShowPanel(std::unique_ptr<W>& window, Make make) {
+  if (window) window->Reload();
+  else window = make();
+  window->present();
+}
+
+/// Hides a form, table, style or fields dialog whose model closed, and refreshes the table. The
+/// form is not rebuilt here: it holds the user's edits.
+void MapWindow::FeaturesDidChange() {
+  if (feature_form_ && !host_->FeatureFormOpen()) feature_form_->set_visible(false);
+  if (layer_style_ && !host_->LayerStyleOpen()) layer_style_->set_visible(false);
+  if (layer_fields_ && !host_->LayerFieldsOpen()) layer_fields_->set_visible(false);
+  if (attribute_table_) {
+    if (!host_->AttributeTableOpen()) attribute_table_->set_visible(false);
+    else if (attribute_table_->get_visible()) attribute_table_->Reload();
+  }
 }
 
 /// Answers the host's question with a modal dialog. The map holds still
@@ -251,7 +303,7 @@ void MapWindow::RebuildToolbar() {
     }
     Gtk::Button* button = item.checkable ? Gtk::make_managed<Gtk::ToggleButton>()
                                          : Gtk::make_managed<Gtk::Button>();
-    const std::string icon = IconName(item.icon);
+    const std::string icon = IconNameFor(item.icon);
     if (!icon.empty() && theme->has_icon(icon)) button->set_icon_name(icon);
     else button->set_label(item.label);
     button->set_tooltip_text(item.label);

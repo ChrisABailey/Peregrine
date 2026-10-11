@@ -32,6 +32,24 @@ int AskSaveAnswer(int index);
 /// has no filters.
 Glib::RefPtr<Gio::ListStore<Gtk::FileFilter>> RequestFilters(const fv::desk::DeskHost& host);
 
+/// Makes Escape close `window`, as its close button would.
+void CloseOnEscape(Gtk::Window& window);
+
+/// A row of dialog buttons: `leading` at the left, then a gap, then
+/// `trailing` left to right.
+Gtk::Box* ButtonRow(const std::vector<Gtk::Widget*>& leading,
+                    const std::vector<Gtk::Widget*>& trailing);
+
+/// Sets the 16/20 pt margins dialogs use around their content.
+void SetDialogMargins(Gtk::Widget& content);
+
+/// Replaces `drop_down`'s items with `items`; nothing is selected when
+/// `selected` is out of range.
+void SetChoices(Gtk::DropDown& drop_down, const std::vector<std::string>& items, int selected);
+
+/// The selected item of a drop-down as an index, -1 when none.
+int SelectedIndex(const Gtk::DropDown& drop_down);
+
 /// A modal message with buttons and, optionally, a drop-down of rows. Closing
 /// the window or pressing Escape answers `cancel_button`.
 class ChoiceDialog : public Gtk::Window {

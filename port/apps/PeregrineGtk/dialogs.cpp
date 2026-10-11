@@ -338,4 +338,47 @@ void JobDialog::Cancel() {
   if (on_cancel_) on_cancel_();
 }
 
+void CloseOnEscape(Gtk::Window& window) {
+  auto keys = Gtk::EventControllerKey::create();
+  keys->signal_key_pressed().connect(
+      [&window](guint keyval, guint, Gdk::ModifierType) {
+        if (keyval != GDK_KEY_Escape) return false;
+        window.close();
+        return true;
+      },
+      false);
+  window.add_controller(keys);
+}
+
+Gtk::Box* ButtonRow(const std::vector<Gtk::Widget*>& leading,
+                    const std::vector<Gtk::Widget*>& trailing) {
+  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+  for (Gtk::Widget* w : leading) row->append(*w);
+  auto* gap = Gtk::make_managed<Gtk::Box>();
+  gap->set_hexpand(true);
+  row->append(*gap);
+  for (Gtk::Widget* w : trailing) row->append(*w);
+  return row;
+}
+
+void SetDialogMargins(Gtk::Widget& content) {
+  content.set_margin_top(16);
+  content.set_margin_bottom(16);
+  content.set_margin_start(20);
+  content.set_margin_end(20);
+}
+
+void SetChoices(Gtk::DropDown& drop_down, const std::vector<std::string>& items, int selected) {
+  std::vector<Glib::ustring> strings(items.begin(), items.end());
+  drop_down.set_model(Gtk::StringList::create(strings));
+  drop_down.set_selected(selected >= 0 && selected < static_cast<int>(items.size())
+                             ? static_cast<guint>(selected)
+                             : GTK_INVALID_LIST_POSITION);
+}
+
+int SelectedIndex(const Gtk::DropDown& drop_down) {
+  const guint k = drop_down.get_selected();
+  return k == GTK_INVALID_LIST_POSITION ? -1 : static_cast<int>(k);
+}
+
 }  // namespace peregrine

@@ -55,6 +55,54 @@ std::string NamedKey(const std::string& key) {
 
 }  // namespace
 
+const std::map<std::string, std::string>& IconNames() {
+  // The nearest freedesktop/Adwaita symbolic icon; the tooltip carries the
+  // command's label.
+  static const std::map<std::string, std::string> kIcons = {
+      {"zoom_in", "zoom-in-symbolic"},
+      {"zoom_out", "zoom-out-symbolic"},
+      {"recenter", "find-location-symbolic"},
+      {"grid", "view-grid-symbolic"},
+      {"points", "mark-location-symbolic"},
+      {"features", "view-paged-symbolic"},
+      {"contour", "applications-science-symbolic"},
+      {"tamask", "dialog-warning-symbolic"},
+      {"scalebar", "format-justify-fill-symbolic"},
+      {"movingmap", "go-up-symbolic"},
+      {"route", "go-jump-symbolic"},
+      {"pencil", "document-edit-symbolic"},
+      {"add_point", "list-add-symbolic"},
+      {"edit_point", "document-properties-symbolic"},
+      {"delete_point", "list-remove-symbolic"},
+      {"leg_type", "object-flip-horizontal-symbolic"},
+      {"follow_roads", "media-playlist-repeat-symbolic"},
+      {"follow_roads_bicycle", "media-playlist-shuffle-symbolic"},
+      {"straight_legs", "go-next-symbolic"},
+      {"labels", "insert-text-symbolic"},
+      {"select", "edit-select-symbolic"},
+      {"draw_line", "media-playlist-consecutive-symbolic"},
+      {"draw_area", "checkbox-symbolic"},
+      {"add_hole", "media-record-symbolic"},
+      {"finish", "emblem-ok-symbolic"},
+      {"delete_vertex", "edit-clear-symbolic"},
+      {"delete_hole", "process-stop-symbolic"},
+      {"delete_feature", "user-trash-symbolic"},
+      {"undo", "edit-undo-symbolic"},
+      {"redo", "edit-redo-symbolic"},
+      {"elevation_profile", "x-office-presentation-symbolic"},
+      {"attribute_table", "x-office-spreadsheet-symbolic"},
+      {"layer_style", "applications-graphics-symbolic"},
+      {"style_feature", "color-select-symbolic"},
+      {"layer_fields", "view-list-bullet-symbolic"},
+  };
+  return kIcons;
+}
+
+std::string IconNameFor(const std::string& icon) {
+  const auto it = IconNames().find(icon);
+  return it == IconNames().end() ? std::string() : it->second;
+}
+
 std::string AcceleratorFor(const std::string& key, unsigned modifiers) {
   std::string name;
   if (key.size() == 1) {
@@ -121,7 +169,9 @@ void CommandMenus::AddAction(const fv::desk::HostMenuEntry& e) {
   action->signal_activate().connect([this, id](const Glib::VariantBase&) { execute_(id); });
   actions_->add_action(action);
 
-  const std::string accel = AcceleratorFor(e.key, e.modifiers);
+  // An unmodified key is not a window shortcut, so text fields keep it; the
+  // map widget handles the ones meant for the map.
+  const std::string accel = e.modifiers != 0 ? AcceleratorFor(e.key, e.modifiers) : std::string();
   if (!accel.empty()) accelerators_.emplace_back(ActionFor(e.id), accel);
 }
 

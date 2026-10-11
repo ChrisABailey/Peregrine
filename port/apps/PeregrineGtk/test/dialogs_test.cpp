@@ -11,72 +11,22 @@
 #include "map_window.h"
 
 #include <gtest/gtest.h>
-#include <gtkmm/init.h>
-#include <unistd.h>
 
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <functional>
 #include <string>
-#include <thread>
 #include <vector>
+
+#include "test/test_support.h"
 
 namespace fs = std::filesystem;
 
 namespace peregrine {
 namespace {
 
-/// Runs the main loop until `done` or about `seconds` have passed.
-bool SpinUntil(const std::function<bool()>& done, double seconds = 10) {
-  const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
-  while (!done()) {
-    if (std::chrono::steady_clock::now() > end) return false;
-    if (!g_main_context_iteration(nullptr, FALSE))
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-  return true;
-}
-
-/// A scratch directory removed at the end of the test.
-struct Scratch {
-  fs::path dir;
-  Scratch() {
-    dir = fs::temp_directory_path() /
-          ("peregrine_gtk_dialogs_" + std::to_string(::getpid()) + "_" +
-           ::testing::UnitTest::GetInstance()->current_test_info()->name());
-    fs::remove_all(dir);
-    fs::create_directories(dir);
-  }
-  ~Scratch() {
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-  }
-};
-
-class DialogsTest : public ::testing::Test {
- protected:
-  static void SetUpTestSuite() {
-    // The user settings and the log go to the scratch home, not the user's.
-    const fs::path home = fs::temp_directory_path() /
-                          ("peregrine_gtk_dialogs_home_" + std::to_string(::getpid()));
-    fs::create_directories(home);
-    setenv("XDG_CONFIG_HOME", (home / "config").c_str(), 1);
-    setenv("XDG_STATE_HOME", (home / "state").c_str(), 1);
-    setenv("XDG_DATA_HOME", (home / "data").c_str(), 1);
-    setenv("GSK_RENDERER", "cairo", 0);
-    have_display_ = gtk_init_check();
-    if (have_display_) Gtk::init_gtkmm_internals();
-  }
-
-  void SetUp() override {
-    if (!have_display_) GTEST_SKIP() << "no display; run under xvfb-run";
-  }
-
-  static bool have_display_;
-};
-
-bool DialogsTest::have_display_ = false;
+using test::Scratch;
+using test::SpinUntil;
+using DialogsTest = test::DisplayTest;
 
 TEST_F(DialogsTest, ChoiceDialogReturnsTheButtonFromANestedLoop) {
   Gtk::Window parent;
