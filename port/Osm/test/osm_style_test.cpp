@@ -870,6 +870,95 @@ TEST(OsmReferenceStyle, ACasingDashesInStepWithTheLineItCases) {
   }
 }
 
+namespace {
+
+fv::VectorFeature Poi(const char* klass);
+fv::VectorFeature Landuse(const char* klass);
+
+/// Returns the draw priorities `e` emits for `f` at web-mercator zoom `z`.
+std::vector<int> PrioritiesAt(fv::OsmStyleEngine& e, const fv::VectorFeature& f,
+                              double z) {
+  fv::StyleContext ctx;
+  ctx.scale_denominator = fv::webmerc::ScaleForZoomExact(z, 33.75, 0.25);
+  std::vector<fv::StyleResult> out;
+  EXPECT_TRUE(e.Style(f, ctx, &out).ok());
+  std::vector<int> p;
+  for (const fv::StyleResult& r : out) p.push_back(r.priority);
+  return p;
+}
+
+/// True when `e` draws `f` at zoom `z` through the style layer named `id`.
+bool DrawsThrough(fv::OsmStyleEngine& e, const fv::VectorFeature& f, double z,
+                  const std::string& id) {
+  const fv::OsmStyleLayerInfo* info = Info(e, id);
+  EXPECT_NE(info, nullptr) << id;
+  if (info == nullptr) return false;
+  for (int p : PrioritiesAt(e, f, z))
+    if (p == info->priority) return true;
+  return false;
+}
+
+}  // namespace
+
+// Atlanta Streets colours each road's casing by how comfortable it is to ride,
+// keeps sidewalks, parking and lodging for close zooms, and draws interstates
+// from z5. The dark sheet is generated from the light one and must keep every
+// layer, so both files are held to the same assertions.
+TEST(OsmReferenceStyle, AtlantaStreetsTiersRoadsAndHoldsBackClutter) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+
+  std::vector<std::string> light_ids;
+  for (const char* name : {"atlanta-streets.json", "atlanta-streets-dark.json"}) {
+    const std::string path = std::string(dir) + "/" + name;
+    fv::OsmStyleEngine e;
+    std::string err;
+    ASSERT_TRUE(e.LoadFile(path, &err).ok()) << name << ": " << err;
+    e.SetReferenceLatitude(33.75);
+    EXPECT_TRUE(e.unresolved_symbols().empty()) << name;
+
+    std::vector<std::string> ids;
+    for (const auto& i : e.layers()) ids.push_back(i.id);
+    if (light_ids.empty()) light_ids = ids;
+    else EXPECT_EQ(ids, light_ids) << name << " has drifted from the light style";
+
+    const struct { const char* klass; const char* casing; } kTiers[] = {
+        {"minor", "road-quiet-casing"},     {"tertiary", "road-moderate-casing"},
+        {"secondary", "road-busy-casing"},  {"primary", "road-avoid-casing"},
+        {"trunk", "road-avoid-casing"},     {"motorway", "road-interstate-casing"},
+    };
+    for (const auto& t : kTiers) {
+      EXPECT_TRUE(DrawsThrough(e, Road(t.klass), 15, t.casing))
+          << name << ": " << t.klass;
+      EXPECT_FALSE(DrawsThrough(e, Road(t.klass), 15, "trail-casing"))
+          << name << ": " << t.klass;
+    }
+
+    fv::VectorFeature beltline = Road("path");
+    beltline.attributes.push_back({"subclass", "cycleway"});
+    EXPECT_TRUE(DrawsThrough(e, beltline, 12, "trail-casing")) << name;
+
+    fv::VectorFeature nobike = Road("primary");
+    nobike.attributes.push_back({"bicycle", "no"});
+    EXPECT_TRUE(DrawsThrough(e, nobike, 15, "road-nobike-casing")) << name;
+
+    // Interstates are a landmark at state scale; city streets are not.
+    EXPECT_FALSE(PrioritiesAt(e, Road("motorway"), 5).empty()) << name;
+    EXPECT_TRUE(PrioritiesAt(e, Road("minor"), 5).empty()) << name;
+
+    fv::VectorFeature sidewalk = Road("path");
+    sidewalk.attributes.push_back({"subclass", "footway"});
+    EXPECT_TRUE(PrioritiesAt(e, sidewalk, 15).empty()) << name;
+    EXPECT_TRUE(DrawsThrough(e, sidewalk, 17, "sidewalk")) << name;
+
+    EXPECT_TRUE(PrioritiesAt(e, Landuse("parking"), 14).empty()) << name;
+    EXPECT_TRUE(DrawsThrough(e, Landuse("parking"), 16, "parking")) << name;
+
+    EXPECT_TRUE(PrioritiesAt(e, Poi("lodging"), 16).empty()) << name;
+    EXPECT_TRUE(DrawsThrough(e, Poi("lodging"), 18, "poi-lodging")) << name;
+  }
+}
+
 TEST(OsmReferenceStyle, StylesRealAtlantaFeatures) {
   const std::string style = StylePath();
   const std::string mb = MbtilesPath();
