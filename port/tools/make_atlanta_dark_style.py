@@ -67,7 +67,8 @@ PALETTE = {
  "road-moderate": {"line-color": "#665f50"},
  "road-busy": {"line-color": "#68594c"},
  "road-avoid": {"line-color": "#6a4f4b"},
- "road-interstate": {"line-color": "#4a4380"},
+ # The interstate is filled like a primary road; its indigo casing alone marks it.
+ "road-interstate": {"line-color": "#6a4f4b"},
  "bike-lane": {"line-color": "#3fb56a"},
  "track": {"line-color": "#97805a"},
  "sidewalk": {"line-color": "#7a7067"},
@@ -84,6 +85,7 @@ PALETTE = {
  "trail-name": {"text-color": "#8fe0a8", "text-halo-color": "#1b2a1f"},
  "path-name": {"text-color": "#dba584", "text-halo-color": HALO},
  "interstate-ref": {"text-color": "#ffffff", "text-halo-color": "#463f7a"},
+ "poi-lodging": {"text-color": "#cbbfb0", "text-halo-color": HALO},
  "poi-food": {"text-color": "#f0a46a", "text-halo-color": HALO},
  "poi-grocery": {"text-color": "#cbbfb0", "text-halo-color": HALO},
  "poi-landmark": {"text-color": "#c9bfe0", "text-halo-color": HALO},

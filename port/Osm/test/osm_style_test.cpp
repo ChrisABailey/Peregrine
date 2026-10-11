@@ -956,6 +956,34 @@ TEST(OsmReferenceStyle, AtlantaStreetsTiersRoadsAndHoldsBackClutter) {
 
     EXPECT_TRUE(PrioritiesAt(e, Poi("lodging"), 16).empty()) << name;
     EXPECT_TRUE(DrawsThrough(e, Poi("lodging"), 18, "poi-lodging")) << name;
+
+    // At 1:5,000 on a phone lodging, parking and food are all on the map. The
+    // engine is set up as Pippin does it: the point pitch (1/163 inch) and the
+    // view's latitude are given after the style has loaded.
+    fv::OsmStyleEngine phone;
+    ASSERT_TRUE(phone.LoadFile(path, &err).ok()) << name << ": " << err;
+    phone.SetDisplayMmPerPixel(25.4 / 163.0);
+    phone.SetReferenceLatitude(34.0);
+    fv::VectorFeature parking = Poi("amenity");
+    parking.attributes.push_back({"subclass", "parking"});
+    fv::VectorFeature restaurant = Poi("amenity");
+    restaurant.attributes.push_back({"subclass", "restaurant"});
+    fv::VectorFeature cafe = Poi("cafe");
+    cafe.attributes.push_back({"subclass", "cafe"});
+    const struct { const fv::VectorFeature f; const char* layer; } kAt1To5000[] = {
+        {Poi("lodging"), "poi-lodging"}, {parking, "poi-parking"},
+        {restaurant, "poi-food"},        {cafe, "poi-food"},
+    };
+    for (const auto& c : kAt1To5000) {
+      fv::StyleContext ctx;
+      ctx.scale_denominator = 5000.0;
+      std::vector<fv::StyleResult> out;
+      ASSERT_TRUE(phone.Style(c.f, ctx, &out).ok());
+      const int want = Info(phone, c.layer)->priority;
+      EXPECT_TRUE(std::any_of(out.begin(), out.end(),
+                              [want](const fv::StyleResult& r) { return r.priority == want; }))
+          << name << ": " << c.layer;
+    }
   }
 }
 
