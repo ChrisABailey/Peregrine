@@ -136,6 +136,10 @@ ATLANTA_INI = {
     "points.seed": '"atlanta.fvpoints"',
     "search.initial_text": '"BeltLine"',
     "routing.graph": '"atlanta.fvroad"',
+    # Kiawah Trails is drawn for an island's bike paths; a city grid needs
+    # every street's riding comfort, the interstates and the parks.
+    "osm.style": '"atlanta-streets.json"',
+    "osm.style_dark": '"atlanta-streets-dark.json"',
     # A city grid puts the next street closer than Kiawah's cul-de-sacs do.
     "routing.pick_radius_m": "30",
     # Downtown; the forecast is the same anywhere in the box.
@@ -198,6 +202,11 @@ REGIONS = {
              "the map: tilemaker, peregrine profile, over the Atlanta cut"),
         Item("testdata/OSM/atlanta.fvroad", "atlanta.fvroad",
              "the road graph, built by fvgraph HONOURING access"),
+        Item("port/Osm/styles/atlanta-streets.json", "atlanta-streets.json",
+             "the look the Atlanta pippin.ini selects: Atlanta Streets"),
+        Item("port/Osm/styles/atlanta-streets-dark.json",
+             "atlanta-streets-dark.json",
+             "the same look recoloured for dark mode"),
         Item("port/apps/Pippin/pippin.ini", "pippin.ini",
              "the settings file, rewritten for Atlanta",
              transform=region_ini(ATLANTA_INI, ATLANTA_DROP)),
