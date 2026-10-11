@@ -36,6 +36,10 @@ class MapCanvas : public Gtk::Widget {
 
   /// Renders the current view, waits for the frame and shows it.
   void RenderNow();
+  /// While held the widget makes no host calls but keeps painting the last
+  /// frame; a size change is passed on at release. The window holds it while
+  /// a host call waits on a dialog, so the host is not re-entered.
+  void SetHeld(bool held);
 
  protected:
   void snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot>& snapshot) override;
@@ -59,6 +63,7 @@ class MapCanvas : public Gtk::Widget {
   double texture_width_pt_ = 0;
   double texture_height_pt_ = 0;
   guint tick_id_ = 0;
+  bool held_ = false;
   double pointer_x_ = 0;
   double pointer_y_ = 0;
   double drag_x_ = 0;

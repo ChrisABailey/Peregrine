@@ -31,7 +31,7 @@ xvfb-run -a ctest --test-dir build -j8
 The root `README.md` (*Build ▸ Linux*) explains each package and the offline
 configure. `testdata/` holds a small sample data set and the build points the
 tests at it; tests pinned to larger data skip themselves (`ctest` counts a
-skip as a pass, so report the skip count too: 182 on Linux with the sample
+skip as a pass, so report the skip count too: 185 on Linux with the sample
 set). Screenshots: `xvfb-run -a <binary> --shot out.png`; for the app on the
 sample data see `port/apps/PeregrineGtk/README.md`.
 

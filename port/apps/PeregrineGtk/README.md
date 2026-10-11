@@ -9,8 +9,9 @@ The desktop map application on GTK4 (gtkmm-4), the Linux counterpart of
 `port/apps/Peregrine` (`port/linux-plan.md`). A C++ shell over DeskKit's
 `fv::desk::DeskHost`, the same object the macOS app drives. Every decision
 lives in C++ under `port/`; this directory holds only the window, event
-translation, the frame blit, and the menus and toolbar generated from
-DeskKit's model. Dialogs come later.
+translation, the frame blit, the menus and toolbar generated from
+DeskKit's model, and the dialogs that answer the core's questions. The
+options windows come later.
 
 | This app | macOS app |
 |---|---|
@@ -18,6 +19,8 @@ DeskKit's model. Dialogs come later.
 | `map_window.{h,cpp}` | `MapWindowController.swift` |
 | `map_canvas.{h,cpp}` | `MapCanvasView.swift` |
 | `main_menu.{h,cpp}` | `MainMenu.swift`, `Toolbar.swift` |
+| `dialogs.{h,cpp}` | `Dialogs.swift` |
+| `data_sources_window.{h,cpp}` | `DataSourcesWindow.swift` |
 
 ## Build and run
 
@@ -36,9 +39,10 @@ installed.
 
 ### On the sample data
 
-Map ▸ Build Map Catalog needs a directory dialog, which this app does not have
-yet. The test helper `peregrine-gtk-build-catalog` does the same build from
-the command line. GeoTIFF needs the GEOTRANS datum tables in `MSPCCS_DATA`:
+Map ▸ Map Data Sources… asks for a new catalog file, then lists the folders
+to scan: Add… the `testdata` directory and Generate Coverage. The test helper
+`peregrine-gtk-build-catalog` does the same build from the command line.
+GeoTIFF needs the GEOTRANS datum tables in `MSPCCS_DATA`:
 
 ```sh
 export MSPCCS_DATA=$PWD/fvw_core/PdfLib/sdk/lib
@@ -55,6 +59,7 @@ directory as an absolute path: the catalog stores it as given.
 | Test | What it proves |
 |---|---|
 | `peregrine_gtk_test` (gtest) | every command in DeskKit's menu bar has one menu item and one action; shortcuts map to GTK accelerators; actions follow the commands' enabled and checked state; the menus rebuild when a catalog with data opens; the frame placement is a transform every GSK renderer draws |
+| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws |
 | `peregrine_gtk.shot_empty_catalog` | `--shot` writes a PNG and the status line reports the empty catalog |
 | `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, and the PNG holds the picture |
 
@@ -91,8 +96,34 @@ The toolbar sits in the header bar: one icon button per toolbar command
 as text when the icon theme has no matching symbolic icon.
 
 Shortcuts are DeskKit's, with Primary as Ctrl (`<Primary>` in GTK accelerator
-syntax). Unlike the macOS app there is no Edit, Window or Help menu, and Quit
-stays in the File menu, as in GNOME applications with a menu bar.
+syntax). Unlike the macOS app there is no Edit or Window menu, and Quit stays
+in the File menu, as in GNOME applications with a menu bar. Help ▸ Show Log,
+which the macOS shell also adds itself, opens the application log in the
+default viewer.
+
+## Dialogs
+
+The host asks its questions (save changes, choose files, a folder or a list
+row, revert) from inside the call that raised them, through
+`SetRequestHandler`, and expects the answer before that call returns. GTK's
+dialogs are asynchronous, so the handler shows a modal dialog and runs a
+nested main loop until it is answered. Meanwhile the map widget makes no host
+calls (`MapCanvas::SetHeld`) and keeps painting the last frame.
+
+- Files and folders use `Gtk::FileDialog` (the portal where there is one),
+  with the request's filters. It does not report the filter chosen for a
+  save, so the answer is always the first, as on macOS.
+- Save, revert and list questions use `ChoiceDialog`, a modal window with the
+  macOS app's wording. Escape and the close button are Cancel.
+- A catalog build shows `JobDialog`, a modal progress dialog with Cancel,
+  while `JobActive()`.
+- Map ▸ Map Data Sources… opens `DataSourcesWindow`: the folders Generate
+  Coverage scans, with Add…, Remove and Generate Coverage. It closes when the
+  build starts and the progress dialog takes over.
+
+The application log starts after the settings load, in
+`$XDG_STATE_HOME/peregrine` (`~/.local/state/peregrine` by default, from
+`fv::DefaultLogDirectory`).
 
 ## Input
 

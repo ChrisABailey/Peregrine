@@ -17,6 +17,8 @@ endif()
 
 add_executable(peregrine-gtk
   application.cpp
+  data_sources_window.cpp
+  dialogs.cpp
   main.cpp
   main_menu.cpp
   map_canvas.cpp
@@ -44,6 +46,20 @@ if(FVW_BUILD_TESTS)
 
   find_program(XVFB_RUN xvfb-run)
   if(XVFB_RUN)
+    # The dialog tests show windows, so the whole binary runs under its own Xvfb.
+    add_executable(peregrine_gtk_dialogs_test test/dialogs_test.cpp
+      data_sources_window.cpp dialogs.cpp main_menu.cpp map_canvas.cpp map_window.cpp)
+    target_include_directories(peregrine_gtk_dialogs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(peregrine_gtk_dialogs_test PRIVATE
+      fv_deskkit PkgConfig::GTKMM4 GTest::gtest_main)
+    target_link_options(peregrine_gtk_dialogs_test PRIVATE "LINKER:--exclude-libs,ALL")
+    add_test(NAME peregrine_gtk.dialogs
+      COMMAND ${XVFB_RUN} -a $<TARGET_FILE:peregrine_gtk_dialogs_test>)
+    set_property(TEST peregrine_gtk.dialogs APPEND PROPERTY
+      ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
+    set_property(TEST peregrine_gtk.dialogs APPEND PROPERTY
+      ENVIRONMENT "MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib")
+
     add_test(NAME peregrine_gtk.shot_empty_catalog
       COMMAND ${CMAKE_COMMAND}
         -DAPP=$<TARGET_FILE:peregrine-gtk>

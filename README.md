@@ -34,7 +34,7 @@ ctest --test-dir build  # run tests
 `ctest` reports a skipped test as passing; the `(Skipped)` lines in its output
 show which tests skipped and why. With the sample data in `testdata/` (see
 *Test data*) the suite is **2396 tests on macOS, 179 of them skipped**, and
-**2402 on Linux, 182 skipped**: the skips need map data too large to ship
+**2441 on Linux, 185 skipped**: the skips need map data too large to ship
 (CADRG, DNC/GeoSym, the full OSM pyramid).
 
 ### macOS
@@ -256,8 +256,8 @@ out the same way.
 
 - **The Linux desktop app is behind the macOS one.** The whole suite runs
   green on Ubuntu 24.04, and `peregrine-gtk` has the map window, menus,
-  toolbar and shortcuts, but no file dialogs or options windows yet: a
-  command that asks for a file or a choice does nothing on Linux.
+  toolbar, shortcuts, file and question dialogs, and Map Data Sources, but no
+  options windows yet: Map ▸ Options and Overlay ▸ Options do nothing on Linux.
 - Rendering is CPU-only; there is no GPU. The desktop demo uses Tk; Pippin
   composites the CPU canvas into a SwiftUI view.
 - Pippin ships without its data pack, so a clone cannot run the app until it
