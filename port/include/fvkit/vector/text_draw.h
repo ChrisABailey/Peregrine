@@ -77,11 +77,16 @@ constexpr double kCapHeightEm = 0.72;
 // straddle the line.
 double AlongPathAnchorShift(const LabelStyle& lb, double drawn_size_px);
 
-// Per-glyph advances, measured through the canvas because the canvas owns the
-// font. Taken as DIFFERENCES OF PREFIX WIDTHS rather than per-character
-// widths: GetTextExtent returns whole pixels, so summing rounded characters
-// would drift by up to half a pixel per glyph, while prefix differences put
-// every glyph within a pixel of where the upright renderer would have put it.
+// Splits UTF-8 text into one string per code point, the unit a placed glyph
+// indexes. A malformed byte becomes a glyph of its own.
+std::vector<std::string> SplitGlyphs(const std::string& utf8);
+
+// Per-glyph advances, one per code point of SplitGlyphs, measured through the
+// canvas because the canvas owns the font. Taken as DIFFERENCES OF PREFIX
+// WIDTHS rather than per-character widths: GetTextExtent returns whole pixels,
+// so summing rounded characters would drift by up to half a pixel per glyph,
+// while prefix differences put every glyph within a pixel of where the upright
+// renderer would have put it.
 bool GlyphAdvances(ICanvas* canvas, const std::string& text,
                    const TextStyle& ts, std::vector<double>* out);
 

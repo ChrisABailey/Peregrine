@@ -301,6 +301,16 @@ bool ArcUsable(const RoadArc& arc, const RouteOptions& options);
 /// own cost, public so a view of the graph can show what the router sees.
 double ArcCost(const RoadArc& arc, const RouteOptions& options);
 
+/// What the junctions at either end of `arc` cost on top of ArcCost: the
+/// profile's signal seconds at its target, and half its unsignalled-crossing
+/// seconds at each end that meets a busier road. A preference only; reported
+/// times omit it.
+double NodeDelayCost(const RoadArc& arc, const RouteOptions& options);
+/// The target's share of NodeDelayCost.
+double ArrivalDelayCost(const RoadArc& arc, const RouteOptions& options);
+/// The source's share of NodeDelayCost.
+double DepartureDelayCost(const RoadArc& arc, const RouteOptions& options);
+
 /// The cost multiplier `options` gives a beach arc, or kAvoidExcluded when the
 /// beach is barred. Only meaningful for an arc whose is_beach() is true.
 double BeachFactor(const RoadArc& arc, const RouteOptions& options);

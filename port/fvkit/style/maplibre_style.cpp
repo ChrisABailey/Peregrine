@@ -141,6 +141,7 @@ struct StyleLayer {
   bool along_path = false;
   double spacing = 250.0;    // GL default, in px at the style's own sizes
   double max_angle = 45.0;   // GL default
+  bool keep_upright = true;  // text-keep-upright, GL default
   double offset_em = 0.0;    // text-offset is in EMs; +y in GL is DOWN
   // Point placement: text-offset as GL states it (ems, +y down) and
   // text-anchor, whose GL default is "center".
@@ -999,6 +1000,11 @@ Status MapLibreStyleEngine::LoadText(const std::string& json_text,
             return fail(Reject(id, "text-max-angle is not a constant"));
           L.max_angle = layout["text-max-angle"].get<double>();
         }
+        if (layout.contains("text-keep-upright")) {
+          if (!layout["text-keep-upright"].is_boolean())
+            return fail(Reject(id, "text-keep-upright is not a constant"));
+          L.keep_upright = layout["text-keep-upright"].get<bool>();
+        }
         if (layout.contains("text-offset")) {
           const Json& o = layout["text-offset"];
           if (!o.is_array() || o.size() != 2 || !o[0].is_number() ||
@@ -1397,6 +1403,7 @@ Status MapLibreStyleEngine::StyleFeature(const VectorFeature& f,
           lb.placement = LabelPlacement::kAlongPath;
           lb.spacing_px = L.spacing * dpi_scale;
           lb.max_angle_deg = L.max_angle;
+          lb.keep_upright = L.keep_upright;
           lb.offset_px = L.offset_em * lb.style.size;
           // GL centres a line label ON its line and measures `text-offset`
           // from there; the placer's own anchor is the baseline, which put

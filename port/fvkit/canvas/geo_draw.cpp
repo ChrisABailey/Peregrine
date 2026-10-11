@@ -637,6 +637,7 @@ Status GeoDraw::DrawLabelAlongPath(
   if (ts.size < kMinLabelPx) return Status::Ok();
 
   std::vector<double> adv;
+  const std::vector<std::string> glyphs = SplitGlyphs(text);
   if (!GlyphAdvances(canvas_, text, ts, &adv))
     return Status::Error(kUnsupported, "canvas cannot measure text");
 
@@ -669,7 +670,7 @@ Status GeoDraw::DrawLabelAlongPath(
         hi.color = highlight_color_;
         for (const PlacedGlyph& g : run.glyphs) {
           if (!on_canvas(g)) continue;
-          const std::string gs = text.substr(g.index, 1);
+          const std::string& gs = glyphs[g.index];
           for (int i = 0; i < n; ++i)
             canvas_->DrawRotatedTextString(gs, g.x + sx[i], g.y + sy[i],
                                            g.angle_rad, hi);
@@ -681,7 +682,7 @@ Status GeoDraw::DrawLabelAlongPath(
       if (halo_n > 0) {
         for (const PlacedGlyph& g : run.glyphs) {
           if (!on_canvas(g)) continue;
-          const std::string gs = text.substr(g.index, 1);
+          const std::string& gs = glyphs[g.index];
           for (int i = 0; i < halo_n; ++i)
             canvas_->DrawRotatedTextString(gs, g.x + hdx[i], g.y + hdy[i],
                                            g.angle_rad, hs);
@@ -690,7 +691,7 @@ Status GeoDraw::DrawLabelAlongPath(
       }
       for (const PlacedGlyph& g : run.glyphs) {
         if (!on_canvas(g)) continue;
-        canvas_->DrawRotatedTextString(text.substr(g.index, 1), g.x, g.y,
+        canvas_->DrawRotatedTextString(glyphs[g.index], g.x, g.y,
                                        g.angle_rad, ts);
         drew = true;
         if (pick_enabled_) ink.Add(g.x, g.y);

@@ -116,7 +116,9 @@ bool KnownProfileKey(const std::string& k) {
          k == "toll_penalty" || k == "ferry_penalty" || k == "beach_penalty" ||
          k == "golf_cartpath_penalty" || k == "golf_path_penalty" ||
          k == "beach_prefer_factor" || k == "unlisted_classes" || k == "classes" ||
-         k == "class_kph";
+         k == "class_kph" || k == "bike_lane_factor" || k == "speed_factor" ||
+         k == "bike_route_factor" || k == "surface_factor" || k == "signal_seconds" ||
+         k == "crossing_seconds";
 }
 
 Status ParseMode(const Json& v, const std::string& where, TravelMode* out) {
@@ -280,6 +282,90 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
     }
   }
 
+  // Overlays key by key, like "class_kph".
+  if (obj.contains("bike_lane_factor")) {
+    const Json& o = obj["bike_lane_factor"];
+    if (!o.is_object()) return Fail(where, "'bike_lane_factor' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      BikeProvision kind;
+      if (it.key() == "shared_lane") kind = BikeProvision::kSharedLane;
+      else if (it.key() == "lane") kind = BikeProvision::kLane;
+      else if (it.key() == "track") kind = BikeProvision::kTrack;
+      else return Fail(where, "'bike_lane_factor." + it.key() + "' is not shared_lane, lane or track");
+      if (!it.value().is_number() || !(it.value().get<double>() > 0.0))
+        return Fail(where, "'bike_lane_factor." + it.key() + "' must be greater than zero");
+      p.bike_lane_factor[static_cast<size_t>(kind)] = it.value().get<double>();
+    }
+  }
+
+  if (obj.contains("bike_route_factor")) {
+    const Json& o = obj["bike_route_factor"];
+    if (!o.is_object()) return Fail(where, "'bike_route_factor' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      BikeRoute network;
+      if (it.key() == "local") network = BikeRoute::kLocal;
+      else if (it.key() == "regional") network = BikeRoute::kRegional;
+      else if (it.key() == "national") network = BikeRoute::kNational;
+      else return Fail(where, "'bike_route_factor." + it.key() + "' is not local, regional or national");
+      if (!it.value().is_number() || !(it.value().get<double>() > 0.0))
+        return Fail(where, "'bike_route_factor." + it.key() + "' must be greater than zero");
+      p.bike_route_factor[static_cast<size_t>(network)] = it.value().get<double>();
+    }
+  }
+
+  if (obj.contains("surface_factor")) {
+    const Json& o = obj["surface_factor"];
+    if (!o.is_object()) return Fail(where, "'surface_factor' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      RoadSurface surface;
+      if (it.key() == "paved") surface = RoadSurface::kPaved;
+      else if (it.key() == "compacted") surface = RoadSurface::kCompacted;
+      else if (it.key() == "rough") surface = RoadSurface::kRough;
+      else return Fail(where, "'surface_factor." + it.key() + "' is not paved, compacted or rough");
+      if (!it.value().is_number() || !(it.value().get<double>() > 0.0))
+        return Fail(where, "'surface_factor." + it.key() + "' must be greater than zero");
+      p.surface_factor[static_cast<size_t>(surface)] = it.value().get<double>();
+    }
+  }
+
+  if (obj.contains("signal_seconds")) {
+    const Json& v = obj["signal_seconds"];
+    if (!v.is_number() || !(v.get<double>() >= 0.0))
+      return Fail(where, "'signal_seconds' must be a number of seconds, zero or more");
+    p.signal_seconds = v.get<double>();
+  }
+
+  if (obj.contains("crossing_seconds")) {
+    const Json& o = obj["crossing_seconds"];
+    if (!o.is_object()) return Fail(where, "'crossing_seconds' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      RoadCrossing level;
+      if (it.key() == "secondary") level = RoadCrossing::kSecondary;
+      else if (it.key() == "primary") level = RoadCrossing::kPrimary;
+      else if (it.key() == "trunk") level = RoadCrossing::kTrunk;
+      else return Fail(where, "'crossing_seconds." + it.key() + "' is not secondary, primary or trunk");
+      if (!it.value().is_number() || !(it.value().get<double>() >= 0.0))
+        return Fail(where, "'crossing_seconds." + it.key() + "' must be zero or more seconds");
+      p.crossing_seconds[static_cast<size_t>(level)] = it.value().get<double>();
+    }
+  }
+
+  // Replaces the base's bands whole: bands only make sense as a set.
+  if (obj.contains("speed_factor")) {
+    const Json& a = obj["speed_factor"];
+    if (!a.is_array()) return Fail(where, "'speed_factor' must be an array of [max_kph, factor]");
+    p.speed_factor.clear();
+    for (const Json& band : a) {
+      if (!band.is_array() || band.size() != 2 || !band[0].is_number() || !band[1].is_number())
+        return Fail(where, "each 'speed_factor' band must be [max_kph, factor]");
+      const double max_kph = band[0].get<double>(), factor = band[1].get<double>();
+      if (!(factor > 0.0)) return Fail(where, "a 'speed_factor' factor must be greater than zero");
+      if (!p.speed_factor.empty() && !(max_kph > p.speed_factor.back().first))
+        return Fail(where, "'speed_factor' bands must ascend by max_kph");
+      p.speed_factor.emplace_back(max_kph, factor);
+    }
+  }
+
   // `unlisted_classes` sets every class the object does not name, so it has to
   // be applied BEFORE "classes" — and, on a profile that extends another, it
   // wipes the base's per-class weights, which is what "everything unlisted"
@@ -321,6 +407,14 @@ double RouteProfile::Seconds(double length_m, int posted_kph, RoadClass klass) c
     kph = class_kph[static_cast<size_t>(klass)];
   if (!(kph > 0.0)) kph = 1.0;
   return length_m / (kph * (1000.0 / 3600.0));
+}
+
+double RouteProfile::SpeedFactor(int kph) const {
+  if (speed_factor.empty()) return 1.0;
+  for (const auto& band : speed_factor) {
+    if (kph <= band.first) return band.second;
+  }
+  return speed_factor.back().second;
 }
 
 // ---------------------------------------------------------------------------

@@ -509,6 +509,17 @@ std::vector<double> Word(size_t n = 6, double adv = 10.0) {
   return std::vector<double>(n, adv);
 }
 
+TEST(TextPlacer, GlyphsAreCodePointsNotBytes) {
+  // A line label is drawn glyph by glyph; a byte-wise split would draw a
+  // multi-byte character as several missing-glyph boxes.
+  const auto g = fv::SplitGlyphs("Pe\xC3\xB1" "a \xE2\x86\x92");  // "Peña →"
+  ASSERT_EQ(g.size(), 6u);
+  EXPECT_EQ(g[2], "\xC3\xB1");
+  EXPECT_EQ(g[5], "\xE2\x86\x92");
+  // A stray continuation byte or a truncated sequence stays one glyph each.
+  EXPECT_EQ(fv::SplitGlyphs("a\x80\xE2\x86").size(), 4u);
+}
+
 TEST(TextPlacer, AWordOnAStraightLineIsCentredAndUnrotated) {
   std::vector<SurfacePoint> path{{0, 50}, {100, 50}};
   const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0);
@@ -566,6 +577,16 @@ TEST(TextPlacer, AWestwardRoadReadsLeftToRightAnyway) {
   const auto& g = runs[0].glyphs;
   for (const auto& p : g) EXPECT_NEAR(p.angle_rad, 0.0, 1e-12);
   EXPECT_LT(g.front().x, g.back().x) << "reading order must run rightward";
+}
+
+TEST(TextPlacer, WithoutKeepUprightAWestwardRunFollowsTheDigitising) {
+  // An arrow must point the way the line runs, upside down or not.
+  std::vector<SurfacePoint> path{{100, 50}, {0, 50}};
+  const auto runs = PlaceTextAlongPath(path, Word(), 0.0, 45.0, 0.0, false);
+  ASSERT_EQ(runs.size(), 1u);
+  const auto& g = runs[0].glyphs;
+  for (const auto& p : g) EXPECT_NEAR(std::fabs(p.angle_rad), M_PI, 1e-9);
+  EXPECT_GT(g.front().x, g.back().x) << "the run must follow the digitising";
 }
 
 TEST(TextPlacer, ANorthSouthRoadReadsUpward) {

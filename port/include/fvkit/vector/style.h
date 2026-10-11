@@ -183,6 +183,10 @@ struct LabelStyle {
   // Rejects a run whose direction turns by more than this between any two
   // consecutive glyphs. MapLibre's text-max-angle, same meaning and default.
   double max_angle_deg = 45.0;
+  // When false, a run follows the digitised direction even if that puts it
+  // upside down — for arrows that must point the way the line runs.
+  // MapLibre's text-keep-upright, same meaning and default.
+  bool keep_upright = true;
   // Perpendicular displacement in pixels, positive to the LEFT of the
   // direction of travel — the same sense as PathRun::offset. Lifts a name off
   // the centreline it would otherwise sit on.

@@ -33,6 +33,7 @@ target_compile_features(fv_routing PUBLIC cxx_std_17)
 # when it changes — this only tells fvgraph and the test where to look for it,
 # it does not compile it in.
 set(FV_ROUTE_RULES_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rules/route-weights.json")
+set(FV_CITY_ROUTE_RULES_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rules/route-weights-city.json")
 
 # fvgraph — offline graph builder + route query CLI, the fvpack pattern.
 # A host tool like fvrender and fvpack: it BUILDS the .fvroad a phone reads.
@@ -61,7 +62,8 @@ if(FVW_BUILD_TESTS)
   target_link_libraries(fv_routing_test PRIVATE fv_routing fv_zlib fv_fvkit
                         GTest::gtest_main)
   target_compile_definitions(fv_routing_test PRIVATE
-    FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}")
+    FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}"
+    FV_CITY_ROUTE_RULES_FILE="${FV_CITY_ROUTE_RULES_FILE}")
   gtest_discover_tests(fv_routing_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

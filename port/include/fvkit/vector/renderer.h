@@ -326,12 +326,14 @@ struct PlacedTextRun {
 //   max_angle_deg the largest turn tolerated between two consecutive glyphs.
 //                 A run that turns harder is dropped, not straightened.
 //   offset_px     perpendicular shift, positive to the LEFT of travel.
+//   keep_upright  false walks the path as digitised, never reversed.
 //
 // Returns nothing when the text is longer than the path: a name that does not
 // fit is not drawn. Every emitted run is complete.
 std::vector<PlacedTextRun> PlaceTextAlongPath(
     const std::vector<SurfacePoint>& path, const std::vector<double>& advances,
-    double spacing_px, double max_angle_deg, double offset_px);
+    double spacing_px, double max_angle_deg, double offset_px,
+    bool keep_upright = true);
 
 // Sizing bounds for a label whose size is a GROUND size (LabelSizeUnit::
 // kMeters, or a renderer label reference scale). Ground sizing has no natural

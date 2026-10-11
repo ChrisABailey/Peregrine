@@ -47,6 +47,32 @@
 // "golf_cartpath_penalty" and "golf_path_penalty" price them in the same grammar
 // as the avoidances, on top of the class weight. A bicycle profile does not
 // apply "golf_path_penalty" to a way tagged `bicycle=designated`.
+//
+// "bike_lane_factor" multiplies the class weight by the on-road bike provision
+// in the arc's direction: { "shared_lane": x, "lane": x, "track": x }, each
+// 1.0 when unnamed. "speed_factor" is a list of [max_kph, factor] bands in
+// ascending order; an arc whose speed was posted (`maxspeed`) takes the first
+// band it does not exceed, else the last. It is not applied on a track or to
+// an arc whose speed is the class default. Both need a v3 graph; an older one
+// reads every arc as no provision and no posted speed.
+//
+// "bike_route_factor" multiplies it again for an arc on a signed bike route
+// (`route=bicycle` relation) in its direction, by the relation's network:
+// { "local": x, "regional": x, "national": x }, each 1.0 when unnamed. A graph
+// built before signed routes were read has none.
+//
+// "surface_factor" multiplies it again by the way's `surface`:
+// { "paved": x, "compacted": x, "rough": x }, each 1.0 when unnamed; an
+// untagged surface is 1.0. Compacted includes fine gravel, sett and
+// cobblestone; rough is gravel, dirt, ground, grass, sand and other unpaved.
+//
+// "signal_seconds" is added to the cost of every arc that ends at a junction
+// with a traffic signal. "crossing_seconds" { "secondary": s, "primary": s,
+// "trunk": s } is the cost of crossing a busier road of that class where there
+// is no signal: half on arriving at it and half on leaving it, so turning onto
+// or off the busier road pays half and riding along it pays nothing. Both are
+// seconds of cost (on a distance profile, the metres covered in that time at
+// "speed"); reported times omit them. A graph built before signals were read has none.
 
 {
   "version": 1,

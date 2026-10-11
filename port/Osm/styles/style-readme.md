@@ -29,8 +29,9 @@ peregrine tilemaker profile writes, and degrades to tag heuristics on tiles with
 riding comfort — trail, signed route, quiet, moderate, busy, avoid, no bicycles — from `class`
 and `bicycle`, the only riding signals the tiles carry. Interstates are drawn as indigo
 landmarks from z5, and state lines, state names and ranked city names fill the low zooms.
-Sidewalks, parking lots and lodging wait for close zooms. The `bike-lane` layer reads a
-`cycleway` attribute the profile does not yet write, and stays empty until it does.
+Sidewalks, parking lots and lodging wait for close zooms. On-road provision comes from the
+profile's `cycleway` attribute (`track`, `lane`, `share_busway`, `shared_lane`), and drinking
+water, repair stands and air pumps from its `poi` layer.
 `atlanta-streets-dark.json` is generated from it by `port/tools/make_atlanta_dark_style.py`.
 
 ## The one rule that shapes everything else
@@ -102,8 +103,8 @@ prevent.
 
 Icon half: `icon-image`, `icon-size`, `icon-rotate`.
 Text half: `text-field`, `text-size`, `text-color`, `text-opacity`, `text-halo-color`,
-`text-halo-width`, `symbol-placement`, `symbol-spacing`, `text-max-angle`, `text-offset`,
-`text-anchor`.
+`text-halo-width`, `symbol-placement`, `symbol-spacing`, `text-max-angle`, `text-keep-upright`,
+`text-offset`, `text-anchor`.
 
 The two halves are **independent**. A layer may carry an icon and no text (a shield), text and
 no icon (a place name), or both (a POI). The application's label switch turns off the text and
@@ -112,6 +113,9 @@ leaves the icon drawing.
 `symbol-placement` accepts `point`, `line` and `line-center`. `line-center` is `line` with the
 spacing forced to zero, which is what "one run per feature" means to the placer. A `line`
 placement on a point feature is harmless — it falls back to point placement.
+
+`text-keep-upright` (default `true`) turns a run that would read upside down end for end;
+`false` walks the line as digitised, which is what a one-way arrow (`"text-field": "→"`) needs.
 
 `text-offset` is `[x, y]` in ems, and **only the perpendicular component `y` survives** a line
 placement: the placer offsets *across* the path, and an along-axis offset has no meaning once

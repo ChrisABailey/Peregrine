@@ -41,8 +41,13 @@ const char kMagic[8] = {'F', 'V', 'R', 'O', 'A', 'D', '0', '1'};
 // 1 = O4 (no turn restrictions). 2 = O5, which appends a restriction count to
 // the header and a restriction table to the body. A version-1 file still
 // loads and simply has no restrictions — it is a build artifact, but so is
-// the hour it takes to rebuild one from a continent.
-constexpr uint32_t kFormatVersion = 2;
+// the hour it takes to rebuild one from a continent. 3 appends a 32-bit
+// attribute word to each arc: bike provision (bits 0-2), lanes (bits 3-6),
+// signed bike route network (bits 7-8), surface (bits 9-10), signal at the
+// target (bit 11), unsignalled crossing at the target (bits 12-13) and at the
+// source (bits 14-15), the rest reserved. Older files read it as zero, and so
+// do the bits a v3 file written before they existed.
+constexpr uint32_t kFormatVersion = 3;
 
 struct ClassInfo {
   const char* tag;
@@ -158,6 +163,84 @@ int ParseMaxSpeedKph(const std::string& v) {
   return value > 255 ? 255 : value;
 }
 
+/// One `cycleway*` value as a provision. `separate`, `no`, `crossing` and the
+/// `opposite_*` contraflow values are kNone.
+BikeProvision ProvisionFromValue(const std::string* v) {
+  if (v == nullptr) return BikeProvision::kNone;
+  if (*v == "track") return BikeProvision::kTrack;
+  if (*v == "lane" || *v == "buffered_lane" || *v == "share_busway") return BikeProvision::kLane;
+  if (*v == "shared_lane") return BikeProvision::kSharedLane;
+  return BikeProvision::kNone;
+}
+
+/// The provision on one side of a way: `cycleway:<side>`, else
+/// `cycleway:both`, else plain `cycleway`.
+BikeProvision SideProvision(const OsmWay& w, const char* side) {
+  for (const std::string key : {std::string("cycleway:") + side, std::string("cycleway:both"),
+                                std::string("cycleway")}) {
+    if (const std::string* v = w.Find(key)) return ProvisionFromValue(v);
+  }
+  return BikeProvision::kNone;
+}
+
+/// A `surface` value by how it rides; kUnknown when absent or unrecognised.
+RoadSurface SurfaceFromValue(const std::string* v) {
+  if (v == nullptr) return RoadSurface::kUnknown;
+  static const std::unordered_map<std::string, RoadSurface> kSurfaces = {
+      {"paved", RoadSurface::kPaved},           {"asphalt", RoadSurface::kPaved},
+      {"concrete", RoadSurface::kPaved},        {"concrete:plates", RoadSurface::kPaved},
+      {"concrete:lanes", RoadSurface::kPaved},  {"paving_stones", RoadSurface::kPaved},
+      {"bricks", RoadSurface::kPaved},          {"brick", RoadSurface::kPaved},
+      {"wood", RoadSurface::kPaved},            {"metal", RoadSurface::kPaved},
+      {"chipseal", RoadSurface::kPaved},        {"compacted", RoadSurface::kCompacted},
+      {"fine_gravel", RoadSurface::kCompacted}, {"sett", RoadSurface::kCompacted},
+      {"cobblestone", RoadSurface::kCompacted}, {"unhewn_cobblestone", RoadSurface::kCompacted},
+      {"unpaved", RoadSurface::kRough},         {"gravel", RoadSurface::kRough},
+      {"pebblestone", RoadSurface::kRough},     {"dirt", RoadSurface::kRough},
+      {"earth", RoadSurface::kRough},           {"ground", RoadSurface::kRough},
+      {"grass", RoadSurface::kRough},           {"grass_paver", RoadSurface::kRough},
+      {"sand", RoadSurface::kRough},            {"mud", RoadSurface::kRough},
+      {"rock", RoadSurface::kRough},            {"woodchips", RoadSurface::kRough},
+  };
+  auto it = kSurfaces.find(*v);
+  return it == kSurfaces.end() ? RoadSurface::kUnknown : it->second;
+}
+
+/// Whether a node's tags mark a traffic signal: `highway=traffic_signals`, or a
+/// crossing with `crossing=traffic_signals` or `crossing:signals=yes`.
+bool IsTrafficSignal(const std::vector<OsmTag>& tags) {
+  for (const OsmTag& t : tags) {
+    if (t.key == "highway" && t.value == "traffic_signals") return true;
+    if (t.key == "crossing" && t.value == "traffic_signals") return true;
+    if (t.key == "crossing:signals" && t.value == "yes") return true;
+  }
+  return false;
+}
+
+/// How busy a road is as something to cross: trunk 3, primary 2, secondary 1,
+/// anything else 0. Links count as the road they serve when they are the arc
+/// being ridden, and as nothing when they are the road met (a slip lane).
+uint8_t CrossingLevel(RoadClass k, bool links) {
+  switch (k) {
+    case RoadClass::kTrunk: return 3;
+    case RoadClass::kPrimary: return 2;
+    case RoadClass::kSecondary: return 1;
+    case RoadClass::kTrunkLink: return links ? 3 : 0;
+    case RoadClass::kPrimaryLink: return links ? 2 : 0;
+    case RoadClass::kSecondaryLink: return links ? 1 : 0;
+    case RoadClass::kMotorway:
+    case RoadClass::kMotorwayLink: return links ? 3 : 0;
+    default: return 0;
+  }
+}
+
+/// `lanes`, capped at 15; 0 when absent or unreadable.
+uint8_t ParseLanes(const std::string* v) {
+  if (v == nullptr) return 0;
+  const int n = std::atoi(v->c_str());
+  return static_cast<uint8_t>(n < 0 ? 0 : (n > 15 ? 15 : n));
+}
+
 // OSM's `duration`, seconds, or 0 when there is nothing usable. The tag is
 // written `hh:mm:ss` and shortened to `hh:mm` or a bare count of MINUTES —
 // so "20" is twenty minutes and "0:20" is the same thing, which is the one
@@ -199,6 +282,12 @@ struct KeptWay {
   EdgeDir dir = EdgeDir::kBoth;
   uint16_t access_flags = 0;
   int duration_s = 0;  // ferries only; 0 = use the class default speed
+  BikeProvision bike_fwd = BikeProvision::kNone;  // in the way's direction
+  BikeProvision bike_bwd = BikeProvision::kNone;  // against it
+  uint8_t lanes = 0;
+  BikeRoute route_fwd = BikeRoute::kNone;  // in the way's direction
+  BikeRoute route_bwd = BikeRoute::kNone;  // against it
+  RoadSurface surface = RoadSurface::kUnknown;
 };
 
 struct BuiltEdge {
@@ -213,6 +302,12 @@ struct BuiltEdge {
   uint8_t speed_kph = 0;
   EdgeDir dir = EdgeDir::kBoth;
   uint16_t access_flags = 0;  // kArcNoBicycle / kArcNoFoot / kArcNoMotorVehicle
+  BikeProvision bike_fwd = BikeProvision::kNone;
+  BikeProvision bike_bwd = BikeProvision::kNone;
+  uint8_t lanes = 0;
+  BikeRoute route_fwd = BikeRoute::kNone;
+  BikeRoute route_bwd = BikeRoute::kNone;
+  RoadSurface surface = RoadSurface::kUnknown;
 };
 
 /// Beach polygons and coastline ways as pass 1 finds them, before any node is
@@ -266,6 +361,45 @@ Access AccessFor(const OsmWay& w, std::initializer_list<const char*> keys) {
   return Access::kUnset;
 }
 
+/// Access bits a `barrier=*` node imposes on the arcs beside it; 0 when it
+/// stops nobody. The gate family is passable unless its own access tags say
+/// otherwise; bollards and their kin bar motor vehicles by default. Any other
+/// barrier value (kerb, fence, toll_booth, ...) is ignored.
+uint16_t BarrierAccessFlags(const OsmWay& node) {
+  const std::string* barrier = node.Find("barrier");
+  if (barrier == nullptr) return 0;
+  const std::string& b = *barrier;
+  const bool gate = b == "gate" || b == "lift_gate" || b == "swing_gate" || b == "sliding_gate";
+  const bool motor_block = b == "bollard" || b == "block" || b == "chain" || b == "cycle_barrier";
+  if (!gate && !motor_block) return 0;
+  const Access bicycle = AccessFor(node, {"bicycle", "vehicle", "access"});
+  const Access foot = AccessFor(node, {"foot", "access"});
+  Access motor = AccessFor(node, {"motor_vehicle", "vehicle", "access"});
+  if (motor_block && motor == Access::kUnset) motor = Access::kDenied;
+  uint16_t flags = 0;
+  if (bicycle == Access::kDenied) flags |= kArcNoBicycle;
+  if (bicycle == Access::kPrivate) flags |= kArcPrivateBicycle;
+  if (foot == Access::kDenied) flags |= kArcNoFoot;
+  if (foot == Access::kPrivate) flags |= kArcPrivateFoot;
+  if (motor == Access::kDenied) flags |= kArcNoMotorVehicle;
+  if (motor == Access::kPrivate) flags |= kArcPrivateMotorVehicle;
+  return flags;
+}
+
+/// The route network a `route=bicycle` relation's `network` tag names.
+BikeRoute BikeRouteFromNetwork(const std::string* network) {
+  if (network == nullptr) return BikeRoute::kLocal;
+  if (*network == "ncn" || *network == "icn") return BikeRoute::kNational;
+  if (*network == "rcn") return BikeRoute::kRegional;
+  return BikeRoute::kLocal;
+}
+
+/// A way's signed bike routes, with and against its direction.
+struct WayBikeRoutes {
+  BikeRoute fwd = BikeRoute::kNone;
+  BikeRoute bwd = BikeRoute::kNone;
+};
+
 // --- turn restrictions, as they come off the relation ----------------------
 
 // A `type=restriction` relation after its tags are understood but before
@@ -309,18 +443,27 @@ class WayPass : public OsmSink {
           std::unordered_map<std::string, uint32_t>* name_index,
           std::unordered_set<int64_t>* seen_way_ids,
           std::vector<PendingRestriction>* restrictions, BeachWays* beach,
+          std::unordered_map<int64_t, WayBikeRoutes>* bike_routes,
           RoadGraphBuildStats* stats)
       : opts_(opts), ways_(ways), ref_uses_(ref_uses), names_(names),
         name_index_(name_index), seen_way_ids_(seen_way_ids),
-        restrictions_(restrictions), beach_(beach), stats_(stats) {}
+        restrictions_(restrictions), beach_(beach), bike_routes_(bike_routes),
+        stats_(stats) {}
 
   bool WantNodes() const override { return false; }
-  bool WantRelations() const override { return opts_.honor_turn_restrictions || opts_.beaches; }
+  bool WantRelations() const override {
+    return opts_.honor_turn_restrictions || opts_.beaches || opts_.bike_routes;
+  }
   void Node(int64_t, double, double) override {}
 
   void Relation(const OsmRelation& r) override {
     const std::string* type = r.Find("type");
     if (type == nullptr) return;
+    if (opts_.bike_routes && *type == "route") {
+      const std::string* route = r.Find("route");
+      if (route != nullptr && *route == "bicycle") CollectBikeRoute(r);
+      return;
+    }
     if (opts_.beaches && *type == "multipolygon") {
       const std::string* natural = r.Find("natural");
       if (natural != nullptr && *natural == "beach") ++stats_->beach_relations_skipped;
@@ -480,11 +623,30 @@ class WayPass : public OsmSink {
     } else {
       const std::string* maxspeed = w.Find("maxspeed");
       if (maxspeed != nullptr) speed = ParseMaxSpeedKph(*maxspeed);
+      if (speed > 0) kept.access_flags |= kArcSpeedPosted;
     }
     if (speed == 0) speed = DefaultSpeedKph(klass);
     kept.speed_kph = static_cast<uint8_t>(speed);
 
     kept.dir = ResolveDirection(w, klass);
+    kept.lanes = ParseLanes(w.Find("lanes"));
+    kept.surface = SurfaceFromValue(w.Find("surface"));
+    // Right-hand traffic: the right side is ridden with the way, the left
+    // against it. On a one-way street either side is ridden with the traffic,
+    // unless the side is tagged as contraflow.
+    const BikeProvision right = SideProvision(w, "right");
+    const BikeProvision left = SideProvision(w, "left");
+    if (kept.dir == EdgeDir::kBoth) {
+      kept.bike_fwd = right;
+      kept.bike_bwd = left;
+    } else {
+      auto with_traffic = [&](BikeProvision p, const char* side) {
+        const std::string* o = w.Find(std::string("cycleway:") + side + ":oneway");
+        return o != nullptr && *o == "-1" ? BikeProvision::kNone : p;
+      };
+      const BikeProvision best = std::max(with_traffic(right, "right"), with_traffic(left, "left"));
+      (kept.dir == EdgeDir::kForward ? kept.bike_fwd : kept.bike_bwd) = best;
+    }
     kept.name = InternName(w);
 
     for (int64_t ref : w.refs) ref_uses_->push_back(ref);
@@ -513,6 +675,21 @@ class WayPass : public OsmSink {
     // An explicit `oneway=no` beats the motorway/roundabout implication.
     if (IsFalse(*oneway)) return EdgeDir::kBoth;
     return implied ? EdgeDir::kForward : EdgeDir::kBoth;
+  }
+
+  // A `forward` member is signed only in the way's direction, `backward` only
+  // against it. Relation members (super-routes) are skipped: their children
+  // are routes in their own right. A relation seen twice in merged inputs
+  // marks the same ways again, which changes nothing.
+  void CollectBikeRoute(const OsmRelation& r) {
+    ++stats_->bike_route_relations;
+    const BikeRoute network = BikeRouteFromNetwork(r.Find("network"));
+    for (const OsmMember& m : r.members) {
+      if (m.type != OsmMemberType::kWay) continue;
+      WayBikeRoutes& w = (*bike_routes_)[m.ref];
+      if (m.role != "backward") w.fwd = std::max(w.fwd, network);
+      if (m.role != "forward") w.bwd = std::max(w.bwd, network);
+    }
   }
 
   void CollectBeach(const OsmWay& w) {
@@ -551,30 +728,60 @@ class WayPass : public OsmSink {
   std::unordered_set<int64_t>* seen_way_ids_;
   std::vector<PendingRestriction>* restrictions_;
   BeachWays* beach_;
+  std::unordered_map<int64_t, WayBikeRoutes>* bike_routes_;
   RoadGraphBuildStats* stats_;
 };
 
 // Pass 2: nodes only. Resolves coordinates for the IDs pass 1 asked for and
-// nothing else — this is the whole reason the build is two passes.
+// nothing else — this is the whole reason the build is two passes. With
+// `barriers` set it also records the access a barrier node on a road imposes,
+// and with `signals` set which nodes are traffic signals, both indexed like
+// `needed`.
 class NodePass : public OsmSink {
  public:
-  NodePass(const std::vector<int64_t>& needed, std::vector<int32_t>* coords)
-      : needed_(needed), coords_(coords) {}
+  NodePass(const std::vector<int64_t>& needed, std::vector<int32_t>* coords,
+           std::vector<uint16_t>* barriers, std::vector<uint8_t>* signals)
+      : needed_(needed), coords_(coords), barriers_(barriers), signals_(signals) {}
 
   bool WantWays() const override { return false; }
+  bool WantNodeTags() const override { return barriers_ != nullptr || signals_ != nullptr; }
   void Way(const OsmWay&) override {}
 
   void Node(int64_t id, double lat, double lon) override {
-    auto it = std::lower_bound(needed_.begin(), needed_.end(), id);
-    if (it == needed_.end() || *it != id) return;
-    size_t i = static_cast<size_t>(it - needed_.begin());
+    const size_t i = IndexOf(id);
+    if (i == kMissing) return;
     (*coords_)[2 * i] = static_cast<int32_t>(std::lround(lat * 1e7));
     (*coords_)[2 * i + 1] = static_cast<int32_t>(std::lround(lon * 1e7));
   }
 
+  void NodeTags(int64_t id, const std::vector<OsmTag>& tags) override {
+    bool barrier = false;
+    for (const OsmTag& t : tags) barrier = barrier || t.key == "barrier";
+    const bool signal = signals_ != nullptr && IsTrafficSignal(tags);
+    if (!(barrier && barriers_ != nullptr) && !signal) return;
+    const size_t i = IndexOf(id);
+    if (i == kMissing) return;
+    if (signal) (*signals_)[i] = 1;
+    if (barrier && barriers_ != nullptr) {
+      scratch_.tags = tags;
+      (*barriers_)[i] = BarrierAccessFlags(scratch_);
+    }
+  }
+
  private:
+  static constexpr size_t kMissing = static_cast<size_t>(-1);
+
+  size_t IndexOf(int64_t id) const {
+    auto it = std::lower_bound(needed_.begin(), needed_.end(), id);
+    if (it == needed_.end() || *it != id) return kMissing;
+    return static_cast<size_t>(it - needed_.begin());
+  }
+
   const std::vector<int64_t>& needed_;
   std::vector<int32_t>* coords_;
+  std::vector<uint16_t>* barriers_;
+  std::vector<uint8_t>* signals_;
+  OsmWay scratch_;  // AccessFor reads tags through an OsmWay
 };
 
 /// Adds the beach polygons' and coastlines' node ids to `needed` (sorted) so
@@ -1269,6 +1476,12 @@ Status RoadGraph::Save(const std::string& path) const {
                      (static_cast<uint32_t>(a.flags & 0xFF) << 8) |
                      (static_cast<uint32_t>(a.speed_kph) << 16) |
                      (static_cast<uint32_t>((a.flags >> 8) & 0xFF) << 24));
+    PutU32(&buf, static_cast<uint32_t>(a.bike) | (static_cast<uint32_t>(a.lanes & 0x0F) << 3) |
+                     (static_cast<uint32_t>(a.bike_route) << 7) |
+                     (static_cast<uint32_t>(a.surface) << 9) |
+                     (static_cast<uint32_t>(a.signal ? 1 : 0) << 11) |
+                     (static_cast<uint32_t>(a.crossing) << 12) |
+                     (static_cast<uint32_t>(a.crossing_from) << 14));
   }
   for (int32_t v : geometry_) PutI32(&buf, v);
   for (const std::string& s : names_) {
@@ -1322,7 +1535,7 @@ Status RoadGraph::Load(const std::string& path, RoadGraph* out) {
   // reserving gigabytes on their say-so.
   const uint64_t min_bytes = static_cast<uint64_t>(node_count) * 16 +
                              (static_cast<uint64_t>(node_count) + 1) * 4 +
-                             static_cast<uint64_t>(arc_count) * 24 +
+                             static_cast<uint64_t>(arc_count) * (version >= 3 ? 28 : 24) +
                              static_cast<uint64_t>(geom_count) * 8 +
                              static_cast<uint64_t>(name_count) * 4 +
                              static_cast<uint64_t>(restriction_count) * 16;
@@ -1350,6 +1563,16 @@ Status RoadGraph::Load(const std::string& path, RoadGraph* out) {
     a.klass = static_cast<RoadClass>(packed & 0xFF);
     a.flags = static_cast<uint16_t>(((packed >> 8) & 0xFF) | (((packed >> 24) & 0xFF) << 8));
     a.speed_kph = static_cast<uint8_t>((packed >> 16) & 0xFF);
+    if (version >= 3) {
+      const uint32_t attrs = c.U32();
+      a.bike = static_cast<BikeProvision>(std::min<uint32_t>(attrs & 0x07, 3));
+      a.lanes = static_cast<uint8_t>((attrs >> 3) & 0x0F);
+      a.bike_route = static_cast<BikeRoute>((attrs >> 7) & 0x03);
+      a.surface = static_cast<RoadSurface>((attrs >> 9) & 0x03);
+      a.signal = ((attrs >> 11) & 0x01) != 0;
+      a.crossing = static_cast<RoadCrossing>((attrs >> 12) & 0x03);
+      a.crossing_from = static_cast<RoadCrossing>((attrs >> 14) & 0x03);
+    }
   }
   g.geometry_.resize(static_cast<size_t>(geom_count) * 2);
   for (int32_t& v : g.geometry_) v = c.I32();
@@ -1416,15 +1639,26 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
   std::unordered_set<int64_t> seen_way_ids;
   std::vector<PendingRestriction> pending_restrictions;
   BeachWays beach_ways;
+  std::unordered_map<int64_t, WayBikeRoutes> bike_routes;
   {
     WayPass pass(options, &ways, &ref_uses, &names, &name_index,
                  inputs.size() > 1 ? &seen_way_ids : nullptr, &pending_restrictions,
-                 options.beaches ? &beach_ways : nullptr, &st);
+                 options.beaches ? &beach_ways : nullptr, &bike_routes, &st);
     for (const std::string& path : inputs) {
       Status s = ReadOsmFile(path, &pass);
       if (!s.ok()) return s;
     }
   }
+  // Relations follow the ways in the file, so routes are attached afterwards.
+  if (!bike_routes.empty()) {
+    for (KeptWay& w : ways) {
+      auto it = bike_routes.find(w.id);
+      if (it == bike_routes.end()) continue;
+      w.route_fwd = it->second.fwd;
+      w.route_bwd = it->second.bwd;
+    }
+  }
+  std::unordered_map<int64_t, WayBikeRoutes>().swap(bike_routes);
   if (ways.empty()) {
     return Status::Error(kNotFound, "BuildRoadGraph: no routable highway ways in the input");
   }
@@ -1448,8 +1682,13 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
 
   // --- pass 2: nodes ------------------------------------------------------
   std::vector<int32_t> coords(needed.size() * 2, kNoCoord);
+  std::vector<uint16_t> barrier_at;
+  if (options.honor_access) barrier_at.assign(needed.size(), 0);
+  std::vector<uint8_t> signal_at;
+  if (options.traffic_signals) signal_at.assign(needed.size(), 0);
   {
-    NodePass pass(needed, &coords);
+    NodePass pass(needed, &coords, options.honor_access ? &barrier_at : nullptr,
+                  options.traffic_signals ? &signal_at : nullptr);
     for (const std::string& path : inputs) {
       Status s = ReadOsmFile(path, &pass);
       if (!s.ok()) return s;
@@ -1458,12 +1697,42 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
   for (size_t i = 0; i < needed.size(); ++i) {
     if (coords[2 * i] != kNoCoord) ++st.nodes_resolved;
   }
+  // A barrier splits its way so the arcs on either side of it can carry it.
+  // Beach nodes are not road refs; a barrier on a dune fence stays off.
+  for (size_t i = 0; i < barrier_at.size(); ++i) {
+    if (barrier_at[i] == 0) continue;
+    if (!road_ref[i]) {
+      barrier_at[i] = 0;
+      continue;
+    }
+    is_vertex[i] = 1;
+    ++st.barrier_nodes;
+  }
 
   auto index_of = [&needed](int64_t id) -> size_t {
     auto it = std::lower_bound(needed.begin(), needed.end(), id);
     if (it == needed.end() || *it != id) return static_cast<size_t>(-1);
     return static_cast<size_t>(it - needed.begin());
   };
+
+  // A barrier where one way ends and another passes through guards the branch
+  // (a gated driveway off a street), so only the ending ways take it. A
+  // barrier inside a way, or where ways only end, applies to every side.
+  enum : uint8_t { kBarrierEnds = 1, kBarrierPasses = 2 };
+  std::vector<uint8_t> barrier_role;
+  if (st.barrier_nodes > 0) {
+    barrier_role.assign(needed.size(), 0);
+    for (const KeptWay& w : ways) {
+      for (size_t k = 0; k < w.refs.size(); ++k) {
+        const size_t ni = index_of(w.refs[k]);
+        if (ni == static_cast<size_t>(-1) || barrier_at[ni] == 0) continue;
+        barrier_role[ni] |= (k == 0 || k + 1 == w.refs.size()) ? kBarrierEnds : kBarrierPasses;
+      }
+    }
+    for (uint8_t role : barrier_role) {
+      if (role == (kBarrierEnds | kBarrierPasses)) ++st.barrier_branches;
+    }
+  }
 
   // Beach geometry, and the road nodes that lead onto it. Those are promoted
   // to vertices here, before node numbering, so an access arc has a node to
@@ -1523,10 +1792,20 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
     gnodes.push_back(n);
   }
 
+  // A signal on a junction controls it; one on the approach controls the
+  // junction within signal_reach_m of it (marked as edges are cut).
+  std::vector<uint8_t> node_signal(gnodes.size(), 0);
+  for (size_t i = 0; i < signal_at.size(); ++i) {
+    if (!signal_at[i] || !road_ref[i]) continue;
+    ++st.signal_nodes;
+    if (node_of[i] != kNoIndex) node_signal[node_of[i]] = 1;
+  }
+
   // --- cut each way into edges at its vertices ----------------------------
   std::vector<int32_t>& geom = g.mutable_geometry();
   std::vector<BuiltEdge> edges;
   std::vector<int32_t> pending;  // interior geometry of the edge in progress
+  std::vector<size_t> pending_signals;  // interior points of it that are signals
 
   for (const KeptWay& w : ways) {
     size_t start = static_cast<size_t>(-1);
@@ -1539,6 +1818,17 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
     // is the safe direction to be wrong in.
     const size_t way_edge_begin = edges.size();
     double way_length_m = 0.0;
+    size_t first_ni = static_cast<size_t>(-1), last_ni = static_cast<size_t>(-1);
+    if (!barrier_role.empty()) {
+      first_ni = index_of(w.refs.front());
+      last_ni = index_of(w.refs.back());
+    }
+    auto barrier_for = [&](size_t ni) -> uint16_t {
+      if (barrier_role.empty() || barrier_at[ni] == 0) return 0;
+      const bool branch = barrier_role[ni] == (kBarrierEnds | kBarrierPasses);
+      if (branch && ni != first_ni && ni != last_ni) return 0;
+      return barrier_at[ni];
+    };
     for (int64_t ref : w.refs) {
       const size_t ni = index_of(ref);
       const bool resolved = ni != static_cast<size_t>(-1) && coords[2 * ni] != kNoCoord;
@@ -1548,6 +1838,7 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
         if (start != static_cast<size_t>(-1)) ++st.edges_dropped_unresolved;
         start = static_cast<size_t>(-1);
         pending.clear();
+        pending_signals.clear();
         continue;
       }
       if (start == static_cast<size_t>(-1)) {
@@ -1555,6 +1846,7 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
         continue;
       }
       if (node_of[ni] == kNoIndex) {  // interior shape point
+        if (!signal_at.empty() && signal_at[ni]) pending_signals.push_back(pending.size() / 2);
         pending.push_back(coords[2 * ni]);
         pending.push_back(coords[2 * ni + 1]);
         continue;
@@ -1572,17 +1864,36 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
         e.speed_kph = w.speed_kph;
         e.dir = w.dir;
         e.access_flags = w.access_flags;
+        e.bike_fwd = w.bike_fwd;
+        e.bike_bwd = w.bike_bwd;
+        e.lanes = w.lanes;
+        e.route_fwd = w.route_fwd;
+        e.route_bwd = w.route_bwd;
+        e.surface = w.surface;
+        const uint16_t barred = barrier_for(start) | barrier_for(ni);
+        if (barred != 0) ++st.edges_at_barrier;
+        e.access_flags |= barred;
 
         double len = 0.0;
         double plat = coords[2 * start] * 1e-7, plon = coords[2 * start + 1] * 1e-7;
+        std::vector<double> signal_m;  // distance from u of each interior signal
+        size_t next_signal = 0;
         for (size_t k = 0; k < pending.size(); k += 2) {
           const double qlat = pending[k] * 1e-7, qlon = pending[k + 1] * 1e-7;
           len += GreatCircleMeters(plat, plon, qlat, qlon);
           plat = qlat;
           plon = qlon;
+          if (next_signal < pending_signals.size() && pending_signals[next_signal] == k / 2) {
+            signal_m.push_back(len);
+            ++next_signal;
+          }
         }
         len += GreatCircleMeters(plat, plon, coords[2 * ni] * 1e-7, coords[2 * ni + 1] * 1e-7);
         e.length_m = static_cast<float>(len);
+        for (double d : signal_m) {
+          if (d <= options.signal_reach_m) node_signal[e.u] = 1;
+          if (len - d <= options.signal_reach_m) node_signal[e.v] = 1;
+        }
         way_length_m += len;
 
         geom.insert(geom.end(), pending.begin(), pending.end());
@@ -1591,6 +1902,7 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
       }
       start = ni;
       pending.clear();
+      pending_signals.clear();
     }
 
     if (w.duration_s > 0 && way_length_m > 0.0) {
@@ -1697,9 +2009,13 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
     a.length_m = e.length_m;
     a.klass = e.klass;
     a.speed_kph = e.speed_kph;
+    a.lanes = e.lanes;
+    a.surface = e.surface;
 
     RoadArc fwd = a;
     fwd.target = e.v;
+    fwd.bike = e.bike_fwd;
+    fwd.bike_route = e.route_fwd;
     fwd.flags = static_cast<uint16_t>((e.dir != EdgeDir::kBackward ? kArcForward : 0) |
                                       (e.dir != EdgeDir::kForward ? kArcBackward : 0) |
                                       e.access_flags);
@@ -1708,6 +2024,8 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
 
     RoadArc rev = a;
     rev.target = e.u;
+    rev.bike = e.bike_bwd;
+    rev.bike_route = e.route_bwd;
     // Mirrored: from v, "forward" means v -> u, which is the way's backward.
     // Access is a property of the road, not of a direction, so it is not.
     rev.flags = static_cast<uint16_t>((e.dir != EdgeDir::kForward ? kArcForward : 0) |
@@ -1715,6 +2033,45 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
                                       kArcGeomReversed | e.access_flags);
     arc_way[fill[e.v]] = e.way_id;
     arcs[fill[e.v]++] = rev;
+  }
+
+  // --- signals and crossings at each arc's target -------------------------
+  if (options.traffic_signals) {
+    node_signal.resize(gnodes.size(), 0);
+    for (uint8_t s : node_signal) st.signalled_junctions += s;
+    // The busiest road met at `v` other than along `twin` (the arc back the
+    // way the rider came), counting links as nothing.
+    auto met_at = [&](uint32_t v, uint32_t twin) {
+      uint8_t level = 0;
+      for (uint32_t b = begin[v]; b < begin[v + 1]; ++b) {
+        if (b != twin) level = std::max(level, CrossingLevel(arcs[b].klass, false));
+      }
+      return level;
+    };
+    for (uint32_t u = 0; u + 1 < begin.size(); ++u) {
+      for (uint32_t a = begin[u]; a < begin[u + 1]; ++a) {
+        RoadArc& arc = arcs[a];
+        const uint32_t v = arc.target;
+        // A short arc between two parts of one junction (a dual carriageway's
+        // median, a signal mapped on each approach) is not a second stop.
+        const bool inside = arc.length_m < options.signal_reach_m;
+        if (node_signal[v]) {
+          arc.signal = !(inside && node_signal[u]);
+          continue;
+        }
+        const uint8_t own = CrossingLevel(arc.klass, true);
+        const uint8_t met = met_at(v, g.TwinArc(u, a));
+        if (met <= own) continue;
+        if (inside && met_at(u, a) >= met) continue;
+        arc.crossing = static_cast<RoadCrossing>(met);
+      }
+    }
+    for (uint32_t u = 0; u + 1 < begin.size(); ++u) {
+      for (uint32_t a = begin[u]; a < begin[u + 1]; ++a) {
+        const uint32_t twin = g.TwinArc(u, a);
+        if (twin != kNoArc) arcs[a].crossing_from = arcs[twin].crossing;
+      }
+    }
   }
 
   // --- resolve turn restrictions onto arcs --------------------------------
@@ -1789,6 +2146,20 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
     if (a.foot_private()) ++st.arcs_private_foot;
     if (a.is_ferry()) ++st.arcs_ferry;
     if (a.tolled()) ++st.arcs_toll;
+    if (a.bike == BikeProvision::kSharedLane) ++st.arcs_bike_shared_lane;
+    if (a.bike == BikeProvision::kLane) ++st.arcs_bike_lane;
+    if (a.bike == BikeProvision::kTrack) ++st.arcs_bike_track;
+    if (a.speed_posted()) ++st.arcs_speed_posted;
+    if (a.bike_route == BikeRoute::kLocal) ++st.arcs_bike_route_local;
+    if (a.bike_route == BikeRoute::kRegional) ++st.arcs_bike_route_regional;
+    if (a.bike_route == BikeRoute::kNational) ++st.arcs_bike_route_national;
+    if (a.signal) ++st.arcs_signal;
+    if (a.crossing == RoadCrossing::kSecondary) ++st.arcs_crossing_secondary;
+    if (a.crossing == RoadCrossing::kPrimary) ++st.arcs_crossing_primary;
+    if (a.crossing == RoadCrossing::kTrunk) ++st.arcs_crossing_trunk;
+    if (a.surface == RoadSurface::kPaved) ++st.arcs_surface_paved;
+    if (a.surface == RoadSurface::kCompacted) ++st.arcs_surface_compacted;
+    if (a.surface == RoadSurface::kRough) ++st.arcs_surface_rough;
   }
 
   *out = std::move(g);

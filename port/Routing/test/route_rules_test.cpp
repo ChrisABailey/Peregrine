@@ -481,6 +481,185 @@ TEST(RouteRules, ShippedRuleFileParses) {
   EXPECT_NE(rules->default_profile(), nullptr);
 }
 
+// A gated street (`access=private`, gate node 4) is the short way from n1 to
+// n3; a public residential loop through n5 is about twice as long. n6 is a
+// house reachable only past the gate.
+const char* kGatedStreetOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8200000" lon="-84.4500000"/>
+ <node id="4" lat="33.8200000" lon="-84.4490000">
+  <tag k="barrier" v="gate"/><tag k="access" v="private"/>
+ </node>
+ <node id="3" lat="33.8200000" lon="-84.4470000"/>
+ <node id="5" lat="33.8230000" lon="-84.4485000"/>
+ <node id="6" lat="33.8190000" lon="-84.4480000"/>
+ <way id="301">
+  <nd ref="1"/><nd ref="4"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Public Approach"/>
+ </way>
+ <way id="302">
+  <nd ref="4"/><nd ref="3"/>
+  <tag k="highway" v="residential"/><tag k="access" v="private"/>
+  <tag k="name" v="Gated Way"/>
+ </way>
+ <way id="303">
+  <nd ref="1"/><nd ref="5"/><nd ref="3"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Public Loop"/>
+ </way>
+ <way id="304">
+  <nd ref="4"/><nd ref="6"/>
+  <tag k="highway" v="residential"/><tag k="access" v="private"/>
+  <tag k="name" v="Behind The Gate"/>
+ </way>
+</osm>
+)";
+
+/// Metres of `r` on arcs private to a bicycle.
+double PrivateBikeMetres(const RoadGraph& g, const Route& r) {
+  double m = 0.0;
+  for (size_t i = 1; i < r.nodes.size(); ++i) {
+    const auto& arc = g.arc(g.ArcBetween(r.nodes[i - 1], r.nodes[i]));
+    if (arc.bicycle_private()) m += arc.length_m;
+  }
+  return m;
+}
+
+TEST(RouteRules, CityRuleFileParses) {
+  std::shared_ptr<const RouteRules> rules;
+  const fv::Status s = RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &rules);
+  ASSERT_EQ(s.code, fv::kOk) << s.message;
+  // Pippin offers Walk and Cycle by these names.
+  ASSERT_NE(rules->Find("bicycle"), nullptr);
+  ASSERT_NE(rules->Find("foot"), nullptr);
+  EXPECT_NE(rules->Find("car"), nullptr);
+  EXPECT_GE(rules->Find("bicycle")->private_penalty, 10.0);
+  EXPECT_GE(rules->Find("foot")->private_penalty, 10.0);
+}
+
+TEST(RouteRules, CityRulesRideAroundAGatedStreet) {
+  RoadGraph g;
+  fv::routing::RoadGraphBuildOptions build;
+  build.include_non_driveable = true;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("gated.osm", kGatedStreetOsm)}, build, &g,
+                                        nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city, island;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  ASSERT_EQ(RouteRules::Load(FV_ROUTE_RULES_FILE, &island).code, fv::kOk);
+
+  for (const char* profile : {"bicycle", "foot"}) {
+    RouteOptions o;
+    ASSERT_EQ(SelectProfile(city, profile, &o).code, fv::kOk);
+    Route through;
+    ASSERT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 1), NodeByOsmId(g, 3), o, &through).code,
+              fv::kOk);
+    EXPECT_DOUBLE_EQ(PrivateBikeMetres(g, through), 0.0) << profile;
+
+    // Priced, not deleted: the house behind the gate is still reachable.
+    Route home;
+    ASSERT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 1), NodeByOsmId(g, 6), o, &home).code,
+              fv::kOk)
+        << profile;
+    EXPECT_GT(PrivateBikeMetres(g, home), 0.0) << profile;
+  }
+
+  // The island rules treat private ways as the network and take the shortcut.
+  RouteOptions o;
+  ASSERT_EQ(SelectProfile(island, "bicycle", &o).code, fv::kOk);
+  Route through;
+  ASSERT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 1), NodeByOsmId(g, 3), o, &through).code,
+            fv::kOk);
+  EXPECT_GT(PrivateBikeMetres(g, through), 0.0);
+}
+
+TEST(RouteRules, BikeLaneAndSpeedFactorsParse) {
+  const auto rules = ParseOk(R"({"version":1,"profiles":{
+      "b": {"mode":"bicycle","bike_lane_factor":{"lane":0.6,"track":0.4},
+            "speed_factor":[[40,0.9],[72,1.5],[255,2.5]]},
+      "plain": {"mode":"bicycle"}}})");
+  ASSERT_NE(rules, nullptr);
+  const fv::routing::RouteProfile* b = rules->Find("b");
+  EXPECT_DOUBLE_EQ(b->bike_lane_factor[static_cast<size_t>(fv::routing::BikeProvision::kNone)], 1.0);
+  EXPECT_DOUBLE_EQ(
+      b->bike_lane_factor[static_cast<size_t>(fv::routing::BikeProvision::kSharedLane)], 1.0);
+  EXPECT_DOUBLE_EQ(b->bike_lane_factor[static_cast<size_t>(fv::routing::BikeProvision::kLane)], 0.6);
+  EXPECT_DOUBLE_EQ(b->bike_lane_factor[static_cast<size_t>(fv::routing::BikeProvision::kTrack)], 0.4);
+  EXPECT_DOUBLE_EQ(b->SpeedFactor(30), 0.9);
+  EXPECT_DOUBLE_EQ(b->SpeedFactor(40), 0.9);
+  EXPECT_DOUBLE_EQ(b->SpeedFactor(56), 1.5);
+  EXPECT_DOUBLE_EQ(b->SpeedFactor(300), 2.5);
+  EXPECT_DOUBLE_EQ(rules->Find("plain")->SpeedFactor(100), 1.0);
+
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "bike_lane_factor":{"painted":0.5}}}})").find("bike_lane_factor.painted"), std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "speed_factor":[[72,1.5],[40,0.9]]}}})").find("ascend"), std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "speed_factor":[[40,0]]}}})").find("greater than zero"), std::string::npos);
+}
+
+// Two pairs of parallel roads. A to B: a straight secondary road with no bike
+// provision, or one about 11% longer with a lane each way. C to D: a straight
+// residential street posted at 45 mph, or an unposted dogleg about 11% longer.
+const char* kLaneAndSpeedOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4000000"/>
+ <node id="2" lat="33.8000000" lon="-84.3900000"/>
+ <node id="3" lat="33.8020000" lon="-84.3950000"/>
+ <node id="11" lat="33.8200000" lon="-84.4000000"/>
+ <node id="12" lat="33.8200000" lon="-84.3900000"/>
+ <node id="13" lat="33.8220000" lon="-84.3950000"/>
+ <way id="401">
+  <nd ref="1"/><nd ref="2"/>
+  <tag k="highway" v="secondary"/><tag k="name" v="No Lane"/>
+ </way>
+ <way id="402">
+  <nd ref="1"/><nd ref="3"/><nd ref="2"/>
+  <tag k="highway" v="secondary"/><tag k="cycleway:both" v="lane"/>
+  <tag k="name" v="With Lane"/>
+ </way>
+ <way id="403">
+  <nd ref="11"/><nd ref="12"/>
+  <tag k="highway" v="residential"/><tag k="maxspeed" v="45 mph"/>
+  <tag k="name" v="Fast Street"/>
+ </way>
+ <way id="404">
+  <nd ref="11"/><nd ref="13"/><nd ref="12"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Quiet Street"/>
+ </way>
+</osm>
+)";
+
+/// The name of the first road `r` takes. By leg, not by node pair: each
+/// parallel pair joins the same two nodes.
+std::string FirstStreet(const Route& r) { return r.legs.empty() ? "" : r.legs[0].name; }
+
+TEST(RouteRules, CityRulesTakeTheLaneAndAvoidTheFastStreet) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("lanes.osm", kLaneAndSpeedOsm)}, {}, &g,
+                                        nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city, island;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  ASSERT_EQ(RouteRules::Load(FV_ROUTE_RULES_FILE, &island).code, fv::kOk);
+
+  auto ride = [&](const std::shared_ptr<const RouteRules>& rules, int64_t from, int64_t to) {
+    RouteOptions o;
+    EXPECT_EQ(SelectProfile(rules, "bicycle", &o).code, fv::kOk);
+    Route r;
+    EXPECT_EQ(Router(g).RouteNodes(NodeByOsmId(g, from), NodeByOsmId(g, to), o, &r).code, fv::kOk);
+    return FirstStreet(r);
+  };
+  EXPECT_EQ(ride(city, 1, 2), "With Lane");
+  EXPECT_EQ(ride(city, 2, 1), "With Lane");
+  EXPECT_EQ(ride(city, 11, 12), "Quiet Street");
+  // The island rules name neither key, so the shorter road wins both times.
+  EXPECT_EQ(ride(island, 1, 2), "No Lane");
+  EXPECT_EQ(ride(island, 11, 12), "Fast Street");
+}
+
 // ---------------------------------------------------------------------------
 // Toll and ferry (O5e)
 // ---------------------------------------------------------------------------
@@ -798,3 +977,312 @@ TEST(RouteRules, SelectProfileSeedsTheBeachSettings) {
 }
 
 }  // namespace
+
+// A public street (401, 1-2-3) with a private gate at 2, and a longer public
+// loop (402, 1-4-3) with a bollard at 4. The gate is the only restriction on
+// the street, so only CR3's node barriers can steer a route off it.
+const char* kGateOnPublicStreetOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8200000" lon="-84.4500000"/>
+ <node id="2" lat="33.8200000" lon="-84.4485000">
+  <tag k="barrier" v="gate"/><tag k="access" v="private"/>
+ </node>
+ <node id="3" lat="33.8200000" lon="-84.4470000"/>
+ <node id="4" lat="33.8225000" lon="-84.4485000"><tag k="barrier" v="bollard"/></node>
+ <way id="401">
+  <nd ref="1"/><nd ref="2"/><nd ref="3"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Gated Street"/>
+ </way>
+ <way id="402">
+  <nd ref="1"/><nd ref="4"/><nd ref="3"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Bollard Loop"/>
+ </way>
+</osm>
+)";
+
+TEST(RouteRules, CityRulesRideAroundAGateOnAPublicStreet) {
+  RoadGraph g;
+  fv::routing::RoadGraphBuildOptions build;
+  build.include_non_driveable = true;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("gate-node.osm", kGateOnPublicStreetOsm)},
+                                        build, &g, nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+
+  // A bike goes round by the bollards rather than through the gate.
+  RouteOptions bike;
+  ASSERT_EQ(SelectProfile(city, "bicycle", &bike).code, fv::kOk);
+  Route ride;
+  ASSERT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 1), NodeByOsmId(g, 3), bike, &ride).code,
+            fv::kOk);
+  EXPECT_DOUBLE_EQ(PrivateBikeMetres(g, ride), 0.0);
+  EXPECT_EQ(ride.nodes.size(), 3u);  // 1, 4, 3
+
+  // A car cannot pass the bollards, so the gate is its only way; priced, not
+  // barred, so it still gets there.
+  RouteOptions car;
+  ASSERT_EQ(SelectProfile(city, "car", &car).code, fv::kOk);
+  Route drive;
+  ASSERT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 1), NodeByOsmId(g, 3), car, &drive).code,
+            fv::kOk);
+  ASSERT_EQ(drive.nodes.size(), 3u);
+  EXPECT_EQ(drive.nodes[1], NodeByOsmId(g, 2));
+}
+
+TEST(RouteRules, BikeRouteFactorParses) {
+  const auto rules = ParseOk(R"({"version":1,"profiles":{
+      "b": {"mode":"bicycle","bike_route_factor":{"local":0.9,"national":0.8}}}})");
+  ASSERT_NE(rules, nullptr);
+  const fv::routing::RouteProfile* b = rules->Find("b");
+  using fv::routing::BikeRoute;
+  EXPECT_DOUBLE_EQ(b->bike_route_factor[static_cast<size_t>(BikeRoute::kNone)], 1.0);
+  EXPECT_DOUBLE_EQ(b->bike_route_factor[static_cast<size_t>(BikeRoute::kLocal)], 0.9);
+  EXPECT_DOUBLE_EQ(b->bike_route_factor[static_cast<size_t>(BikeRoute::kRegional)], 1.0);
+  EXPECT_DOUBLE_EQ(b->bike_route_factor[static_cast<size_t>(BikeRoute::kNational)], 0.8);
+
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "bike_route_factor":{"lcn":0.9}}}})").find("bike_route_factor.lcn"), std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "bike_route_factor":{"local":-1}}}})").find("greater than zero"), std::string::npos);
+}
+
+// Two residential roads from 1 to 2: a straight one, and a dogleg about 6%
+// longer that is a `forward` member of a signed local route.
+const char* kSignedRouteOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4000000"/>
+ <node id="2" lat="33.8000000" lon="-84.3900000"/>
+ <node id="3" lat="33.8015000" lon="-84.3950000"/>
+ <way id="601">
+  <nd ref="1"/><nd ref="2"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Unsigned"/>
+ </way>
+ <way id="602">
+  <nd ref="1"/><nd ref="3"/><nd ref="2"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Signed Route"/>
+ </way>
+ <relation id="950">
+  <member type="way" ref="602" role="forward"/>
+  <tag k="type" v="route"/><tag k="route" v="bicycle"/><tag k="network" v="lcn"/>
+ </relation>
+</osm>
+)";
+
+TEST(RouteRules, CityRulesTakeTheSignedRouteInItsDirection) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("signed.osm", kSignedRouteOsm)}, {}, &g,
+                                        nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city, island;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  ASSERT_EQ(RouteRules::Load(FV_ROUTE_RULES_FILE, &island).code, fv::kOk);
+
+  auto ride = [&](const std::shared_ptr<const RouteRules>& rules, int64_t from, int64_t to) {
+    RouteOptions o;
+    EXPECT_EQ(SelectProfile(rules, "bicycle", &o).code, fv::kOk);
+    Route r;
+    EXPECT_EQ(Router(g).RouteNodes(NodeByOsmId(g, from), NodeByOsmId(g, to), o, &r).code, fv::kOk);
+    return FirstStreet(r);
+  };
+  EXPECT_EQ(ride(city, 1, 2), "Signed Route");
+  EXPECT_EQ(ride(city, 2, 1), "Unsigned");  // the route is signed one way only
+  EXPECT_EQ(ride(island, 1, 2), "Unsigned");
+}
+
+TEST(RouteRules, SurfaceSignalAndCrossingKeysParse) {
+  const auto rules = ParseOk(R"({"version":1,"profiles":{
+      "b": {"mode":"bicycle","surface_factor":{"compacted":1.2,"rough":1.6},
+            "signal_seconds":20,"crossing_seconds":{"primary":45,"trunk":90}}}})");
+  ASSERT_NE(rules, nullptr);
+  const fv::routing::RouteProfile* b = rules->Find("b");
+  using fv::routing::RoadCrossing;
+  using fv::routing::RoadSurface;
+  EXPECT_DOUBLE_EQ(b->surface_factor[static_cast<size_t>(RoadSurface::kUnknown)], 1.0);
+  EXPECT_DOUBLE_EQ(b->surface_factor[static_cast<size_t>(RoadSurface::kPaved)], 1.0);
+  EXPECT_DOUBLE_EQ(b->surface_factor[static_cast<size_t>(RoadSurface::kCompacted)], 1.2);
+  EXPECT_DOUBLE_EQ(b->surface_factor[static_cast<size_t>(RoadSurface::kRough)], 1.6);
+  EXPECT_DOUBLE_EQ(b->signal_seconds, 20.0);
+  EXPECT_DOUBLE_EQ(b->crossing_seconds[static_cast<size_t>(RoadCrossing::kSecondary)], 0.0);
+  EXPECT_DOUBLE_EQ(b->crossing_seconds[static_cast<size_t>(RoadCrossing::kPrimary)], 45.0);
+  EXPECT_DOUBLE_EQ(b->crossing_seconds[static_cast<size_t>(RoadCrossing::kTrunk)], 90.0);
+
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "surface_factor":{"gravel":1.5}}}})").find("surface_factor.gravel"), std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "signal_seconds":-5}}})").find("signal_seconds"), std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "crossing_seconds":{"tertiary":10}}}})").find("crossing_seconds.tertiary"),
+            std::string::npos);
+}
+
+// From A (south) to B (north) across a primary road: Direct Street crosses at
+// X with no signal; Signal Street jogs 46 m east to cross at the signal at Y.
+const char* kCrossingOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4010000"/>
+ <node id="2" lat="33.8000000" lon="-84.3980000"/>
+ <node id="10" lat="33.7990000" lon="-84.4000000"/>
+ <node id="11" lat="33.8000000" lon="-84.4000000"/>
+ <node id="12" lat="33.8010000" lon="-84.4000000"/>
+ <node id="13" lat="33.7990000" lon="-84.3995000"/>
+ <node id="14" lat="33.8000000" lon="-84.3995000"><tag k="highway" v="traffic_signals"/></node>
+ <node id="15" lat="33.8010000" lon="-84.3995000"/>
+ <way id="801"><nd ref="1"/><nd ref="11"/><nd ref="14"/><nd ref="2"/>
+  <tag k="highway" v="primary"/><tag k="name" v="Arterial"/></way>
+ <way id="802"><nd ref="10"/><nd ref="11"/><nd ref="12"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Direct Street"/></way>
+ <way id="803"><nd ref="10"/><nd ref="13"/><nd ref="14"/><nd ref="15"/><nd ref="12"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Signal Street"/></way>
+</osm>
+)";
+
+TEST(RouteRules, CityRulesCrossAnArterialAtTheSignal) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("crossing.osm", kCrossingOsm)}, {}, &g,
+                                        nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city, island;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  ASSERT_EQ(RouteRules::Load(FV_ROUTE_RULES_FILE, &island).code, fv::kOk);
+
+  auto go = [&](const std::shared_ptr<const RouteRules>& rules, const char* profile) {
+    RouteOptions o;
+    EXPECT_EQ(SelectProfile(rules, profile, &o).code, fv::kOk);
+    Route r;
+    EXPECT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 10), NodeByOsmId(g, 12), o, &r).code,
+              fv::kOk);
+    return FirstStreet(r);
+  };
+  EXPECT_EQ(go(city, "bicycle"), "Signal Street");
+
+  // Crossing at X pays half arriving and half leaving; along the arterial, nothing.
+  RouteOptions bike;
+  ASSERT_EQ(SelectProfile(city, "bicycle", &bike).code, fv::kOk);
+  auto delay = [&](int64_t a, int64_t b) {
+    const uint32_t arc = g.ArcBetween(NodeByOsmId(g, a), NodeByOsmId(g, b));
+    EXPECT_NE(arc, fv::routing::kNoArc) << a << "->" << b;
+    return fv::routing::NodeDelayCost(g.arc(arc), bike);
+  };
+  EXPECT_DOUBLE_EQ(delay(10, 11), 22.5);
+  EXPECT_DOUBLE_EQ(delay(11, 12), 22.5);
+  EXPECT_DOUBLE_EQ(delay(1, 11), 0.0);
+  EXPECT_DOUBLE_EQ(delay(11, 14), 20.0);  // the signal at Y
+  // On foot the 92 m detour takes longer than the wait it saves.
+  EXPECT_EQ(go(city, "foot"), "Direct Street");
+  EXPECT_EQ(go(island, "bicycle"), "Direct Street");
+}
+
+// Two residential roads from 1 to 2: a straight gravel one, and a paved dogleg
+// about 6% longer.
+const char* kSurfaceOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4000000"/>
+ <node id="2" lat="33.8000000" lon="-84.3900000"/>
+ <node id="3" lat="33.8015000" lon="-84.3950000"/>
+ <way id="601"><nd ref="1"/><nd ref="2"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Gravel Road"/><tag k="surface" v="gravel"/></way>
+ <way id="602"><nd ref="1"/><nd ref="3"/><nd ref="2"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Paved Road"/><tag k="surface" v="asphalt"/></way>
+</osm>
+)";
+
+TEST(RouteRules, CityRulesRideThePavedRoad) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("surface.osm", kSurfaceOsm)}, {}, &g, nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city, island;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  ASSERT_EQ(RouteRules::Load(FV_ROUTE_RULES_FILE, &island).code, fv::kOk);
+  auto ride = [&](const std::shared_ptr<const RouteRules>& rules) {
+    RouteOptions o;
+    EXPECT_EQ(SelectProfile(rules, "bicycle", &o).code, fv::kOk);
+    Route r;
+    EXPECT_EQ(Router(g).RouteNodes(NodeByOsmId(g, 1), NodeByOsmId(g, 2), o, &r).code, fv::kOk);
+    return FirstStreet(r);
+  };
+  EXPECT_EQ(ride(city), "Paved Road");
+  EXPECT_EQ(ride(island), "Gravel Road");
+}
+
+// A 6x6 grid of one-edge residential ways with a primary road along row 2.
+// About 40% of ways carry a right-side lane (one direction only) and about 30%
+// of nodes a signal, so most arcs cost differently from their twins.
+std::string DirectionalGridOsm() {
+  std::string s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<osm version=\"0.6\">\n";
+  uint32_t seed = 12345;
+  auto next = [&seed]() {
+    seed = seed * 1103515245u + 12345u;
+    return (seed >> 16) % 100;
+  };
+  auto id = [](int i, int j) { return 1000 + i * 10 + j; };
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      char buf[200];
+      std::snprintf(buf, sizeof buf, " <node id=\"%d\" lat=\"%.4f\" lon=\"%.4f\">", id(i, j),
+                    33.80 + 0.001 * i, -84.40 + 0.001 * j);
+      s += buf;
+      if (next() < 30) s += "<tag k=\"highway\" v=\"traffic_signals\"/>";
+      s += "</node>\n";
+    }
+  }
+  int way = 5000;
+  auto add_way = [&](int a, int b, const char* klass) {
+    char buf[200];
+    std::snprintf(buf, sizeof buf, " <way id=\"%d\"><nd ref=\"%d\"/><nd ref=\"%d\"/>", way++, a, b);
+    s += buf;
+    s += std::string("<tag k=\"highway\" v=\"") + klass + "\"/>";
+    if (next() < 40) s += "<tag k=\"cycleway:right\" v=\"lane\"/>";
+    s += "</way>\n";
+  };
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      if (j + 1 < 6) add_way(id(i, j), id(i, j + 1), i == 2 ? "primary" : "residential");
+      if (i + 1 < 6) add_way(id(i, j), id(i + 1, j), "residential");
+    }
+  }
+  return s + "</osm>\n";
+}
+
+TEST(RouteRules, BidirectionalMatchesDijkstraWhenDirectionsCostDifferently) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("grid.osm", DirectionalGridOsm())}, {}, &g,
+                                        nullptr)
+                .code,
+            fv::kOk);
+  const auto rules = ParseOk(R"({"version":1,"profiles":{"b":{"mode":"bicycle",
+      "speed":{"source":"fixed","kph":14},"unlisted_classes":1.0,"classes":{"primary":3.0},
+      "bike_lane_factor":{"lane":0.4},"signal_seconds":30,
+      "crossing_seconds":{"primary":60}}}})");
+  RouteOptions bi;
+  ASSERT_EQ(SelectProfile(rules, "b", &bi).code, fv::kOk);
+  RouteOptions plain = bi;
+  plain.bidirectional = false;
+
+  const Router router(g);
+  auto cost = [&](const Route& r, const RouteOptions& o) {
+    double c = 0.0;
+    for (size_t i = 1; i < r.nodes.size(); ++i) {
+      const uint32_t a = g.ArcBetween(r.nodes[i - 1], r.nodes[i]);
+      c += fv::routing::ArcCost(g.arc(a), o) + fv::routing::NodeDelayCost(g.arc(a), o);
+    }
+    return c;
+  };
+  int compared = 0;
+  for (uint32_t from = 0; from < g.node_count(); ++from) {
+    for (uint32_t to = 0; to < g.node_count(); ++to) {
+      if (from == to) continue;
+      Route rb, rp;
+      ASSERT_EQ(router.RouteNodes(from, to, bi, &rb).code, fv::kOk);
+      ASSERT_EQ(router.RouteNodes(from, to, plain, &rp).code, fv::kOk);
+      ASSERT_TRUE(rb.found && rp.found);
+      EXPECT_NEAR(cost(rb, bi), cost(rp, plain), 1e-6) << from << " -> " << to;
+      ++compared;
+    }
+  }
+  EXPECT_EQ(compared, 36 * 35);
+}

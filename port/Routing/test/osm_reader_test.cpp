@@ -127,6 +127,7 @@ class CountingSink : public OsmSink {
   bool WantNodes() const override { return want_nodes; }
   bool WantWays() const override { return want_ways; }
   bool WantRelations() const override { return want_relations_flag; }
+  bool WantNodeTags() const override { return want_node_tags; }
   bool Continue() const override { return ways < way_limit && nodes < node_limit; }
 
   void Node(int64_t id, double lat, double lon) override {
@@ -142,6 +143,12 @@ class CountingSink : public OsmSink {
     max_lon = std::max(max_lon, lon);
     if (lat >= 24.0 && lat <= 41.0 && lon >= -107.0 && lon <= -75.0) ++nodes_in_us_south;
     all_nodes.emplace_back(id, std::make_pair(lat, lon));
+  }
+
+  void NodeTags(int64_t id, const std::vector<fv::routing::OsmTag>& tags) override {
+    ASSERT_FALSE(all_nodes.empty());
+    EXPECT_EQ(all_nodes.back().first, id) << "NodeTags must follow its own Node()";
+    node_tags.emplace_back(id, tags);
   }
 
   void Way(const OsmWay& w) override {
@@ -160,6 +167,7 @@ class CountingSink : public OsmSink {
   bool want_nodes = true;
   bool want_ways = true;
   bool want_relations_flag = false;
+  bool want_node_tags = false;
   int64_t way_limit = std::numeric_limits<int64_t>::max();
   int64_t node_limit = std::numeric_limits<int64_t>::max();
 
@@ -170,6 +178,7 @@ class CountingSink : public OsmSink {
   std::vector<std::pair<int64_t, std::pair<double, double>>> all_nodes;
   std::vector<OsmWay> all_ways;
   std::vector<fv::routing::OsmRelation> all_relations;
+  std::vector<std::pair<int64_t, std::vector<fv::routing::OsmTag>>> node_tags;
 };
 
 // ---------------------------------------------------------------------------
@@ -260,9 +269,21 @@ std::string SyntheticOsmData() {
   // 32.7 -> 327000000 raw (granularity 100, so degrees * 1e7)
   PutBytesField(&dense, 8, PackedZigZag({327000000, 100000, -50000}));
   PutBytesField(&dense, 9, PackedZigZag({-800000000, -30000, -40000}));
+  // keys_vals: 100 untagged, 101 name=Test Street + oneway=yes, 102 untagged.
+  PutBytesField(&dense, 10, PackedVarint({0, 3, 4, 5, 6, 0, 0}));
+
+  // One non-dense node, 103, tagged highway=residential.
+  std::string node;
+  PutVarintField(&node, 1, ZigZag(103));
+  PutBytesField(&node, 2, PackedVarint({1}));
+  PutBytesField(&node, 3, PackedVarint({2}));
+  PutVarintField(&node, 8, ZigZag(327000000));
+  PutVarintField(&node, 9, ZigZag(-800000000));
 
   std::string group_nodes;
   PutBytesField(&group_nodes, 2, dense);
+  std::string group_plain;
+  PutBytesField(&group_plain, 1, node);
 
   // Way 500: refs 100 -> 101 -> 102, tags highway=residential, name=Test
   // Street, oneway=yes.
@@ -293,6 +314,7 @@ std::string SyntheticOsmData() {
   std::string block;
   PutBytesField(&block, 1, strings);
   PutBytesField(&block, 2, group_nodes);
+  PutBytesField(&block, 2, group_plain);
   PutBytesField(&block, 2, group_ways);
   PutBytesField(&block, 2, group_relations);
   return block;
@@ -345,6 +367,36 @@ TEST(OsmXmlReader, ReadsNodesWaysAndTags) {
 
   // Node IDs are real OSM identities, not indices.
   EXPECT_EQ(sink.first_node_id, expect.first_node_id);
+}
+
+TEST(OsmXmlReader, NodeTagsAreDeliveredOnlyWhenAskedFor) {
+  const fs::path path = ScratchDir() / "node-tags.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.0" lon="-84.0"/>
+ <node id="2" lat="33.1" lon="-84.1">
+  <tag k="barrier" v="gate"/><tag k="access" v="private"/>
+ </node>
+ <way id="10"><nd ref="1"/><nd ref="2"/><tag k="highway" v="service"/></way>
+</osm>
+)";
+  }
+  CountingSink plain;
+  ASSERT_EQ(fv::routing::ReadOsmFile(path.string(), &plain).code, fv::kOk);
+  EXPECT_TRUE(plain.node_tags.empty());
+  ASSERT_EQ(plain.ways, 1);
+  EXPECT_EQ(plain.all_ways[0].tags.size(), 1u);  // the node's tags stayed off the way
+
+  CountingSink tagged;
+  tagged.want_node_tags = true;
+  ASSERT_EQ(fv::routing::ReadOsmFile(path.string(), &tagged).code, fv::kOk);
+  ASSERT_EQ(tagged.node_tags.size(), 1u);
+  EXPECT_EQ(tagged.node_tags[0].first, 2);
+  ASSERT_EQ(tagged.node_tags[0].second.size(), 2u);
+  EXPECT_EQ(tagged.node_tags[0].second[0].key, "barrier");
+  EXPECT_EQ(tagged.node_tags[0].second[1].value, "private");
 }
 
 TEST(OsmXmlReader, WantNodesFalseSkipsNodeRecords) {
@@ -453,7 +505,7 @@ TEST_P(OsmPbfReaderTest, DecodesDenseNodesWaysAndTheStringTable) {
 
   // Dense IDs and coordinates are all delta-encoded against the previous
   // entry, and coordinates are (offset + granularity * value) nanodegrees.
-  ASSERT_EQ(sink.nodes, 3);
+  ASSERT_EQ(sink.nodes, 4);
   EXPECT_EQ(sink.all_nodes[0].first, 100);
   EXPECT_EQ(sink.all_nodes[1].first, 101);
   EXPECT_EQ(sink.all_nodes[2].first, 102);
@@ -483,6 +535,30 @@ TEST_P(OsmPbfReaderTest, DecodesDenseNodesWaysAndTheStringTable) {
 
   // A sink that did not ask for relations is not handed the one in the block.
   EXPECT_EQ(sink.relations, 0);
+  // Nor node tags.
+  EXPECT_TRUE(sink.node_tags.empty());
+}
+
+TEST_P(OsmPbfReaderTest, NodeTagsFromDenseAndPlainNodesWhenAskedFor) {
+  const std::string path =
+      WriteSyntheticPbf(GetParam() ? "synthetic-tags-zlib.osm.pbf" : "synthetic-tags-raw.osm.pbf",
+                        GetParam());
+  CountingSink sink;
+  sink.want_node_tags = true;
+  ASSERT_EQ(fv::routing::ReadOsmFile(path, &sink).code, fv::kOk);
+  ASSERT_EQ(sink.nodes, 4);
+  // Untagged nodes get no call; the dense run and the plain node each get one.
+  ASSERT_EQ(sink.node_tags.size(), 2u);
+  EXPECT_EQ(sink.node_tags[0].first, 101);
+  ASSERT_EQ(sink.node_tags[0].second.size(), 2u);
+  EXPECT_EQ(sink.node_tags[0].second[0].key, "name");
+  EXPECT_EQ(sink.node_tags[0].second[0].value, "Test Street");
+  EXPECT_EQ(sink.node_tags[0].second[1].key, "oneway");
+  EXPECT_EQ(sink.node_tags[0].second[1].value, "yes");
+  EXPECT_EQ(sink.node_tags[1].first, 103);
+  ASSERT_EQ(sink.node_tags[1].second.size(), 1u);
+  EXPECT_EQ(sink.node_tags[1].second[0].key, "highway");
+  EXPECT_EQ(sink.node_tags[1].second[0].value, "residential");
 }
 
 TEST_P(OsmPbfReaderTest, DecodesRelationMembersAndRoles) {
@@ -526,7 +602,7 @@ TEST(OsmPbfReader, WantWaysFalseStillDecodesNodes) {
   CountingSink sink;
   sink.want_ways = false;
   ASSERT_EQ(fv::routing::ReadOsmFile(path, &sink).code, fv::kOk);
-  EXPECT_EQ(sink.nodes, 3);
+  EXPECT_EQ(sink.nodes, 4);
   EXPECT_EQ(sink.ways, 0);
 }
 

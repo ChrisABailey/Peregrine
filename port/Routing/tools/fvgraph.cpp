@@ -144,12 +144,40 @@ int Build(int argc, char** argv) {
               static_cast<long long>(stats.arcs_private_motor_vehicle),
               static_cast<long long>(stats.arcs_private_bicycle),
               static_cast<long long>(stats.arcs_private_foot));
+  std::printf("  barriers         %lld restricting nodes on roads (%lld guarding a branch), "
+              "%lld edges beside one\n",
+              static_cast<long long>(stats.barrier_nodes),
+              static_cast<long long>(stats.barrier_branches),
+              static_cast<long long>(stats.edges_at_barrier));
   std::printf("  ferry / toll     %lld ferry ways (%lld timed by `duration`), "
               "%lld ferry arcs, %lld tolled arcs\n",
               static_cast<long long>(stats.ways_ferry),
               static_cast<long long>(stats.ferries_timed),
               static_cast<long long>(stats.arcs_ferry),
               static_cast<long long>(stats.arcs_toll));
+  std::printf("  bike provision   %lld track / %lld lane / %lld shared-lane arcs; "
+              "%lld arcs with a posted speed\n",
+              static_cast<long long>(stats.arcs_bike_track),
+              static_cast<long long>(stats.arcs_bike_lane),
+              static_cast<long long>(stats.arcs_bike_shared_lane),
+              static_cast<long long>(stats.arcs_speed_posted));
+  std::printf("  bike routes      %lld relations; %lld local / %lld regional / %lld national arcs\n",
+              static_cast<long long>(stats.bike_route_relations),
+              static_cast<long long>(stats.arcs_bike_route_local),
+              static_cast<long long>(stats.arcs_bike_route_regional),
+              static_cast<long long>(stats.arcs_bike_route_national));
+  std::printf("  signals          %lld signal nodes, %lld signalled junctions; %lld arcs end at "
+              "one; unsignalled crossings %lld secondary / %lld primary / %lld trunk arcs\n",
+              static_cast<long long>(stats.signal_nodes),
+              static_cast<long long>(stats.signalled_junctions),
+              static_cast<long long>(stats.arcs_signal),
+              static_cast<long long>(stats.arcs_crossing_secondary),
+              static_cast<long long>(stats.arcs_crossing_primary),
+              static_cast<long long>(stats.arcs_crossing_trunk));
+  std::printf("  surface          %lld paved / %lld compacted / %lld rough arcs\n",
+              static_cast<long long>(stats.arcs_surface_paved),
+              static_cast<long long>(stats.arcs_surface_compacted),
+              static_cast<long long>(stats.arcs_surface_rough));
   if (options.beaches) {
     std::printf("  beach            %lld polygons (%lld multipolygons skipped), %lld coastline ways\n",
                 static_cast<long long>(stats.beach_polygons),
@@ -188,6 +216,8 @@ int Info(int argc, char** argv) {
   // The same per-mode picture `build` prints, but off the finished file — the
   // graph in the app is this one, not the build log somebody kept.
   int barred[3] = {0, 0, 0}, priv[3] = {0, 0, 0}, usable_car = 0;
+  int bike[4] = {0, 0, 0, 0}, route[4] = {0, 0, 0, 0}, posted = 0;
+  int surface[4] = {0, 0, 0, 0}, crossing[4] = {0, 0, 0, 0}, signal = 0;
   int ferry_arcs = 0, toll_arcs = 0;
   double ferry_km = 0.0;
   double beach_km = 0.0;
@@ -202,6 +232,12 @@ int Info(int argc, char** argv) {
       ferry_km += arc.length_m / 2000.0;  // two arcs per edge, as above
     }
     if (arc.tolled()) ++toll_arcs;
+    ++bike[static_cast<int>(arc.bike)];
+    ++route[static_cast<int>(arc.bike_route)];
+    ++surface[static_cast<int>(arc.surface)];
+    if (arc.signal) ++signal;
+    ++crossing[static_cast<int>(arc.crossing)];
+    if (arc.speed_posted()) ++posted;
     if (!arc.motor_vehicle_allowed()) ++barred[0];
     if (!arc.bicycle_allowed()) ++barred[1];
     if (!arc.foot_allowed()) ++barred[2];
@@ -214,6 +250,14 @@ int Info(int argc, char** argv) {
               barred[2]);
   std::printf("  access private   %d car / %d bike / %d foot arcs\n", priv[0], priv[1], priv[2]);
   std::printf("  driveable arcs a car may use: %d\n", usable_car);
+  std::printf("  bike provision   %d track / %d lane / %d shared-lane arcs; "
+              "%d arcs with a posted speed\n", bike[3], bike[2], bike[1], posted);
+  std::printf("  bike routes      %d local / %d regional / %d national arcs\n", route[1],
+              route[2], route[3]);
+  std::printf("  signals          %d arcs end at a signal; unsignalled crossings %d secondary / "
+              "%d primary / %d trunk arcs\n", signal, crossing[1], crossing[2], crossing[3]);
+  std::printf("  surface          %d paved / %d compacted / %d rough arcs\n", surface[1],
+              surface[2], surface[3]);
   std::printf("  ferry / toll     %d ferry arcs (%.1f km of crossing), %d tolled arcs\n",
               ferry_arcs, ferry_km, toll_arcs);
   if (beach_km > 0.0 || !access_m.empty()) {
@@ -279,6 +323,40 @@ void WriteGeoJson(const char* path, const fv::routing::Route& route) {
   }
   std::fprintf(f, "]}}\n");
   std::fclose(f);
+}
+
+/// Prints how much of a route, junction to junction, runs on signed bike
+/// routes, on lanes or tracks, on secondary or busier roads, and on private
+/// ways, and the signals and unsignalled busier-road crossings it meets. The
+/// partial arcs at a snapped start or end are not counted.
+void PrintRouteMix(const RoadGraph& graph, const fv::routing::Route& route) {
+  double signed_m = 0.0, provision_m = 0.0, busy_m = 0.0, private_m = 0.0;
+  int signals = 0, crossings = 0;
+  const fv::routing::RoadArc* prev = nullptr;
+  for (size_t i = 1; i < route.nodes.size(); ++i) {
+    const uint32_t a = graph.ArcBetween(route.nodes[i - 1], route.nodes[i]);
+    if (a == fv::routing::kNoArc) {
+      prev = nullptr;
+      continue;
+    }
+    const fv::routing::RoadArc& arc = graph.arc(a);
+    if (arc.bike_route != fv::routing::BikeRoute::kNone) signed_m += arc.length_m;
+    if (arc.bike >= fv::routing::BikeProvision::kLane) provision_m += arc.length_m;
+    if (arc.bicycle_private()) private_m += arc.length_m;
+    // RoadClass orders by importance: motorway through secondary_link.
+    if (arc.klass <= fv::routing::RoadClass::kSecondaryLink) busy_m += arc.length_m;
+    if (arc.signal) ++signals;
+    // Crossed over: arrived on a minor road and left on one.
+    if (prev != nullptr && prev->crossing != fv::routing::RoadCrossing::kNone &&
+        arc.crossing_from != fv::routing::RoadCrossing::kNone)
+      ++crossings;
+    prev = &arc;
+  }
+  std::printf("on the way: %.2f km signed bike route, %.2f km lane or track, "
+              "%.2f km secondary or busier, %.2f km private; %d signals, %d unsignalled "
+              "crossings\n",
+              signed_m / 1000.0, provision_m / 1000.0, busy_m / 1000.0, private_m / 1000.0,
+              signals, crossings);
 }
 
 int Route(int argc, char** argv) {
@@ -428,6 +506,7 @@ int Route(int argc, char** argv) {
     std::printf("  %6.2f km  %-16s %s\n", leg.length_m / 1000.0, leg.klass.c_str(),
                 leg.name.empty() ? "(unnamed)" : leg.name.c_str());
   }
+  PrintRouteMix(graph, route);
   if (geojson != nullptr) WriteGeoJson(geojson, route);
   return 0;
 }
@@ -473,6 +552,13 @@ int Profiles(int argc, char** argv) {
     std::printf("  golf cart path %s, golfer path %s\n",
                 avoidance(p.golf_cartpath_penalty).c_str(),
                 avoidance(p.golf_path_penalty).c_str());
+    std::printf("  bike lane: shared x%.2f, lane x%.2f, track x%.2f",
+                p.bike_lane_factor[1], p.bike_lane_factor[2], p.bike_lane_factor[3]);
+    if (!p.speed_factor.empty()) {
+      std::printf("; posted speed:");
+      for (const auto& band : p.speed_factor) std::printf(" <=%.0f x%.2f", band.first, band.second);
+    }
+    std::printf("\n");
     std::printf("  classes:");
     for (size_t i = 0; i < static_cast<size_t>(fv::routing::RoadClass::kCount); ++i) {
       const auto klass = static_cast<fv::routing::RoadClass>(i);

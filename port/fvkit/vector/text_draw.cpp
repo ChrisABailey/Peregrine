@@ -96,14 +96,32 @@ double HaloPixels(const LabelStyle& lb, double drawn_size_px) {
 // GetTextExtent returns whole pixels, so summing rounded characters would drift
 // by up to half a pixel per glyph, while prefix differences put every glyph
 // within a pixel of where the upright renderer would have put it.
+std::vector<std::string> SplitGlyphs(const std::string& utf8) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i < utf8.size();) {
+    const unsigned char c = static_cast<unsigned char>(utf8[i]);
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3
+             : (c >> 3) == 0x1E ? 4 : 1;
+    if (i + n > utf8.size()) n = 1;
+    for (size_t k = 1; k < n; ++k)
+      if ((static_cast<unsigned char>(utf8[i + k]) & 0xC0) != 0x80) { n = 1; break; }
+    out.push_back(utf8.substr(i, n));
+    i += n;
+  }
+  return out;
+}
+
 bool GlyphAdvances(ICanvas* canvas, const std::string& text,
                    const TextStyle& ts, std::vector<double>* out) {
   out->clear();
-  out->reserve(text.size());
+  const std::vector<std::string> glyphs = SplitGlyphs(text);
+  out->reserve(glyphs.size());
   int prev = 0;
-  for (size_t i = 1; i <= text.size(); ++i) {
+  std::string prefix;
+  for (const std::string& g : glyphs) {
+    prefix += g;
     PixelSize ext;
-    if (!canvas->GetTextExtent(text.substr(0, i), ts, &ext).ok()) return false;
+    if (!canvas->GetTextExtent(prefix, ts, &ext).ok()) return false;
     out->push_back(static_cast<double>(ext.width - prev));
     prev = ext.width;
   }

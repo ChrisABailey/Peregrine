@@ -86,6 +86,9 @@ class OsmSink {
   // keeps skipping the records exactly as it did before they were decoded at
   // all, rather than paying for members it will throw away.
   virtual bool WantRelations() const { return false; }
+  /// Opt-in, off by default: decoding node tags costs a pass over every
+  /// node's key/value table, and only a sink that reads barriers needs them.
+  virtual bool WantNodeTags() const { return false; }
 
   // Polled between elements (XML) and between blocks (PBF). Returning false
   // stops the read early and is reported as success — a sink that has seen
@@ -93,6 +96,12 @@ class OsmSink {
   virtual bool Continue() const { return true; }
 
   virtual void Node(int64_t id, double lat, double lon) = 0;
+  /// Called after Node() for the same id, only when WantNodeTags() is true
+  /// and the node carries at least one tag.
+  virtual void NodeTags(int64_t id, const std::vector<OsmTag>& tags) {
+    (void)id;
+    (void)tags;
+  }
   virtual void Way(const OsmWay& way) = 0;
   // Not pure: a sink that leaves WantRelations() false never sees one.
   virtual void Relation(const OsmRelation& relation) { (void)relation; }

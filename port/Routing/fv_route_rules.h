@@ -51,6 +51,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fv_road_graph.h"
@@ -112,6 +113,32 @@ struct RouteProfile {
   // arc cost by, in (0, 1].
   double beach_penalty = kAvoidExcluded;
   double beach_prefer_factor = 0.5;
+
+  /// Multiplier on the class weight by the arc's bike provision, indexed by
+  /// BikeProvision. All 1.0 unless the file says `bike_lane_factor`.
+  double bike_lane_factor[4] = {1.0, 1.0, 1.0, 1.0};
+
+  /// Multiplier on the class weight for an arc on a signed bike route,
+  /// indexed by BikeRoute. All 1.0 unless the file says `bike_route_factor`.
+  double bike_route_factor[4] = {1.0, 1.0, 1.0, 1.0};
+
+  /// Multiplier on the class weight by the arc's surface, indexed by
+  /// RoadSurface. All 1.0 unless the file says `surface_factor`.
+  double surface_factor[4] = {1.0, 1.0, 1.0, 1.0};
+
+  /// Seconds added to the cost of an arc that ends at a traffic signal.
+  double signal_seconds = 0.0;
+  /// Seconds of cost for crossing a busier road without a signal, indexed by
+  /// RoadCrossing: half on arriving at it, half on leaving it.
+  double crossing_seconds[4] = {0.0, 0.0, 0.0, 0.0};
+
+  /// `speed_factor`: (max_kph, factor) pairs, ascending. An arc with a posted
+  /// speed takes the factor of the first band whose max_kph it does not
+  /// exceed, or the last band's. Empty means no speed factor.
+  std::vector<std::pair<double, double>> speed_factor;
+
+  /// The `speed_factor` for an arc whose posted speed is `kph`.
+  double SpeedFactor(int kph) const;
 
   // Indexed by RoadClass; kClassExcluded for a class this profile bars.
   double class_weight[static_cast<size_t>(RoadClass::kCount)];

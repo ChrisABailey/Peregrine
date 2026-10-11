@@ -2515,7 +2515,7 @@ Still open: the ride on the phone (Chris).
 
 #### EL2 — elevation in the cost (M, mac)
 
-- The direction fix first: `ArcCost(arc, options, reversed)`, the reverse frontier passes `true`
+- The direction fix first (landed with CR5: the reverse search prices the twin arc, so only the climb/descent swap remains): `ArcCost(arc, options, reversed)`, the reverse frontier passes `true`
   and the climb/descent pair swaps; `Materialize` uses the traversal direction. Test: on a hilly
   synthetic graph, bidirectional and plain Dijkstra agree on route and cost for 100 random pairs.
   That test must fail before the fix.
@@ -2895,6 +2895,180 @@ Kiawah Trails stays.
 - Proved: light/dark renders compared with pyfvw; simulator switched light→dark→light live;
   macOS ctest 2299/2299; Release 1.2.0 (2) archive installed on Chris's iPhone and accepted
   2026-10-05.
+
+### CR — City Rules: bike routing and bike maps for a city (planned 2026-10-11)
+
+Chris, 2026-10-11, after Atlanta routes ran through a gated street (Coronet Way NW): private
+ways must be avoided in a city, and the routing should use the bike data OSM already holds.
+The same data should reach the tiles, so the map can colour the preferred cycle network and
+show where a road has a bike lane.
+
+The data is already in the raw extract (`testdata/OSM/atlanta.osm.pbf`, 211k highway ways).
+The router builds from that file, so nothing needs fetching. What is missing is that `fvgraph`
+and `process-peregrine.lua` do not yet read it:
+
+| OSM data | Atlanta count | Graph today | Tiles today |
+|---|---|---|---|
+| `cycleway`, `cycleway:both/left/right` = lane, shared_lane, track, share_busway | ~3,300 ways | not read | `cycleway` (strongest side), since 2026-10-11 |
+| `maxspeed` | 11,329 ways | the speed, not whether it was posted | not written |
+| `lanes` | 17,949 ways | not read | not written |
+| `barrier=gate/bollard/lift_gate/chain` nodes, 600 gates with `access=private\|no` | ~6,900 nodes | not read | not written |
+| `route=bicycle` relations (BeltLine, PATH Parkway, Path 400, Silver Comet, Shared Roadway routes) | 48 | not read | not written |
+| `surface` | 47,522 ways | not read | paved/unpaved |
+| `highway=traffic_signals` | 2,538 nodes | not read | not written |
+
+**One classification, two consumers.** The router weights an arc by class, bike provision,
+posted speed and lane count; the map colours a road by how comfortable it is to ride. The two
+must agree, or the map shows a road as good that the router avoids. The tiles therefore carry
+the *inputs* (normalised as the graph builder reads them), and the style tiers on them. A
+cross-check tool (CR6) runs both readers over the same extract and reports ways they read
+differently.
+
+| # | Step | Size | Needs | Proved on |
+|---|---|---|---|---|
+| CR1 | The City Rules file; Atlanta's pack uses it | S | — | mac — **BUILT 2026-10-11** |
+| CR2 | Bike lanes and speed limits in the graph and the rules | M | — | mac + Atlanta sweep — **BUILT 2026-10-11** |
+| CR3 | Gates and barriers on nodes | M | CR2 (format) | mac + Atlanta sweep — **BUILT 2026-10-11** |
+| CR4 | Signed bike routes | M | CR2 (format) | mac — **BUILT 2026-10-11** (tiles moved to CR6) |
+| CR5 | Surface and traffic signals | S–M | CR2 (format) | mac — **BUILT 2026-10-11** |
+| CR6 | The tiles: speed, lanes, bike routes; Atlanta Streets tiers on them | M | CR2, CR4 | tilemaker + pyfvw render — **BUILT 2026-10-11** (profile outside git, see PORTING.md) |
+| CR7 | Contraflow: `oneway:bicycle=no` and `opposite_*` lanes | S–M | CR2 | mac |
+| CR8 | Restage Atlanta, ride it | S | CR2–CR6 | phone (Chris) |
+
+#### CR1 — the City Rules file — **BUILT 2026-10-11**
+
+`port/Routing/rules/route-weights-city.json`: the same profile names (`bicycle`, `foot`,
+`car`), `private_penalty` 25 (priced, not deleted: a destination behind a gate is still
+reachable), arterials usable as a last resort, sidewalks walked at 5 km/h, turn signage obeyed
+by bike. `stage_data.py` stages it for `--region atlanta` and points `routing.rules` at it.
+120 random intown trips: private cut-throughs fell from 31/114 routes to 4/118.
+
+#### CR2 — bike lanes and speed limits in the graph and the rules (M, mac) — **BUILT 2026-10-11**
+
+- **Format.** `.fvroad` v3 appends one 32-bit attribute word per arc after the packed class
+  word: bike provision (bits 0–2), lanes (bits 3–6, 0 = unknown), the rest reserved for CR3–CR5.
+  v1/v2 files load with the word zero, meaning nothing was said, which is the rule the access
+  bits already follow. Flag bit 13 records that the speed came from a posted `maxspeed`
+  rather than the class default.
+- **Provision per direction.** Each edge is two arcs. The forward arc carries the right side
+  (`cycleway:right`, else `:both`, else `cycleway`), the reverse arc the left. On a one-way
+  street, the forward arc takes the better of the two sides. Values: `track` > `lane`,
+  `buffered_lane`, `share_busway` > `shared_lane`; `separate`, `no` and `crossing` are none
+  (a `separate` lane is its own cycleway way). `opposite_*` waits for CR7.
+- **Rules.** Two new bicycle-profile keys:
+  `"bike_lane_factor": {"shared_lane": x, "lane": x, "track": x}`, multiplied onto the class
+  weight; and `"speed_factor": [[max_kph, x], ...]`, applied only when the speed was posted,
+  and not on a track. Unposted roads keep the class weight alone, because the class default
+  speed is the class weight's own assumption.
+- `fvgraph info` reports arcs per provision and the posted-speed count.
+- Acceptance: unit tests on the tag reading (sides, one-ways, precedence) and on the cost; the
+  Atlanta graph rebuilt; a route along a road with a painted lane chosen over the parallel road
+  without one; the CR1 sweep re-run with the share of route length on lanes and tracks reported.
+
+**BUILT 2026-10-11.** As specified above; lanes are stored but not yet priced (CR3–CR6 decide
+how they enter the stress tiers). City Rules: `bike_lane_factor` shared 0.9 / lane 0.6 / track
+0.45; `speed_factor` ≤40 km/h 0.9, ≤56 1.0, ≤72 1.5, faster 2.5. Kiawah's file names neither key,
+so its routes are unchanged. `atlanta.fvroad` rebuilt as v3 (same 305,222 nodes / 800,560 arcs;
+230 track, 7,432 lane, 2,243 shared-lane arcs; 62,464 arcs with a posted speed). Sweep of 150
+random 2–8 km intown trips: the share of route length on lanes and tracks rose from 4.65% (CR1)
+to 8.51%; on roads posted 45 mph or more it fell from 0.62% to 0.32%; total distance and time
+within 0.2%. Tests: road_graph_test +3, route_rules_test +2.
+
+#### CR3 — gates and barriers (M, mac) — **BUILT 2026-10-11**
+
+A barrier node with its own access tags applies to the edges on either side of it, for the
+modes it names. `barrier=gate` with `access=private` marks both adjacent arcs private;
+`access=no` (or `bicycle=no`) bars them. `bollard`, `chain` and `cycle_barrier` bar motor
+vehicles but not bikes or feet (`cycle_barrier` may cost a bike a few seconds). A plain gate
+with no access tag is passable. Reaching a gate means splitting an edge at the gate node, so the
+builder treats a barrier node as a vertex. Acceptance: Coronet Way's gate (node 5829097078)
+and one gate on a public way, each tested; the sweep re-run.
+
+**BUILT 2026-10-11.** No format change: a barrier writes the access bits the arcs already carry.
+The OSM readers deliver node tags to a sink that asks (`WantNodeTags`); pass 2 records barriers
+on road nodes. Gate family (`gate`, `lift_gate`, `swing_gate`, `sliding_gate`) is passable
+unless its access tags say otherwise; `bollard`, `block`, `chain`, `cycle_barrier` bar motor
+vehicles unless a motor tag allows them; every other barrier value (kerb, fence, toll_booth,
+...) is ignored. Same per-mode precedence as ways (`motorcar` is not read, as on ways). One
+departure from "both sides": where one way ends at the barrier and another passes through it
+(a gated driveway off a street), only the ending way takes it, so the street is not priced.
+`cycle_barrier` costs a bike nothing (no node delay exists yet; CR5's signal delay could carry
+it). Atlanta: 905 restricting barrier nodes on roads (10 guarding a branch), 1,741 edges beside
+one, 465 new vertices (305,687 nodes / 801,490 arcs). Coronet's untagged gate (5829097078)
+changes nothing, its private gate (69444466) prices both sides; East Campbell Street's gate
+(13625206981) splits a public street and prices it. Sweep, the same 150 random 2–8 km intown
+trips on the CR2 and CR3 graphs, City Rules: bicycle 1 route through a private gate → 0, foot
+0 → 0, car 3 routes through bollards/blocks → 0; distance and time within 0.06%. Two car trips
+no longer route: their end snapped inside a complex whose entrances are tagged `barrier=block`
+(Lloyd Hall Court SE), which is what the data says.
+
+#### CR4 — signed bike routes (M, mac + tiles) — **BUILT 2026-10-11**, graph and rules
+
+A `route=bicycle` relation's member ways get a bit (and its `network`, lcn/rcn/ncn, in the
+reserved bits). A profile key `"bike_route_factor"` discounts them a little. The tiles get
+`bike_route` (network) and the route's name on a `bike_route` line, so the map can draw the
+signed network and label it.
+
+**BUILT 2026-10-11** (graph and rules; the tiles half moved to CR6, which already writes
+`bike_route` from the lua, so `atlanta.mbtiles` is rebuilt once). Bits 7–8 of the v3 attribute
+word hold the strongest network per arc direction (`BikeRoute`: local = `lcn` or untagged,
+regional = `rcn`, national = `ncn`/`icn`); v3 files written earlier read none, so no version
+bump. `forward`/`backward` member roles sign one direction only; relation members (super-routes)
+are skipped. Build option `bike_routes` (on). Profile key
+`"bike_route_factor": {"local": x, "regional": x, "national": x}` multiplies the class weight
+with `bike_lane_factor`; City Rules sets 0.9 for all three, Kiawah's file names none.
+`fvgraph route` now prints the route's km on signed routes, lanes/tracks, secondary-or-busier
+roads and private ways. Atlanta: 48 relations; 7,346 local / 2,689 regional / 836 national arcs.
+Atlanta's national and regional routes (USBR 21, March to the Sea) and the "Shared Roadway"
+local routes run mostly on secondary and primary roads, so a signed route is not a comfort
+signal on its own here; the discount is kept small. Sweep, 150 trips on the CR4 graph with and
+without the key: signed share 23.85% → 28.10%, lanes/tracks 9.88% → 9.74%, secondary-or-busier
+3.32% → 3.17%, distance +1.3%, time +1.35%, 40 of 144 routes changed. Local-only (0.9 on lcn):
+27.58% signed, 3.15% busy — not different enough to split the networks.
+
+#### CR5 — surface and traffic signals (S–M, mac) — **BUILT 2026-10-11**
+
+Surface into three bits (paved, compacted/fine gravel, gravel/dirt/grass); a
+`"surface_factor"` per profile. A traffic signal costs a fixed delay at the node, in the
+profile (`"signal_seconds"`), and crossing a primary road at a signal is preferred to crossing
+it without one.
+
+**BUILT 2026-10-11.** Bits 9-10 of the v3 attribute word hold surface (paved/compacted/rough),
+bit 11 a signal at the target, bits 12-13 an unsignalled crossing of a secondary/primary/trunk
+at the target, bits 14-15 the same at the source; no version bump. Signals on road nodes are not
+vertices; a signal within 30 m along a way controls its junction; short arcs between signalled
+junctions get no bit. Keys `surface_factor`, `signal_seconds`, `crossing_seconds` (half charged
+arriving, half leaving the busier road); delays are cost only. `NodeDelayCost` /
+`ArrivalDelayCost` / `DepartureDelayCost` in fv_router.h; `ArcCost` unchanged. Build option
+`traffic_signals`. City Rules: bicycle only for signals (20 s); foot has crossing seconds but
+no signal wait (it pushed walkers onto arterials), car neither. Also fixed: the bidirectional
+reverse frontier priced arcs in their own direction (now the twin arc). Sweep, 150 trips, with
+vs without the keys: bicycle crossings 235 -> 149, signals passed 1,239 -> 818, busy share
+3.37% -> 2.91%, distance +2.7%, time +3.1%; foot crossings 203 -> 86, distance +0.05%. Details
+in PORTING.md. Open: a signal wait for foot/car needs a turn-aware model; `cycle_barrier` delay.
+
+#### CR6 — the tiles (M, tilemaker + render)
+
+`process-peregrine.lua` writes `maxspeed` (km/h, as the graph reads it, and only when posted),
+`lanes`, `bike_route` (network, strongest, from `route=bicycle` relations accepted in
+`relation_scan_function`) and the route's name on a `bike_route` line layer (from CR4), and
+keeps `cycleway` (strongest side). Atlanta Streets tiers roads on
+class, speed and provision instead of class alone: a secondary road with a lane at 35 mph reads as
+moderate, not busy. A small tool (`port/tools/bike_tags_check.py`) reads the same extract
+through both readers and lists ways where the lua's attributes and the graph builder's disagree.
+Rebuild `atlanta.mbtiles`; render light and dark at z13–z16 with pyfvw.
+
+#### CR7 — contraflow (S–M, mac)
+
+`oneway:bicycle=no`, `cycleway=opposite_lane/opposite_track`, and `cycleway:<side>:oneway=-1`
+let a bike ride against a one-way street. Direction is per arc for every mode today; this needs
+the bicycle direction separate from the motor one (a flag pair), honoured only by a bicycle
+profile.
+
+#### CR8 — restage and ride (S, phone)
+
+`stage_data.py --region atlanta`, Atlanta build on Chris's phone, a ride on a route that uses a
+painted lane and passes a gate.
 
 ### Open for Chris
 

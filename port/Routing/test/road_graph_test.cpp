@@ -134,6 +134,9 @@ std::string WriteLoopOsm() {
 }
 
 // Finds the graph node carrying a given OSM node id.
+std::string DowngradeToV2(const std::string& v3);
+std::string ReadBytes(const fs::path& path);
+
 uint32_t NodeForOsmId(const RoadGraph& g, int64_t osm_id) {
   for (uint32_t i = 0; i < g.node_count(); ++i) {
     if (g.node(i).osm_id == osm_id) return i;
@@ -1015,11 +1018,7 @@ TEST(RoadGraphFormat, RestrictionsSurviveTheRoundTripAndVersionOneStillLoads) {
   // A version-1 file has no restriction table and no count field at all. Make
   // one out of the version-2 bytes: version is the word after the 8-byte
   // magic, and the count is the last word of the header.
-  std::string bytes;
-  {
-    std::ifstream in(out, std::ios::binary);
-    bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-  }
+  std::string bytes = DowngradeToV2(ReadBytes(out));
   ASSERT_GT(bytes.size(), 36u);
   bytes[8] = 1;
   bytes.erase(32, 4);  // the restriction count
@@ -1542,4 +1541,594 @@ TEST(RoadGraphBuild, EmptyAndMissingInputsAreErrors) {
             fv::kInvalidArg);
 }
 
+// ---------------------------------------------------------------------------
+// Bike provision, posted speed and lanes
+// ---------------------------------------------------------------------------
+
+/// Eight separate two-node ways, one per tagging case, each named for it.
+std::string BikeTagsOsm() {
+  struct Case { const char* name; const char* tags; };
+  const Case cases[] = {
+      {"Right Lane Left Sharrow",
+       R"(<tag k="cycleway:right" v="lane"/><tag k="cycleway:left" v="shared_lane"/>)"},
+      {"Both Track", R"(<tag k="cycleway:both" v="track"/>)"},
+      {"Plain Lane Left No",
+       R"(<tag k="cycleway" v="lane"/><tag k="cycleway:left" v="no"/>)"},
+      {"Oneway Left Lane", R"(<tag k="oneway" v="yes"/><tag k="cycleway:left" v="lane"/>)"},
+      {"Oneway Contraflow Left",
+       R"(<tag k="oneway" v="yes"/><tag k="cycleway:left" v="lane"/>)"
+       R"(<tag k="cycleway:left:oneway" v="-1"/>)"},
+      {"Separate", R"(<tag k="cycleway:right" v="separate"/>)"},
+      {"Posted Four Lane", R"(<tag k="maxspeed" v="35 mph"/><tag k="lanes" v="4"/>)"},
+      {"Unposted", ""},
+  };
+  std::string osm = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<osm version=\"0.6\">\n";
+  int id = 1;
+  for (const Case& c : cases) {
+    const double lat = 33.80 + 0.01 * id;
+    osm += " <node id=\"" + std::to_string(2 * id) + "\" lat=\"" + std::to_string(lat) +
+           "\" lon=\"-84.40\"/>\n";
+    osm += " <node id=\"" + std::to_string(2 * id + 1) + "\" lat=\"" + std::to_string(lat) +
+           "\" lon=\"-84.39\"/>\n";
+    osm += " <way id=\"" + std::to_string(100 + id) + "\"><nd ref=\"" + std::to_string(2 * id) +
+           "\"/><nd ref=\"" + std::to_string(2 * id + 1) +
+           "\"/><tag k=\"highway\" v=\"secondary\"/><tag k=\"name\" v=\"" + c.name + "\"/>" +
+           c.tags + "</way>\n";
+    ++id;
+  }
+  return osm + "</osm>\n";
+}
+
+/// The arc of `name` ridden with the way (`with_way`) or against it.
+const fv::routing::RoadArc* NamedArc(const RoadGraph& g, const std::string& name, bool with_way) {
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    const bool reversed = (g.arc(i).flags & fv::routing::kArcGeomReversed) != 0;
+    if (g.name(g.arc(i).name) == name && reversed != with_way) return &g.arc(i);
+  }
+  return nullptr;
+}
+
+RoadGraph BuildBikeTags(fv::routing::RoadGraphBuildStats* stats = nullptr) {
+  const fs::path path = ScratchDir() / "bike-tags.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << BikeTagsOsm();
+  }
+  RoadGraph g;
+  EXPECT_EQ(fv::routing::BuildRoadGraph({path.string()}, {}, &g, stats).code, fv::kOk);
+  return g;
+}
+
+TEST(RoadGraphBike, ProvisionIsReadPerDirectionOfTravel) {
+  using fv::routing::BikeProvision;
+  const RoadGraph g = BuildBikeTags();
+  auto bike = [&](const char* name, bool with_way) {
+    const fv::routing::RoadArc* a = NamedArc(g, name, with_way);
+    EXPECT_NE(a, nullptr) << name;
+    return a != nullptr ? a->bike : BikeProvision::kNone;
+  };
+  // Right side with the way, left side against it.
+  EXPECT_EQ(bike("Right Lane Left Sharrow", true), BikeProvision::kLane);
+  EXPECT_EQ(bike("Right Lane Left Sharrow", false), BikeProvision::kSharedLane);
+  EXPECT_EQ(bike("Both Track", true), BikeProvision::kTrack);
+  EXPECT_EQ(bike("Both Track", false), BikeProvision::kTrack);
+  // A side key beats the plain one.
+  EXPECT_EQ(bike("Plain Lane Left No", true), BikeProvision::kLane);
+  EXPECT_EQ(bike("Plain Lane Left No", false), BikeProvision::kNone);
+  // On a one-way street a left-side lane is ridden with the traffic, unless it
+  // is tagged as contraflow.
+  EXPECT_EQ(bike("Oneway Left Lane", true), BikeProvision::kLane);
+  EXPECT_EQ(bike("Oneway Contraflow Left", true), BikeProvision::kNone);
+  // A side mapped as its own way is not provision on this one.
+  EXPECT_EQ(bike("Separate", true), BikeProvision::kNone);
+}
+
+TEST(RoadGraphBike, PostedSpeedAndLanesAreRecorded) {
+  fv::routing::RoadGraphBuildStats stats;
+  const RoadGraph g = BuildBikeTags(&stats);
+  const fv::routing::RoadArc* posted = NamedArc(g, "Posted Four Lane", true);
+  const fv::routing::RoadArc* unposted = NamedArc(g, "Unposted", true);
+  ASSERT_NE(posted, nullptr);
+  ASSERT_NE(unposted, nullptr);
+  EXPECT_TRUE(posted->speed_posted());
+  EXPECT_EQ(posted->speed_kph, 56);
+  EXPECT_EQ(posted->lanes, 4);
+  EXPECT_FALSE(unposted->speed_posted());
+  EXPECT_EQ(unposted->speed_kph, fv::routing::DefaultSpeedKph(RoadClass::kSecondary));
+  EXPECT_EQ(unposted->lanes, 0);
+  EXPECT_EQ(stats.arcs_speed_posted, 2);  // both arcs of the one posted way
+  EXPECT_EQ(stats.arcs_bike_track, 2);
+  EXPECT_EQ(stats.arcs_bike_lane, 3);
+  EXPECT_EQ(stats.arcs_bike_shared_lane, 1);
+}
+
+/// `v3` with each arc's attribute word removed and the version set to 2.
+/// Header: 8-byte magic, version, flags, then node, arc, geometry, name and
+/// restriction counts; then nodes (16 bytes), the arc index, and the arcs.
+std::string DowngradeToV2(const std::string& v3) {
+  auto u32 = [&](size_t at) {
+    uint32_t v = 0;
+    for (int i = 3; i >= 0; --i) v = (v << 8) | static_cast<uint8_t>(v3[at + i]);
+    return v;
+  };
+  const uint32_t nodes = u32(16), arcs = u32(20);
+  const size_t arcs_at = 36 + static_cast<size_t>(nodes) * 16 + (static_cast<size_t>(nodes) + 1) * 4;
+  std::string out = v3.substr(0, arcs_at);
+  for (uint32_t i = 0; i < arcs; ++i) out.append(v3, arcs_at + static_cast<size_t>(i) * 28, 24);
+  out.append(v3, arcs_at + static_cast<size_t>(arcs) * 28, std::string::npos);
+  out[8] = 2;
+  return out;
+}
+
+std::string ReadBytes(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+TEST(RoadGraphFormat, BikeAttributesSurviveTheRoundTripAndVersionTwoReadsThemClear) {
+  const RoadGraph g = BuildBikeTags();
+  const fs::path path = ScratchDir() / "bike.fvroad";
+  ASSERT_EQ(g.Save(path.string()).code, fv::kOk);
+  RoadGraph back;
+  ASSERT_EQ(RoadGraph::Load(path.string(), &back).code, fv::kOk);
+  ASSERT_EQ(back.arc_count(), g.arc_count());
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    EXPECT_EQ(back.arc(i).bike, g.arc(i).bike) << "arc " << i;
+    EXPECT_EQ(back.arc(i).lanes, g.arc(i).lanes) << "arc " << i;
+    EXPECT_EQ(back.arc(i).flags, g.arc(i).flags) << "arc " << i;
+  }
+
+  const fs::path v2 = ScratchDir() / "bike-v2.fvroad";
+  {
+    const std::string bytes = DowngradeToV2(ReadBytes(path));
+    std::ofstream o(v2, std::ios::binary | std::ios::trunc);
+    o.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+  RoadGraph old;
+  ASSERT_EQ(RoadGraph::Load(v2.string(), &old).code, fv::kOk);
+  ASSERT_EQ(old.arc_count(), g.arc_count());
+  for (uint32_t i = 0; i < old.arc_count(); ++i) {
+    EXPECT_EQ(old.arc(i).bike, fv::routing::BikeProvision::kNone) << "arc " << i;
+    EXPECT_EQ(old.arc(i).lanes, 0) << "arc " << i;
+    EXPECT_EQ(old.arc(i).target, g.arc(i).target) << "arc " << i;
+    EXPECT_EQ(old.arc(i).speed_kph, g.arc(i).speed_kph) << "arc " << i;
+  }
+}
+
 }  // namespace
+
+// --- CR3: barrier nodes -----------------------------------------------------
+
+// Main Street (201) runs 1-2-3-4-5 with a private gate at 2 and a bollard at
+// 4; Stub (204) makes 3 a junction. Side Road (202) runs 5-6-7 through an
+// untagged gate at 6, then Gate Lane (203) 7-8-9-10-11 through a gate barred
+// to all but feet, and a kerb at 10. Branch Street (206) passes through a
+// private gate at 12 where Spur (205) begins.
+const char* kBarrierOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4000000"/>
+ <node id="2" lat="33.8000000" lon="-84.3990000">
+  <tag k="barrier" v="gate"/><tag k="access" v="private"/>
+ </node>
+ <node id="3" lat="33.8000000" lon="-84.3980000"/>
+ <node id="4" lat="33.8000000" lon="-84.3970000"><tag k="barrier" v="bollard"/></node>
+ <node id="5" lat="33.8000000" lon="-84.3960000"/>
+ <node id="6" lat="33.8010000" lon="-84.3960000"><tag k="barrier" v="gate"/></node>
+ <node id="7" lat="33.8020000" lon="-84.3960000"/>
+ <node id="8" lat="33.8020000" lon="-84.3970000">
+  <tag k="barrier" v="lift_gate"/><tag k="access" v="no"/><tag k="foot" v="yes"/>
+ </node>
+ <node id="9" lat="33.8020000" lon="-84.3980000"/>
+ <node id="10" lat="33.8020000" lon="-84.3990000"><tag k="barrier" v="kerb"/></node>
+ <node id="11" lat="33.8020000" lon="-84.4000000"/>
+ <node id="12" lat="33.8040000" lon="-84.3980000">
+  <tag k="barrier" v="gate"/><tag k="access" v="private"/>
+ </node>
+ <node id="13" lat="33.8040000" lon="-84.3990000"/>
+ <node id="14" lat="33.8040000" lon="-84.3970000"/>
+ <node id="15" lat="33.8050000" lon="-84.3980000"/>
+ <node id="16" lat="33.7990000" lon="-84.3980000"/>
+ <way id="201">
+  <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/><nd ref="5"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Main Street"/>
+ </way>
+ <way id="204">
+  <nd ref="3"/><nd ref="16"/><tag k="highway" v="residential"/>
+ </way>
+ <way id="202">
+  <nd ref="5"/><nd ref="6"/><nd ref="7"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Side Road"/>
+ </way>
+ <way id="203">
+  <nd ref="7"/><nd ref="8"/><nd ref="9"/><nd ref="10"/><nd ref="11"/>
+  <tag k="highway" v="service"/><tag k="name" v="Gate Lane"/>
+ </way>
+ <way id="206">
+  <nd ref="9"/><nd ref="13"/><nd ref="12"/><nd ref="14"/>
+  <tag k="highway" v="residential"/><tag k="name" v="Branch Street"/>
+ </way>
+ <way id="205">
+  <nd ref="12"/><nd ref="15"/>
+  <tag k="highway" v="service"/><tag k="name" v="Spur"/>
+ </way>
+</osm>
+)";
+
+TEST(RoadGraphBarriers, ABarrierNodeSetsTheAccessOfTheArcsBesideIt) {
+  const fs::path path = ScratchDir() / "barriers.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << kBarrierOsm;
+  }
+  RoadGraph g;
+  fv::routing::RoadGraphBuildOptions options;
+  options.include_non_driveable = true;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, options, &g, &stats).code, fv::kOk);
+
+  // Gates 2, 8 and 12 and the bollard at 4 restrict someone; the plain gate
+  // at 6 and the kerb at 10 do not, so they stay shape points.
+  EXPECT_EQ(stats.barrier_nodes, 4);
+  EXPECT_EQ(stats.barrier_branches, 1);  // 12: Branch Street passes, Spur ends
+  // 1-2, 2-3, 3-4, 4-5, 7-8, 8-9, 12-15.
+  EXPECT_EQ(stats.edges_at_barrier, 7);
+  for (int64_t plain : {6, 10}) {
+    for (uint32_t i = 0; i < g.node_count(); ++i) EXPECT_NE(g.node(i).osm_id, plain);
+  }
+
+  auto arc = [&](int64_t a, int64_t b) {
+    const fv::routing::RoadArc* found = ArcBetween(g, NodeForOsmId(g, a), NodeForOsmId(g, b));
+    EXPECT_NE(found, nullptr) << a << "->" << b;
+    return found != nullptr ? *found : fv::routing::RoadArc{};
+  };
+
+  // A private gate prices both sides for every mode, both directions.
+  for (auto ab : {std::make_pair(1, 2), std::make_pair(2, 1), std::make_pair(2, 3),
+                  std::make_pair(3, 2)}) {
+    const fv::routing::RoadArc a = arc(ab.first, ab.second);
+    EXPECT_TRUE(a.motor_vehicle_private() && a.bicycle_private() && a.foot_private())
+        << ab.first << "->" << ab.second;
+    EXPECT_TRUE(a.motor_vehicle_allowed() && a.bicycle_allowed() && a.foot_allowed());
+  }
+
+  // A bollard bars cars only.
+  for (auto ab : {std::make_pair(3, 4), std::make_pair(5, 4)}) {
+    const fv::routing::RoadArc a = arc(ab.first, ab.second);
+    EXPECT_FALSE(a.motor_vehicle_allowed());
+    EXPECT_TRUE(a.bicycle_allowed());
+    EXPECT_TRUE(a.foot_allowed());
+    EXPECT_FALSE(a.bicycle_private());
+  }
+
+  // The plain gate is passable: Side Road is one untouched edge.
+  const fv::routing::RoadArc side = arc(5, 7);
+  EXPECT_EQ(side.flags & (fv::routing::kArcNoMotorVehicle | fv::routing::kArcNoBicycle |
+                          fv::routing::kArcPrivateMotorVehicle),
+            0);
+
+  // access=no + foot=yes: a footpath through a closed gate.
+  for (auto ab : {std::make_pair(7, 8), std::make_pair(9, 8)}) {
+    const fv::routing::RoadArc a = arc(ab.first, ab.second);
+    EXPECT_FALSE(a.motor_vehicle_allowed());
+    EXPECT_FALSE(a.bicycle_allowed());
+    EXPECT_TRUE(a.foot_allowed());
+  }
+  // The kerb is not a barrier to anyone.
+  EXPECT_TRUE(arc(9, 11).bicycle_allowed());
+  EXPECT_FALSE(arc(9, 11).bicycle_private());
+
+  // The gate at 12 guards the Spur, not the street it stands on.
+  EXPECT_TRUE(arc(12, 15).bicycle_private());
+  EXPECT_FALSE(arc(9, 12).bicycle_private());
+  EXPECT_FALSE(arc(12, 14).bicycle_private());
+}
+
+TEST(RoadGraphBarriers, IgnoringAccessIgnoresBarriers) {
+  const fs::path path = ScratchDir() / "barriers-ignored.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << kBarrierOsm;
+  }
+  RoadGraph g;
+  fv::routing::RoadGraphBuildOptions options;
+  options.include_non_driveable = true;
+  options.honor_access = false;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, options, &g, &stats).code, fv::kOk);
+  EXPECT_EQ(stats.barrier_nodes, 0);
+  EXPECT_EQ(stats.edges_at_barrier, 0);
+  for (uint32_t i = 0; i < g.node_count(); ++i) EXPECT_NE(g.node(i).osm_id, 2);
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    EXPECT_EQ(g.arc(i).flags & (fv::routing::kArcNoBicycle | fv::routing::kArcNoFoot |
+                                fv::routing::kArcNoMotorVehicle |
+                                fv::routing::kArcPrivateBicycle | fv::routing::kArcPrivateFoot |
+                                fv::routing::kArcPrivateMotorVehicle),
+              0)
+        << "arc " << i;
+  }
+}
+
+// Atlanta's own gates. Coronet Way NW is entered past a private gate at the
+// public stub's end (69444466); the private service road off it starts at an
+// untagged gate (5829097078). East Campbell Street is public with a private
+// gate part way along (13625206981).
+TEST(RoadGraphBarriers, AtlantaGates) {
+  const std::string pbf = KiawahPath("atlanta.osm.pbf");
+  if (!fs::exists(pbf)) GTEST_SKIP() << "no " << pbf;
+  RoadGraph g;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({pbf}, {}, &g, &stats).code, fv::kOk);
+  EXPECT_GT(stats.barrier_nodes, 800);  // measured 905
+
+  auto arcs_at = [&](int64_t osm_id) {
+    std::vector<fv::routing::RoadArc> out;
+    const uint32_t n = NodeForOsmId(g, osm_id);
+    for (uint32_t a = g.arc_begin(n); a < g.arc_end(n); ++a) out.push_back(g.arc(a));
+    return out;
+  };
+
+  const auto coronet = arcs_at(69444466);
+  ASSERT_EQ(coronet.size(), 2u);
+  for (const auto& a : coronet) EXPECT_TRUE(a.bicycle_private() && a.motor_vehicle_private());
+
+  // The untagged gate adds nothing: the public one-way service road beside it
+  // stays public, and the private road stays private on its own tags.
+  int public_sides = 0;
+  for (const auto& a : arcs_at(5829097078)) {
+    if (!a.bicycle_private()) ++public_sides;
+  }
+  EXPECT_GE(public_sides, 1);
+
+  const auto campbell = arcs_at(13625206981);
+  ASSERT_EQ(campbell.size(), 2u);  // the gate split the street
+  for (const auto& a : campbell) {
+    EXPECT_TRUE(a.bicycle_private() && a.foot_private() && a.motor_vehicle_private());
+    EXPECT_TRUE(a.bicycle_allowed());
+  }
+}
+
+// --- CR4: signed bike routes ------------------------------------------------
+
+// Way 501 (1-2) is in a regional and a national route; 502 (2-3) is a
+// `forward` member of a local route; 503 (3-4) a `backward` member of a
+// regional one; 504 (4-1) is in no route. The super-route (relation 904)
+// names a relation and a way it does not otherwise carry, and only the way
+// counts.
+const char* kBikeRouteOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4000000"/>
+ <node id="2" lat="33.8000000" lon="-84.3900000"/>
+ <node id="3" lat="33.8100000" lon="-84.3900000"/>
+ <node id="4" lat="33.8100000" lon="-84.4000000"/>
+ <way id="501"><nd ref="1"/><nd ref="2"/><tag k="highway" v="residential"/></way>
+ <way id="502"><nd ref="2"/><nd ref="3"/><tag k="highway" v="residential"/></way>
+ <way id="503"><nd ref="3"/><nd ref="4"/><tag k="highway" v="residential"/></way>
+ <way id="504"><nd ref="4"/><nd ref="1"/><tag k="highway" v="residential"/></way>
+ <relation id="901">
+  <member type="way" ref="501" role=""/><member type="way" ref="503" role="backward"/>
+  <tag k="type" v="route"/><tag k="route" v="bicycle"/><tag k="network" v="rcn"/>
+ </relation>
+ <relation id="902">
+  <member type="way" ref="501" role=""/>
+  <tag k="type" v="route"/><tag k="route" v="bicycle"/><tag k="network" v="ncn"/>
+ </relation>
+ <relation id="903">
+  <member type="way" ref="502" role="forward"/>
+  <tag k="type" v="route"/><tag k="route" v="bicycle"/>
+ </relation>
+ <relation id="905">
+  <member type="way" ref="504" role=""/>
+  <tag k="type" v="route"/><tag k="route" v="hiking"/>
+ </relation>
+ <relation id="904">
+  <member type="relation" ref="901" role=""/>
+  <tag k="type" v="route"/><tag k="route" v="bicycle"/><tag k="network" v="icn"/>
+ </relation>
+</osm>
+)";
+
+TEST(RoadGraphBikeRoutes, RelationsMarkTheirWaysPerDirection) {
+  const fs::path path = ScratchDir() / "bike-routes.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << kBikeRouteOsm;
+  }
+  RoadGraph g;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, {}, &g, &stats).code, fv::kOk);
+  EXPECT_EQ(stats.bike_route_relations, 4);
+
+  using fv::routing::BikeRoute;
+  auto route = [&](int64_t a, int64_t b) {
+    const fv::routing::RoadArc* arc = ArcBetween(g, NodeForOsmId(g, a), NodeForOsmId(g, b));
+    EXPECT_NE(arc, nullptr) << a << "->" << b;
+    return arc != nullptr ? arc->bike_route : BikeRoute::kNone;
+  };
+  EXPECT_EQ(route(1, 2), BikeRoute::kNational);  // the stronger of rcn and ncn
+  EXPECT_EQ(route(2, 1), BikeRoute::kNational);
+  EXPECT_EQ(route(2, 3), BikeRoute::kLocal);  // no network tag reads as local
+  EXPECT_EQ(route(3, 2), BikeRoute::kNone);   // `forward` only
+  EXPECT_EQ(route(3, 4), BikeRoute::kNone);   // `backward` only
+  EXPECT_EQ(route(4, 3), BikeRoute::kRegional);
+  EXPECT_EQ(route(4, 1), BikeRoute::kNone);  // a hiking route
+  EXPECT_EQ(route(1, 4), BikeRoute::kNone);
+  EXPECT_EQ(stats.arcs_bike_route_national, 2);
+  EXPECT_EQ(stats.arcs_bike_route_regional, 1);
+  EXPECT_EQ(stats.arcs_bike_route_local, 1);
+
+  // Bits 7-8 of the attribute word survive a save and load.
+  const fs::path saved = ScratchDir() / "bike-routes.fvroad";
+  ASSERT_EQ(g.Save(saved.string()).code, fv::kOk);
+  RoadGraph back;
+  ASSERT_EQ(RoadGraph::Load(saved.string(), &back).code, fv::kOk);
+  ASSERT_EQ(back.arc_count(), g.arc_count());
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    EXPECT_EQ(back.arc(i).bike_route, g.arc(i).bike_route) << "arc " << i;
+    EXPECT_EQ(back.arc(i).bike, g.arc(i).bike) << "arc " << i;
+    EXPECT_EQ(back.arc(i).lanes, g.arc(i).lanes) << "arc " << i;
+  }
+
+  fv::routing::RoadGraphBuildOptions off;
+  off.bike_routes = false;
+  RoadGraph plain;
+  fv::routing::RoadGraphBuildStats plain_stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, off, &plain, &plain_stats).code,
+            fv::kOk);
+  EXPECT_EQ(plain_stats.bike_route_relations, 0);
+  for (uint32_t i = 0; i < plain.arc_count(); ++i) {
+    EXPECT_EQ(plain.arc(i).bike_route, BikeRoute::kNone);
+  }
+}
+
+// --- CR5: surface, traffic signals and crossings -----------------------------
+
+// A primary road 1-2-3-5-4 is crossed by residential streets at 2 (signal on
+// the junction), 3 (signal on the approach node 13, ~11 m away) and 4 (no
+// signal); 5 is a midblock signal ~90 m from either junction. Further north, a
+// residential street crosses a dual carriageway (two primary ways ~14 m apart)
+// at 20/21, both signalled, and again at 30/31 without signals.
+const char* kSignalOsm = R"(<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6">
+ <node id="1" lat="33.8000000" lon="-84.4000000"/>
+ <node id="2" lat="33.8000000" lon="-84.3980000"><tag k="highway" v="traffic_signals"/></node>
+ <node id="3" lat="33.8000000" lon="-84.3960000"/>
+ <node id="5" lat="33.8000000" lon="-84.3950000"><tag k="highway" v="traffic_signals"/></node>
+ <node id="4" lat="33.8000000" lon="-84.3940000"/>
+ <node id="10" lat="33.8020000" lon="-84.3980000"/>
+ <node id="11" lat="33.7980000" lon="-84.3980000"/>
+ <node id="12" lat="33.8020000" lon="-84.3960000"/>
+ <node id="13" lat="33.8001000" lon="-84.3960000">
+  <tag k="highway" v="crossing"/><tag k="crossing" v="traffic_signals"/></node>
+ <node id="14" lat="33.7980000" lon="-84.3960000"/>
+ <node id="15" lat="33.8020000" lon="-84.3940000"/>
+ <node id="16" lat="33.7980000" lon="-84.3940000"/>
+ <way id="701"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="5"/><nd ref="4"/>
+  <tag k="highway" v="primary"/><tag k="surface" v="moon_dust"/></way>
+ <way id="702"><nd ref="10"/><nd ref="2"/><nd ref="11"/>
+  <tag k="highway" v="residential"/><tag k="surface" v="gravel"/></way>
+ <way id="703"><nd ref="12"/><nd ref="13"/><nd ref="3"/><nd ref="14"/>
+  <tag k="highway" v="residential"/><tag k="surface" v="asphalt"/></way>
+ <way id="704"><nd ref="15"/><nd ref="4"/><nd ref="16"/>
+  <tag k="highway" v="residential"/><tag k="surface" v="compacted"/></way>
+
+ <node id="20" lat="33.8100000" lon="-84.4000000"><tag k="highway" v="traffic_signals"/></node>
+ <node id="21" lat="33.8101300" lon="-84.4000000"><tag k="highway" v="traffic_signals"/></node>
+ <node id="22" lat="33.8090000" lon="-84.4000000"/>
+ <node id="23" lat="33.8110000" lon="-84.4000000"/>
+ <node id="24" lat="33.8100000" lon="-84.4010000"/>
+ <node id="25" lat="33.8100000" lon="-84.3990000"/>
+ <node id="26" lat="33.8101300" lon="-84.4010000"/>
+ <node id="27" lat="33.8101300" lon="-84.3990000"/>
+ <way id="706"><nd ref="22"/><nd ref="20"/><nd ref="21"/><nd ref="23"/>
+  <tag k="highway" v="residential"/></way>
+ <way id="707"><nd ref="24"/><nd ref="20"/><nd ref="25"/>
+  <tag k="highway" v="primary"/><tag k="oneway" v="yes"/></way>
+ <way id="708"><nd ref="27"/><nd ref="21"/><nd ref="26"/>
+  <tag k="highway" v="primary"/><tag k="oneway" v="yes"/></way>
+
+ <node id="30" lat="33.8100000" lon="-84.4100000"/>
+ <node id="31" lat="33.8101300" lon="-84.4100000"/>
+ <node id="32" lat="33.8090000" lon="-84.4100000"/>
+ <node id="33" lat="33.8110000" lon="-84.4100000"/>
+ <node id="34" lat="33.8100000" lon="-84.4110000"/>
+ <node id="35" lat="33.8100000" lon="-84.4090000"/>
+ <node id="36" lat="33.8101300" lon="-84.4110000"/>
+ <node id="37" lat="33.8101300" lon="-84.4090000"/>
+ <way id="716"><nd ref="32"/><nd ref="30"/><nd ref="31"/><nd ref="33"/>
+  <tag k="highway" v="residential"/></way>
+ <way id="717"><nd ref="34"/><nd ref="30"/><nd ref="35"/>
+  <tag k="highway" v="primary"/><tag k="oneway" v="yes"/></way>
+ <way id="718"><nd ref="37"/><nd ref="31"/><nd ref="36"/>
+  <tag k="highway" v="primary"/><tag k="oneway" v="yes"/></way>
+</osm>
+)";
+
+TEST(RoadGraphSignals, SignalsCrossingsAndSurface) {
+  const fs::path path = ScratchDir() / "signals.osm";
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << kSignalOsm;
+  }
+  RoadGraph g;
+  fv::routing::RoadGraphBuildStats stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, {}, &g, &stats).code, fv::kOk);
+  EXPECT_EQ(stats.signal_nodes, 5);         // 2, 13, 5, 20, 21
+  EXPECT_EQ(stats.signalled_junctions, 4);  // 2, 3 (from 13), 20, 21
+
+  using fv::routing::RoadCrossing;
+  using fv::routing::RoadSurface;
+  auto arc = [&](int64_t a, int64_t b) -> fv::routing::RoadArc {
+    const fv::routing::RoadArc* p = ArcBetween(g, NodeForOsmId(g, a), NodeForOsmId(g, b));
+    EXPECT_NE(p, nullptr) << a << "->" << b;
+    return p != nullptr ? *p : fv::routing::RoadArc{};
+  };
+
+  // A signal on the junction, and one on the approach, control the junction
+  // for every arc into it.
+  EXPECT_TRUE(arc(10, 2).signal);
+  EXPECT_TRUE(arc(11, 2).signal);
+  EXPECT_TRUE(arc(1, 2).signal);
+  EXPECT_TRUE(arc(12, 3).signal);
+  EXPECT_TRUE(arc(14, 3).signal);
+  EXPECT_FALSE(arc(2, 10).signal);
+  EXPECT_FALSE(arc(3, 12).signal);  // 13 is ~200 m from 12
+  // The midblock signal at 5 is too far from 4 to control it; 4 -> 3 is
+  // signalled by 13, not by 5.
+  EXPECT_FALSE(arc(3, 4).signal);
+  EXPECT_TRUE(arc(4, 3).signal);
+
+  // At 4 the residential street meets the primary with no signal; the primary
+  // itself meets nothing busier.
+  EXPECT_EQ(arc(15, 4).crossing, RoadCrossing::kPrimary);
+  EXPECT_EQ(arc(16, 4).crossing, RoadCrossing::kPrimary);
+  EXPECT_EQ(arc(3, 4).crossing, RoadCrossing::kNone);
+  EXPECT_EQ(arc(10, 2).crossing, RoadCrossing::kNone);  // signalled instead
+
+  // Dual carriageway: the median arc is part of the junction just entered.
+  EXPECT_TRUE(arc(22, 20).signal);
+  EXPECT_FALSE(arc(20, 21).signal);
+  EXPECT_FALSE(arc(21, 20).signal);
+  EXPECT_TRUE(arc(23, 21).signal);
+  EXPECT_EQ(arc(32, 30).crossing, RoadCrossing::kPrimary);
+  EXPECT_EQ(arc(30, 31).crossing, RoadCrossing::kNone);
+  EXPECT_EQ(arc(33, 31).crossing, RoadCrossing::kPrimary);
+  EXPECT_EQ(arc(31, 30).crossing, RoadCrossing::kNone);
+  // Leaving a junction carries the crossing its twin arrives with.
+  EXPECT_EQ(arc(4, 15).crossing_from, RoadCrossing::kPrimary);
+  EXPECT_EQ(arc(4, 3).crossing_from, RoadCrossing::kNone);
+  EXPECT_EQ(arc(31, 33).crossing_from, RoadCrossing::kPrimary);
+  EXPECT_EQ(arc(30, 31).crossing_from, RoadCrossing::kNone);
+
+  EXPECT_EQ(arc(10, 2).surface, RoadSurface::kRough);
+  EXPECT_EQ(arc(2, 10).surface, RoadSurface::kRough);
+  EXPECT_EQ(arc(12, 3).surface, RoadSurface::kPaved);
+  EXPECT_EQ(arc(15, 4).surface, RoadSurface::kCompacted);
+  EXPECT_EQ(arc(1, 2).surface, RoadSurface::kUnknown);
+
+  // Bits 9-15 of the attribute word survive a save and load.
+  const fs::path saved = ScratchDir() / "signals.fvroad";
+  ASSERT_EQ(g.Save(saved.string()).code, fv::kOk);
+  RoadGraph back;
+  ASSERT_EQ(RoadGraph::Load(saved.string(), &back).code, fv::kOk);
+  ASSERT_EQ(back.arc_count(), g.arc_count());
+  for (uint32_t i = 0; i < g.arc_count(); ++i) {
+    EXPECT_EQ(back.arc(i).surface, g.arc(i).surface) << "arc " << i;
+    EXPECT_EQ(back.arc(i).signal, g.arc(i).signal) << "arc " << i;
+    EXPECT_EQ(back.arc(i).crossing, g.arc(i).crossing) << "arc " << i;
+    EXPECT_EQ(back.arc(i).crossing_from, g.arc(i).crossing_from) << "arc " << i;
+    EXPECT_EQ(back.arc(i).bike_route, g.arc(i).bike_route) << "arc " << i;
+  }
+
+  fv::routing::RoadGraphBuildOptions off;
+  off.traffic_signals = false;
+  RoadGraph plain;
+  fv::routing::RoadGraphBuildStats plain_stats;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({path.string()}, off, &plain, &plain_stats).code,
+            fv::kOk);
+  EXPECT_EQ(plain_stats.signal_nodes, 0);
+  EXPECT_EQ(plain.node_count(), g.node_count());  // a signal is never a vertex
+  for (uint32_t i = 0; i < plain.arc_count(); ++i) {
+    EXPECT_FALSE(plain.arc(i).signal);
+    EXPECT_EQ(plain.arc(i).crossing, RoadCrossing::kNone);
+  }
+}

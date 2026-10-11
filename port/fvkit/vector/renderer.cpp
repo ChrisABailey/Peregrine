@@ -433,7 +433,8 @@ PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
 
 std::vector<PlacedTextRun> PlaceTextAlongPath(
     const std::vector<SurfacePoint>& path, const std::vector<double>& advances,
-    double spacing_px, double max_angle_deg, double offset_px) {
+    double spacing_px, double max_angle_deg, double offset_px,
+    bool keep_upright) {
   std::vector<PlacedTextRun> out;
   if (path.size() < 2 || advances.empty()) return out;
 
@@ -450,7 +451,8 @@ std::vector<PlacedTextRun> PlaceTextAlongPath(
   const double chord_y = path.back().y - path.front().y;
   // Ties (a due-north/south road) read UPWARD, the cartographic convention;
   // screen y grows downward, so upward is a negative chord_y.
-  const bool reverse = chord_x < 0.0 || (chord_x == 0.0 && chord_y > 0.0);
+  const bool reverse =
+      keep_upright && (chord_x < 0.0 || (chord_x == 0.0 && chord_y > 0.0));
   std::vector<SurfacePoint> fwd;
   if (reverse) fwd.assign(path.rbegin(), path.rend());
   const std::vector<SurfacePoint>& p = reverse ? fwd : path;
@@ -1036,12 +1038,14 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
             // is laid before clipping, and here it also decides whether the
             // name FITS, which the clipped fragment cannot answer.
             std::vector<double> adv;
+            const std::vector<std::string> glyphs = SplitGlyphs(sr.label.text);
             if (GlyphAdvances(canvas, sr.label.text, ts, &adv)) {
               for (const PlacedTextRun& run : PlaceTextAlongPath(
                        proj_part, adv, sr.label.spacing_px,
                        sr.label.max_angle_deg,
                        sr.label.offset_px +
-                           AlongPathAnchorShift(sr.label, ts.size))) {
+                           AlongPathAnchorShift(sr.label, ts.size),
+                       sr.label.keep_upright)) {
                 InkBox ink;
                 bool drew = false;
                 // The WHOLE run's halo goes down before ANY of its fill. Per
@@ -1055,7 +1059,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                         g.x > size.width + ts.size * 2 ||
                         g.y > size.height + ts.size * 2)
                       continue;
-                    const std::string gs = sr.label.text.substr(g.index, 1);
+                    const std::string& gs = glyphs[g.index];
                     for (int i = 0; i < halo_n; ++i)
                       canvas->DrawRotatedTextString(gs, g.x + hdx[i],
                                                     g.y + hdy[i], g.angle_rad,
@@ -1069,7 +1073,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                       g.y > size.height + ts.size * 2)
                     continue;
                   canvas->DrawRotatedTextString(
-                      sr.label.text.substr(g.index, 1), g.x, g.y, g.angle_rad,
+                      glyphs[g.index], g.x, g.y, g.angle_rad,
                       ts);
                   drew = true;
                   if (pick_enabled_) {

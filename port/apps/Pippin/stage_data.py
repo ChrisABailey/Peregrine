@@ -136,6 +136,8 @@ ATLANTA_INI = {
     "points.seed": '"atlanta.fvpoints"',
     "search.initial_text": '"BeltLine"',
     "routing.graph": '"atlanta.fvroad"',
+    # City Rules: private ways are a last resort, not the island's network.
+    "routing.rules": '"route-weights-city.json"',
     # Kiawah Trails is drawn for an island's bike paths; a city grid needs
     # every street's riding comfort, the interstates and the parks.
     "osm.style": '"atlanta-streets.json"',
@@ -202,6 +204,9 @@ REGIONS = {
              "the map: tilemaker, peregrine profile, over the Atlanta cut"),
         Item("testdata/OSM/atlanta.fvroad", "atlanta.fvroad",
              "the road graph, built by fvgraph HONOURING access"),
+        Item("port/Routing/rules/route-weights-city.json",
+             "route-weights-city.json",
+             "City Rules: the walk and cycle profiles for a city grid"),
         Item("port/Osm/styles/atlanta-streets.json", "atlanta-streets.json",
              "the look the Atlanta pippin.ini selects: Atlanta Streets"),
         Item("port/Osm/styles/atlanta-streets-dark.json",

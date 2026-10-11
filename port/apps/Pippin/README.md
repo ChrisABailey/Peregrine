@@ -1967,11 +1967,11 @@ osmium extract -b -84.61,33.67,-84.25,33.97 testdata/OSM/us-south-260728.osm.pbf
 build/port/Routing/fvgraph build -o testdata/OSM/atlanta.fvroad testdata/OSM/atlanta.osm.pbf
 ```
 
-and the tiles, run from the tilemaker checkout because its config names the coastline by a
-relative path:
+and the tiles, with the tracked profile in `port/Osm/`, run from the tilemaker checkout because its
+config names the coastline by a relative path:
 
 ```sh
-./tilemaker --input $FVW/testdata/OSM/atlanta.osm.pbf --output $FVW/testdata/OSM/atlanta.mbtiles --config config-peregrine.json --process process-peregrine.lua --bbox -84.61,33.67,-84.25,33.97
+cd ~/Documents/Source/tilemaker && ./tilemaker --input $FVW/testdata/OSM/atlanta.osm.pbf --output $FVW/testdata/OSM/atlanta.mbtiles --config $FVW/port/Osm/config-peregrine.json --process $FVW/port/Osm/process-peregrine.lua --bbox -84.61,33.67,-84.25,33.97
 ```
 
 The pack is ~52 MB (23 MB of tiles, 29 MB of graph) against Kiawah's 4.

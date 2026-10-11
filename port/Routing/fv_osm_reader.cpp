@@ -29,9 +29,13 @@ struct XmlState {
   bool want_nodes = true;
   bool want_ways = true;
   bool want_relations = false;
+  bool want_node_tags = false;
 
+  bool in_node = false;  // only while collecting a wanted node's tags
   bool in_way = false;
   bool in_relation = false;
+  int64_t node_id = 0;
+  std::vector<OsmTag> node_tags;
   OsmWay way;
   OsmRelation relation;
   std::string error;
@@ -64,7 +68,12 @@ void XMLCALL XmlStart(void* user, const char* name, const char** atts) {
     // A deleted node in a full-history dump carries no lat/lon; skip it
     // rather than inventing 0,0 (which is a real place in the Atlantic).
     if (id == nullptr || lat == nullptr || lon == nullptr) return;
-    st->sink->Node(std::strtoll(id, nullptr, 10), std::atof(lat), std::atof(lon));
+    st->node_id = std::strtoll(id, nullptr, 10);
+    st->sink->Node(st->node_id, std::atof(lat), std::atof(lon));
+    if (st->want_node_tags) {
+      st->in_node = true;
+      st->node_tags.clear();
+    }
     return;
   }
 
@@ -108,12 +117,14 @@ void XMLCALL XmlStart(void* user, const char* name, const char** atts) {
     return;
   }
 
-  if ((st->in_way || st->in_relation) && std::strcmp(name, "tag") == 0) {
+  if ((st->in_node || st->in_way || st->in_relation) && std::strcmp(name, "tag") == 0) {
     const char* k = Attr(atts, "k");
     const char* v = Attr(atts, "v");
     if (k == nullptr || v == nullptr) return;
-    // A <way> and a <relation> never nest, so whichever flag is set owns it.
-    if (st->in_way) {
+    // Elements never nest, so whichever flag is set owns the tag.
+    if (st->in_node) {
+      st->node_tags.push_back(OsmTag{k, v});
+    } else if (st->in_way) {
       st->way.tags.push_back(OsmTag{k, v});
     } else {
       st->relation.tags.push_back(OsmTag{k, v});
@@ -124,6 +135,11 @@ void XMLCALL XmlStart(void* user, const char* name, const char** atts) {
 
 void XMLCALL XmlEnd(void* user, const char* name) {
   XmlState* st = static_cast<XmlState*>(user);
+  if (st->in_node && std::strcmp(name, "node") == 0) {
+    st->in_node = false;
+    if (!st->node_tags.empty()) st->sink->NodeTags(st->node_id, st->node_tags);
+    return;
+  }
   if (st->in_way && std::strcmp(name, "way") == 0) {
     st->in_way = false;
     st->sink->Way(st->way);
@@ -195,6 +211,7 @@ class PbfReader {
     want_nodes_ = sink_->WantNodes();
     want_ways_ = sink_->WantWays();
     want_relations_ = sink_->WantRelations();
+    want_node_tags_ = want_nodes_ && sink_->WantNodeTags();
     for (;;) {
       uint32_t header_len = 0;
       if (!ReadBigEndian32(&header_len)) break;  // clean EOF
@@ -354,21 +371,44 @@ class PbfReader {
 
   void ReadNode(protozero::pbf_reader& node) {
     int64_t id = 0, lat = 0, lon = 0;
+    keys_.clear();
+    vals_.clear();
     while (node.next()) {
       switch (node.tag()) {
         case kNodeId: id = node.get_sint64(); break;
         case kNodeLat: lat = node.get_sint64(); break;
         case kNodeLon: lon = node.get_sint64(); break;
+        case kNodeKeys: {
+          if (!want_node_tags_) { node.skip(); break; }
+          auto range = node.get_packed_uint32();
+          for (uint32_t v : range) keys_.push_back(v);
+          break;
+        }
+        case kNodeVals: {
+          if (!want_node_tags_) { node.skip(); break; }
+          auto range = node.get_packed_uint32();
+          for (uint32_t v : range) vals_.push_back(v);
+          break;
+        }
         default: node.skip(); break;
       }
     }
     sink_->Node(id, Lat(lat), Lon(lon));
+    if (!want_node_tags_) return;
+    node_tags_.clear();
+    const size_t n = keys_.size() < vals_.size() ? keys_.size() : vals_.size();
+    for (size_t i = 0; i < n; ++i) {
+      if (keys_[i] >= strings_.size() || vals_[i] >= strings_.size()) continue;
+      node_tags_.push_back(OsmTag{strings_[keys_[i]], strings_[vals_[i]]});
+    }
+    if (!node_tags_.empty()) sink_->NodeTags(id, node_tags_);
   }
 
   void ReadDenseNodes(protozero::pbf_reader& dense) {
     ids_.clear();
     lats_.clear();
     lons_.clear();
+    keys_vals_.clear();
     while (dense.next()) {
       switch (dense.tag()) {
         case kDenseId: {
@@ -386,6 +426,12 @@ class PbfReader {
           for (int64_t v : range) lons_.push_back(v);
           break;
         }
+        case kDenseKeysVals: {
+          if (!want_node_tags_) { dense.skip(); break; }
+          auto range = dense.get_packed_int32();
+          for (int32_t v : range) keys_vals_.push_back(v);
+          break;
+        }
         default: dense.skip(); break;
       }
     }
@@ -393,11 +439,27 @@ class PbfReader {
     size_t n = ids_.size();
     if (lats_.size() < n || lons_.size() < n) n = 0;  // malformed block; drop it
     int64_t id = 0, lat = 0, lon = 0;
+    // keys_vals is one run per node: key, value, key, value, ..., 0. A block
+    // with no tagged node at all may omit the field entirely.
+    size_t kv = 0;
     for (size_t i = 0; i < n; ++i) {
       id += ids_[i];
       lat += lats_[i];
       lon += lons_[i];
       sink_->Node(id, Lat(lat), Lon(lon));
+      if (kv >= keys_vals_.size()) continue;
+      node_tags_.clear();
+      while (kv < keys_vals_.size() && keys_vals_[kv] != 0) {
+        if (kv + 1 >= keys_vals_.size()) { kv = keys_vals_.size(); break; }
+        const uint32_t k = static_cast<uint32_t>(keys_vals_[kv]);
+        const uint32_t v = static_cast<uint32_t>(keys_vals_[kv + 1]);
+        kv += 2;
+        if (k < strings_.size() && v < strings_.size()) {
+          node_tags_.push_back(OsmTag{strings_[k], strings_[v]});
+        }
+      }
+      ++kv;  // the run's terminating 0
+      if (!node_tags_.empty()) sink_->NodeTags(id, node_tags_);
     }
   }
 
@@ -512,6 +574,7 @@ class PbfReader {
   bool want_nodes_ = true;
   bool want_ways_ = true;
   bool want_relations_ = false;
+  bool want_node_tags_ = false;
 
   std::vector<char> header_;
   std::vector<char> blob_;
@@ -522,6 +585,8 @@ class PbfReader {
   int64_t lon_offset_ = 0;
 
   std::vector<int64_t> ids_, lats_, lons_;
+  std::vector<int32_t> keys_vals_;
+  std::vector<OsmTag> node_tags_;
   std::vector<uint32_t> keys_, vals_;
   std::vector<int32_t> roles_, types_;
   std::vector<int64_t> memids_;
@@ -550,6 +615,7 @@ Status ReadOsmXml(const std::string& path, OsmSink* sink) {
   st.want_nodes = sink->WantNodes();
   st.want_ways = sink->WantWays();
   st.want_relations = sink->WantRelations();
+  st.want_node_tags = st.want_nodes && sink->WantNodeTags();
   XML_SetUserData(parser, &st);
   XML_SetElementHandler(parser, XmlStart, XmlEnd);
 

@@ -1,0 +1,139 @@
+// route-weights-city.json — City Rules: routing costs for a US city street grid.
+//
+// Same schema as route-weights.json, whose header documents every key. The
+// profile names are the same ("bicycle", "foot", "car") so an app that offers
+// Walk and Cycle picks these up when its routing.rules names this file.
+//
+// What differs from the Kiawah rules:
+//   - A private way is a last resort, not a preference. On a gated island the
+//     private paths are the network; in a city they are someone's driveway,
+//     apartment complex or gated street. private_penalty 25 keeps a route off
+//     one unless the public detour is 25 times as long, while a destination
+//     behind the gate stays reachable.
+//   - Primary and trunk roads are usable by bike at a steep weight. A city has
+//     places where the arterial is the only crossing of a rail line, river or
+//     interstate; excluding them would return no route at all.
+//   - Riding on a sidewalk (footway) is walking the bike: its own slow speed,
+//     so the reported time is honest about it.
+//   - Service ways are mostly parking lots and drive-throughs, so a bike avoids
+//     them slightly instead of treating them as quiet streets.
+//   - A road with a bike lane costs less than the same road without one, and a
+//     posted speed limit moves a road up or down within its class.
+//   - By bike a traffic signal costs a wait, and crossing a secondary, primary
+//     or trunk road where there is no signal costs more, so a route crosses an
+//     arterial at a light. On foot only the unsignalled crossing is priced;
+//     driving prices neither (a signal wait sends a car down side streets).
+
+{
+  "version": 1,
+  "default_profile": "bicycle",
+
+  "profiles": {
+    "bicycle": {
+      "description": "City cycling: trails and quiet streets, arterials only when needed, private ways avoided.",
+      "mode": "bicycle",
+      "speed": { "source": "fixed", "kph": 14.0 },
+      "metric": "time",
+      // A bicycle is a vehicle on a city street and is bound by its turn signage.
+      "turn_restrictions": true,
+      "private_penalty": 25.0,
+
+      "unlisted_classes": "exclude",
+      "classes": {
+        "cycleway": 0.60,       // separated trail (BeltLine, PATH)
+        "path": 0.70,
+        "living_street": 0.80,
+        "residential": 0.80,
+        "unclassified": 1.2,
+        "track": 1.5,
+        "service": 1.5,         // parking lots, alleys, drive-throughs
+        "tertiary": 1.5,
+        "tertiary_link": 1.5,
+        "secondary": 2.5,
+        "secondary_link": 2.5,
+        "primary": 4.0,
+        "primary_link": 4.0,
+        "trunk": 8.0,
+        "trunk_link": 8.0,
+        "footway": 1.2,         // already slow through class_kph
+        "pedestrian": 1.2,
+        "ferry": 1.0
+        // Motorway and steps are absent: not usable by bike.
+      },
+      // Sidewalks and plazas are walked, not ridden.
+      "class_kph": { "footway": 5.0, "pedestrian": 6.0 },
+      // A secondary road with a painted lane costs about what a tertiary one
+      // does without; a track takes the road most of the way to a trail.
+      "bike_lane_factor": { "shared_lane": 0.9, "lane": 0.6, "track": 0.45 },
+      // Posted limits only: 25 mph and under, 35, 45, faster.
+      "speed_factor": [[40, 0.9], [56, 1.0], [72, 1.5], [255, 2.5]],
+      // Signed routes (BeltLine, PATH trails, Shared Roadway routes) a little
+      // ahead of an unsigned road of the same class and provision.
+      "bike_route_factor": { "local": 0.9, "regional": 0.9, "national": 0.9 },
+      "surface_factor": { "compacted": 1.15, "rough": 1.6 },
+      // Seconds: an average red-light wait; the gap in traffic an unsignalled
+      // crossing waits for.
+      "signal_seconds": 20.0,
+      "crossing_seconds": { "secondary": 15.0, "primary": 45.0, "trunk": 90.0 },
+      "golf_cartpath_penalty": "exclude",
+      "golf_path_penalty": 10.0
+    },
+
+    "foot": {
+      "description": "City walking at a flat speed, steering off busy streets and private ways.",
+      "mode": "foot",
+      "speed": { "source": "fixed", "kph": 5.0 },
+      "metric": "time",
+      "turn_restrictions": false,
+      "private_penalty": 25.0,
+
+      // What a pedestrian may use is decided by the arc's foot-access bits.
+      "unlisted_classes": 1.0,
+      "classes": {
+        "tertiary": 1.5,
+        "tertiary_link": 1.5,
+        "secondary": 2.0,
+        "secondary_link": 2.0,
+        "primary": 3.0,
+        "primary_link": 3.0,
+        "trunk": 5.0,
+        "trunk_link": 5.0
+      },
+      // No signal wait: mapped sidewalks put a signalled crosswalk on each
+      // corner, so a per-junction wait would count one light several times.
+      "crossing_seconds": { "secondary": 10.0, "primary": 30.0, "trunk": 60.0 },
+      "golf_cartpath_penalty": "exclude"
+    },
+
+    "car": {
+      "description": "Fastest driving route on posted/assumed speed limits, avoiding private roads.",
+      "mode": "motor_vehicle",
+      "speed": { "source": "posted" },
+      "metric": "time",
+      "turn_restrictions": true,
+      "private_penalty": 25.0,
+      "toll_penalty": 1.0,
+      "ferry_penalty": 1.0,
+
+      "unlisted_classes": "exclude",
+      "classes": {
+        "motorway": 1.0,
+        "motorway_link": 1.0,
+        "trunk": 1.0,
+        "trunk_link": 1.0,
+        "primary": 1.0,
+        "primary_link": 1.0,
+        "secondary": 1.0,
+        "secondary_link": 1.0,
+        "tertiary": 1.0,
+        "tertiary_link": 1.0,
+        "unclassified": 1.0,
+        "residential": 1.0,
+        "living_street": 1.0,
+        "service": 12.0,
+        "track": 3.0,
+        "ferry": 1.0
+      }
+    }
+  }
+}

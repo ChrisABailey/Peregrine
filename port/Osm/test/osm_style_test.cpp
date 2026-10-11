@@ -631,10 +631,37 @@ TEST(OsmStyleSymbol, LinePlacementCarriesTheRoadNameOntoItsRoad) {
   EXPECT_EQ(lb.placement, fv::LabelPlacement::kAlongPath);
   EXPECT_DOUBLE_EQ(lb.spacing_px, 300.0);
   EXPECT_DOUBLE_EQ(lb.max_angle_deg, 30.0);
+  EXPECT_TRUE(lb.keep_upright);
   // GL's text-offset is in EMs with +y DOWN; the placer's offset is pixels,
   // positive to the LEFT of travel. A -0.5 em offset must therefore come out
   // POSITIVE, at half the text size.
   EXPECT_DOUBLE_EQ(lb.offset_px, 6.0);
+}
+
+TEST(OsmStyleSymbol, KeepUprightFalseReachesTheLabel) {
+  fv::OsmStyleEngine e;
+  e.SetDrawLabels(true);
+  ASSERT_TRUE(e.LoadText(Wrap(
+                  R"({"id":"oneway","type":"symbol","source-layer":"transportation",
+                      "layout":{"text-field":"→","symbol-placement":"line",
+                                "text-keep-upright":false},
+                      "paint":{"text-color":"#000"}})"))
+                  .ok());
+  fv::VectorFeature road;
+  road.type = fv::VectorGeometryType::kLine;
+  road.layer = "transportation";
+  road.parts.push_back({{33.75, -84.38}, {33.75, -84.39}});
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(road, ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_FALSE(out[0].label.keep_upright);
+
+  fv::OsmStyleEngine bad;
+  EXPECT_FALSE(bad.LoadText(Wrap(
+                   R"({"id":"oneway","type":"symbol","source-layer":"transportation",
+                       "layout":{"text-field":"→","text-keep-upright":"no"}})"))
+                   .ok());
 }
 
 /// A point label takes text-offset as a pixel dx/dy (ems times the text size,
@@ -1059,7 +1086,14 @@ TEST(OsmReferenceStyle, AtlantaStreetsTiersRoadsAndHoldsBackClutter) {
     EXPECT_TRUE(PrioritiesAt(e, Poi("lodging"), 16).empty()) << name;
     EXPECT_TRUE(DrawsThrough(e, Poi("lodging"), 18, "poi-lodging")) << name;
 
-    // At 1:5,000 on a phone lodging, parking and food are all on the map. The
+    // A bridge gets a dark edge so the crossings over interstates stand out.
+    fv::VectorFeature bridge = Road("tertiary");
+    bridge.attributes.push_back({"brunnel", "bridge"});
+    EXPECT_TRUE(DrawsThrough(e, bridge, 15, "bridge-edge")) << name;
+    EXPECT_FALSE(DrawsThrough(e, Road("tertiary"), 15, "bridge-edge")) << name;
+
+    // At 1:5,000 on a phone lodging, bike parking and food are on the map and
+    // car parking is not. The
     // engine is set up as Pippin does it: the point pitch (1/163 inch) and the
     // view's latitude are given after the style has loaded.
     fv::OsmStyleEngine phone;
@@ -1068,12 +1102,14 @@ TEST(OsmReferenceStyle, AtlantaStreetsTiersRoadsAndHoldsBackClutter) {
     phone.SetReferenceLatitude(34.0);
     fv::VectorFeature parking = Poi("amenity");
     parking.attributes.push_back({"subclass", "parking"});
+    fv::VectorFeature bike_parking = Poi("amenity");
+    bike_parking.attributes.push_back({"subclass", "bicycle_parking"});
     fv::VectorFeature restaurant = Poi("amenity");
     restaurant.attributes.push_back({"subclass", "restaurant"});
     fv::VectorFeature cafe = Poi("cafe");
     cafe.attributes.push_back({"subclass", "cafe"});
     const struct { const fv::VectorFeature f; const char* layer; } kAt1To5000[] = {
-        {Poi("lodging"), "poi-lodging"}, {parking, "poi-parking"},
+        {Poi("lodging"), "poi-lodging"}, {bike_parking, "poi-bike-parking"},
         {restaurant, "poi-food"},        {cafe, "poi-food"},
     };
     for (const auto& c : kAt1To5000) {
@@ -1086,6 +1122,11 @@ TEST(OsmReferenceStyle, AtlantaStreetsTiersRoadsAndHoldsBackClutter) {
                               [want](const fv::StyleResult& r) { return r.priority == want; }))
           << name << ": " << c.layer;
     }
+    fv::StyleContext at5000;
+    at5000.scale_denominator = 5000.0;
+    std::vector<fv::StyleResult> car;
+    ASSERT_TRUE(phone.Style(parking, at5000, &car).ok());
+    EXPECT_TRUE(car.empty()) << name << ": car parking at 1:5,000";
   }
 }
 

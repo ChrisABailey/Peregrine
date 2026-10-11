@@ -311,7 +311,14 @@ double ArcCost(const RoadArc& arc, const RouteOptions& options) {
     const double base = p.metric == RouteMetric::kDistance
                             ? static_cast<double>(arc.length_m)
                             : ProfileSeconds(arc, options);
-    return base * p.weight(arc.klass) * gate;
+    // A track is ridden apart from the traffic, so the road's speed does not
+    // reach it.
+    double street = p.bike_lane_factor[static_cast<size_t>(arc.bike)] *
+                    p.bike_route_factor[static_cast<size_t>(arc.bike_route)] *
+                    p.surface_factor[static_cast<size_t>(arc.surface)];
+    if (arc.speed_posted() && arc.bike != BikeProvision::kTrack)
+      street *= p.SpeedFactor(arc.speed_kph);
+    return base * p.weight(arc.klass) * street * gate;
   }
   if (options.cycle_only) {
     // Bike time, scaled by how pleasant the class is to ride. The scaling is
@@ -336,6 +343,36 @@ double ArcCost(const RoadArc& arc, const RouteOptions& options) {
                           ? static_cast<double>(arc.length_m)
                           : ProfileSeconds(arc, options);
   return base * gate;
+}
+
+namespace {
+
+/// Seconds of profile delay as cost: a distance profile prices the wait as the
+/// ground it could have covered.
+double DelayCost(double seconds, const RouteProfile& p) {
+  return p.metric == RouteMetric::kDistance ? seconds * p.fixed_kph / 3.6 : seconds;
+}
+
+}  // namespace
+
+// An unsignalled crossing is charged half on arriving at the busier road and
+// half on leaving it, so crossing straight over pays it whole, turning onto or
+// off the busier road pays half, and riding along it pays nothing.
+double ArrivalDelayCost(const RoadArc& arc, const RouteOptions& options) {
+  if (options.profile == nullptr) return 0.0;
+  const RouteProfile& p = *options.profile;
+  if (arc.signal) return DelayCost(p.signal_seconds, p);
+  return DelayCost(0.5 * p.crossing_seconds[static_cast<size_t>(arc.crossing)], p);
+}
+
+double DepartureDelayCost(const RoadArc& arc, const RouteOptions& options) {
+  if (options.profile == nullptr) return 0.0;
+  const RouteProfile& p = *options.profile;
+  return DelayCost(0.5 * p.crossing_seconds[static_cast<size_t>(arc.crossing_from)], p);
+}
+
+double NodeDelayCost(const RoadArc& arc, const RouteOptions& options) {
+  return DepartureDelayCost(arc, options) + ArrivalDelayCost(arc, options);
 }
 
 bool Router::ArcUsable(const RoadArc& arc, const RouteOptions& options) const {
@@ -439,8 +476,11 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
   }
   const RoadArc& arc = graph_.arc(a.arc);
   if (!ArcUsable(arc, o)) return;
-  const double cost = ArcCost(arc, o);
   const uint32_t u = a.node, v = a.to;
+  // Each way is priced by the arc pointing that way: the junction ahead is
+  // paid, the one behind is not.
+  const uint32_t twin = graph_.TwinArc(u, a.arc);
+  const RoadArc& back = twin == kNoArc ? arc : graph_.arc(twin);
 
   // Setting off toward the target end travels the arc with the grain, which is
   // what kArcForward permits; toward the source end is kArcBackward. The flags
@@ -452,8 +492,8 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
     // Arriving at v along this road is, from v's side, the arc pointing back
     // at u — the arc a restriction at v names as its `from`, and the same one
     // the search itself would have labelled the state with.
-    t.arc = graph_.TwinArc(u, a.arc);
-    t.cost = (1.0 - a.t) * cost;
+    t.arc = twin;
+    t.cost = (1.0 - a.t) * ArcCost(arc, o) + ArrivalDelayCost(arc, o);
     t.partial = true;
     t.step.arc = a.arc;
     t.step.t0 = a.t;
@@ -464,7 +504,7 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
     Terminal t;
     t.node = u;
     t.arc = a.arc;
-    t.cost = a.t * cost;
+    t.cost = a.t * ArcCost(back, o) + ArrivalDelayCost(back, o);
     t.partial = true;
     t.step.arc = a.arc;
     t.step.t0 = a.t;
@@ -484,8 +524,11 @@ void Router::TargetsFor(const RouteAnchor& a, const RouteOptions& o,
   }
   const RoadArc& arc = graph_.arc(a.arc);
   if (!ArcUsable(arc, o)) return;
-  const double cost = ArcCost(arc, o);
   const uint32_t u = a.node, v = a.to;
+  // The point is reached mid-arc: the junction left behind is paid, the one
+  // ahead is not.
+  const uint32_t twin = graph_.TwinArc(u, a.arc);
+  const RoadArc& back = twin == kNoArc ? arc : graph_.arc(twin);
 
   // Mirror of SourcesFor: reaching the point FROM u travels with the grain, so
   // it is kArcForward that permits it. The state remembers the arc it LEAVES
@@ -494,7 +537,7 @@ void Router::TargetsFor(const RouteAnchor& a, const RouteOptions& o,
     Terminal t;
     t.node = u;
     t.arc = a.arc;
-    t.cost = a.t * cost;
+    t.cost = a.t * ArcCost(arc, o) + DepartureDelayCost(arc, o);
     t.partial = true;
     t.step.arc = a.arc;
     t.step.t0 = 0.0;
@@ -504,8 +547,8 @@ void Router::TargetsFor(const RouteAnchor& a, const RouteOptions& o,
   if (arc.backward()) {
     Terminal t;
     t.node = v;
-    t.arc = graph_.TwinArc(u, a.arc);
-    t.cost = (1.0 - a.t) * cost;
+    t.arc = twin;
+    t.cost = (1.0 - a.t) * ArcCost(back, o) + DepartureDelayCost(back, o);
     t.partial = true;
     t.step.arc = a.arc;
     t.step.t0 = 1.0;
@@ -583,7 +626,7 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
       // back at u — which is the arc a restriction at v names as its `from`.
       const uint32_t next =
           space.split(v) ? space.StateOf(v, graph_.TwinArc(u, a)) : v;
-      const double nd = top.key + ArcCost(arc, o);
+      const double nd = top.key + ArcCost(arc, o) + NodeDelayCost(arc, o);
       if (nd < dist[next]) {
         dist[next] = nd;
         parent_arc[next] = a;
@@ -719,7 +762,11 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
       // what arrives — and what arrives at u from arc.target is arc `a`.
       if (!(go_forward ? space.Allowed(u, marker, a) : space.Allowed(u, a, marker))) continue;
 
-      const double nd = top.key + ArcCost(arc, o);
+      // Reverse travels w -> u, so it is priced by the arc pointing that way:
+      // per-direction bike provision, route and the delay at u are on it.
+      const RoadArc& travelled =
+          go_forward ? arc : graph_.arc(graph_.TwinArc(u, a));
+      const double nd = top.key + ArcCost(travelled, o) + NodeDelayCost(travelled, o);
       const uint32_t w = arc.target;
       // Either way round, the state at w records the arc of w that faces u:
       // forward that is what it arrived along, reverse what it will leave

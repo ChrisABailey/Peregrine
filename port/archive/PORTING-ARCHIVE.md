@@ -2769,3 +2769,7 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
 - A new required field needs a default or apply fails.
 - New Layer writes the file immediately; a GeoPackage replaces any file at the path (one table, named after the file).
 - `--open` runs before `--run` commands in Peregrine-mac.
+
+### 2026-10-11 — CR6 decisions
+- In `process-peregrine.lua` the relation cursor `NextRelation` is shared with the admin-boundary code, so `BikeRouteOnWay` calls `RestartRelations` first.
+- Tiles write `maxspeed` only when posted (km/h, mirrors `ParseMaxSpeedKph`); Atlanta Streets: secondary reads busy, tertiary plus calm secondary (track/lane/share_busway or posted <= 56 km/h) reads moderate.

@@ -189,12 +189,17 @@ build/port/Routing/fvgraph route testdata/OSM/atlanta.fvroad 33.82 -84.43 33.785
 ```
 
 The tiles: tilemaker with the peregrine profile, which writes the tags the Kiawah Trails style
-reads (a `mbtiles_cut.py` cut of `us-south.mbtiles` lacks them). Run it from the tilemaker
-checkout, because its config names the coastline shapefile by a relative path:
+and the Atlanta Streets tiers read (a `mbtiles_cut.py` cut of `us-south.mbtiles` lacks them). The
+profile and its config are tracked in `port/Osm/` (`process-peregrine.lua`,
+`config-peregrine.json`); pass them by path. The config names the coastline and landcover shapefiles
+by relative path, so run from the tilemaker checkout, which holds that data:
 
 ```sh
-cd ~/Documents/Source/tilemaker && ./tilemaker --input ~/Documents/Claude/FVW/testdata/OSM/atlanta.osm.pbf --output ~/Documents/Claude/FVW/testdata/OSM/atlanta.mbtiles --config config-peregrine.json --process process-peregrine.lua --bbox -84.61,33.67,-84.25,33.97
+cd ~/Documents/Source/tilemaker && ./tilemaker --input ~/Documents/Claude/FVW/testdata/OSM/atlanta.osm.pbf --output ~/Documents/Claude/FVW/testdata/OSM/atlanta.mbtiles --config ~/Documents/Claude/FVW/port/Osm/config-peregrine.json --process ~/Documents/Claude/FVW/port/Osm/process-peregrine.lua --bbox -84.61,33.67,-84.25,33.97
 ```
+
+A rebuild is not byte-identical run to run (feature order inside a tile varies); the layers and
+attributes match. Edit the profile in `port/Osm/`, not in the tilemaker checkout.
 
 Use `./tilemaker` from that checkout. The copy in `/usr/local/bin` fails at load with
 `Symbol not found: __ZN5boost15program_options3argE` after a Homebrew boost upgrade; rebuild it

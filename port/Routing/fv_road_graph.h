@@ -153,6 +153,44 @@ enum ArcFlags : uint16_t {
   /// `bicycle=designated`: a positive statement that bikes belong here, which
   /// exempts a golf path from its profile penalty.
   kArcBicycleDesignated = 1 << 12,
+  /// The speed came from a posted `maxspeed`, not the class default.
+  kArcSpeedPosted = 1 << 13,
+};
+
+/// On-road bike provision for one direction of travel, weakest to strongest.
+/// A side mapped as its own way (`cycleway:right=separate`) is kNone here; the
+/// separate way is a kCycleway arc of its own.
+enum class BikeProvision : uint8_t {
+  kNone = 0,
+  kSharedLane,  // `shared_lane`: sharrows, no space of its own
+  kLane,        // `lane`, `buffered_lane`, `share_busway`
+  kTrack,       // `track`: physically separated from traffic
+};
+
+/// The strongest signed bicycle route (`route=bicycle` relation) an arc
+/// belongs to in its direction of travel, by the relation's `network`.
+enum class BikeRoute : uint8_t {
+  kNone = 0,
+  kLocal,     // `lcn`, or no network tag
+  kRegional,  // `rcn`
+  kNational,  // `ncn`, `icn`
+};
+
+/// A way's `surface`, by how it rides. 0 when untagged or unrecognised.
+enum class RoadSurface : uint8_t {
+  kUnknown = 0,
+  kPaved,      // asphalt, concrete, paving stones, wood
+  kCompacted,  // compacted, fine gravel, sett and cobblestone
+  kRough,      // gravel, dirt, ground, grass, sand and other unpaved
+};
+
+/// The busiest road a minor road meets at a junction without a traffic signal,
+/// when that road is busier than the minor road's own class.
+enum class RoadCrossing : uint8_t {
+  kNone = 0,
+  kSecondary,
+  kPrimary,
+  kTrunk,
 };
 
 struct RoadArc {
@@ -168,6 +206,23 @@ struct RoadArc {
   // rule the access bits themselves got.
   uint16_t flags = 0;
   uint8_t speed_kph = 0;
+  /// Bike provision in this arc's direction of travel. Stored in the v3
+  /// attribute word; a v1/v2 file reads kNone.
+  BikeProvision bike = BikeProvision::kNone;
+  /// The way's `lanes`, both directions, capped at 15; 0 when untagged.
+  uint8_t lanes = 0;
+  /// Signed bike route in this arc's direction. Bits 7-8 of the v3 attribute
+  /// word, which earlier v3 files wrote as zero.
+  BikeRoute bike_route = BikeRoute::kNone;
+  /// The way's surface. Bits 9-10 of the v3 attribute word.
+  RoadSurface surface = RoadSurface::kUnknown;
+  /// The arc ends at a junction with a traffic signal. Bit 11.
+  bool signal = false;
+  /// The unsignalled busier road the arc meets at its target. Bits 12-13.
+  RoadCrossing crossing = RoadCrossing::kNone;
+  /// The unsignalled busier road at its source: its twin's `crossing`.
+  /// Bits 14-15.
+  RoadCrossing crossing_from = RoadCrossing::kNone;
 
   bool forward() const { return (flags & kArcForward) != 0; }
   bool backward() const { return (flags & kArcBackward) != 0; }
@@ -182,6 +237,7 @@ struct RoadArc {
   bool golf_cartpath() const { return (flags & kArcGolfCartpath) != 0; }
   bool golf_path() const { return (flags & kArcGolfPath) != 0; }
   bool bicycle_designated() const { return (flags & kArcBicycleDesignated) != 0; }
+  bool speed_posted() const { return (flags & kArcSpeedPosted) != 0; }
   /// Either beach class: the run along the water or a crossing onto it.
   bool is_beach() const {
     return klass == RoadClass::kBeach || klass == RoadClass::kBeachAccess;
@@ -539,6 +595,17 @@ struct RoadGraphBuildOptions {
   // show that a restriction is what changed an answer.
   bool honor_turn_restrictions = true;
 
+  /// Read `route=bicycle` relations and mark their member ways' arcs.
+  bool bike_routes = true;
+
+  /// Read `highway=traffic_signals` (and signalled crossings) on road nodes and
+  /// mark the arcs into a signalled junction; mark unsignalled crossings of
+  /// secondary, primary and trunk roads.
+  bool traffic_signals = true;
+  /// A signal node this far along a way from a junction controls that junction
+  /// (signals are often mapped on the approach, not the junction node).
+  double signal_reach_m = 30.0;
+
   /// Synthesise kBeach arcs along the coastline where it borders a beach
   /// polygon, and kBeachAccess arcs from nearby way ends. Off by default, so a
   /// graph built without it is unchanged.
@@ -572,6 +639,12 @@ struct RoadGraphBuildStats {
   int64_t arcs_private_motor_vehicle = 0;
   int64_t arcs_private_bicycle = 0;
   int64_t arcs_private_foot = 0;
+  /// Barrier nodes on a kept road that restrict some mode; those where one
+  /// way ends and another passes through (only the ending way takes the
+  /// barrier); and the edges that took their access from one.
+  int64_t barrier_nodes = 0;
+  int64_t barrier_branches = 0;
+  int64_t edges_at_barrier = 0;
 
   // O5e. `ways_ferry` counts the `route=ferry` ways admitted; `ferries_timed`
   // how many of them carried a `duration` the speed came from rather than the
@@ -580,6 +653,30 @@ struct RoadGraphBuildStats {
   int64_t ferries_timed = 0;
   int64_t arcs_ferry = 0;
   int64_t arcs_toll = 0;
+
+  /// Arcs by bike provision in their own direction, and arcs whose speed was
+  /// posted rather than the class default. Over the finished graph.
+  int64_t arcs_bike_shared_lane = 0;
+  int64_t arcs_bike_lane = 0;
+  int64_t arcs_bike_track = 0;
+  int64_t arcs_speed_posted = 0;
+  /// `route=bicycle` relations read, and arcs by the route network they carry.
+  int64_t bike_route_relations = 0;
+  int64_t arcs_bike_route_local = 0;
+  int64_t arcs_bike_route_regional = 0;
+  int64_t arcs_bike_route_national = 0;
+  /// Signal nodes on roads, junctions they control, and arcs by what they meet
+  /// at their target.
+  int64_t signal_nodes = 0;
+  int64_t signalled_junctions = 0;
+  int64_t arcs_signal = 0;
+  int64_t arcs_crossing_secondary = 0;
+  int64_t arcs_crossing_primary = 0;
+  int64_t arcs_crossing_trunk = 0;
+  /// Arcs by surface.
+  int64_t arcs_surface_paved = 0;
+  int64_t arcs_surface_compacted = 0;
+  int64_t arcs_surface_rough = 0;
 
   int64_t restrictions_seen = 0;      // type=restriction relations in the input
   int64_t restrictions_applied = 0;   // turns actually forbidden in the graph
