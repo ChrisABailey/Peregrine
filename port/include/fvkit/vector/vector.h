@@ -131,6 +131,10 @@ struct VectorFeature {
   // feature the render path needs to keep once drawing is done.
   FeatureRef ref;
 
+  // The source's own feature id, for a style's ["id"] expression.
+  bool has_id = false;
+  int64_t id = 0;
+
   const std::string* Attribute(const std::string& key) const {
     for (const auto& kv : attributes)
       if (kv.first == key) return &kv.second;

@@ -255,4 +255,35 @@ TEST(VectorBaseMap, DrawsOsmWithItsStyleSheet) {
   EXPECT_GT(Inked(canvas), v.PixelWidth() * v.PixelHeight() / 20);
 }
 
+TEST(VectorBaseMap, HoverNamesWhatTheLastRenderDrew) {
+  const std::string file = TestData("OSM/kiawah.mbtiles");
+  if (file.empty()) GTEST_SKIP() << "no testdata/OSM/kiawah.mbtiles";
+  ConfigGuard guard;
+  VectorMapConfig c;
+  c.osm_style = FV_OSM_STYLE_JSON;
+  fv::desk::SetVectorMapConfig(c);
+  VectorFixture f;
+  ASSERT_NO_FATAL_FAILURE(f.Load(file, "osm", ""));
+  BaseMapRenderer r;
+  r.SetCatalog(f.catalog);
+  EXPECT_TRUE(r.HintAt(fv::PixelPoint{10, 10}).empty());  // nothing drawn yet
+  // Large enough for labels: OpenMapTiles names live on the label features.
+  const auto v = fv::view::Viewport::Make(f.Middle(), 12000).WithSurface(600, 400, 2.0, 0.25);
+  fv::CpuCanvas canvas(v.PixelWidth(), v.PixelHeight());
+  ASSERT_TRUE(r.Render(v, f.product, canvas).ok());
+  int named = 0, described = 0;
+  for (int y = 0; y < v.PixelHeight(); y += 4) {
+    for (int x = 0; x < v.PixelWidth(); x += 4) {
+      const fv::app::HintText h = r.HintAt(fv::PixelPoint{x, y});
+      described += !h.status.empty();
+      if (h.tool_tip.empty()) continue;
+      ++named;
+      // A named hit's status line leads with the name.
+      EXPECT_EQ(h.status.rfind(h.tool_tip, 0), 0u) << h.status;
+    }
+  }
+  EXPECT_GT(named, 0);
+  EXPECT_GE(described, named);
+}
+
 }  // namespace

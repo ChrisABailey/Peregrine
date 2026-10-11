@@ -19,6 +19,7 @@
 
 #include "fv_view_ladder.h"
 #include "fv_view_viewport.h"
+#include "fvkit/app/shell.h"
 #include "fvkit/geo.h"
 
 namespace fv {
@@ -79,6 +80,11 @@ class VectorBaseMap {
   Status Render(const view::Viewport& view, const view::LadderProduct& product,
                 ICanvas& canvas);
 
+  /// What the last `Render` drew under `p`, in that render's pixels: the
+  /// topmost named feature's name, else the topmost feature's class (status
+  /// only). Empty when nothing was drawn there.
+  app::HintText HintAt(PixelPoint p);
+
  private:
   struct Series {
     std::shared_ptr<IVectorSource> source;
@@ -91,6 +97,7 @@ class VectorBaseMap {
   std::shared_ptr<Catalog> catalog_;
   VectorMapConfig config_;
   std::map<int64_t, Series> series_;
+  Series* last_ = nullptr;  ///< the series the last Render drew; its pick index is current
   std::shared_ptr<GeoSymStyleEngine> geosym_;
   std::shared_ptr<S52StyleEngine> s52_;
   std::shared_ptr<OsmStyleEngine> osm_;

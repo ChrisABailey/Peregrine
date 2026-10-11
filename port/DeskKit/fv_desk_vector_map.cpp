@@ -11,6 +11,7 @@
 #include <set>
 #include <vector>
 
+#include "fv_desk_base_map.h"
 #include "fv_enc_vector_source.h"
 #include "fv_geosym_style.h"
 #include "fv_osm_style.h"
@@ -72,6 +73,7 @@ bool VectorBaseMap::CanDraw(const std::string& format) {
 }
 
 void VectorBaseMap::Reset(std::shared_ptr<Catalog> catalog) {
+  last_ = nullptr;
   series_.clear();
   geosym_.reset();
   s52_.reset();
@@ -125,7 +127,7 @@ Status VectorBaseMap::OpenSeries(const view::LadderProduct& product, Series* out
       if (!s.ok())
         return Status::Error(s.code, "osm.style " + config_.osm_style + ": " +
                                          (detail.empty() ? s.message : detail));
-      e->SetDrawLabels(false);
+      e->SetDrawLabels(!HostLabelFont().empty());
       osm_ = std::move(e);
     }
     style = osm_;
@@ -138,7 +140,7 @@ Status VectorBaseMap::OpenSeries(const view::LadderProduct& product, Series* out
       if (!s.ok()) return Status::Error(s.code, "enc.data_dir: " + s.message);
       e->SetShowMetaObjects(config_.enc_show_meta);
       config_.mariner.ApplyTo(&e->mutable_mariner());
-      e->SetDrawLabels(false);
+      e->SetDrawLabels(!HostLabelFont().empty());
       s52_ = std::move(e);
     }
     style = s52_;
@@ -151,7 +153,7 @@ Status VectorBaseMap::OpenSeries(const view::LadderProduct& product, Series* out
       if (!s.ok()) return Status::Error(s.code, "geosym.data_dir: " + s.message);
       e->SetColorAdjust(config_.geosym_brightness, config_.geosym_contrast);
       config_.mariner.ApplyTo(&e->mutable_mariner());
-      e->SetDrawLabels(false);
+      e->SetDrawLabels(!HostLabelFont().empty());
       geosym_ = std::move(e);
     }
     style = geosym_;
@@ -168,6 +170,7 @@ Status VectorBaseMap::OpenSeries(const view::LadderProduct& product, Series* out
 
 Status VectorBaseMap::Render(const view::Viewport& v, const view::LadderProduct& product,
                              ICanvas& canvas) {
+  last_ = nullptr;
   if (!catalog_ || !CanDraw(product.format)) return Status::Ok();
   auto it = series_.find(product.series_id);
   if (it == series_.end()) {
@@ -199,7 +202,28 @@ Status VectorBaseMap::Render(const view::Viewport& v, const view::LadderProduct&
     r.SetDeviceDpi(25.4 * v.DisplayScale() / v.MmPerPoint());
   }
   canvas.Clear(ground);
+  last_ = &it->second;
   return r.Render(proj, &canvas);
+}
+
+app::HintText VectorBaseMap::HintAt(PixelPoint p) {
+  app::HintText hint;
+  if (last_ == nullptr || !last_->source) return hint;
+  constexpr size_t kMaxDescribed = 8;
+  const std::vector<PickHit> hits = last_->renderer->pick_index().HitTest(p.x, p.y);
+  for (size_t i = 0; i < hits.size() && i < kMaxDescribed; ++i) {
+    FeatureDescription d;
+    if (!last_->source->Describe(hits[i].ref, &d).ok()) continue;
+    const std::string& kind = !d.class_name.empty() ? d.class_name : d.layer_name;
+    // A source titles an unnamed feature with its class; that is not a name.
+    if (!d.title.empty() && d.title != d.class_name && d.title != d.layer_name) {
+      hint.tool_tip = d.title;
+      hint.status = kind.empty() ? d.title : d.title + " (" + kind + ")";
+      return hint;
+    }
+    if (hint.status.empty()) hint.status = !d.title.empty() ? d.title : kind;
+  }
+  return hint;
 }
 
 }  // namespace desk

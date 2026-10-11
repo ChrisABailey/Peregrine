@@ -14,6 +14,7 @@
 #include <algorithm>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -22,10 +23,13 @@
 #include <vector>
 
 #include "fv_desk_catalog_build.h"
+#include "fv_desk_feature_form.h"
 #include "fv_desk_user_settings.h"
 #include "fvkit/catalog/catalog.h"
+#include "fvkit/formats/dted.h"
 #include "fvkit/formats/dted_shaded.h"
 #include "fvkit/formats/registry.h"
+#include "fv_route_overlay.h"
 #include "scratch.h"
 #include "stub_formats.h"
 
@@ -272,7 +276,7 @@ TEST(DeskHost, MenusFlattenInPreorderWithShortcuts) {
       ++projections;
     }
   }
-  EXPECT_EQ(tops, (std::vector<std::string>{"File", "Map", "Overlay"}));
+  EXPECT_EQ(tops, (std::vector<std::string>{"File", "Edit", "Map", "Overlay"}));
   EXPECT_EQ(projections, 5);
 
   const HostMenuEntry save = MenuEntry(h.host, "file.save");
@@ -293,11 +297,17 @@ TEST(DeskHost, MenusFlattenInPreorderWithShortcuts) {
   }
   EXPECT_EQ(checked, 1);
 
-  ASSERT_GE(h->ToolbarEntryCount(), 3);
-  EXPECT_EQ(h->ToolbarEntryAt(0).id, "map.zoom_in");
-  EXPECT_EQ(h->ToolbarEntryAt(0).icon, "zoom_in");
-  EXPECT_EQ(h->ToolbarEntryAt(0).depth, 0);
-  EXPECT_FALSE(h->ToolbarEntryAt(0).checkable);
+  // Zoom and recenter stay in the Map menu; the toolbar holds the editors.
+  ASSERT_GE(h->ToolbarEntryCount(), 1);
+  for (int i = 0; i < h->ToolbarEntryCount(); ++i) {
+    const HostMenuEntry e = h->ToolbarEntryAt(i);
+    EXPECT_EQ(e.depth, 0);
+    EXPECT_NE(e.id, "map.zoom_in");
+    EXPECT_NE(e.id, "map.zoom_out");
+    EXPECT_NE(e.id, "map.recenter");
+  }
+  EXPECT_EQ(h->ToolbarEntryAt(0).id.rfind("editor.mode.", 0), 0u);
+  EXPECT_TRUE(h->ToolbarEntryAt(0).checkable);
   for (int i = 0; i < h->MenuEntryCount(); ++i) {
     const HostMenuEntry e = h->MenuEntryAt(i);
     if (e.id.rfind("map.projection.", 0) == 0) EXPECT_TRUE(e.checkable) << e.id;
@@ -881,4 +891,315 @@ TEST(DeskHostData, DrawsShadedReliefFromDted) {
   fv::ClearFormatRegistryForTest();
 }
 
+TEST(DeskHostData, StatusShowsTheTerrainHeightUnderTheCursorInFeet) {
+  const char* root = std::getenv("FVW_TESTDATA_DIR");
+  const std::string dir = root ? std::string(root) + "/dted" : std::string();
+  if (dir.empty() || !std::filesystem::exists(dir)) GTEST_SKIP() << "no testdata/dted";
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  Scratch scratch;
+  const std::string path = scratch.Path("catalog.sqlite");
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(path).ok());
+    int64_t src = 0;
+    int added = 0;
+    ASSERT_TRUE(cat.AddDataSource(dir, "dted", 0, &src).ok());
+    ASSERT_TRUE(cat.Scan(src, &added).ok());
+  }
+  HostRef h;
+  h->Resize(128, 128, 2.0, 0.25);
+  ASSERT_EQ(h->OpenCatalog(path), "");
+  h->GoTo(32.5, -80.5, 500e3);
+  EXPECT_EQ(h->StatusElevation(), "");  // no cursor
+  h->Hover(64, 64);
+  fv::DtedElevationSource dted(dir);
+  float meters = 0;
+  ASSERT_TRUE(dted.GetElevation(fv::GeoPoint{h->CenterLat(), h->CenterLon()}, &meters).ok());
+  const std::string text = h->StatusElevation();
+  ASSERT_GE(text.size(), 4u);
+  EXPECT_EQ(text.substr(text.size() - 3), " ft");
+  EXPECT_NEAR(std::stod(text), meters / 0.3048, 0.5) << text;
+  h->HoverExit();
+  EXPECT_EQ(h->StatusElevation(), "");
+  fv::ClearFormatRegistryForTest();
+}
+
+TEST(DeskHostData, TheRouteProfileChartsTheCatalogsDted) {
+  const char* root = std::getenv("FVW_TESTDATA_DIR");
+  const std::string dir = root ? std::string(root) + "/dted" : std::string();
+  if (dir.empty() || !std::filesystem::exists(dir)) GTEST_SKIP() << "no testdata/dted";
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  Scratch scratch;
+  const std::string path = scratch.Path("catalog.sqlite");
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(path).ok());
+    int64_t src = 0;
+    int added = 0;
+    ASSERT_TRUE(cat.AddDataSource(dir, "dted", 0, &src).ok());
+    ASSERT_TRUE(cat.Scan(src, &added).ok());
+  }
+  HostRef h;
+  h->Resize(256, 256, 1.0, 0.25);
+  ASSERT_EQ(h->OpenCatalog(path), "");
+  h->GoTo(32.5, -80.5, 500e3);
+  ASSERT_EQ(h->Execute(std::string("editor.mode.") + fv::RouteOverlay::kTypeId), "");
+  h->Tick();
+  h->WaitForRender();
+  h->Tick();  // the route now has a projection to place clicks with
+  ASSERT_TRUE(h->KeyDown('A', 'a', false, false, false, false));
+  h->PointerDown(60, 60);
+  h->PointerUp(60, 60);
+  h->PointerDown(200, 180);
+  h->PointerUp(200, 180);
+
+  std::string tool;
+  for (int i = 0; i < h->ToolbarEntryCount(); ++i)
+    if (h->ToolbarEntryAt(i).icon == "elevation_profile") tool = h->ToolbarEntryAt(i).id;
+  ASSERT_FALSE(tool.empty());
+  ASSERT_TRUE(h->IsEnabled(tool));
+  ASSERT_EQ(h->Execute(tool), "");
+  EXPECT_TRUE(h->Tick().profile_requested);
+  EXPECT_TRUE(h->TakeRouteProfileRequest());
+  EXPECT_FALSE(h->TakeRouteProfileRequest());
+  ASSERT_TRUE(h->RouteProfileOpen());
+
+  h->LayoutRouteProfile(720, 340);
+  ASSERT_TRUE(h->RouteProfileBox().valid) << h->RouteProfileMessage();
+  ASSERT_GT(h->RouteProfileRunCount(), 0);
+  EXPECT_GT(h->RouteProfileRunLength(0), 100);
+  EXPECT_EQ(h->RouteProfileTickCount(0), 6);
+  EXPECT_NE(h->RouteProfileTickLabel(1, 0).find(" ft"), std::string::npos);
+  EXPECT_NE(h->RouteProfileStats().find("200 samples"), std::string::npos)
+      << h->RouteProfileStats();
+
+  // The readout at the start is the DTED height at the first waypoint.
+  const std::string first = h->RouteProfileReadout(h->RouteProfileBox().x0);
+  const size_t ft = first.find(" ft   ");
+  ASSERT_NE(ft, std::string::npos) << first;
+  const size_t elev_at = first.rfind("   ", ft - 1) + 3;
+  double lat = 0, lon = 0;
+  ASSERT_EQ(std::sscanf(first.c_str() + ft + 6, "%lf, %lf", &lat, &lon), 2) << first;
+  fv::DtedElevationSource dted(dir);
+  float meters = 0;
+  ASSERT_TRUE(dted.GetElevation(fv::GeoPoint{lat, lon}, &meters).ok());
+  std::string feet = first.substr(elev_at, ft - elev_at);
+  feet.erase(std::remove(feet.begin(), feet.end(), ','), feet.end());
+  EXPECT_NEAR(std::stod(feet), meters / 0.3048, 0.5) << first;
+
+  h->CloseRouteProfile();
+  EXPECT_FALSE(h->RouteProfileOpen());
+  fv::ClearFormatRegistryForTest();
+}
+
 }  // namespace
+
+TEST(DeskHost, LayersPanelReadsAndChangesTheStack) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  EXPECT_EQ(h->Execute("overlay.layers"), "");
+  EXPECT_TRUE(h->Tick().layers_requested);
+  EXPECT_TRUE(h->TakeLayersRequest());
+  EXPECT_FALSE(h->TakeLayersRequest());
+  EXPECT_EQ(h->LayerCount(), 0);
+
+  EXPECT_EQ(h->Execute(std::string("overlay.toggle.") + fv::app::kGridTypeId), "");
+  EXPECT_TRUE(h->Tick().layers_changed);
+  ASSERT_EQ(h->LayerCount(), 1);
+  EXPECT_EQ(h->LayerTypeName(0), "Lat/Lon Grid");
+  EXPECT_EQ(h->LayerIcon(0), "grid");
+  EXPECT_TRUE(h->LayerVisible(0));
+  EXPECT_FALSE(h->LayerHasOpacity(0));
+
+  EXPECT_EQ(h->SetLayerVisible(0, false), "");
+  EXPECT_FALSE(h->LayerVisible(0));
+  EXPECT_TRUE(h->Tick().redraw);
+  EXPECT_NE(h->SetLayerOpacity(0, 50), "");  // the grid has no opacity
+  EXPECT_NE(h->SetLayerVisible(3, true), "");
+  EXPECT_EQ(h->LayerName(3), "");
+  h->WaitForRender();
+}
+
+TEST(DeskHost, FeatureFormAndTableFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+  EXPECT_FALSE(h->AttributeTableOpen());
+
+  EXPECT_EQ(h->Execute("overlay.attribute_table"), "");
+  const fv::desk::HostTick t = h->Tick();
+  EXPECT_TRUE(t.table_requested);
+  EXPECT_TRUE(t.features_changed);
+  EXPECT_TRUE(h->TakeAttributeTableRequest());
+  EXPECT_EQ(h->AttributeTableTitle(), "Charleston rivers");
+  ASSERT_EQ(h->TableColumnCount(), 3);
+  EXPECT_EQ(h->TableColumnTitle(1), "Depth (m)");
+  EXPECT_TRUE(h->TableColumnNumeric(1));
+  ASSERT_EQ(h->TableRowCount(), 3);
+  EXPECT_EQ(h->TableCell(0, 0), "Cooper River");
+  EXPECT_EQ(h->SelectedTableRow(), -1);
+
+  h->SortTable(1, true);
+  EXPECT_EQ(h->TableSortColumn(), 1);
+  EXPECT_EQ(h->SelectTableRow(2), "");
+  EXPECT_EQ(h->TableCell(h->SelectedTableRow(), 0), "Cooper River");  // the deepest
+  EXPECT_TRUE(h->Tick().features_changed);
+
+  EXPECT_EQ(h->EditTableRow(2), "");
+  EXPECT_TRUE(h->Tick().form_requested);
+  EXPECT_TRUE(h->TakeFeatureFormRequest());
+  EXPECT_EQ(h->FeatureFormTitle(), "Edit Feature — Cooper River");
+  ASSERT_EQ(h->FormFieldCount(), 3);
+  EXPECT_EQ(h->FormFieldControl(1), static_cast<int>(fv::desk::FormControl::kNumber));
+  EXPECT_EQ(h->FormFieldUnit(1), "m");
+  EXPECT_EQ(h->FormFieldText(1), "12");
+  EXPECT_EQ(h->SetFormFieldText(1, "-1"), "");
+  EXPECT_NE(h->ApplyFeatureForm(), "");
+  EXPECT_EQ(h->FormFieldError(1), "\"Depth\" is below its minimum");
+  EXPECT_EQ(h->SetFormFieldText(1, "13.5"), "");
+  EXPECT_TRUE(h->FeatureFormDirty());
+  EXPECT_EQ(h->ApplyFeatureForm(), "");
+  EXPECT_FALSE(h->FeatureFormDirty());
+  EXPECT_EQ(h->TableCell(h->SelectedTableRow(), 1), "13.5");
+  EXPECT_TRUE(h->Tick().redraw);
+
+  h->CloseFeatureForm();
+  h->CloseAttributeTable();
+  EXPECT_FALSE(h->FeatureFormOpen());
+  EXPECT_EQ(h->TableRowCount(), 0);
+  EXPECT_EQ(h->FormFieldText(0), "");
+  h->WaitForRender();
+}
+
+TEST(DeskHost, LayerStyleFlattensForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+  EXPECT_FALSE(h->LayerStyleOpen());
+
+  EXPECT_EQ(h->Execute("overlay.style"), "");
+  const fv::desk::HostTick t = h->Tick();
+  EXPECT_TRUE(t.style_requested);
+  EXPECT_TRUE(t.features_changed);
+  EXPECT_TRUE(h->TakeLayerStyleRequest());
+  EXPECT_FALSE(h->TakeLayerStyleRequest());
+  EXPECT_EQ(h->LayerStyleTitle(), "Layer Style — Charleston rivers");
+  EXPECT_FALSE(h->LayerStyleIsFeature());
+  EXPECT_EQ(h->StyleRenderer(), 0);
+  ASSERT_EQ(h->StyleEntryCount(), 1);
+  // Lines: colour, width, pattern, casing, casing width.
+  ASSERT_EQ(h->StylePropertyCount(), 5);
+  EXPECT_EQ(h->StylePropertyGroup(0), "Line");
+  EXPECT_EQ(h->StylePropertyKind(2), 2);
+  EXPECT_EQ(h->StylePropertyChoice(2, 1), "dash");
+
+  EXPECT_EQ(h->SetStyleRenderer(2), "");
+  ASSERT_EQ(h->StyleFieldCount(), 2);
+  EXPECT_EQ(h->StyleFieldTitle(1), "Average flow");
+  EXPECT_EQ(h->SetStyleField("flow"), "");
+  EXPECT_EQ(h->ClassifyStyle(3, 0, 0), "");
+  ASSERT_EQ(h->StyleEntryCount(), 4);
+  EXPECT_TRUE(h->StyleEntryIsOther(3));
+  EXPECT_EQ(h->StyleEntryValue(0), "25");
+  EXPECT_EQ(h->SetStyleColor(1, 0, 0x11223344u), "");
+  EXPECT_EQ(h->StyleColor(1, 0), 0x11223344u);
+  EXPECT_EQ(h->SetStyleColor(1, 0, 0x112233ffu), "");
+  EXPECT_EQ(h->SetStyleNumber(1, 1, 6.5), "");
+  EXPECT_DOUBLE_EQ(h->StyleNumber(1, 1), 6.5);
+  EXPECT_NE(h->SetStyleNumber(1, 1, -1), "");
+  EXPECT_EQ(h->SetStyleChoice(1, 2, 1), "");
+  EXPECT_EQ(h->StyleChoice(1, 2), 1);
+  EXPECT_EQ(h->StyleLabelFieldCount(), 3);
+  EXPECT_EQ(h->SetStyleLabel("name", 14), "");
+  EXPECT_EQ(h->StyleLabelField(), "name");
+
+  std::vector<uint8_t> px(32 * 16 * 4);
+  EXPECT_TRUE(h->CopyStyleSwatch(1, 32, 16, 1.0, px.data(), px.size()));
+  EXPECT_FALSE(h->CopyStyleSwatch(1, 32, 16, 1.0, px.data(), px.size() - 1));
+  bool coloured = false;
+  for (size_t i = 0; i < px.size(); i += 4) coloured = coloured || (px[i] == 0x11 && px[i + 1] == 0x22);
+  EXPECT_TRUE(coloured);
+
+  EXPECT_TRUE(h->LayerStyleDirty());
+  EXPECT_EQ(h->ApplyLayerStyle(), "");
+  EXPECT_FALSE(h->LayerStyleDirty());
+  EXPECT_TRUE(h->Tick().redraw);
+  h->CloseLayerStyle();
+  EXPECT_FALSE(h->LayerStyleOpen());
+  EXPECT_TRUE(h->Tick().features_changed);
+  h->WaitForRender();
+}
+
+TEST(DeskHost, LayerFieldsAndNewLayerFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+
+  EXPECT_EQ(h->Execute("overlay.fields"), "");
+  const fv::desk::HostTick t = h->Tick();
+  EXPECT_TRUE(t.fields_requested);
+  EXPECT_TRUE(h->TakeLayerFieldsRequest());
+  EXPECT_FALSE(h->TakeLayerFieldsRequest());
+  EXPECT_EQ(h->LayerFieldsTitle(), "Layer Fields — Charleston rivers");
+  ASSERT_EQ(h->LayerFieldCount(), 3);
+  EXPECT_EQ(h->FieldTypeTitle(h->LayerFieldType(1)), "Decimal number");
+  EXPECT_EQ(h->FieldRoleTitle(h->LayerFieldRole(1)), "Measurement");
+  EXPECT_EQ(h->LayerFieldUnit(1), "m");
+  EXPECT_EQ(h->LayerFieldMin(1), "0");
+  EXPECT_EQ(h->LayerFieldMax(1), "");
+  EXPECT_TRUE(h->LayerFieldRequired(0));
+
+  // depth becomes a whole-number "depth_ft" with a maximum; a pick-list field is added.
+  EXPECT_EQ(h->SetLayerField(1, "depth_ft", 1, 5, "Depth", "", "ft", false, "", "0", "x", ""),
+            "the maximum needs a number");
+  EXPECT_EQ(h->SetLayerField(1, "depth_ft", 1, 5, "Depth", "", "ft", false, "", "0", "200", ""), "");
+  EXPECT_EQ(h->LayerFieldOriginalName(1), "depth");
+  const int kind = h->AddLayerField();
+  EXPECT_EQ(kind, 3);
+  EXPECT_EQ(h->SetLayerField(kind, "kind", 0, 4, "Kind", "", "", false, "tidal", "", "",
+                             "tidal = Tidal\nfresh = Fresh water"), "");
+  EXPECT_EQ(h->LayerFieldChoices(kind), "tidal = Tidal\nfresh = Fresh water");
+  EXPECT_EQ(h->LayerFieldDefault(kind), "tidal");
+  EXPECT_EQ(h->MoveLayerField(kind, 1), "");
+  EXPECT_EQ(h->LayerFieldName(1), "kind");
+  EXPECT_TRUE(h->LayerFieldsDirty());
+  EXPECT_EQ(h->RemoveLayerField(3), "");  // flow
+  EXPECT_NE(h->LayerFieldsLoss().find("\"flow\""), std::string::npos);
+  EXPECT_EQ(h->ApplyLayerFields(), "");
+  EXPECT_FALSE(h->LayerFieldsDirty());
+  ASSERT_EQ(h->LayerFieldCount(), 3);
+  EXPECT_EQ(h->LayerFieldName(2), "depth_ft");
+  EXPECT_TRUE(h->Tick().features_changed);
+  h->CloseLayerFields();
+  EXPECT_FALSE(h->LayerFieldsOpen());
+
+  EXPECT_EQ(h->Execute("overlay.new_layer"), "");
+  EXPECT_TRUE(h->Tick().new_layer_requested);
+  EXPECT_TRUE(h->TakeNewLayerRequest());
+  ASSERT_EQ(h->NewLayerTemplateCount(), 4);
+  EXPECT_EQ(h->SetNewLayerTemplate(1), "");
+  EXPECT_EQ(h->NewLayerName(), "Historical monuments");
+  EXPECT_EQ(h->NewLayerGeometryTitle(h->NewLayerGeometry()), "Point");
+  EXPECT_NE(h->NewLayerFieldSummary().find("Date built \xe2\x80\x94 Date"), std::string::npos);
+  EXPECT_EQ(h->CreateNewLayer(), "choose where to save the layer");
+  h->SetNewLayerPath(scratch.Path("monuments"));
+  EXPECT_EQ(h->SetNewLayerFormat(1), "");
+  EXPECT_EQ(h->NewLayerPath(), scratch.Path("monuments.geojson"));
+  EXPECT_EQ(h->CreateNewLayer(), "");
+  EXPECT_FALSE(h->NewLayerOpen());
+  EXPECT_TRUE(std::filesystem::exists(scratch.Path("monuments.geojson")));
+}

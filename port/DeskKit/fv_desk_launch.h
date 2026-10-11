@@ -7,7 +7,8 @@
 ///
 /// Every shell reads the same options with the same meaning
 /// (port/apps/Peregrine/README.md): `--catalog <path>`,
-/// `--center lat,lon[,scale]` and `--shot <png>`. Anything else is ignored,
+/// `--center lat,lon[,scale]`, `--run <command-id>` (repeatable, run in order
+/// after the catalog and centre) and `--shot <png>`. Anything else is ignored,
 /// so toolkit options pass through untouched.
 #pragma once
 
@@ -26,6 +27,10 @@ struct LaunchOptions {
   double center_lon = 0;
   /// The scale denominator of `--center`, or 0 to keep the current scale.
   double center_scale = 0;
+  /// Command ids to execute after the catalog and centre, in order.
+  std::vector<std::string> run;
+  /// Overlay files (`--open`, repeatable) to open after the commands, in order.
+  std::vector<std::string> open;
 };
 
 /// Parses `argv` (argv[0] is the program and is skipped). A later option

@@ -1,0 +1,24 @@
+{
+  "type": "FeatureCollection",
+  "name": "Charleston rivers",
+  "fv_schema": {
+    "version": 1,
+    "geometry_type": "LINESTRING",
+    "fields": [
+      {"name": "name", "type": "text", "title": "Name", "required": true},
+      {"name": "depth", "type": "real", "role": "measurement", "unit": "m", "title": "Depth", "min": 0},
+      {"name": "flow", "type": "real", "role": "measurement", "unit": "m³/s", "title": "Average flow", "min": 0}
+    ]
+  },
+  "features": [
+    {"type": "Feature", "id": 1,
+     "geometry": {"type": "LineString", "coordinates": [[-79.93, 32.99], [-79.94, 32.90], [-79.93, 32.85], [-79.92, 32.80], [-79.91, 32.77]]},
+     "properties": {"name": "Cooper River", "depth": 12.0, "flow": 130.0}},
+    {"type": "Feature", "id": 2,
+     "geometry": {"type": "LineString", "coordinates": [[-80.10, 32.90], [-80.03, 32.85], [-79.97, 32.80], [-79.95, 32.77]]},
+     "properties": {"name": "Ashley River", "depth": 6.0, "flow": 25.0}},
+    {"type": "Feature", "id": 3,
+     "geometry": {"type": "LineString", "coordinates": [[-79.82, 32.93], [-79.86, 32.87], [-79.89, 32.83], [-79.91, 32.80]]},
+     "properties": {"name": "Wando River", "depth": 9.0, "flow": 40.0}}
+  ]
+}

@@ -182,6 +182,12 @@ class EditorManager {
   // mode that is already current it simply moves the focus bracket.
   FlowResult AutoEnterFor(const std::shared_ptr<Overlay>& overlay);
 
+  /// Opacity, 0..100, at which the overlay stack draws everything but the
+  /// edited overlay and the top-most band while something is edited. 100
+  /// (the default) draws them unchanged.
+  void SetDimOthers(int percent);
+  int dim_others() const { return dim_percent_; }
+
   // The Status behind the last kFailed; the shell has already been told
   // through AppShell::ReportError.
   const Status& last_error() const { return last_error_; }
@@ -201,7 +207,8 @@ class EditorManager {
   // silently redirect the adoption by changing the current overlay.
   FlowResult EnterMode(const TypeId& id, std::shared_ptr<Overlay> adopt);
   FlowResult AdoptForMode(std::shared_ptr<Overlay> adopt);
-  void ExitMode(bool notify);
+  /// `restore_order` false keeps the stack as it is: the user put it so.
+  void ExitMode(bool notify, bool restore_order = true);
 
   OverlayEditor* EditorFor(const TypeId& id);
   void ReleaseFocus();
@@ -209,6 +216,8 @@ class EditorManager {
 
   void OnCurrentChanged(Overlay* now);
   void OnOverlayRemoved(Overlay& overlay);
+  void OnOverlayAdded();
+  void OnOrderChanged();
 
   FlowResult Fail(const Status& s);
 
@@ -226,6 +235,7 @@ class EditorManager {
   std::unique_ptr<Hook> hook_;
   Status last_error_ = Status::Ok();
   bool in_transition_ = false;
+  int dim_percent_ = 100;
 };
 
 }  // namespace app

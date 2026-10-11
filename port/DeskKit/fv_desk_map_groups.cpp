@@ -90,6 +90,10 @@ Status MapGroups::LoadJson(const std::string& text, const std::string& name) {
     } else {
       return fail("group '" + g.id + "' has unknown ladder '" + ladder + "'");
     }
+    if (jg.contains("shortcut")) {
+      if (!jg["shortcut"].is_string()) return fail("group '" + g.id + "' shortcut must be a string");
+      g.shortcut = jg["shortcut"].get<std::string>();
+    }
     if (jg.contains("step")) {
       if (!jg["step"].is_number() || !(jg["step"].get<double>() > 1.0))
         return fail("group '" + g.id + "' step must be a number > 1");

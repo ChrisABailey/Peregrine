@@ -23,7 +23,13 @@ add_library(fv_deskkit STATIC
   fv_desk_catalog_build.cpp
   fv_desk_commands.cpp
   fv_desk_desk.cpp
+  fv_desk_layers.cpp
+  fv_desk_feature_form.cpp
+  fv_desk_layer_fields.cpp
+  fv_desk_layer_style.cpp
+  fv_desk_attribute_table.cpp
   fv_desk_fake.cpp
+  fv_desk_feature_editor.cpp
   fv_desk_host.cpp
   fv_desk_launch.cpp
   fv_desk_map_groups.cpp
@@ -31,13 +37,15 @@ add_library(fv_deskkit STATIC
   fv_desk_menu_model.cpp
   fv_desk_options.cpp
   fv_desk_overlay_manifest.cpp
+  fv_desk_point_editor.cpp
+  fv_desk_profile.cpp
   fv_desk_user_settings.cpp
   fv_desk_vector_map.cpp
   fv_desk_workspace.cpp
 )
 target_include_directories(fv_deskkit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE ${FV_DESK_GEN_DIR})
-target_link_libraries(fv_deskkit PUBLIC fv_viewkit fv_fvkit
+target_link_libraries(fv_deskkit PUBLIC fv_viewkit fv_fvkit fv_routekit
   PRIVATE fv_vpf fv_geosym fv_enc fv_osm fv_json fv_png)
 target_compile_features(fv_deskkit PUBLIC cxx_std_17)
 
@@ -46,6 +54,11 @@ if(FVW_BUILD_TESTS)
     test/catalog_build_test.cpp
     test/commands_test.cpp
     test/desk_test.cpp
+    test/layers_test.cpp
+    test/feature_form_test.cpp
+    test/feature_editor_test.cpp
+    test/layer_style_test.cpp
+    test/layer_fields_test.cpp
     test/host_test.cpp
     test/launch_test.cpp
     test/map_groups_test.cpp
@@ -53,12 +66,14 @@ if(FVW_BUILD_TESTS)
     test/menu_model_test.cpp
     test/options_test.cpp
     test/overlay_manifest_test.cpp
+    test/profile_test.cpp
     test/user_settings_test.cpp
     test/vector_map_test.cpp
     test/workspace_test.cpp
   )
-  target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_enc fv_osm GTest::gtest_main)
+  target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm GTest::gtest_main)
   target_compile_definitions(fv_deskkit_test PRIVATE
+    FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson"
     FV_MAP_GROUPS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/map-groups.json"
     FV_OSM_STYLE_JSON="${CMAKE_SOURCE_DIR}/port/Osm/styles/peregrine-osm.json")
   gtest_discover_tests(fv_deskkit_test

@@ -36,6 +36,7 @@ namespace fv {
 namespace app {
 class Persistence;
 class HitTest;
+class EditHint;
 class SnapTo;
 class ContextMenu;
 class RoutingOverrides;
@@ -48,6 +49,7 @@ struct MouseEvent {
   int x = 0, y = 0;   // surface pixels
   int button = 0;     // 0 left, 1 middle, 2 right
   bool shift = false, ctrl = false;
+  int clicks = 1;     // 2 for the second press of a double-click
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,12 @@ class Overlay {
   bool IsVisible() const { return visible_; }
   void SetVisible(bool v) { visible_ = v; }
 
+  /// Layer opacity, 0..100, as the layers panel sets it. Only an overlay whose
+  /// `SupportsOpacity` is true draws with it; the rest ignore the value.
+  int opacity() const { return opacity_; }
+  void SetOpacity(int percent) { opacity_ = percent < 0 ? 0 : (percent > 100 ? 100 : percent); }
+  virtual bool SupportsOpacity() const { return false; }
+
   // The registered overlay type this instance came from (app::TypeId, i.e. a
   // string -- "fv.grid"). Empty for an overlay created outside the app layer,
   // which is legal: an ad-hoc pyfvw overlay has no type. Stamped at creation
@@ -134,6 +142,8 @@ class Overlay {
   // pybind11 trampoline, which a cross-cast is not.
   virtual app::Persistence* AsPersistence() { return nullptr; }
   virtual app::HitTest* AsHitTest() { return nullptr; }
+  /// What a press would do while this overlay is being edited.
+  virtual app::EditHint* AsEditHint() { return nullptr; }
   virtual app::SnapTo* AsSnapTo() { return nullptr; }
   virtual app::ContextMenu* AsContextMenu() { return nullptr; }
   virtual app::RoutingOverrides* AsRoutingOverrides() { return nullptr; }
@@ -174,6 +184,7 @@ class Overlay {
   std::string name_;
   std::string type_id_;
   bool visible_ = true;
+  int opacity_ = 100;
 };
 
 }  // namespace fv

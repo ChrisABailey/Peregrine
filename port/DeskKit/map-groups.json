@@ -1,7 +1,8 @@
 {
   "version": 1,
   "groups": [
-    { "id": "raster",    "title": "Raster",        "formats": ["cadrg", "geotiff", "tiros", "gpkg"], "ladder": "series" },
+    { "id": "raster",    "title": "Raster",        "formats": ["cadrg", "geotiff", "tiros", "gpkg"], "ladder": "series",
+      "shortcut": "Primary+R" },
     { "id": "elevation", "title": "Elevation",     "formats": ["dted-shaded", "dted"],              "ladder": "uniform",
       "scales": [
         { "format": "dted-shaded", "series": "DTED0", "scale": 2000000 },
@@ -9,7 +10,7 @@
         { "format": "dted-shaded", "series": "DTED2", "scale": 150000 },
         { "format": "dted-shaded", "series": "DTED3", "scale": 50000 }
       ] },
-    { "id": "osm",       "title": "OpenStreetMap", "formats": ["osm"],                              "ladder": "uniform",
+    { "id": "osm",       "title": "OpenStreetMap", "formats": ["osm"],                              "ladder": "uniform", "shortcut": "Primary+O",
       "scales": [
         { "format": "osm", "scale": 50000 }
       ] },

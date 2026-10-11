@@ -143,6 +143,9 @@ class PointEditSession {
   bool OnMouseMove(const MouseEvent& e);
   bool OnMouseUp(const MouseEvent& e);
   bool OnKeyDown(const KeyEvent& e);
+  /// What a press at `p` would do: "Add point", "Select point “Name”",
+  /// "Move point “Name”"; empty when it would pan.
+  std::string HintAt(PixelPoint p) const;
 
  private:
   /// Snapshot for undo, and mark the document dirty. Every mutation goes

@@ -13,6 +13,7 @@
 #include <memory>
 
 #include "fv_desk_vector_map.h"
+#include "fv_route_overlay.h"
 #include "fvkit/formats/dted_shaded.h"
 
 namespace fv {
@@ -238,7 +239,7 @@ MapOptionsSource DncMapOptions() {
   src.make = [] {
     std::vector<app::PropertySpec> specs;
     specs.push_back(PathSpec("geosym.data_dir", "GeoSym directory", app::PathKind::kDirectory,
-                             "The directory holding GeoSymbol/SymAssign and GeoSymbol/Graphics."));
+                             "The folder that contains GeoSymbol/, not GeoSymbol/ itself."));
     for (const char* key : {"geosym.brightness", "geosym.contrast"}) {
       app::PropertySpec s;
       s.key = key;
@@ -300,6 +301,36 @@ MapOptionsSource OsmMapOptions() {
   };
   src.apply = [](const app::Properties& p) {
     EditVectorConfig([&p](VectorMapConfig& c) { c.osm_style = p.GetString("osm.style"); });
+  };
+  return src;
+}
+
+MapOptionsSource RoutingOptions(std::function<void()> changed) {
+  MapOptionsSource src;
+  src.group_id = RouteOverlay::kTypeId;
+  src.make = [] {
+    app::PropertySpec graph = PathSpec("routing.graph", "Road network", app::PathKind::kFile,
+                                       "The .fvroad graph Follow Roads routes over "
+                                       "(fvgraph build).");
+    graph.group = "Routing";
+    graph.path_filters = {{"Road Graphs (*.fvroad)", "*.fvroad"}};
+    app::PropertySpec rules = PathSpec("routing.rules", "Routing rules", app::PathKind::kFile,
+                                       "The rule file that prices each way; empty uses the "
+                                       "built-in weights.");
+    rules.group = "Routing";
+    rules.path_filters = {{"Routing Rules (*.json)", "*.json"}};
+    app::PropertySpec profile;
+    profile.key = "routing.profile";
+    profile.label = "Profile for new routes";
+    profile.group = "Routing";
+    profile.type = app::PropertyType::kString;
+    profile.default_value = app::PropertyValue::String(std::string());
+    profile.help = "A profile named in the rule file; an opened route keeps its own.";
+    return std::make_unique<SpecProperties>(
+        std::vector<app::PropertySpec>{graph, rules, profile});
+  };
+  src.apply = [changed](const app::Properties&) {
+    if (changed) changed();
   };
   return src;
 }

@@ -21,7 +21,6 @@ add_library(fv_osm STATIC
   fv_mbtiles.cpp
   fv_osm_vector_source.cpp
   fv_osm_name_index.cpp
-  fv_osm_style.cpp
   fv_osm_format.cpp
 )
 target_include_directories(fv_osm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

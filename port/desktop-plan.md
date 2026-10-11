@@ -80,12 +80,22 @@ The difference is presentation: **toolbar buttons are icons with tooltips, not t
 its own art (SF Symbols on macOS where one fits, a bundled icon set elsewhere). An overlay that
 ships outside the app supplies its own icon file through its manifest (§3a).
 
+- **Route editor toolbar.** While the Route editor is active its tools appear as toolbar icons:
+  Add Point, Delete Point, Cycle Leg Type, Follow Roads, Follow Roads by Bicycle, Straight Legs,
+  Undo, Redo, Elevation Profile. `RouteEditor::Tools()` gives each an `icon`; today they have none,
+  so they show only in the Route menu.
+- **Route elevation profile.** Route ▸ Elevation Profile opens a window charting terrain along the
+  route (PythonView's AN6 `ProfileWindow` over the analysis sampler), from the catalog's DTED
+  (`Desk::elevation_source()`), refreshed as waypoints move.
+
 ### 1c. Options dialogs
 
 Two dialogs of the same shape — **Map ▸ Options…** and **Overlay ▸ Options…** — each a list of
 pages on the left and the selected page on the right (on macOS, a settings-style window).
 
-- One page per overlay type (Grid: colours, tick marks; Route: routing rules, line style; Points;
+- One page per overlay type (Grid: colours, tick marks; Route: routing network (`routing.graph`),
+  routing rules and profile, and drawing — line colour, width and style, casing colour and width,
+  waypoint symbol and labels; Points;
   Moving Map; Contour Lines: interval, colours; TA Mask: altitude, clearance bands; …) and one per map family (Raster: display pixel pitch; Elevation: colour breaks, units, shading; OSM: style sheets; ENC:
   mariner settings, data directory; DNC: GeoSym assets, data families).
 - **A page is generated from the type's `app::Properties` schema** — typed, grouped fields
@@ -340,7 +350,7 @@ yet a seam.
 | DK6d | **Vector base map** (§2c) — `BaseMapRenderer` draws DNC (VPF + GeoSym), ENC (S-57 + S-52) and OSM (MVT + style sheet) through `VectorRenderer`, one style engine per product as PythonView keeps them; Map ▸ Options pages for the GeoSym directory, ENC data directory and mariner settings, and OSM style sheets (DK6 follow-ups) | gtests over the test data, skipped without it; mac: DNC at Nantucket and ENC at Charleston match PythonView's `--shot` of the same view |
 | DK6e | **ENC and OSM formats in Peregrine** (§2c) — link `port/Enc` and `port/Osm` into the core, call `RegisterEncFormat` / `RegisterOsmFormat` in `DeskHost`, so Generate Coverage finds `enc/` and `OSM/` | Generate Coverage on `testdata` lists the ENC and OpenStreetMap groups; both draw (after DK6d) |
 | DK7 | **Linux spike** — GTK4 window, same map widget contract, generated menus | the same workspace renders on Linux; any Swift-shaped leak in DeskKit fixed here |
-| DK8 | **Panels and editing** — layers panel, points and route editors, search, undo | editor flows tested through FakeDesk first |
+| DK8 | **Panels and editing** — layers panel, points and route editors, search, undo. Routes: editor and input path (DK8a, done); route editor toolbar icons (§1b); Overlay ▸ Options Route page — routing network, rules, drawing properties — with `RouteOverlay` gaining `app::Properties` and a line style that includes a casing colour (§1c); route elevation profile window (§1b) | editor flows tested through FakeDesk first; the Route page changes the casing colour with no Route-specific UI code; the profile charts testdata DTED along a route |
 | DK9 | **Moving map** — NMEA/GPX/demo feed, follow modes | GPX replay end to end |
 | DK10 | **mac release** — about/licensing, notarized DMG | installs on a clean mac |
 | DK11+ | `library` plug-ins; Linux and Windows to parity; Pippin onto ViewKit (optional) | |

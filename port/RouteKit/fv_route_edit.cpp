@@ -110,10 +110,17 @@ bool RouteEditSession::Delete(const std::string& label) {
   Record();
   std::vector<RouteWaypoint> kept;
   kept.reserve(wps.size() - 1);
-  for (const RouteWaypoint& w : wps) {
-    if (w.label != label) kept.push_back(w);
+  size_t removed = 0;
+  for (size_t i = 0; i < wps.size(); ++i) {
+    if (wps[i].label == label) removed = i;
+    else kept.push_back(wps[i]);
   }
+  // Deleting the selected point selects the one before it (or the new first),
+  // so repeated Deletes walk back along the route.
+  const bool was_selected = overlay_.selected() == label;
   overlay_.SetWaypoints(std::move(kept));
+  if (was_selected && !overlay_.waypoints().empty())
+    overlay_.SetSelected(overlay_.waypoints()[removed > 0 ? removed - 1 : 0].label);
   return true;
 }
 
@@ -324,8 +331,8 @@ bool RouteEditSession::OnMouseDown(const MouseEvent& e) {
 
   const PixelPoint at{e.x, e.y};
   if (adding_) {
+    // Stays armed: each click adds a point until the tool is turned off.
     const EditPosition p = ResolvePixel(at);
-    adding_ = false;  // spent either way; an unusable pixel is not a retry
     if (!p.valid) return true;
     AddAt(p.position);
     return true;
@@ -350,6 +357,22 @@ bool RouteEditSession::OnMouseDown(const MouseEvent& e) {
   // A press on a waypoint is the START of a drag, not yet a move.
   BeginDrag(label, at);
   return true;
+}
+
+std::string RouteEditSession::HintAt(PixelPoint p) {
+  if (!has_edit_focus_) return std::string();
+  if (adding_) return "Add waypoint";
+  if (!overlay_.has_projection()) return std::string();
+  // The same hit test and nearest-wins rule a press uses.
+  std::vector<app::HitItem> hits;
+  overlay_.HitTestPoint(overlay_.last_projection(), p, pick_tolerance_px_, hits);
+  if (hits.empty()) return std::string();
+  const app::HitItem* nearest = &hits.front();
+  for (const app::HitItem& h : hits)
+    if (h.distance_px < nearest->distance_px) nearest = &h;
+  const std::string label = overlay_.LabelForFeature(nearest->feature);
+  if (label.empty()) return std::string();
+  return (overlay_.selected() == label ? "Move waypoint " : "Select waypoint ") + label;
 }
 
 bool RouteEditSession::OnMouseMove(const MouseEvent& e) {
@@ -383,6 +406,16 @@ bool RouteEditSession::OnKeyDown(const KeyEvent& e) {
     }
     return false;  // nothing to cancel: let the app quit
   }
+  if (e.ctrl && e.key == 'Z') {
+    if (e.shift) {
+      Redo();
+    } else {
+      Undo();
+    }
+    return true;
+  }
+  // A chord is a menu shortcut (Cmd+R is not R), so it goes back to the shell.
+  if (e.ctrl || e.alt || e.meta) return false;
   if (e.key == 'A') {
     adding_ = !adding_;
     return true;
@@ -399,7 +432,7 @@ bool RouteEditSession::OnKeyDown(const KeyEvent& e) {
     FollowRoadsByBicycle();
     return true;
   }
-  if (e.key == 'U' || (e.ctrl && e.key == 'Z')) {
+  if (e.key == 'U') {
     if (e.shift) {
       Redo();
     } else {

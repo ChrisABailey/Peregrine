@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-#include "fv_osm_style.h"
+#include "fvkit/style/maplibre_style.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,8 +18,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "fv_web_mercator.h"
+#include "fvkit/geo/web_mercator.h"
+#include "fvkit/canvas/geo_draw.h"  // MakeLinePreset
 #include "fvkit/proj.h"  // kNativeDisplayMmPerPixel
+#include "fvkit/style/expression.h"
+#include "fvkit/symbol/builtin.h"
 #include "fvkit/symbol/png_library.h"
 
 namespace fv {
@@ -45,32 +48,6 @@ unsigned char ClampByte(double v) {
   return static_cast<unsigned char>(std::lround(v));
 }
 
-// h in [0,360), s and l in [0,1] — the CSS definition, which is what a GL
-// style's hsl()/hsla() means.
-FvColor FromHsl(double h, double s, double l, double a) {
-  h = std::fmod(h, 360.0);
-  if (h < 0.0) h += 360.0;
-  s = std::max(0.0, std::min(1.0, s));
-  l = std::max(0.0, std::min(1.0, l));
-  const double c = (1.0 - std::fabs(2.0 * l - 1.0)) * s;
-  const double hp = h / 60.0;
-  const double x = c * (1.0 - std::fabs(std::fmod(hp, 2.0) - 1.0));
-  double r = 0, g = 0, b = 0;
-  if (hp < 1.0)      { r = c; g = x; }
-  else if (hp < 2.0) { r = x; g = c; }
-  else if (hp < 3.0) { g = c; b = x; }
-  else if (hp < 4.0) { g = x; b = c; }
-  else if (hp < 5.0) { r = x; b = c; }
-  else               { r = c; b = x; }
-  const double m = l - c / 2.0;
-  FvColor out;
-  out.r = ClampByte((r + m) * 255.0);
-  out.g = ClampByte((g + m) * 255.0);
-  out.b = ClampByte((b + m) * 255.0);
-  out.a = ClampByte(a * 255.0);
-  return out;
-}
-
 int HexDigit(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -85,151 +62,49 @@ std::string Trim(const std::string& s) {
   return s.substr(b, e - b + 1);
 }
 
-// Splits "a, b, c" — commas only, whitespace trimmed. Percent signs are kept
-// for the caller, because hsl()'s 2nd/3rd arguments carry them and rgb()'s
-// may.
-std::vector<std::string> SplitArgs(const std::string& s) {
-  std::vector<std::string> out;
-  size_t start = 0;
-  while (true) {
-    size_t comma = s.find(',', start);
-    if (comma == std::string::npos) {
-      out.push_back(Trim(s.substr(start)));
-      break;
-    }
-    out.push_back(Trim(s.substr(start, comma - start)));
-    start = comma + 1;
-  }
-  return out;
-}
-
-// Accepts a plain number or a percentage; `full` is what 100% means.
-bool ParseColorNumber(const std::string& tok, double full, double* out) {
-  if (tok.empty()) return false;
-  std::string t = tok;
-  bool pct = false;
-  if (t.back() == '%') { pct = true; t.pop_back(); t = Trim(t); }
-  char* end = nullptr;
-  const double v = std::strtod(t.c_str(), &end);
-  if (end == t.c_str() || *end != '\0') return false;
-  *out = pct ? v / 100.0 * full : v;
-  return true;
-}
-
-// The CSS colour forms a GL style actually uses. Deliberately NOT the full
-// named-colour table: three names cover what the reference styles use, and an
-// unknown one is a load failure rather than a silent black.
-bool ParseColor(const std::string& raw, FvColor* out) {
-  const std::string s = Trim(raw);
-  if (s.empty()) return false;
-
-  if (s[0] == '#') {
-    const std::string h = s.substr(1);
-    auto nib = [&h](size_t i) { return HexDigit(h[i]); };
-    if (h.size() == 3 || h.size() == 4) {
-      for (char c : h) if (HexDigit(c) < 0) return false;
-      out->r = static_cast<unsigned char>(nib(0) * 17);
-      out->g = static_cast<unsigned char>(nib(1) * 17);
-      out->b = static_cast<unsigned char>(nib(2) * 17);
-      out->a = h.size() == 4 ? static_cast<unsigned char>(nib(3) * 17) : 255;
-      return true;
-    }
-    if (h.size() == 6 || h.size() == 8) {
-      for (char c : h) if (HexDigit(c) < 0) return false;
-      out->r = static_cast<unsigned char>(nib(0) * 16 + nib(1));
-      out->g = static_cast<unsigned char>(nib(2) * 16 + nib(3));
-      out->b = static_cast<unsigned char>(nib(4) * 16 + nib(5));
-      out->a = h.size() == 8
-                   ? static_cast<unsigned char>(nib(6) * 16 + nib(7))
-                   : 255;
-      return true;
-    }
-    return false;
-  }
-
-  const size_t open = s.find('(');
-  if (open != std::string::npos && s.back() == ')') {
-    const std::string fn = Trim(s.substr(0, open));
-    const std::vector<std::string> args =
-        SplitArgs(s.substr(open + 1, s.size() - open - 2));
-    if (fn == "rgb" || fn == "rgba") {
-      if (args.size() != (fn == "rgb" ? 3u : 4u)) return false;
-      double r, g, b, a = 1.0;
-      if (!ParseColorNumber(args[0], 255.0, &r)) return false;
-      if (!ParseColorNumber(args[1], 255.0, &g)) return false;
-      if (!ParseColorNumber(args[2], 255.0, &b)) return false;
-      if (args.size() == 4 && !ParseColorNumber(args[3], 1.0, &a)) return false;
-      out->r = ClampByte(r);
-      out->g = ClampByte(g);
-      out->b = ClampByte(b);
-      out->a = ClampByte(a * 255.0);
-      return true;
-    }
-    if (fn == "hsl" || fn == "hsla") {
-      if (args.size() != (fn == "hsl" ? 3u : 4u)) return false;
-      double h, sat, l, a = 1.0;
-      if (!ParseColorNumber(args[0], 360.0, &h)) return false;
-      if (!ParseColorNumber(args[1], 1.0, &sat)) return false;
-      if (!ParseColorNumber(args[2], 1.0, &l)) return false;
-      if (args.size() == 4 && !ParseColorNumber(args[3], 1.0, &a)) return false;
-      *out = FromHsl(h, sat, l, a);
-      return true;
-    }
-    return false;
-  }
-
-  if (s == "white")       { *out = FvColor{255, 255, 255, 255}; return true; }
-  if (s == "black")       { *out = FvColor{0, 0, 0, 255};       return true; }
-  if (s == "transparent") { *out = FvColor{0, 0, 0, 0};         return true; }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Zoom functions
 // ---------------------------------------------------------------------------
 
-// A number that may vary with zoom. `set` distinguishes "the style said 0"
-// from "the style said nothing", which matters for line-width (0 is legal and
-// means invisible) and for opacity (absent means 1).
+/// A number that may vary with zoom or per feature. `set` distinguishes "the
+/// style said 0" from "the style said nothing": line-width 0 is legal and
+/// means invisible, and an absent opacity means 1.
 struct NumberFn {
   bool set = false;
-  double constant = 0.0;
-  double base = 1.0;
-  std::vector<std::pair<double, double>> stops;
+  StyleExpression expr;
+  bool constant = false;
+  double value = 0.0;  ///< when `constant`
 
-  double At(double zoom) const {
-    if (stops.empty()) return constant;
-    if (zoom <= stops.front().first) return stops.front().second;
-    if (zoom >= stops.back().first) return stops.back().second;
-    size_t i = 0;
-    while (i + 1 < stops.size() && stops[i + 1].first <= zoom) ++i;
-    const double z0 = stops[i].first, v0 = stops[i].second;
-    const double z1 = stops[i + 1].first, v1 = stops[i + 1].second;
-    if (!(z1 > z0)) return v0;
-    // The GL spec's exponential interpolation: base 1 is linear, base > 1
-    // weights the change toward the higher zoom.
-    double t = (zoom - z0) / (z1 - z0);
-    if (base != 1.0 && base > 0.0) {
-      const double d = z1 - z0;
-      t = (std::pow(base, zoom - z0) - 1.0) / (std::pow(base, d) - 1.0);
-    }
-    return v0 + t * (v1 - v0);
+  /// The value for one feature; `fallback` when the expression yields no number.
+  double At(const StyleExpressionInput& in, double fallback = 0.0) const {
+    if (constant) return value;
+    double v = fallback;
+    return expr.Evaluate(in).AsNumber(&v) ? v : fallback;
   }
 };
 
-// A colour that may vary with zoom. STEPPED, not interpolated — see the
-// header's declared deviations.
+/// A colour that may vary with zoom or per feature.
 struct ColorFn {
   bool set = false;
-  FvColor constant;
-  std::vector<std::pair<double, FvColor>> stops;
+  StyleExpression expr;
+  bool constant = false;
+  FvColor value;  ///< when `constant`
 
-  FvColor At(double zoom) const {
-    if (stops.empty()) return constant;
-    size_t i = 0;
-    while (i + 1 < stops.size() && stops[i + 1].first <= zoom) ++i;
-    return stops[i].second;
+  /// The colour for one feature; black when the expression yields no colour,
+  /// the style spec's default.
+  FvColor At(const StyleExpressionInput& in) const {
+    if (constant) return value;
+    FvColor c{0, 0, 0, 255};
+    return expr.Evaluate(in).AsColor(&c) ? c : FvColor{0, 0, 0, 255};
   }
+};
+
+/// A string-valued layout property: a `{token}` template or an expression.
+struct TextFn {
+  std::string tmpl;
+  StyleExpression expr;
+
+  bool empty() const { return tmpl.empty() && expr.empty(); }
 };
 
 // ---------------------------------------------------------------------------
@@ -237,28 +112,32 @@ struct ColorFn {
 // ---------------------------------------------------------------------------
 
 struct StyleLayer {
-  OsmStyleLayerInfo info;
+  MapLibreLayerInfo info;
   Predicate filter;
   bool has_filter = false;
+  StyleExpression filter_expr;  // an expression filter; empty for a legacy one
 
   ColorFn color;          // fill-color / line-color / circle-color / text-color
   NumberFn opacity;       // fill- / line- / text-opacity
   ColorFn outline_color;  // fill-outline-color
   NumberFn width;         // line-width / circle-radius / text-size
   std::vector<double> dash;  // line-dasharray, in line-width units
-  std::string text_field;    // "{name:latin}"-style token template
+  TextFn text_field;         // "{name:latin}" template or an expression
   // Sprite names, both the SAME token-template form as text_field: an
   // OpenMapTiles style writes `"icon-image": "{class}"` far more often than it
   // writes a literal, and a pattern is occasionally keyed off a tag too.
-  std::string icon_image;    // symbol layers
-  std::string fill_pattern;  // fill layers
+  TextFn icon_image;         // symbol layers
+  TextFn fill_pattern;       // fill layers
   NumberFn icon_size;        // icon-size, a multiplier on the sprite
   NumberFn icon_rotate;      // icon-rotate, degrees clockwise
+  ColorFn stroke_color;      // circle-stroke-color
+  NumberFn stroke_width;     // circle-stroke-width, CSS px
+  TextFn shape;              // fv-circle-shape: "circle" or "square"
+  TextFn line_preset;        // fv-line-dash: a fvkit line_preset name
   ColorFn halo_color;        // text-halo-color
   NumberFn halo_width;       // text-halo-width, CSS px
   // symbol-placement / symbol-spacing / text-max-angle / text-offset[1],
-  // i.e. everything that makes a road name follow its road. Constants only,
-  // like every other layout property here.
+  // i.e. everything that makes a road name follow its road. Constants only.
   bool along_path = false;
   double spacing = 250.0;    // GL default, in px at the style's own sizes
   double max_angle = 45.0;   // GL default
@@ -329,16 +208,24 @@ bool ExpandTokens(const std::string& tmpl, const VectorFeature& f,
   return (any || !has_token) && !out->empty();
 }
 
+/// A template's or expression's text for one feature; false when it is empty.
+bool ExpandText(const TextFn& t, const VectorFeature& f,
+                const StyleExpressionInput& in, std::string* out) {
+  if (t.expr.empty()) return ExpandTokens(t.tmpl, f, out);
+  *out = Trim(t.expr.Evaluate(in).ToString());
+  return !out->empty();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
 // Impl
 // ---------------------------------------------------------------------------
 
-struct OsmStyleEngine::Impl {
+struct MapLibreStyleEngine::Impl {
   std::string name;
   std::vector<StyleLayer> layers;
-  std::vector<OsmStyleLayerInfo> infos;
+  std::vector<MapLibreLayerInfo> infos;
 
   // Background layers are not features; kept aside for background().
   bool has_background = false;
@@ -349,6 +236,7 @@ struct OsmStyleEngine::Impl {
   double mm_per_pixel = kNativeDisplayMmPerPixel;
   double zoom_override = -1.0;
   double scaleless_zoom = 14.0;
+  std::string label_font;  // empty = the canvas default
 
   // The sprite sheet. `sprite_url` is what the style said; `sprite_base` is
   // where that resolved on disk, empty when nothing was resolvable. The
@@ -421,11 +309,9 @@ std::string JsonToString(const Json& v) {
 
 // --- filters ---------------------------------------------------------------
 //
-// LEGACY syntax only. The tell is the first element: a legacy filter's head is
-// one of the fixed operator words below and its second element is a plain
-// string key. An expression's head is any other word ("get", "match", "case",
-// "coalesce", …) or its arguments are themselves arrays — both are rejected
-// here rather than half-understood.
+// A legacy filter compiles to the predicate AST; an expression filter is kept
+// as a StyleExpression. IsExpressionFilter is MapLibre's own test for which
+// syntax a filter is written in.
 
 bool IsLegacyOp(const std::string& op) {
   static const char* kOps[] = {"==", "!=", "<",  "<=", ">",   ">=",
@@ -433,6 +319,28 @@ bool IsLegacyOp(const std::string& op) {
                                "none"};
   for (const char* o : kOps) if (op == o) return true;
   return false;
+}
+
+/// MapLibre's isExpressionFilter: true when `j` is written in expression
+/// syntax rather than the legacy filter syntax.
+bool IsExpressionFilter(const Json& j) {
+  if (!j.is_array() || j.empty() || !j[0].is_string()) return false;
+  const std::string op = j[0].get<std::string>();
+  if (op == "has")
+    return j.size() >= 2 && !(j[1].is_string() &&
+                              (j[1] == "$id" || j[1] == "$type"));
+  if (op == "in")
+    return j.size() >= 3 && (!j[1].is_string() || j[2].is_array());
+  if (op == "!in" || op == "!has" || op == "none") return false;
+  if (op == "==" || op == "!=" || op == ">" || op == ">=" || op == "<" ||
+      op == "<=")
+    return j.size() != 3 || j[1].is_array() || j[2].is_array();
+  if (op == "any" || op == "all") {
+    for (size_t i = 1; i < j.size(); ++i)
+      if (!IsExpressionFilter(j[i]) && !j[i].is_boolean()) return false;
+    return true;
+  }
+  return true;
 }
 
 Status ParseFilter(const Json& j, const std::string& layer_id, Predicate* out);
@@ -458,11 +366,8 @@ Status ParseFilter(const Json& j, const std::string& layer_id, Predicate* out) {
 
   const std::string op = j[0].get<std::string>();
   if (!IsLegacyOp(op))
-    return Reject(layer_id,
-                  "filter operator '" + op +
-                      "' is an expression; only the legacy filter syntax is "
-                      "supported (==, !=, <, <=, >, >=, in, !in, has, !has, "
-                      "all, any, none)");
+    return Reject(layer_id, "filter operator '" + op +
+                                "' mixes expression and legacy syntax");
 
   if (op == "all" || op == "any" || op == "none") {
     std::vector<Predicate> kids;
@@ -539,79 +444,135 @@ Status ParseFilter(const Json& j, const std::string& layer_id, Predicate* out) {
 
 // --- paint / layout values -------------------------------------------------
 
-Status ParseNumber(const Json& j, const std::string& layer_id,
-                   const std::string& prop, NumberFn* out) {
-  out->set = true;
-  if (j.is_number()) { out->constant = j.get<double>(); return Status::Ok(); }
-  if (j.is_array())
-    return Reject(layer_id, prop + " is an expression; only a constant or a "
-                                   "{base, stops} zoom function is supported");
-  if (!j.is_object() || !j.contains("stops"))
-    return Reject(layer_id, prop + " is not a number or a zoom function");
+/// A legacy `{base, stops, type}` zoom function as the equivalent expression:
+/// exponential (the default) is `interpolate`, interval is `step`.
+Status ZoomFunctionExpression(const Json& j, const std::string& layer_id,
+                              const std::string& prop, bool colour,
+                              Json* out) {
   if (j.contains("property"))
     return Reject(layer_id,
-                  prop + " is a data-driven (per-feature) function; only zoom "
-                         "functions are supported");
+                  prop + " is a data-driven (per-feature) function; write it "
+                         "as an expression");
+  double base = 1.0;
   if (j.contains("base")) {
     if (!j["base"].is_number())
       return Reject(layer_id, prop + ": 'base' is not a number");
-    out->base = j["base"].get<double>();
+    base = j["base"].get<double>();
   }
+  const std::string type = j.value("type", std::string("exponential"));
+  if (type != "exponential" && type != "interval")
+    return Reject(layer_id, prop + ": zoom function type '" + type +
+                                "' is not exponential or interval");
   const Json& st = j["stops"];
   if (!st.is_array() || st.empty())
     return Reject(layer_id, prop + ": 'stops' is not a non-empty array");
+  std::vector<std::pair<double, Json>> stops;
   for (const Json& s : st) {
-    if (!s.is_array() || s.size() != 2 || !s[0].is_number() ||
-        !s[1].is_number())
-      return Reject(layer_id, prop + ": a stop is not [zoom, number]");
-    out->stops.emplace_back(s[0].get<double>(), s[1].get<double>());
+    const bool ok = s.is_array() && s.size() == 2 && s[0].is_number() &&
+                    (colour ? s[1].is_string() : s[1].is_number());
+    if (!ok)
+      return Reject(layer_id, prop + (colour ? ": a stop is not [zoom, colour]"
+                                             : ": a stop is not [zoom, number]"));
+    if (colour) {
+      FvColor c;
+      if (!ParseCssColor(s[1].get<std::string>(), &c))
+        return Reject(layer_id, prop + ": unrecognized colour '" +
+                                    s[1].get<std::string>() + "'");
+    }
+    stops.emplace_back(s[0].get<double>(), s[1]);
   }
-  std::sort(out->stops.begin(), out->stops.end(),
-            [](const std::pair<double, double>& a,
-               const std::pair<double, double>& b) {
-              return a.first < b.first;
-            });
+  std::stable_sort(stops.begin(), stops.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  // Duplicate zooms: the expression forms need strictly ascending stops, and
+  // the last stop at a zoom is the one a lookup lands on.
+  std::vector<std::pair<double, Json>> unique;
+  for (auto& st2 : stops) {
+    if (!unique.empty() && unique.back().first == st2.first) unique.back() = st2;
+    else unique.push_back(st2);
+  }
+  if (unique.size() == 1) {
+    *out = unique[0].second;
+    return Status::Ok();
+  }
+  Json e = Json::array();
+  if (type == "interval") {
+    e = Json::array({"step", Json::array({"zoom"}), unique[0].second});
+    for (size_t i = 1; i < unique.size(); ++i) {
+      e.push_back(unique[i].first);
+      e.push_back(unique[i].second);
+    }
+  } else {
+    e = Json::array({"interpolate", Json::array({"exponential", base}),
+                     Json::array({"zoom"})});
+    for (const auto& st2 : unique) {
+      e.push_back(st2.first);
+      e.push_back(st2.second);
+    }
+  }
+  *out = e;
+  return Status::Ok();
+}
+
+/// A paint or layout value as an expression: a constant, a legacy zoom
+/// function, or an expression array.
+Status ParseValueExpression(const Json& j, const std::string& layer_id,
+                            const std::string& prop, bool colour,
+                            StyleExpression* out) {
+  Json e = j;
+  if (j.is_object()) {
+    if (!j.contains("stops"))
+      return Reject(layer_id, prop + (colour ? " is not a colour or a zoom function"
+                                             : " is not a number or a zoom function"));
+    Status s = ZoomFunctionExpression(j, layer_id, prop, colour, &e);
+    if (!s.ok()) return s;
+  } else if (!j.is_array()) {
+    if (colour && !j.is_string())
+      return Reject(layer_id, prop + " is not a colour or a zoom function");
+    if (!colour && !j.is_number())
+      return Reject(layer_id, prop + " is not a number or a zoom function");
+    FvColor c;
+    if (colour && !ParseCssColor(j.get<std::string>(), &c))
+      return Reject(layer_id,
+                    prop + ": unrecognized colour '" + j.get<std::string>() +
+                        "' (hex, rgb(), rgba(), hsl(), hsla(), white, black "
+                        "and transparent are supported)");
+  }
+  Status s = StyleExpression::Parse(e.dump(), out);
+  if (!s.ok()) return Status::Error(s.code, Reject(layer_id, prop + ": " + s.message).message);
+  return Status::Ok();
+}
+
+Status ParseNumber(const Json& j, const std::string& layer_id,
+                   const std::string& prop, NumberFn* out) {
+  out->set = true;
+  Status s = ParseValueExpression(j, layer_id, prop, false, &out->expr);
+  if (!s.ok()) return s;
+  out->constant = out->expr.is_constant() &&
+                  out->expr.Evaluate(StyleExpressionInput{}).AsNumber(&out->value);
   return Status::Ok();
 }
 
 Status ParseColorValue(const Json& j, const std::string& layer_id,
                        const std::string& prop, ColorFn* out) {
   out->set = true;
+  Status s = ParseValueExpression(j, layer_id, prop, true, &out->expr);
+  if (!s.ok()) return s;
+  out->constant = out->expr.is_constant() &&
+                  out->expr.Evaluate(StyleExpressionInput{}).AsColor(&out->value);
+  return Status::Ok();
+}
+
+/// A text-field, icon-image or fill-pattern: a `{token}` string or an expression.
+Status ParseText(const Json& j, const std::string& layer_id,
+                 const std::string& prop, TextFn* out) {
   if (j.is_string()) {
-    if (!ParseColor(j.get<std::string>(), &out->constant))
-      return Reject(layer_id,
-                    prop + ": unrecognized colour '" + j.get<std::string>() +
-                        "' (hex, rgb(), rgba(), hsl(), hsla(), white, black "
-                        "and transparent are supported)");
+    out->tmpl = j.get<std::string>();
     return Status::Ok();
   }
-  if (j.is_array())
-    return Reject(layer_id, prop + " is an expression; only a constant or a "
-                                   "{stops} zoom function is supported");
-  if (!j.is_object() || !j.contains("stops"))
-    return Reject(layer_id, prop + " is not a colour or a zoom function");
-  if (j.contains("property"))
-    return Reject(layer_id,
-                  prop + " is a data-driven (per-feature) function; only zoom "
-                         "functions are supported");
-  const Json& st = j["stops"];
-  if (!st.is_array() || st.empty())
-    return Reject(layer_id, prop + ": 'stops' is not a non-empty array");
-  for (const Json& s : st) {
-    if (!s.is_array() || s.size() != 2 || !s[0].is_number() ||
-        !s[1].is_string())
-      return Reject(layer_id, prop + ": a stop is not [zoom, colour]");
-    FvColor c;
-    if (!ParseColor(s[1].get<std::string>(), &c))
-      return Reject(layer_id, prop + ": unrecognized colour '" +
-                                  s[1].get<std::string>() + "'");
-    out->stops.emplace_back(s[0].get<double>(), c);
-  }
-  std::sort(out->stops.begin(), out->stops.end(),
-            [](const std::pair<double, FvColor>& a,
-               const std::pair<double, FvColor>& b) {
-              return a.first < b.first;
-            });
+  if (!j.is_array())
+    return Reject(layer_id, prop + " is not a string or an expression");
+  Status s = StyleExpression::Parse(j.dump(), &out->expr);
+  if (!s.ok()) return Status::Error(s.code, Reject(layer_id, prop + ": " + s.message).message);
   return Status::Ok();
 }
 
@@ -619,45 +580,45 @@ Status ParseColorValue(const Json& j, const std::string& layer_id,
 
 // ---------------------------------------------------------------------------
 
-OsmStyleEngine::OsmStyleEngine() : impl_(new Impl) {}
-OsmStyleEngine::~OsmStyleEngine() = default;
+MapLibreStyleEngine::MapLibreStyleEngine() : impl_(new Impl) {}
+MapLibreStyleEngine::~MapLibreStyleEngine() = default;
 
-void OsmStyleEngine::SetReferenceLatitude(double lat) {
+void MapLibreStyleEngine::SetReferenceLatitude(double lat) {
   if (impl_->ref_lat != lat) {
     impl_->ref_lat = lat;
     BumpStyleEpoch();
   }
 }
-double OsmStyleEngine::reference_latitude() const { return impl_->ref_lat; }
+double MapLibreStyleEngine::reference_latitude() const { return impl_->ref_lat; }
 
-void OsmStyleEngine::SetDisplayMmPerPixel(double mm_per_pixel) {
+void MapLibreStyleEngine::SetDisplayMmPerPixel(double mm_per_pixel) {
   if (!(mm_per_pixel > 0.0)) return;
   if (impl_->mm_per_pixel != mm_per_pixel) {
     impl_->mm_per_pixel = mm_per_pixel;
     BumpStyleEpoch();
   }
 }
-double OsmStyleEngine::display_mm_per_pixel() const {
+double MapLibreStyleEngine::display_mm_per_pixel() const {
   return impl_->mm_per_pixel;
 }
 
-void OsmStyleEngine::SetZoomOverride(double z) {
+void MapLibreStyleEngine::SetZoomOverride(double z) {
   if (impl_->zoom_override != z) {
     impl_->zoom_override = z;
     BumpStyleEpoch();
   }
 }
-double OsmStyleEngine::zoom_override() const { return impl_->zoom_override; }
+double MapLibreStyleEngine::zoom_override() const { return impl_->zoom_override; }
 
-void OsmStyleEngine::SetScalelessZoom(double z) {
+void MapLibreStyleEngine::SetScalelessZoom(double z) {
   if (impl_->scaleless_zoom != z) {
     impl_->scaleless_zoom = z;
     BumpStyleEpoch();
   }
 }
-double OsmStyleEngine::scaleless_zoom() const { return impl_->scaleless_zoom; }
+double MapLibreStyleEngine::scaleless_zoom() const { return impl_->scaleless_zoom; }
 
-double OsmStyleEngine::ZoomForScale(double scale_denominator) const {
+double MapLibreStyleEngine::ZoomForScale(double scale_denominator) const {
   if (impl_->zoom_override >= 0.0) return impl_->zoom_override;
   if (!(scale_denominator > 0.0)) return impl_->scaleless_zoom;
   const double z = webmerc::ZoomForScaleExact(scale_denominator, impl_->ref_lat,
@@ -665,36 +626,37 @@ double OsmStyleEngine::ZoomForScale(double scale_denominator) const {
   return std::isfinite(z) ? z : impl_->scaleless_zoom;
 }
 
-const std::vector<OsmStyleLayerInfo>& OsmStyleEngine::layers() const {
+const std::vector<MapLibreLayerInfo>& MapLibreStyleEngine::layers() const {
   return impl_->infos;
 }
-const std::string& OsmStyleEngine::style_name() const { return impl_->name; }
+const std::string& MapLibreStyleEngine::style_name() const { return impl_->name; }
 
-bool OsmStyleEngine::background(double scale_denominator, FvColor* out) const {
+bool MapLibreStyleEngine::background(double scale_denominator, FvColor* out) const {
   if (!impl_->has_background || out == nullptr) return false;
-  const double zoom = ZoomForScale(scale_denominator);
-  FvColor c = impl_->background_color.At(zoom);
+  StyleExpressionInput in;
+  in.zoom = ZoomForScale(scale_denominator);
+  FvColor c = impl_->background_color.At(in);
   if (impl_->background_opacity.set) {
     c.a = ClampByte(c.a * std::max(0.0, std::min(1.0,
-                                                 impl_->background_opacity.At(zoom))));
+                                                 impl_->background_opacity.At(in, 1.0))));
   }
   *out = c;
   return true;
 }
 
-const std::map<std::string, size_t>& OsmStyleEngine::ignored_icons() const {
+const std::map<std::string, size_t>& MapLibreStyleEngine::ignored_icons() const {
   return impl_->ignored_icons;
 }
-size_t OsmStyleEngine::layers_that_drew() const {
+size_t MapLibreStyleEngine::layers_that_drew() const {
   size_t n = 0;
   for (bool b : impl_->layer_drew) if (b) ++n;
   return n;
 }
-size_t OsmStyleEngine::empty_labels() const { return impl_->empty_labels; }
-size_t OsmStyleEngine::ignored_halo_blur() const {
+size_t MapLibreStyleEngine::empty_labels() const { return impl_->empty_labels; }
+size_t MapLibreStyleEngine::ignored_halo_blur() const {
   return impl_->ignored_halo_blur;
 }
-void OsmStyleEngine::ResetDiagnostics() {
+void MapLibreStyleEngine::ResetDiagnostics() {
   impl_->ignored_icons.clear();
   impl_->empty_labels = 0;
   std::fill(impl_->layer_drew.begin(), impl_->layer_drew.end(), false);
@@ -705,7 +667,7 @@ void OsmStyleEngine::ResetDiagnostics() {
 // Load
 // ---------------------------------------------------------------------------
 
-Status OsmStyleEngine::LoadFile(const std::string& path, std::string* error) {
+Status MapLibreStyleEngine::LoadFile(const std::string& path, std::string* error) {
   std::ifstream in(path.c_str(), std::ios::binary);
   if (!in) {
     Status s = Status::Error(kIoError, "cannot open style file: " + path);
@@ -724,24 +686,24 @@ Status OsmStyleEngine::LoadFile(const std::string& path, std::string* error) {
 
 // --- the sprite sheet -------------------------------------------------------
 
-void OsmStyleEngine::SetSpriteBase(const std::string& path_without_extension) {
+void MapLibreStyleEngine::SetSpriteBase(const std::string& path_without_extension) {
   impl_->sprite_base = path_without_extension;
   impl_->sprite_base_is_explicit = !path_without_extension.empty();
 }
 
-const std::string& OsmStyleEngine::sprite_base() const {
+const std::string& MapLibreStyleEngine::sprite_base() const {
   return impl_->sprite_base;
 }
 
-void OsmStyleEngine::SetPreferHighDpiSprites(bool on) {
+void MapLibreStyleEngine::SetPreferHighDpiSprites(bool on) {
   impl_->prefer_high_dpi = on;
 }
 
-const std::string& OsmStyleEngine::sprite_url() const {
+const std::string& MapLibreStyleEngine::sprite_url() const {
   return impl_->sprite_url;
 }
 
-std::vector<std::string> OsmStyleEngine::sprite_ids() const {
+std::vector<std::string> MapLibreStyleEngine::sprite_ids() const {
   return impl_->sprites ? impl_->sprites->ids() : std::vector<std::string>();
 }
 
@@ -765,7 +727,7 @@ std::string ResolveSpriteBase(const std::string& url, const std::string& dir) {
 
 }  // namespace
 
-Status OsmStyleEngine::LoadText(const std::string& json_text,
+Status MapLibreStyleEngine::LoadText(const std::string& json_text,
                                 std::string* error) {
   // All-or-nothing: build into a fresh Impl and only swap it in on success, so
   // a rejected style leaves the previous one (or the closed engine) intact.
@@ -848,11 +810,11 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
     L.info.id = id;
     L.info.priority = priority;
 
-    if (type == "background") L.info.type = OsmStyleLayerType::kBackground;
-    else if (type == "fill")  L.info.type = OsmStyleLayerType::kFill;
-    else if (type == "line")  L.info.type = OsmStyleLayerType::kLine;
-    else if (type == "symbol") L.info.type = OsmStyleLayerType::kSymbol;
-    else if (type == "circle") L.info.type = OsmStyleLayerType::kCircle;
+    if (type == "background") L.info.type = MapLibreLayerType::kBackground;
+    else if (type == "fill")  L.info.type = MapLibreLayerType::kFill;
+    else if (type == "line")  L.info.type = MapLibreLayerType::kLine;
+    else if (type == "symbol") L.info.type = MapLibreLayerType::kSymbol;
+    else if (type == "circle") L.info.type = MapLibreLayerType::kCircle;
     else
       return fail(Reject(id, "layer type '" + type +
                                  "' is outside the supported subset "
@@ -888,15 +850,24 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
         return fail(Reject(id, "source-layer is not a string"));
       L.info.source_layer = jl["source-layer"].get<std::string>();
     }
-    if (L.info.type != OsmStyleLayerType::kBackground &&
+    if (L.info.type != MapLibreLayerType::kBackground &&
         L.info.source_layer.empty())
       return fail(Reject(id, "layer has no 'source-layer'"));
 
     if (jl.contains("filter")) {
-      Status s = ParseFilter(jl["filter"], id, &L.filter);
-      if (!s.ok()) return fail(s);
-      L.has_filter = !L.filter.is_always();
-      L.info.filter = L.has_filter ? L.filter.ToText() : std::string();
+      const Json& jf = jl["filter"];
+      if (IsExpressionFilter(jf)) {
+        Status s = StyleExpression::Parse(jf.dump(), &L.filter_expr);
+        if (!s.ok())
+          return fail(Status::Error(s.code, Reject(id, "filter: " + s.message).message));
+        L.has_filter = true;
+        L.info.filter = L.filter_expr.text();
+      } else {
+        Status s = ParseFilter(jf, id, &L.filter);
+        if (!s.ok()) return fail(s);
+        L.has_filter = !L.filter.is_always();
+        L.info.filter = L.has_filter ? L.filter.ToText() : std::string();
+      }
     }
 
     const Json empty = Json::object();
@@ -921,7 +892,7 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
 
     Status s = Status::Ok();
     switch (L.info.type) {
-      case OsmStyleLayerType::kBackground:
+      case MapLibreLayerType::kBackground:
         if (!(s = col(paint, "background-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "background-opacity", &L.opacity)).ok()) return fail(s);
         // Still rejected with the sheet loading (O6): a background is not a
@@ -932,21 +903,24 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
                              "background-pattern has no geometry to repeat "
                              "over: a background is a canvas clear"));
         break;
-      case OsmStyleLayerType::kFill:
+      case MapLibreLayerType::kFill:
         if (!(s = col(paint, "fill-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "fill-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = col(paint, "fill-outline-color", &L.outline_color)).ok())
           return fail(s);
-        if (paint.contains("fill-pattern")) {
-          if (!paint["fill-pattern"].is_string())
-            return fail(Reject(id, "fill-pattern is a function or expression"));
-          L.fill_pattern = paint["fill-pattern"].get<std::string>();
-        }
+        if (paint.contains("fill-pattern") &&
+            !(s = ParseText(paint["fill-pattern"], id, "fill-pattern",
+                            &L.fill_pattern)).ok())
+          return fail(s);
         break;
-      case OsmStyleLayerType::kLine:
+      case MapLibreLayerType::kLine:
         if (!(s = col(paint, "line-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "line-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = num(paint, "line-width", &L.width)).ok()) return fail(s);
+        if (paint.contains("fv-line-dash") &&
+            !(s = ParseText(paint["fv-line-dash"], id, "fv-line-dash",
+                            &L.line_preset)).ok())
+          return fail(s);
         // O6 loads the sheet, so the artwork is now reachable — but a GL
         // line-pattern STRETCHES a tile along the line, and LinePatternStyle
         // repeats a symbol at a fixed step. Those are different pictures, and
@@ -970,7 +944,7 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
           }
         }
         break;
-      case OsmStyleLayerType::kSymbol:
+      case MapLibreLayerType::kSymbol:
         if (!(s = col(paint, "text-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "text-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = num(layout, "text-size", &L.width)).ok()) return fail(s);
@@ -991,21 +965,17 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
                                    "zoom function"));
           ++fresh.ignored_halo_blur;
         }
-        if (layout.contains("icon-image")) {
-          if (!layout["icon-image"].is_string())
-            return fail(Reject(id, "icon-image is a function or expression"));
-          L.icon_image = layout["icon-image"].get<std::string>();
-        }
+        if (layout.contains("icon-image") &&
+            !(s = ParseText(layout["icon-image"], id, "icon-image",
+                            &L.icon_image)).ok())
+          return fail(s);
         if (!(s = num(layout, "icon-size", &L.icon_size)).ok()) return fail(s);
         if (!(s = num(layout, "icon-rotate", &L.icon_rotate)).ok())
           return fail(s);
-        if (layout.contains("text-field")) {
-          if (!layout["text-field"].is_string())
-            return fail(Reject(id,
-                               "text-field is an expression; only the {token} "
-                               "string form is supported"));
-          L.text_field = layout["text-field"].get<std::string>();
-        }
+        if (layout.contains("text-field") &&
+            !(s = ParseText(layout["text-field"], id, "text-field",
+                            &L.text_field)).ok())
+          return fail(s);
         if (layout.contains("symbol-placement")) {
           if (!layout["symbol-placement"].is_string())
             return fail(Reject(id, "symbol-placement is not a constant"));
@@ -1052,14 +1022,22 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
                                        layout["text-anchor"].get<std::string>()));
         }
         break;
-      case OsmStyleLayerType::kCircle:
+      case MapLibreLayerType::kCircle:
         if (!(s = col(paint, "circle-color", &L.color)).ok()) return fail(s);
         if (!(s = num(paint, "circle-opacity", &L.opacity)).ok()) return fail(s);
         if (!(s = num(paint, "circle-radius", &L.width)).ok()) return fail(s);
+        if (!(s = col(paint, "circle-stroke-color", &L.stroke_color)).ok())
+          return fail(s);
+        if (!(s = num(paint, "circle-stroke-width", &L.stroke_width)).ok())
+          return fail(s);
+        if (paint.contains("fv-circle-shape") &&
+            !(s = ParseText(paint["fv-circle-shape"], id, "fv-circle-shape",
+                            &L.shape)).ok())
+          return fail(s);
         break;
     }
 
-    if (L.info.type == OsmStyleLayerType::kBackground) {
+    if (L.info.type == MapLibreLayerType::kBackground) {
       // Only the first background layer can win; a style with two is telling
       // us something we do not model, so say so rather than pick one.
       if (fresh.has_background)
@@ -1092,9 +1070,10 @@ Status OsmStyleEngine::LoadText(const std::string& json_text,
 
 namespace {
 
-FvColor WithOpacity(FvColor c, const NumberFn& op, double zoom) {
+FvColor WithOpacity(FvColor c, const NumberFn& op,
+                    const StyleExpressionInput& in) {
   if (!op.set) return c;
-  const double a = std::max(0.0, std::min(1.0, op.At(zoom)));
+  const double a = std::max(0.0, std::min(1.0, op.At(in, 1.0)));
   c.a = ClampByte(c.a * a);
   return c;
 }
@@ -1116,38 +1095,85 @@ std::string SpriteSymbolId(const std::string& name) {
   return std::string(kSpritePrefix) + name;
 }
 
-// "circle:<radius in himetric>:<rrggbbaa>" — self-describing, so LoadSymbol
-// can build the display list from the id alone and the base class's cache
-// dedupes every feature that shares a radius and colour.
-std::string CircleSymbolId(int radius_himetric, const FvColor& c) {
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "circle:%d:%02X%02X%02X%02X",
-                radius_himetric, c.r, c.g, c.b, c.a);
-  return std::string(buf);
+/// A generated circle or square marker, all sizes in HIMETRIC.
+struct CircleSymbol {
+  int radius = 0;
+  FvColor fill;
+  FvColor stroke;
+  int stroke_width = 0;  // 0 = no outline
+  bool square = false;
+};
+
+std::string ColorHex(const FvColor& c) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", c.r, c.g, c.b, c.a);
+  return buf;
 }
 
-bool ParseCircleSymbolId(const std::string& id, int* radius, FvColor* c) {
-  if (id.compare(0, 7, "circle:") != 0) return false;
-  const size_t colon = id.find(':', 7);
-  if (colon == std::string::npos) return false;
-  const std::string r = id.substr(7, colon - 7);
-  const std::string hex = id.substr(colon + 1);
-  if (r.empty() || hex.size() != 8) return false;
-  char* end = nullptr;
-  const long rv = std::strtol(r.c_str(), &end, 10);
-  if (end == r.c_str() || *end != '\0' || rv <= 0) return false;
+bool ColorFromHex(const std::string& hex, FvColor* c) {
+  if (hex.size() != 8) return false;
   for (char ch : hex) if (HexDigit(ch) < 0) return false;
   auto byte = [&hex](size_t i) {
     return static_cast<unsigned char>(HexDigit(hex[i]) * 16 + HexDigit(hex[i + 1]));
   };
-  *radius = static_cast<int>(rv);
   c->r = byte(0); c->g = byte(2); c->b = byte(4); c->a = byte(6);
   return true;
 }
 
+std::vector<std::string> SplitColons(const std::string& s) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  for (size_t i = 0; i <= s.size(); ++i) {
+    if (i == s.size() || s[i] == ':') {
+      out.push_back(s.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+/// "circle:<r>:<rrggbbaa>" for a plain disc, else
+/// "circle:<r>:<fill>:<stroke>:<stroke width>:<c|s>". Self-describing, so
+/// LoadSymbol builds the display list from the id and the base class's cache
+/// shares it between features.
+std::string CircleSymbolId(const CircleSymbol& c) {
+  std::string id = "circle:" + std::to_string(c.radius) + ":" + ColorHex(c.fill);
+  if (c.stroke_width > 0 || c.square)
+    id += ":" + ColorHex(c.stroke) + ":" + std::to_string(c.stroke_width) + ":" +
+          (c.square ? "s" : "c");
+  return id;
+}
+
+bool ParseCircleSymbolId(const std::string& id, CircleSymbol* out) {
+  const std::vector<std::string> f = SplitColons(id);
+  if (f.size() != 3 && f.size() != 6) return false;
+  if (f[0] != "circle") return false;
+  char* end = nullptr;
+  const long r = std::strtol(f[1].c_str(), &end, 10);
+  if (end == f[1].c_str() || *end != '\0' || r <= 0) return false;
+  CircleSymbol c;
+  c.radius = static_cast<int>(r);
+  if (!ColorFromHex(f[2], &c.fill)) return false;
+  if (f.size() == 6) {
+    if (!ColorFromHex(f[3], &c.stroke)) return false;
+    const long w = std::strtol(f[4].c_str(), &end, 10);
+    if (end == f[4].c_str() || *end != '\0' || w < 0) return false;
+    c.stroke_width = static_cast<int>(w);
+    if (f[5] != "c" && f[5] != "s") return false;
+    c.square = f[5] == "s";
+  }
+  *out = c;
+  return true;
+}
+
+/// "builtin:<rrggbbaa>:<builtin id>" — a fvkit builtin symbol in one colour.
+std::string BuiltinSymbolId(const FvColor& color, const std::string& builtin) {
+  return "builtin:" + ColorHex(color) + ":" + builtin;
+}
+
 }  // namespace
 
-Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
+Status MapLibreStyleEngine::StyleFeature(const VectorFeature& f,
                                     const StyleContext& ctx,
                                     const StylePass& pass,
                                     std::vector<StyleResult>* out) {
@@ -1167,31 +1193,49 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
     if (key == "$type") return &geom_token;
     return f.Attribute(key);
   };
+  StyleExpressionInput in;
+  in.get = [&f](const std::string& key, StyleValue* v) {
+    const std::string* a = f.Attribute(key);
+    if (a == nullptr) return false;
+    *v = StyleValue::String(*a);
+    return true;
+  };
+  in.geometry_type = geom_token;
+  in.zoom = zoom;
+  in.has_id = f.has_id;
+  in.id = f.id;
 
   for (size_t idx : it->second) {
     const StyleLayer& L = impl_->layers[idx];
     if (!L.info.visible) continue;
     if (!L.info.band.Contains(ctx.scale_denominator)) continue;
-    if (L.has_filter && !L.filter.Evaluate(lookup)) continue;
+    if (L.has_filter) {
+      if (!L.filter_expr.empty()) {
+        const StyleValue v = L.filter_expr.Evaluate(in);
+        if (v.type != StyleValue::Type::kBool || !v.boolean) continue;
+      } else if (!L.filter.Evaluate(lookup)) {
+        continue;
+      }
+    }
 
     StyleResultBuilder b(pass.PriorityOr(L.info.priority), out);
 
     switch (L.info.type) {
-      case OsmStyleLayerType::kFill: {
+      case MapLibreLayerType::kFill: {
         if (L.color.set) {
           FillStyle& fs = b.Fill();
           fs.valid = true;
-          fs.brush.color = WithOpacity(L.color.At(zoom), L.opacity, zoom);
+          fs.brush.color = WithOpacity(L.color.At(in), L.opacity, in);
         }
         if (L.outline_color.set) {
           StrokeStyle& ss = b.Stroke();
           ss.valid = true;
-          ss.pen.color = WithOpacity(L.outline_color.At(zoom), L.opacity, zoom);
+          ss.pen.color = WithOpacity(L.outline_color.At(in), L.opacity, in);
           ss.pen.width = 1;
         }
         if (!L.fill_pattern.empty()) {
           std::string name;
-          if (ExpandTokens(L.fill_pattern, f, &name)) {
+          if (ExpandText(L.fill_pattern, f, in, &name)) {
             const SymbolPixmap* tile = SpriteTile(name);
             if (tile == nullptr) {
               ++impl_->ignored_icons[name];
@@ -1229,16 +1273,30 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
         }
         break;
       }
-      case OsmStyleLayerType::kLine: {
+      case MapLibreLayerType::kLine: {
         if (!L.color.set) break;
         // line-width defaults to 1 CSS px when the style omits it.
-        const double w_css = L.width.set ? L.width.At(zoom) : 1.0;
+        const double w_css = L.width.set ? L.width.At(in) : 1.0;
         if (!(w_css > 0.0)) break;
         const int w_px = std::max(1, static_cast<int>(std::lround(w_css * dpi_scale)));
         StrokeStyle& ss = b.Stroke();
         ss.valid = true;
-        ss.pen.color = WithOpacity(L.color.At(zoom), L.opacity, zoom);
+        ss.pen.color = WithOpacity(L.color.At(in), L.opacity, in);
         ss.pen.width = w_px;
+        std::string preset;
+        if (!L.line_preset.empty() && ExpandText(L.line_preset, f, in, &preset) &&
+            preset != line_preset::kSolid) {
+          LinePatternStyle pattern = MakeLinePreset(preset, ss.pen, dpi_scale);
+          if (pattern.valid) {
+            // Builtin stamps take the line's colour through their symbol id.
+            for (PathRun& run : pattern.runs)
+              if (run.type == PathRunType::kSymbol)
+                run.symbol_id = BuiltinSymbolId(ss.pen.color, run.symbol_id);
+            b.LinePattern() = std::move(pattern);
+            ss.valid = false;
+            break;
+          }
+        }
         if (!L.dash.empty()) {
           // GL dash runs are in LINE-WIDTH units, not pixels, and are measured
           // against the width BEFORE it is rounded to a whole pen: rounding
@@ -1252,27 +1310,42 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
         }
         break;
       }
-      case OsmStyleLayerType::kCircle: {
+      case MapLibreLayerType::kCircle: {
         if (!L.color.set) break;
-        const double r_css = L.width.set ? L.width.At(zoom) : 5.0;
+        const double r_css = L.width.set ? L.width.At(in) : 5.0;
         if (!(r_css > 0.0)) break;
         const int r_hm = std::max(
             1, static_cast<int>(std::lround(r_css * dpi_scale * kHimetricPerPixel)));
+        CircleSymbol cs;
+        cs.radius = r_hm;
+        cs.fill = WithOpacity(L.color.At(in), L.opacity, in);
+        if (L.stroke_width.set) {
+          const double sw_css = L.stroke_width.At(in);
+          if (sw_css > 0.0) {
+            cs.stroke_width = std::max(
+                1, static_cast<int>(std::lround(sw_css * dpi_scale * kHimetricPerPixel)));
+            cs.stroke = L.stroke_color.set
+                            ? WithOpacity(L.stroke_color.At(in), L.opacity, in)
+                            : FvColor{0, 0, 0, 255};
+          }
+        }
+        std::string shape;
+        cs.square = !L.shape.empty() && ExpandText(L.shape, f, in, &shape) &&
+                    shape == "square";
         PointSymbolStyle& sy = b.Symbol();
         sy.valid = true;
-        sy.symbol_id = CircleSymbolId(
-            r_hm, WithOpacity(L.color.At(zoom), L.opacity, zoom));
+        sy.symbol_id = CircleSymbolId(cs);
         sy.scale = pass.SymbolScaleOr(1.0);
         break;
       }
-      case OsmStyleLayerType::kSymbol: {
+      case MapLibreLayerType::kSymbol: {
         // The icon and the text are INDEPENDENT halves of a GL symbol layer:
         // a POI draws both, a shield draws only the icon, a place name only
         // the text. Before O6 the icon half was counted and dropped, so a
         // layer with an icon and no text contributed nothing at all.
         if (!L.icon_image.empty()) {
           std::string name;
-          if (ExpandTokens(L.icon_image, f, &name)) {
+          if (ExpandText(L.icon_image, f, in, &name)) {
             if (SpriteTile(name) == nullptr) {
               ++impl_->ignored_icons[name];
             } else {
@@ -1282,38 +1355,39 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
               // icon-size is a multiplier on the sprite's own size, and
               // dpi_scale is the same CSS-px-to-device conversion every other
               // value here goes through.
-              sy.scale = (L.icon_size.set ? L.icon_size.At(zoom) : 1.0) *
+              sy.scale = (L.icon_size.set ? L.icon_size.At(in) : 1.0) *
                          dpi_scale * pass.SymbolScaleOr(1.0);
               // GL's icon-rotate is degrees CLOCKWISE, which is what
               // PointSymbolStyle::rotation_deg already means (GeoSym's
               // convention).
-              if (L.icon_rotate.set) sy.rotation_deg = L.icon_rotate.At(zoom);
+              if (L.icon_rotate.set) sy.rotation_deg = L.icon_rotate.At(in);
             }
           }
         }
         if (L.text_field.empty()) break;
         if (!pass.draw_labels) break;
         std::string text;
-        if (!ExpandTokens(L.text_field, f, &text)) {
+        if (!ExpandText(L.text_field, f, in, &text)) {
           ++impl_->empty_labels;
           break;
         }
         LabelStyle& lb = b.Label();
         lb.valid = true;
         lb.text = std::move(text);
-        lb.style.size = (L.width.set ? L.width.At(zoom) : 16.0) * dpi_scale;
+        lb.style.size = (L.width.set ? L.width.At(in) : 16.0) * dpi_scale;
+        lb.style.font_path = impl_->label_font;
         lb.style.color = L.color.set
-                             ? WithOpacity(L.color.At(zoom), L.opacity, zoom)
+                             ? WithOpacity(L.color.At(in), L.opacity, in)
                              : FvColor{0, 0, 0, 255};
         // The halo is CSS px like every other GL paint value, so it goes
         // through the same dpi conversion the sizes and widths do. A style
         // that gives a colour and no width gets the GL default of 0, i.e.
         // nothing — the colour alone is not a request to draw an outline.
         if (L.halo_width.set) {
-          lb.halo_width = L.halo_width.At(zoom) * dpi_scale;
+          lb.halo_width = L.halo_width.At(in) * dpi_scale;
           lb.halo_color =
               L.halo_color.set
-                  ? WithOpacity(L.halo_color.At(zoom), L.opacity, zoom)
+                  ? WithOpacity(L.halo_color.At(in), L.opacity, in)
                   : FvColor{255, 255, 255, 255};
         }
         // A road name follows its road; a place name does not. The style says
@@ -1333,10 +1407,11 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
           lb.dy = static_cast<int>(std::lround(L.point_dy_em * lb.style.size));
           lb.halign = L.point_halign;
           lb.valign = L.point_valign;
+          lb.anchor = LabelAnchor::kCentre;
         }
         break;
       }
-      case OsmStyleLayerType::kBackground:
+      case MapLibreLayerType::kBackground:
         break;  // not reachable: background layers are not in by_source_layer
     }
 
@@ -1348,18 +1423,18 @@ Status OsmStyleEngine::StyleFeature(const VectorFeature& f,
 
 // The sheet lookup both emission sites go through, by BARE name (no prefix).
 // nullptr = no sheet, or the sheet has no such sprite; the caller counts it.
-const SymbolPixmap* OsmStyleEngine::SpriteTile(const std::string& name) const {
+const SymbolPixmap* MapLibreStyleEngine::SpriteTile(const std::string& name) const {
   if (!impl_->sprites || name.empty()) return nullptr;
   return impl_->sprites->Pixmap(name);
 }
 
-const SymbolPixmap* OsmStyleEngine::Pixmap(const std::string& symbol_id) {
+const SymbolPixmap* MapLibreStyleEngine::Pixmap(const std::string& symbol_id) {
   const size_t n = std::strlen(kSpritePrefix);
   if (symbol_id.compare(0, n, kSpritePrefix) != 0) return nullptr;
   return SpriteTile(symbol_id.substr(n));
 }
 
-const VectorSymbol* OsmStyleEngine::Symbol(const std::string& symbol_id) {
+const VectorSymbol* MapLibreStyleEngine::Symbol(const std::string& symbol_id) {
   // A sprite has no display list, and that is not a failure — it resolves
   // through Pixmap(), which is the next thing ResolveSymbol asks. Answered
   // HERE rather than by letting LoadSymbol return false, because the base
@@ -1371,26 +1446,53 @@ const VectorSymbol* OsmStyleEngine::Symbol(const std::string& symbol_id) {
   return LookupTableStyleEngine::Symbol(symbol_id);
 }
 
-bool OsmStyleEngine::LoadSymbol(const std::string& symbol_id,
-                                VectorSymbol* out) {
-  int r_hm = 0;
-  FvColor c;
-  if (!ParseCircleSymbolId(symbol_id, &r_hm, &c)) return false;
+bool MapLibreStyleEngine::LoadSymbol(const std::string& symbol_id,
+                                     VectorSymbol* out) {
+  if (symbol_id.compare(0, 8, "builtin:") == 0) {
+    const size_t colon = symbol_id.find(':', 8);
+    FvColor color;
+    if (colon == std::string::npos ||
+        !ColorFromHex(symbol_id.substr(8, colon - 8), &color))
+      return false;
+    BuiltinSymbolLibrary lib;
+    lib.SetColor(color);
+    const VectorSymbol* sym = lib.Symbol(symbol_id.substr(colon + 1));
+    if (sym == nullptr) return false;
+    *out = *sym;
+    return true;
+  }
 
-  // A filled disc, in HIMETRIC and y-UP like every other display list at this
-  // seam (fvkit/vector/style.h). CGM's conjugate-diameter encoding degenerates
-  // to the two axes for a circle.
+  CircleSymbol c;
+  if (!ParseCircleSymbolId(symbol_id, &c)) return false;
+  // HIMETRIC and y-up, like every display list at this seam. The outline
+  // lies outside the radius, as MapLibre's circle-stroke does.
+  const double r = c.radius + c.stroke_width / 2.0;
   SymbolPrimitive p;
-  p.type = SymbolPrimitiveType::kEllipse;
-  p.center = SymbolPoint{0.0, 0.0};
-  p.radius1 = SymbolPoint{static_cast<double>(r_hm), 0.0};
-  p.radius2 = SymbolPoint{0.0, static_cast<double>(r_hm)};
+  if (c.square) {
+    p.type = SymbolPrimitiveType::kPolygon;
+    p.points = {{-r, -r}, {r, -r}, {r, r}, {-r, r}};
+  } else {
+    p.type = SymbolPrimitiveType::kEllipse;
+    p.center = SymbolPoint{0.0, 0.0};
+    p.radius1 = SymbolPoint{r, 0.0};
+    p.radius2 = SymbolPoint{0.0, r};
+  }
   p.has_fill = true;
-  p.fill_color = c;
+  p.fill_color = c.fill;
+  if (c.stroke_width > 0) {
+    p.has_stroke = true;
+    p.stroke_color = c.stroke;
+    p.stroke_width = c.stroke_width;
+  }
   out->primitives.push_back(p);
-  out->min_x = out->min_y = -static_cast<double>(r_hm);
-  out->max_x = out->max_y = static_cast<double>(r_hm);
+  const double ext = c.radius + c.stroke_width;
+  out->min_x = out->min_y = -ext;
+  out->max_x = out->max_y = ext;
   return true;
+}
+
+void MapLibreStyleEngine::SetLabelFont(const std::string& path) {
+  impl_->label_font = path;
 }
 
 }  // namespace fv

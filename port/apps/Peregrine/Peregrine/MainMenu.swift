@@ -31,6 +31,15 @@ enum MainMenu {
             let label = String(e.label)
             if e.kind == fv.desk.kMenuTop {
                 stack.forEach(tidySeparators)
+                // DeskKit's Edit menu is the standard one: its undo: and redo:
+                // reach the map view (the workspace history) when it has focus,
+                // and a text field otherwise.
+                if String(e.id) == "edit" {
+                    if !editInserted { add(editMenu(), to: bar) }
+                    editInserted = true
+                    stack = []
+                    continue
+                }
                 if !editInserted, String(e.id) != "file" {
                     add(editMenu(), to: bar)
                     editInserted = true
@@ -85,7 +94,9 @@ enum MainMenu {
         let item = NSMenuItem(title: label, action: Selector(("runCommand:")), keyEquivalent: "")
         item.target = target
         item.representedObject = id
-        if let key = keyEquivalent(String(e.key)) {
+        // A bare key as a menu equivalent would take it from every text field;
+        // the map view handles those itself (MapCanvasView.keyDown).
+        if e.modifiers != 0, let key = keyEquivalent(String(e.key)) {
             item.keyEquivalent = key
             item.keyEquivalentModifierMask = modifierMask(e.modifiers)
         }

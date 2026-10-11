@@ -91,6 +91,7 @@
 #include "fv_route_doc.h"
 #include "fv_route_planner.h"
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/properties.h"
 #include "fvkit/app/search.h"
 #include "fvkit/app/type_registry.h"
 #include "fvkit/canvas/canvas.h"
@@ -116,7 +117,9 @@ class RouteOverlay : public Overlay,
                      public app::HitTest,
                      public app::SnapTo,
                      public app::EditTarget,
-                     public app::SearchProvider {
+                     public app::EditHint,
+                     public app::SearchProvider,
+                     public app::Properties {
  public:
   explicit RouteOverlay(std::string name = "Route");
   ~RouteOverlay() override;
@@ -138,6 +141,9 @@ class RouteOverlay : public Overlay,
   app::SnapTo* AsSnapTo() override { return this; }
   app::EditTarget* AsEditTarget() override { return this; }
   app::SearchProvider* AsSearch() override { return this; }
+  app::Properties* AsProperties() override { return this; }
+  app::EditHint* AsEditHint() override { return this; }
+  std::string EditHintAt(PixelPoint p) override;
 
   // --- the editor ----------------------------------------------------------
 
@@ -263,6 +269,16 @@ class RouteOverlay : public Overlay,
   void SetLegKind(LineKind kind) { leg_kind_ = kind; }
   LineKind leg_kind() const { return leg_kind_; }
 
+  // --- Properties ----------------------------------------------------------
+
+  /// The drawing options, the `[route]` settings section: a calculated route's
+  /// line colour, width and style, its casing and beach casing, and whether
+  /// waypoint names and the status line are drawn. Not document fields: they
+  /// neither save nor dirty.
+  const std::vector<app::PropertySpec>& Describe() const override;
+  Status GetProperty(const std::string& key, app::PropertyValue* out) const override;
+  Status SetProperty(const std::string& key, const app::PropertyValue& value) override;
+
   // --- Persistence ---------------------------------------------------------
 
   Status FileNew() override;
@@ -357,6 +373,12 @@ class RouteOverlay : public Overlay,
   std::string selected_;
   bool show_labels_ = true;
   bool show_status_ = true;
+  FvColor road_color_ = kRoadColor;
+  int road_width_ = 6;
+  long long road_style_ = 0;  // index into the road_style choices
+  FvColor casing_color_ = kCasingColor;
+  int casing_width_ = 4;      // extra pixels beyond the line; 0 draws none
+  FvColor beach_casing_color_ = kBeachCasingColor;
   bool draw_markers_ = true;
   double dpi_scale_ = 1.0;
   LineKind leg_kind_ = LineKind::kGreatCircle;

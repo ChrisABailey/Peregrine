@@ -515,6 +515,84 @@ TEST(RouteOverlay, OpeningADocumentDropsThePlanToo) {
   EXPECT_FALSE(ov.has_plan());
 }
 
+// --- properties ------------------------------------------------------------
+
+/// Pixels in `canvas` exactly `c`'s RGB.
+size_t CountColour(const fv::CpuCanvas& canvas, const fv::FvColor& c) {
+  const fv::PixelBuffer& buf = canvas.Buffer();
+  size_t n = 0;
+  for (int y = 0; y < buf.Height(); ++y) {
+    const unsigned char* row = buf.Row(y);
+    for (int x = 0; x < buf.Width(); ++x) {
+      const unsigned char* p = row + 4 * x;
+      n += p[0] == c.r && p[1] == c.g && p[2] == c.b;
+    }
+  }
+  return n;
+}
+
+TEST(RouteOverlay, PropertiesDefaultToTheBuiltInLook) {
+  RouteOverlay ov("Route1");
+  fv::app::Properties* props = ov.AsProperties();
+  ASSERT_NE(props, nullptr);
+  EXPECT_EQ(fv::app::PropertyValue::Color(props->GetColor("road_color", {})).ToString(),
+            fv::app::PropertyValue::Color(RouteOverlay::kRoadColor).ToString());
+  EXPECT_EQ(fv::app::PropertyValue::Color(props->GetColor("casing_color", {})).ToString(),
+            fv::app::PropertyValue::Color(RouteOverlay::kCasingColor).ToString());
+  EXPECT_EQ(fv::app::PropertyValue::Color(props->GetColor("beach_casing_color", {})).ToString(),
+            fv::app::PropertyValue::Color(RouteOverlay::kBeachCasingColor).ToString());
+  EXPECT_EQ(props->GetInt("road_width", 0), 6);
+  EXPECT_EQ(props->GetInt("casing_width", 0), 4);
+  EXPECT_EQ(props->GetInt("road_style", -1), 0);
+  for (const fv::app::PropertySpec& spec : props->Describe()) {
+    fv::app::PropertyValue v;
+    ASSERT_TRUE(props->GetProperty(spec.key, &v).ok()) << spec.key;
+    EXPECT_TRUE(fv::app::SameValue(v, spec.default_value)) << spec.key;
+  }
+}
+
+TEST(RouteOverlay, PropertiesRejectWhatTheyCannotDraw) {
+  RouteOverlay ov("Route1");
+  using fv::app::PropertyValue;
+  EXPECT_EQ(ov.SetProperty("road_width", PropertyValue::Int(0)).code, fv::kInvalidArg);
+  EXPECT_EQ(ov.SetProperty("road_width", PropertyValue::Double(3)).code, fv::kInvalidArg);
+  EXPECT_EQ(ov.SetProperty("road_style", PropertyValue::Choice(99)).code, fv::kInvalidArg);
+  EXPECT_EQ(ov.SetProperty("nope", PropertyValue::Bool(true)).code, fv::kNotFound);
+  EXPECT_EQ(ov.GetInt("road_width", 0), 6);
+  ASSERT_TRUE(ov.SetProperty("show_labels", PropertyValue::Bool(false)).ok());
+  EXPECT_FALSE(ov.show_labels());
+  EXPECT_FALSE(ov.is_dirty());
+}
+
+TEST(RouteOverlay, TheCasingColourIsAProperty) {
+  const std::string graph = KiawahGraph();
+  if (graph.empty()) GTEST_SKIP() << "no TestData/OSM/kiawah.fvroad";
+
+  RoutePlanner planner(graph, FV_ROUTE_RULES_FILE);
+  RouteOverlay ov("Route1");
+  ov.SetPlanner(&planner);
+  ov.SetShowLabels(false);
+  ov.SetShowStatus(false);
+  ov.SetDrawMarkers(false);
+  ov.SetWaypoints(FixtureWaypoints());
+  ASSERT_TRUE(ov.FollowRoads()) << ov.status();
+
+  const fv::FvColor magenta{255, 0, 255, 255};
+  auto pixels = [&](const fv::FvColor& c) {
+    fv::CpuCanvas canvas(800, 600);
+    EXPECT_TRUE(Draw(ov, KiawahProj(), canvas).ok());
+    return CountColour(canvas, c);
+  };
+  EXPECT_EQ(pixels(magenta), 0u);
+  ASSERT_TRUE(ov.SetProperty("casing_color", fv::app::PropertyValue::Color(magenta)).ok());
+  const size_t cased = pixels(magenta);
+  EXPECT_GT(cased, 100u);
+  ASSERT_TRUE(ov.SetProperty("casing_width", fv::app::PropertyValue::Int(0)).ok());
+  EXPECT_EQ(pixels(magenta), 0u);
+  ASSERT_TRUE(ov.SetProperty("road_color", fv::app::PropertyValue::Color(magenta)).ok());
+  EXPECT_GT(pixels(magenta), 100u);
+}
+
 TEST(RouteOverlay, SelectionIsNotADocumentChange) {
   RouteOverlay ov("Route1");
   ASSERT_TRUE(ov.FileOpen(FV_ROUTE_FIXTURE_FILE).ok());

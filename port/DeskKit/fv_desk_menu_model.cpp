@@ -79,24 +79,24 @@ std::vector<MenuSpec> DefaultMenuLayout() {
        {S::Cmd("file.save"), S::Cmd("file.save_as"), S::Cmd("file.close"), S::Sep(),
         S::Cmd("file.open_workspace"), S::Cmd("file.save_workspace"), S::Sep(),
         S::Cmd("file.export_image"), S::Sep(), S::Cmd("app.quit")}},
+      {"edit", "Edit", {S::Cmd("edit.undo"), S::Cmd("edit.redo")}},
       {"map", "Map",
        {S::Expand("map.group."), S::Sep(), S::Sub("Projection", {S::Expand("map.projection.")}),
         S::Cmd("map.zoom_in"), S::Cmd("map.zoom_out"), S::Cmd("map.goto"),
-        S::Cmd("map.recenter"), S::Sep(), S::Cmd("map.catalog_open"),
+        S::Cmd("map.recenter"), S::Sub("Pan", {S::Expand("map.pan.")}), S::Sep(), S::Cmd("map.catalog_open"),
         S::Cmd("map.sources"), S::Cmd("map.generate_coverage"),
         S::Sep(), S::Cmd("map.options")}},
       {"overlay", "Overlay",
-       {S::Expand("overlay.toggle."), S::Sep(), S::Sub("New", {S::Expand("overlay.new.")}),
+       {S::Expand("overlay.toggle."), S::Sep(), S::Sub("New", {S::Expand("overlay.new.")}), S::Cmd("overlay.new_layer"),
         S::Cmd("overlay.open"), S::Sub("Edit", {S::Expand("editor.mode.")}), S::Sep(),
         S::Expand("overlay.instance."), S::Sep(),
-        S::Cmd("overlay.options")}},
+        S::Cmd("overlay.layers"), S::Cmd("overlay.options")}},
   };
 }
 
 std::vector<MenuSlot> DefaultToolbarLayout() {
   using S = MenuSlot;
-  return {S::Cmd("map.zoom_in"), S::Cmd("map.zoom_out"), S::Cmd("map.recenter"), S::Sep(),
-          S::Expand("editor.mode."), S::Sep(), S::Expand("editor.tool.")};
+  return {S::Expand("editor.mode."), S::Sep(), S::Expand("editor.tool.")};
 }
 
 MenuModel::MenuModel(const CommandRegistry& commands, std::vector<MenuSpec> layout,

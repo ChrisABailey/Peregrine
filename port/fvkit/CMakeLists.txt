@@ -84,6 +84,7 @@ add_library(fv_fvkit STATIC
   app/properties.cpp
   app/session.cpp
   app/editor.cpp
+  app/undo.cpp
   app/pick.cpp
   app/search.cpp
   app/vector_hit_test.cpp
@@ -100,6 +101,22 @@ add_library(fv_fvkit STATIC
   vector/families.cpp
   vector/scene.cpp
   vector/lookup_engine.cpp
+  feature/geometry.cpp
+  feature/schema.cpp
+  feature/schema_change.cpp
+  feature/memory_layer.cpp
+  feature/geojson.cpp
+  feature/geopackage.cpp
+  feature/style.cpp
+  feature/style_json.cpp
+  feature/templates.cpp
+  style/expression.cpp
+  style/maplibre_style.cpp
+  feature/value_text.cpp
+  feature/points_layer.cpp
+  feature/vector_source.cpp
+  overlay/feature_edit.cpp
+  overlay/feature_overlay.cpp
 )
 target_include_directories(fv_fvkit PUBLIC ${CMAKE_SOURCE_DIR}/port/include)
 # stb_truetype (vendored single header, public domain) for CpuCanvas text
@@ -134,6 +151,15 @@ endif()
 if(FVW_BUILD_TESTS)
   add_executable(fv_fvkit_test
     test/geo_test.cpp
+    test/feature_geometry_test.cpp
+    test/feature_geojson_test.cpp
+    test/feature_geopackage_test.cpp
+    test/feature_overlay_test.cpp
+    test/feature_edit_test.cpp
+    test/feature_geometry_edit_test.cpp
+    test/feature_style_test.cpp
+    test/feature_schema_change_test.cpp
+    test/style_expression_test.cpp
     test/geo_contour_test.cpp
     test/terrain_contour_test.cpp
     test/geo_draw_test.cpp
@@ -208,6 +234,8 @@ if(FVW_BUILD_TESTS)
   # The shipped data-family starter files, read at RUN time by the test that
   # checks they parse. Same pattern as FV_ROUTE_RULES_FILE in port/Routing.
   target_compile_definitions(fv_fvkit_test PRIVATE
+    FV_FEATURE_RIVERS="${CMAKE_CURRENT_SOURCE_DIR}/test/data/charleston-rivers.geojson"
+    FV_FEATURE_SAMPLE_GPKG="${CMAKE_BINARY_DIR}/feature-samples.gpkg"
     FV_FAMILIES_DNC="${CMAKE_SOURCE_DIR}/port/families/dnc-families.json"
     FV_FAMILIES_ENC="${CMAKE_SOURCE_DIR}/port/families/enc-families.json"
     FV_FAMILIES_OSM="${CMAKE_SOURCE_DIR}/port/families/osm-families.json"

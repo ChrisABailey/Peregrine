@@ -760,4 +760,54 @@ TEST_F(EditorTest, MakingAnotherOverlayCurrentRaisesThatOneInstead) {
   EXPECT_EQ(Order(manager_), (std::vector<std::string>{"upper", "lower"}));
 }
 
+TEST_F(EditorTest, RaisingAnotherOfTheSameTypeMovesTheEditToIt) {
+  std::shared_ptr<fv::Overlay> lower = Place(kRouteType, "lower");
+  std::shared_ptr<fv::Overlay> upper = Place(kRouteType, "upper");
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  ASSERT_EQ(editors_.edited(), upper.get());
+
+  ASSERT_TRUE(manager_.MoveAbove(lower, upper).ok());  // the layers panel's verb
+  EXPECT_EQ(editors_.CurrentMode(), kRouteType);
+  EXPECT_EQ(editors_.edited(), lower.get());
+  EXPECT_EQ(manager_.current(), lower.get());
+  EXPECT_EQ(AsEditable(upper)->released, 1);
+  EXPECT_EQ(Order(manager_), (std::vector<std::string>{"upper", "lower"}));
+}
+
+TEST_F(EditorTest, RaisingAnotherTypeClosesTheEditorAndKeepsTheOrder) {
+  std::shared_ptr<fv::Overlay> under = Place(kUnderType, "under");
+  std::shared_ptr<fv::Overlay> route = Place(kRouteType, "route");
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+
+  ASSERT_TRUE(manager_.MoveAbove(under, route).ok());
+  EXPECT_TRUE(editors_.CurrentMode().empty());
+  EXPECT_EQ(editors_.edited(), nullptr);
+  EXPECT_EQ(AsEditable(route)->released, 1);
+  // The user's order stands; leaving the mode does not put the bands back.
+  EXPECT_EQ(Order(manager_), (std::vector<std::string>{"route", "under"}));
+}
+
+TEST_F(EditorTest, AnOverlayAddedMidEditGoesUnderTheEditedOne) {
+  std::shared_ptr<fv::Overlay> route = Place(kRouteType, "route");
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  Place(kPlainType, "plain");  // same display order: Add puts it on top
+  EXPECT_EQ(Order(manager_), (std::vector<std::string>{"plain", "route"}));
+  EXPECT_EQ(editors_.edited(), route.get());
+}
+
+TEST_F(EditorTest, OnlyTheEditedOverlayDrawsAtFullStrength) {
+  std::shared_ptr<fv::Overlay> lower = Place(kRouteType, "lower");
+  std::shared_ptr<fv::Overlay> upper = Place(kRouteType, "upper");
+  editors_.SetDimOthers(50);
+  EXPECT_EQ(manager_.dim_focus(), nullptr);  // nothing edited yet
+  ASSERT_EQ(editors_.SetMode(kRouteType), FlowResult::kDone);
+  EXPECT_EQ(manager_.dim_focus(), upper.get());
+  EXPECT_EQ(manager_.dim_percent(), 50);
+  ASSERT_TRUE(manager_.MakeCurrent(lower).ok());
+  EXPECT_EQ(manager_.dim_focus(), lower.get());
+  ASSERT_EQ(editors_.SetMode(TypeId()), FlowResult::kDone);
+  EXPECT_EQ(manager_.dim_focus(), nullptr);
+}
+
 }  // namespace
+

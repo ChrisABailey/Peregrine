@@ -19,6 +19,24 @@
 namespace fv {
 namespace {
 
+/// Where a point-placed label sits on one projected part: its first vertex,
+/// or for LabelAnchor::kCentre a line's middle vertex and an area's box centre.
+SurfacePoint PointLabelAnchor(const LabelStyle& label, VectorGeometryType type,
+                              const std::vector<SurfacePoint>& part) {
+  if (label.anchor != LabelAnchor::kCentre || type == VectorGeometryType::kPoint)
+    return part.front();
+  if (type == VectorGeometryType::kLine) return part[part.size() / 2];
+  double x0 = part.front().x, x1 = x0, y0 = part.front().y, y1 = y0;
+  for (const SurfacePoint& q : part) {
+    x0 = std::min(x0, q.x);
+    x1 = std::max(x1, q.x);
+    y0 = std::min(y0, q.y);
+    y1 = std::max(y1, q.y);
+  }
+  return SurfacePoint{(x0 + x1) / 2, (y0 + y1) / 2};
+}
+
+
 // Outcodes for Cohen-Sutherland.
 enum { kInside = 0, kLeft = 1, kRight = 2, kBottom = 4, kTop = 8 };
 
@@ -811,11 +829,20 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
 
       if (it.type == VectorGeometryType::kArea &&
           (sr.fill.valid || sr.area_pattern.valid) && p == 0) {
-        // Outer ring only for now; holes arrive with V5c's face topology.
+        // Every ring, clipped alone; the even-odd fill cuts the holes.
+        std::vector<std::vector<PixelPoint>> rings;
         std::vector<PixelPoint> ring =
             ClipPolygon(proj_part, size.width, size.height);
-        if (ring.size() >= 3) {
-          std::vector<std::vector<PixelPoint>> rings{std::move(ring)};
+        if (ring.size() >= 3) rings.push_back(std::move(ring));
+        std::vector<SurfacePoint> hole;
+        for (size_t q = 1; !rings.empty() && q < it.part_count; ++q) {
+          const uint32_t hk = it.first_part + static_cast<uint32_t>(q);
+          const uint32_t hb = part_first[hk], he = part_first[hk + 1];
+          if (he <= hb || !ProjectPart(proj, &pts[hb], he - hb, &hole)) continue;
+          std::vector<PixelPoint> h = ClipPolygon(hole, size.width, size.height);
+          if (h.size() >= 3) rings.push_back(std::move(h));
+        }
+        if (!rings.empty()) {
           // A patterned area may carry a boundary pen and no fill at all
           // (S-52's MARCUL row is AP(MARCUL02);LS(DASH,1,CHGRD)), so the pen
           // is drawn whether or not there is a brush — otherwise entering
@@ -1059,8 +1086,11 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                 }
               }
             }
+          } else if (sr.label.anchor == LabelAnchor::kCentre &&
+                     it.type == VectorGeometryType::kArea && p != 0) {
+            // A centred area label belongs to the outer ring alone.
           } else {
-            const SurfacePoint& a = proj_part.front();
+            const SurfacePoint a = PointLabelAnchor(sr.label, it.type, proj_part);
             int lx = static_cast<int>(std::lround(a.x)) + sr.label.dx;
             int ly = static_cast<int>(std::lround(a.y)) + sr.label.dy;
 

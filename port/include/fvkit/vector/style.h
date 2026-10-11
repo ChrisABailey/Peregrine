@@ -120,6 +120,12 @@ enum class LabelAlongAnchor {
   kCenter,        // the cap-height box straddles the path
 };
 
+// Where a point-placed label sits on its geometry.
+enum class LabelAnchor {
+  kFirstVertex = 0,  // the first vertex of each part
+  kCentre,           // a line's middle vertex; an area's outer-ring box centre
+};
+
 // What LabelStyle::style.size means.
 enum class LabelSizeUnit {
   kPixels = 0,  // a constant on-screen size at any scale
@@ -144,6 +150,7 @@ struct LabelStyle {
   LabelVAlign valign = LabelVAlign::kBaseline;
 
   LabelPlacement placement = LabelPlacement::kPoint;
+  LabelAnchor anchor = LabelAnchor::kFirstVertex;  // kPoint only
 
   // --- halo (outlined text) -------------------------------------------------
   // A name lying on the road it belongs to, or on a dense fill, is unreadable

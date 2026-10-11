@@ -146,6 +146,20 @@ class HitTest {
 };
 
 // ---------------------------------------------------------------------------
+// EditHint — what a press would do while the overlay is being edited
+// ---------------------------------------------------------------------------
+
+/// The status-bar line for the edited overlay: "Add point", "Select area
+/// Lake Moultrie". Called on every mouse move, so it must be cheap.
+class EditHint {
+ public:
+  virtual ~EditHint() = default;
+  /// The action a press at `p` (surface pixels, last drawn projection) would
+  /// take; empty when a press would not reach this overlay.
+  virtual std::string EditHintAt(PixelPoint p) = 0;
+};
+
+// ---------------------------------------------------------------------------
 // SnapTo — "what point would I snap to here" (~ test_snap_to/do_snap_to)
 // ---------------------------------------------------------------------------
 

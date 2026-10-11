@@ -16,8 +16,12 @@ From the repository root:
 
 ```sh
 cmake -B build && cmake --build build -j --target peregrine_core
+
+
 xcodebuild -project port/apps/Peregrine/Peregrine.xcodeproj -target Peregrine \
   -configuration Debug SYMROOT=$PWD/build-xcode-peregrine build
+
+
 build-xcode-peregrine/Debug/Peregrine.app/Contents/MacOS/Peregrine --catalog <catalog.sqlite>
 ```
 
@@ -35,6 +39,8 @@ directory the catalog was built in (`port/apps` for that one).
 |---|---|
 | `--catalog <path>` | Opens a catalog. Without it the last catalog reopens at the last view. |
 | `--center lat,lon[,scale]` | Moves the camera there and chooses the map at that scale. |
+| `--run <command-id>` | Executes a command (`overlay.toggle.fv.contour`, `map.group.elevation`, …) after the catalog, camera and `--open` files are set; repeatable, in order. A `map.group.*` runs before the camera is placed, so `--center`'s scale settles on that group's ladder. |
+| `--open <file>` | Opens an overlay file (`.gpkg`, `.geojson`, `.fvpoints`, `.rte`) before the `--run` commands other than `map.group.*`; repeatable. Finder's Open With does the same for those extensions. |
 | `--shot <png>` | Writes the window (map and status bar) once the first frame is drawn, prints the status line to stderr, and quits. |
 
 ## Input
@@ -42,6 +48,24 @@ directory the catalog was built in (`port/apps` for that one).
 Drag pans; a trackpad two-finger scroll pans; a mouse wheel notch, Page Up and
 Page Down step the map group's ladder about the cursor; a pinch zooms live and
 settles on the nearest step when it ends. Map ▸ Zoom In / Zoom Out are ⌘= / ⌘-.
+The arrow keys pan half a screen (Map ▸ Pan); ⌘R and ⌘O choose the Raster and
+OpenStreetMap groups (Overlay ▸ Open… is ⌘⇧O). Holding Space makes a drag pan
+the map whatever overlay is being edited.
+
+While an editor is active, the file it edits is the top layer and the other
+overlays draw at half opacity. Raising another file of the same type in
+Layers… moves the edit to it; raising a different type closes the editor. In
+the feature layer editor a double-click on a feature opens its form, and a
+double-click while drawing a line or area places the last vertex and finishes
+the shape. The attribute table, layer style, feature style and layer fields
+are on the feature editor's toolbar.
+
+The status bar holds feedback on the left: with an editor active, what a click
+would do ("Add point", "Select area “Lake”"); otherwise what is under the
+pointer, from an overlay or the vector base map, whose name is also the map's
+tool tip. The centre shows the scale and series, and the right the position and
+terrain height (feet, from the catalog's DTED) under the cursor. The window
+title is the current overlay file's name, or the topmost one's.
 
 ## Menus, toolbar and dialogs
 

@@ -91,6 +91,9 @@
 #include "fvkit/vector/vector.h"
 
 namespace fv {
+namespace app {
+class VectorHitTest;
+}
 
 class VectorMapOverlay : public Overlay, public app::SearchProvider {
  public:
@@ -103,6 +106,8 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
 
   // Capability accessors (R2 — never dynamic_cast).
   app::SearchProvider* AsSearch() override { return this; }
+  /// What the last draw put under a point, described by the source.
+  app::HitTest* AsHitTest() override;
 
   const VectorSourcePtr& source() const { return source_; }
   // Replacing the source drops the minted-id table: an id names a row in the
@@ -297,6 +302,7 @@ class VectorMapOverlay : public Overlay, public app::SearchProvider {
   VectorSourcePtr source_;
   StyleEnginePtr style_;
   std::unique_ptr<VectorRenderer> renderer_;
+  std::unique_ptr<app::VectorHitTest> hit_;  ///< over `renderer_`'s pick index
   std::vector<std::string> label_tags_;
   double scale_denominator_ = 0.0;
   size_t max_features_ = 0;

@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "fvkit/app/vector_hit_test.h"
 #include "fvkit/vector/feature_rows.h"
 
 namespace fv {
@@ -113,13 +114,19 @@ bool VectorMapOverlay::RefKey::operator<(const RefKey& o) const {
 VectorMapOverlay::VectorMapOverlay(std::string name, VectorSourcePtr source)
     : Overlay(std::move(name)),
       source_(std::move(source)),
+      hit_(std::make_unique<app::VectorHitTest>(*this)),
       label_tags_{"name", "name:latin", "name:en"} {}
 
 VectorMapOverlay::~VectorMapOverlay() = default;
 
+app::HitTest* VectorMapOverlay::AsHitTest() { return hit_.get(); }
+
 void VectorMapOverlay::SetSource(VectorSourcePtr source) {
   source_ = std::move(source);
   renderer_.reset();
+  hit_->SetIndex(nullptr);
+  hit_->SetSource(nullptr);
+  hit_->Reset();
   by_ref_.clear();
   by_id_.clear();
   last_features_ = 0;
@@ -131,6 +138,7 @@ void VectorMapOverlay::SetSource(VectorSourcePtr source) {
 void VectorMapOverlay::SetStyle(StyleEnginePtr style) {
   style_ = std::move(style);
   renderer_.reset();
+  hit_->SetIndex(nullptr);
   last_draw_features_ = 0;
 }
 
@@ -188,6 +196,8 @@ Status VectorMapOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   if (!r) return Status::Ok();
   Status st = r->Render(proj, &canvas);
   last_draw_features_ = r->features_queried();
+  hit_->SetIndex(&r->pick_index());
+  hit_->SetSource(source_.get());
   return st;
 }
 

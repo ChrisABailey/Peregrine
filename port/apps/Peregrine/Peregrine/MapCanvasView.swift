@@ -20,6 +20,8 @@ final class MapCanvasView: NSView {
     var onTick: ((fv.desk.HostTick) -> Void)?
 
     private let frameLayer = CALayer()
+    /// The space bar is down: a press grabs the map whatever overlay is edited.
+    private var spaceHeld = false
     private var link: CADisplayLink?
     private var tracking: NSTrackingArea?
 
@@ -181,7 +183,12 @@ final class MapCanvasView: NSView {
     override func mouseDown(with e: NSEvent) {
         window?.makeFirstResponder(self)
         let p = point(e)
-        host.PointerDown(p.x, p.y)
+        if spaceHeld {
+            NSCursor.closedHand.set()
+            host.PanPointerDown(p.x, p.y)
+            return
+        }
+        host.PointerDown(p.x, p.y, e.modifierFlags.contains(.shift), Int32(min(e.clickCount, 2)))
     }
 
     override func mouseDragged(with e: NSEvent) {
@@ -192,6 +199,7 @@ final class MapCanvasView: NSView {
     override func mouseUp(with e: NSEvent) {
         let p = point(e)
         host.PointerUp(p.x, p.y)
+        if spaceHeld { NSCursor.openHand.set() }
     }
 
     /// A trackpad pans; a wheel takes one ladder step per notch, rolled away
@@ -208,12 +216,78 @@ final class MapCanvasView: NSView {
 
     // MARK: Keys
 
-    /// Page Up and Page Down step the ladder about the cursor.
+    /// The overlay being edited sees a key first; otherwise Page Up and Page
+    /// Down step the ladder about the cursor and the arrows pan half a screen.
     override func keyDown(with e: NSEvent) {
+        let flags = e.modifierFlags
+        if e.keyCode == Self.spaceKeyCode,
+           flags.intersection([.command, .control, .option]).isEmpty {
+            if !spaceHeld {
+                spaceHeld = true
+                NSCursor.openHand.set()
+            }
+            return
+        }
+        let text = e.characters?.unicodeScalars.first.map { $0.value } ?? 0
+        if host.KeyDown(Int32(Self.keyCode(e)), UInt32(text >= 0xF700 ? 0 : text),
+                        flags.contains(.shift), flags.contains(.control),
+                        flags.contains(.option), flags.contains(.command)) {
+            return
+        }
         switch e.charactersIgnoringModifiers?.unicodeScalars.first.map({ Int($0.value) }) {
         case NSPageUpFunctionKey: host.Step(1)
         case NSPageDownFunctionKey: host.Step(-1)
+        case NSUpArrowFunctionKey: _ = host.Execute(std.string("map.pan.north"))
+        case NSDownArrowFunctionKey: _ = host.Execute(std.string("map.pan.south"))
+        case NSRightArrowFunctionKey: _ = host.Execute(std.string("map.pan.east"))
+        case NSLeftArrowFunctionKey: _ = host.Execute(std.string("map.pan.west"))
         default: super.keyDown(with: e)
+        }
+    }
+
+    override func keyUp(with e: NSEvent) {
+        guard e.keyCode == Self.spaceKeyCode else { return super.keyUp(with: e) }
+        releaseSpace()
+    }
+
+    /// A key up lost to another window would leave the map in grab mode.
+    override func resignFirstResponder() -> Bool {
+        releaseSpace()
+        return super.resignFirstResponder()
+    }
+
+    private func releaseSpace() {
+        guard spaceHeld else { return }
+        spaceHeld = false
+        NSCursor.arrow.set()
+    }
+
+    private static let spaceKeyCode: UInt16 = 49
+
+    /// Edit ▸ Undo and Redo while the map has focus: the workspace history.
+    @objc func undo(_ sender: Any?) { _ = host.Execute(std.string("edit.undo")) }
+    @objc func redo(_ sender: Any?) { _ = host.Execute(std.string("edit.redo")) }
+
+    /// The fv::Key value (a Win32 virtual-key code) for `e`, or 0.
+    private static func keyCode(_ e: NSEvent) -> Int {
+        if e.keyCode == 53 { return 0x1B }  // Escape
+        guard let c = e.charactersIgnoringModifiers?.uppercased().unicodeScalars.first else { return 0 }
+        switch Int(c.value) {
+        case 0x41...0x5A, 0x30...0x39: return Int(c.value)
+        case 0x7F: return 0x08                // Delete (backspace)
+        case 0x0D, 0x03: return 0x0D          // Return, Enter
+        case 0x09: return 0x09
+        case 0x20: return 0x20
+        case NSDeleteFunctionKey: return 0x2E
+        case NSLeftArrowFunctionKey: return 0x25
+        case NSUpArrowFunctionKey: return 0x26
+        case NSRightArrowFunctionKey: return 0x27
+        case NSDownArrowFunctionKey: return 0x28
+        case NSPageUpFunctionKey: return 0x21
+        case NSPageDownFunctionKey: return 0x22
+        case NSHomeFunctionKey: return 0x24
+        case NSEndFunctionKey: return 0x23
+        default: return 0
         }
     }
 
@@ -227,6 +301,18 @@ final class MapCanvasView: NSView {
             host.MagnifyEnd(p.x, p.y)
         default:
             host.Magnify(p.x, p.y, 1 + e.magnification)
+        }
+    }
+}
+
+extension MapCanvasView: NSMenuItemValidation {
+    /// Undo and Redo are enabled by the workspace history; every other item
+    /// this view answers for is enabled.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case Selector(("undo:")): return host.IsEnabled(std.string("edit.undo"))
+        case Selector(("redo:")): return host.IsEnabled(std.string("edit.redo"))
+        default: return true
         }
     }
 }

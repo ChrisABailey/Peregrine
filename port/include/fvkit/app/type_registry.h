@@ -54,6 +54,9 @@ struct FileTypeDesc {
   // No leading dot: "rte", not ".rte". Matching is case-insensitive and a
   // leading dot is tolerated on lookup, because a file spec has one.
   std::string default_extension;
+  /// Further extensions this type opens ("geojson" beside "gpkg"), same
+  /// spelling rules. `FindByExtension` tries them after every type's default.
+  std::vector<std::string> extra_extensions;
   // FalconView-style filter pairs: {"Route Files (*.rte)", "*.rte"}.
   // The index into `save_filters` is the `format_index` a Save As carries
   // through to Persistence::FileSaveAs.

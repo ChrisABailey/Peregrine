@@ -10,6 +10,7 @@
 #include "fv_desk_fake.h"
 #include "fv_desk_options.h"
 #include "fv_desk_user_settings.h"
+#include "fv_route_overlay.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/settings.h"
 #include "range_rings.h"
@@ -153,6 +154,51 @@ TEST(OptionsModel, DeskApplyRepaintsAndPersistsThroughUserSettings) {
   EXPECT_GT(fake.shell().invalidate_calls, before);
   EXPECT_EQ(user.Get("rings.units"), "km");
   EXPECT_EQ(fake.settings().GetString("rings.units"), "km");
+}
+
+TEST(OptionsModel, TheRoutePageChangesTheCasingWithNoRouteSpecificCode) {
+  fv::desk::FakeDesk fake;
+  ASSERT_TRUE(fake.Run({std::string("overlay.new.") + fv::RouteOverlay::kTypeId}).ok());
+  auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
+      fake.desk().overlays().FirstOfType(fv::RouteOverlay::kTypeId));
+  ASSERT_NE(route, nullptr);
+
+  const auto model = fake.desk().OverlayOptions();
+  OptionsPage* page = model->Page(fv::RouteOverlay::kTypeId);
+  ASSERT_NE(page, nullptr);
+  std::vector<std::string> titles;
+  for (const auto& s : page->sections()) titles.push_back(s.title);
+  EXPECT_EQ(titles, (std::vector<std::string>{"Calculated route", "Labels", "Routing"}));
+
+  const fv::FvColor magenta{255, 0, 255, 255};
+  ASSERT_TRUE(page->Set("casing_color", PropertyValue::Color(magenta)).ok());
+  ASSERT_TRUE(fake.desk().ApplyOverlayOptions(*model).ok());
+  EXPECT_EQ(fv::app::PropertyValue::Color(route->GetColor("casing_color", {})).ToString(),
+            fv::app::PropertyValue::Color(magenta).ToString());
+  EXPECT_EQ(fake.settings().GetString("route.casing_color"), "#FF00FFFF");
+  EXPECT_TRUE(fake.desk().warnings().empty());
+}
+
+TEST(OptionsModel, TheRoutePageSetsTheRoadNetworkForEveryRoute) {
+  fv::desk::FakeDesk fake;
+  ASSERT_TRUE(fake.Run({std::string("overlay.new.") + fv::RouteOverlay::kTypeId}).ok());
+  auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
+      fake.desk().overlays().FirstOfType(fv::RouteOverlay::kTypeId));
+  ASSERT_NE(route, nullptr);
+  EXPECT_EQ(fake.desk().route_planner(), nullptr);
+
+  const auto model = fake.desk().OverlayOptions();
+  OptionsPage* page = model->Page(fv::RouteOverlay::kTypeId);
+  ASSERT_NE(page, nullptr);
+  ASSERT_TRUE(page->Set("routing.graph", PropertyValue::Path("/nonexistent/kiawah.fvroad")).ok());
+  const auto pending = page->PendingSettings();
+  ASSERT_EQ(pending.size(), 1u);
+  EXPECT_EQ(pending[0].first, "routing.graph");
+  ASSERT_TRUE(fake.desk().ApplyOverlayOptions(*model).ok());
+  // The planner is the shell's; the route never sees the key.
+  EXPECT_TRUE(fake.desk().warnings().empty());
+  ASSERT_NE(fake.desk().route_planner(), nullptr);
+  EXPECT_EQ(route->planner(), fake.desk().route_planner());
 }
 
 }  // namespace

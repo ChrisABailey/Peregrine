@@ -2707,3 +2707,65 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
   must follow the one-property-per-variable form.
 - The geotrans forced `<stdio.h>` include (`port/geotrans/CMakeLists.txt`) is confirmed sufficient
   on GCC 13.3 as well as clang; `third_party/` stayed untouched.
+
+### 2026-10-10 — FO2 GeoPackage decisions
+- Roles, units and date-range pairs live in own extension table `fv_data_columns` (registered in gpkg_extensions), not in `gpkg_data_columns.mime_type` as plan §2 suggested. `gpkg_data_columns` carries title (in both `name`, which GDAL reads as alias, and `title`), description, constraint_name; enum choices and min/max go in `gpkg_data_column_constraints` (name `<table>_<column>`; choices win over range if both).
+- Edits run in one transaction per file: first edit BEGINs, Save commits (refreshing gpkg_contents bounds/last_change), Revert rolls back; a layer created then reverted is gone.
+- R-tree uses the 1.2.1 six triggers; ST_MinX/MaxX/MinY/MaxY/IsEmpty are registered on every connection we open.
+- FO-D9 partial: only EPSG:4326 and undefined geographic (srs 0, read as WGS-84) are read; other SRSs refused with kUnsupported naming the SRS. GEOTRANS conversion is an open follow-up.
+- Exclusive range bounds from foreign files read as inclusive; Z/M on only some features is dropped on WriteLayer; a geometry with the wrong type or Z/M is refused.
+- No GDAL on the Mac: the validator's core checks are reproduced in WrittenFilePassesCoreChecks; QGIS check pending Chris (`build/feature-samples.gpkg`).
+
+### 2026-10-10 — FO3 decisions
+- Layer opacity draws the layer opaque into an offscreen CpuCanvas and blends it once; multiplying style alpha was rejected because CpuCanvas stamps a square nib per pixel, so translucent strokes over-darken.
+- FeatureOverlay style sizes are authored pixels x display scale (`SetDisplayScale`, set by Desk on bind and `DisplayScaleChanged()` from DeskHost::Resize); points/routes still don't scale on desktop.
+- One overlay = one layer; a multi-layer GeoPackage opens its first table (choosing a table is open).
+- GeoPackage Save As to another path writes `<spec>.saving` then renames over the target, replacing the whole file; saving to the open GeoPackage commits its transaction.
+- The `fv_` table-name reservation from FO2 is narrowed to the exact `fv_data_columns`.
+- Antimeridian-crossing polygons are projected short-way per vertex and may draw wrong (open).
+
+### 2026-10-10 — FO4 decisions
+- Mac shell edits dates as ISO text fields with placeholders, not NSDatePicker (pickers cannot be empty).
+- The attribute table is a snapshot, reloaded after form Apply or by its Reload button; edits made by dragging or undo do not refresh it automatically.
+- A date range rejects an end before its start.
+- Desktop has no search UI yet; FO4 adds only the feature-layer SearchProvider.
+- Map click-selection of features is FO6.
+
+### 2026-10-10 — FO5 decisions
+- The style JSON is read by its own evaluator (constants, `match` on `["id"]`/`["get"]`/`["to-string",["get"]]`, `step` on `["get"]`), not OsmStyleEngine, which rejects expressions; the plan's "reuses the existing style engine" does not hold.
+- Root `metadata` (`fv:renderer`, `fv:field`, `fv:categories`, `fv:classes`, `fv:overrides`) carries the structure; paint expressions carry the looks, and the reader evaluates each property once per class. Marker shape and dash preset have no MapLibre property: written as `fv-circle-shape` and `fv-line-dash` (MapLibre validators will flag them). Casing is its own `fv-line-casing` line layer with our casing width, not MapLibre's total-width convention.
+- `layer_styles` row: styleName "Peregrine", useAsDefault 0, styleQML/SLD empty, JSON in an added `fv_style` column; the table is registered in gpkg_contents as `attributes`. `layer_styles` is now a reserved table name. Writing a style marks the table dirty (bumps last_change on Save).
+- Categories match by `FeatureCategoryKey` text (booleans "true"/"false"); first duplicate wins. Graduated classes are [lower, next lower); nulls, non-numbers and values below the first class take the Other symbol. Writer refuses non-ascending bounds.
+- Classify on an enumeration lists every choice, used or not, in choice order.
+- A stored style that does not read is logged and the file opens with the default style.
+- Legend swatches render on opaque white.
+
+### 2026-10-10 — FO5B decisions
+- String attributes compare equal to numbers and booleans by value (`StyleValuesEqual`): the feature seam carries text, so `["==",["get","n"],3]` matches "3".
+- `step` with a non-numeric input takes the base output (MapLibre reports an error). FeatureStyle's "Other" symbol depends on it.
+- Colours interpolate in straight RGBA, not premultiplied. The O2 colour-step deviation is dropped: colour stops interpolate.
+- Legacy `{base,stops}` functions compile to interpolate; `type:"interval"` compiles to step (it was ignored before). Data-driven `{property}` functions stay rejected.
+- `ReadFeatureStyleJson` rejects expressions that read `zoom`; feature styles are zoom-independent.
+- `format`, `cubic-bezier` and unknown operators are `kUnsupported`.
+
+### 2026-10-10 — FO5C decisions
+- One engine: `MapLibreStyleEngine` (fvkit) renders OSM and feature layers; `OsmStyleEngine` stays as a subclass in a forwarding header because DeskKit forward-declares it.
+- `WriteFeatureStyleJson` output is the render form. Casing `line-width` is the whole casing (line + 2*casing); the reader converts back. Feature styles stored earlier on 2026-10-10 misread casing.
+- `VectorRenderer` fills all rings of an area even-odd; holes are cut everywhere (closes the V5c gap).
+- Boolean labels read "true"/"false" (attribute text), not "yes"/"no". Point labels sit above the style's largest marker. Markers are drawn at exact size.
+- Railroad-style dashes use builtin stamp symbols `builtin:<rrggbbaa>:<id>`; FO5's own painter never drew them.
+
+### 2026-10-10 — FO6 decisions
+- One workspace `app::UndoStack` (fvkit app), owned by Desk; feature edits feed it. Points and routes keep their own palette undo for now (follow-up: route their sessions through the stack).
+- `FeatureEditSession` edit focus starts false (unlike `PointEditSession`) so a non-edited feature layer never takes clicks.
+- Plain drag on empty map pans; box select is Shift+drag; Escape clears the selection.
+- Reloading a layer (Open, Revert, Save As, every GeoJSON save) clears that document's history; GeoPackage save in place keeps it.
+- Hole containment is tested in the lat/lon plane.
+
+### 2026-10-10 — FO7 decisions
+- GeoPackage schema changes always rebuild the table; no per-column ALTER.
+- Schema changes are not undoable and clear the layer's undo history. The dialog asks before losing data (dropped fields with values, values that do not convert).
+- Conversions: same type kept; int<->real; bool to 1/0; date to datetime at midnight; datetime to date cut and real to int rounded (both lossy); to text as the form shows it, exact numbers; text parsed as the form parses; enumerations accept labels; values breaking choices or bounds become null.
+- A new required field needs a default or apply fails.
+- New Layer writes the file immediately; a GeoPackage replaces any file at the path (one table, named after the file).
+- `--open` runs before `--run` commands in Peregrine-mac.

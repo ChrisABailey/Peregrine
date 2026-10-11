@@ -82,6 +82,20 @@ TEST(PointEdit, PressSelectsAndDoesNotMove) {
   EXPECT_FALSE(ov.edit().CanUndo());
 }
 
+TEST(PointEdit, HintSaysWhatAPressWouldDo) {
+  PointOverlay ov;
+  ov.SetPoints({At(1, 32.74, -79.89)});
+  const fv::MapProjection proj = HarbourProj();
+  Draw(ov, proj);
+  const PixelPoint at = Pixel(proj, ov.Find(1)->position);
+  EXPECT_EQ(ov.EditHintAt(at), "Select point \u201CP1\u201D");
+  EXPECT_EQ(ov.EditHintAt(PixelPoint{5, 5}), "");
+  ov.SetSelected(1);
+  EXPECT_EQ(ov.EditHintAt(at), "Move point \u201CP1\u201D");
+  ov.edit().SetAdding(true);
+  EXPECT_EQ(ov.EditHintAt(PixelPoint{5, 5}), "Add point");
+}
+
 TEST(PointEdit, DragBeginsOutsideTheMarkerAndCommitsOnce) {
   PointOverlay ov;
   ov.SetPoints({At(1, 32.74, -79.89)});
@@ -212,6 +226,36 @@ TEST(PointEdit, DropSnapsToAnotherSetAndNeverToItself) {
 
   // And the dragged point never snapped to itself on the way: it moved.
   EXPECT_NE(edited->Find(1)->position.lon, -79.8900);
+}
+
+TEST(PointEdit, ModifierChordsGoBackToTheShell) {
+  PointOverlay ov;
+  ov.SetPoints({At(1, 32.74, -79.89)});
+  ov.SetSelected(1);
+  fv::KeyEvent cmd_a;
+  cmd_a.key = 'A';
+  cmd_a.meta = true;
+  EXPECT_FALSE(ov.edit().OnKeyDown(cmd_a));
+  EXPECT_FALSE(ov.edit().adding());
+  fv::KeyEvent ctrl_d;
+  ctrl_d.key = 'D';
+  ctrl_d.ctrl = true;
+  EXPECT_FALSE(ov.edit().OnKeyDown(ctrl_d));
+  EXPECT_NE(ov.Find(1), nullptr);
+
+  // Ctrl+Z and Ctrl+Shift+Z stay the editor's.
+  fv::KeyEvent d;
+  d.key = 'D';
+  ASSERT_TRUE(ov.edit().OnKeyDown(d));
+  EXPECT_EQ(ov.Find(1), nullptr);
+  fv::KeyEvent undo;
+  undo.key = 'Z';
+  undo.ctrl = true;
+  ASSERT_TRUE(ov.edit().OnKeyDown(undo));
+  EXPECT_NE(ov.Find(1), nullptr);
+  undo.shift = true;
+  ASSERT_TRUE(ov.edit().OnKeyDown(undo));
+  EXPECT_EQ(ov.Find(1), nullptr);
 }
 
 TEST(PointEdit, ReleasingEditFocusCancelsTheGestureInFlight) {

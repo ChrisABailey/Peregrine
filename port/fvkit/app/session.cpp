@@ -607,6 +607,7 @@ Status OverlaySession::BuildConfiguration(
     if (Persistence* p = o->AsPersistence()) spec = p->file_spec();
     out->emplace_back(row + "file", spec);
     out->emplace_back(row + "visible", o->IsVisible() ? "true" : "false");
+    if (o->SupportsOpacity()) out->emplace_back(row + "opacity", std::to_string(o->opacity()));
     if (o.get() == manager_.current()) current_index = written;
     ++written;
   }
@@ -689,6 +690,7 @@ Status OverlaySession::RestoreConfiguration(const std::string& name) {
     if (overlay == nullptr) continue;
 
     overlay->SetVisible(settings_.GetBool(row + "visible", true));
+    overlay->SetOpacity(static_cast<int>(settings_.GetInt(row + "opacity", 100)));
     if (i == current_index) want_current = overlay;
     restored.push_back(overlay);
   }

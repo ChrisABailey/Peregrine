@@ -1406,7 +1406,8 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // reproducible, being every cell whose coverage meets lat 32.60..32.95,
 // lon -80.15..-79.75, which is the padded extent of every coordinate these
 // tests name.
-constexpr uint64_t kHashCharleston = 0xf828df94fa9a5721ull;
+// Area holes are cut (even-odd over every ring): 173 px moved, re-checked.
+constexpr uint64_t kHashCharleston = 0x73753f02e6669aa4ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();

@@ -141,8 +141,8 @@ simplify_pixels = 0.5
 
 
 [geosym]
-# Directory holding the GeoSym assets (expects SymAssign/ and Graphics/
-# beneath it). Needed to draw DNC.
+# Directory that contains the GeoSymbol/ folder (GeoSymbol/SymAssign/ and
+# GeoSymbol/Graphics/ beneath it), not GeoSymbol/ itself. Needed to draw DNC.
 # Default: the TestData dir in the repo.
 # data_dir = "/path/to/TestData"
 
@@ -595,6 +595,13 @@ simplify_pixels = 0.5
 # at most five. Empty = FalconView's 2500/5000/7500/10000/12500. PythonView's
 # Tools > DTED Colour Breaks... edits this key.
 # elevation_bands_ft = "2500,5000,7500,10000,12500"
+
+[analysis]
+# Distance unit of the route elevation profile (Route ▸ Elevation Profile).
+# Elevation is in metres for km and m, feet otherwise.
+# units = "nm"                  # nm | miles | km | m | yards | ft
+# Evenly spaced samples along the route.
+# profile_samples = 200
 
 [log]
 # The application log (Help > Show Log). Peregrine writes it to

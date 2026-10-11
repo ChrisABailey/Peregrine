@@ -56,6 +56,10 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string>& argv) {
       o.shot = argv[++i];
     } else if (a == "--center" && has_value) {
       ParseCenter(argv[++i], &o);
+    } else if (a == "--run" && has_value) {
+      o.run.push_back(argv[++i]);
+    } else if (a == "--open" && has_value) {
+      o.open.push_back(argv[++i]);
     }
   }
   return o;

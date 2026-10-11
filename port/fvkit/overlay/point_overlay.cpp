@@ -293,6 +293,7 @@ bool PointOverlay::OnMouseMove(const MouseEvent& e) {
 bool PointOverlay::OnMouseUp(const MouseEvent& e) { return edit_->OnMouseUp(e); }
 bool PointOverlay::OnKeyDown(const KeyEvent& e) { return edit_->OnKeyDown(e); }
 
+std::string PointOverlay::EditHintAt(PixelPoint p) { return edit_->HintAt(p); }
 void PointOverlay::EnterEditFocus() { edit_->EnterEditFocus(); }
 void PointOverlay::ReleaseEditFocus() { edit_->ReleaseEditFocus(); }
 bool PointOverlay::CanUndo() const { return edit_->CanUndo(); }

@@ -52,6 +52,7 @@ Status FakeDesk::Render(PixelBuffer* out) {
   if (!v.HasSurface()) return Status::Error(kInvalidArg, "the view has no surface");
   CpuCanvas canvas(v.PixelWidth(), v.PixelHeight());
   canvas.Clear(FvColor{0, 0, 0, 255});
+  if (!HostLabelFont().empty()) canvas.SetDefaultFont(HostLabelFont());
 
   const view::MapView& mv = desk_->map_view();
   if (mv.HasProduct() && desk_->catalog()) {

@@ -32,6 +32,66 @@ constexpr FvColor kStartColor{20, 160, 60, 255};
 constexpr FvColor kViaColor{30, 110, 235, 255};
 constexpr FvColor kEndColor{215, 30, 30, 255};
 
+/// The road_style choices and the line preset each draws, in display order.
+/// The first leaves the line solid unless the route was priced by bicycle.
+struct RoadStyle {
+  const char* name;
+  const char* preset;
+};
+constexpr RoadStyle kRoadStyles[] = {
+    {"Dashed by bicycle", nullptr},
+    {"Solid", line_preset::kSolid},
+    {"Dashed", line_preset::kDash},
+    {"Long dash", line_preset::kLongDash},
+    {"Dotted", line_preset::kDot},
+    {"Arrows", line_preset::kArrow},
+};
+
+const std::vector<app::PropertySpec>& RouteSpecs() {
+  static const std::vector<app::PropertySpec> specs = [] {
+    using app::PropertySpec;
+    using app::PropertyType;
+    using app::PropertyValue;
+    auto spec = [](const char* key, const char* label, const char* group, PropertyValue def,
+                   const char* help) {
+      PropertySpec s;
+      s.key = key;
+      s.label = label;
+      s.group = group;
+      s.type = def.type;
+      s.default_value = std::move(def);
+      s.help = help;
+      return s;
+    };
+    std::vector<PropertySpec> v;
+    v.push_back(spec("road_color", "Line colour", "Calculated route",
+                     PropertyValue::Color(RouteOverlay::kRoadColor),
+                     "A route that follows roads; an uncalculated one keeps its own colour."));
+    v.push_back(spec("road_width", "Line width", "Calculated route", PropertyValue::Int(6),
+                     "In device pixels."));
+    v.back().min = 1;
+    v.back().max = 20;
+    v.push_back(spec("road_style", "Line style", "Calculated route", PropertyValue::Choice(0),
+                     "Dashed by bicycle is solid unless the route was priced for a bicycle."));
+    for (const RoadStyle& r : kRoadStyles) v.back().choices.push_back(r.name);
+    v.push_back(spec("casing_color", "Casing colour", "Calculated route",
+                     PropertyValue::Color(RouteOverlay::kCasingColor),
+                     "The outline that keeps the line readable over a chart."));
+    v.push_back(spec("casing_width", "Casing width", "Calculated route", PropertyValue::Int(4),
+                     "Pixels beyond the line's width; 0 draws no casing."));
+    v.back().min = 0;
+    v.back().max = 20;
+    v.push_back(spec("beach_casing_color", "Beach casing colour", "Calculated route",
+                     PropertyValue::Color(RouteOverlay::kBeachCasingColor),
+                     "The casing under stretches ridden on the beach."));
+    v.push_back(spec("show_labels", "Waypoint names", "Labels", PropertyValue::Bool(true), ""));
+    v.push_back(spec("show_status", "Route status line", "Labels", PropertyValue::Bool(true),
+                     "The line of text at the top left that describes the calculated route."));
+    return v;
+  }();
+  return specs;
+}
+
 struct BeachPiece {
   std::vector<GeoPoint> points;
   bool on_beach = false;
@@ -192,12 +252,14 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     // it disappears under the map it is drawn over — Chris rode with it and
     // asked for twice the width (2026-08-19). Doubled together with the
     // casing, so the white still shows the same share of itself past the blue.
-    GeoLineStyle style = PresetGeoLine(
-        plan_.is_bicycle ? line_preset::kDash : line_preset::kSolid,
-        kRoadColor, 6);
+    const char* preset = kRoadStyles[road_style_].preset;
+    if (preset == nullptr) preset = plan_.is_bicycle ? line_preset::kDash : line_preset::kSolid;
+    GeoLineStyle style = PresetGeoLine(preset, road_color_, road_width_);
     GeoLineStyle sand = style;
-    AddCasing(&style, kCasingColor, 4);
-    AddCasing(&sand, kBeachCasingColor, 4);
+    if (casing_width_ > 0) {
+      AddCasing(&style, casing_color_, casing_width_);
+      AddCasing(&sand, beach_casing_color_, casing_width_);
+    }
     uint32_t offset = 0;  // index of each leg's first vertex in the joined line
     for (const std::vector<GeoPoint>& leg : plan_.legs) {
       if (leg.size() >= 2) {
@@ -240,7 +302,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     // is not a label that should ever be picked.
     TextStyle ts;
     ts.size = 13.0;
-    ts.color = kRoadColor;
+    ts.color = road_color_;
     s = canvas.DrawTextString(plan_.status, 10, 20, ts);
     if (!s.ok()) return s;
   }
@@ -546,6 +608,8 @@ void RouteOverlay::Undo() { edit_->Undo(); }
 bool RouteOverlay::CanRedo() const { return edit_->CanRedo(); }
 void RouteOverlay::Redo() { edit_->Redo(); }
 
+std::string RouteOverlay::EditHintAt(PixelPoint p) { return edit_->HintAt(p); }
+
 bool RouteOverlay::OnMouseDown(const MouseEvent& e) {
   return edit_->OnMouseDown(e);
 }
@@ -554,6 +618,49 @@ bool RouteOverlay::OnMouseMove(const MouseEvent& e) {
 }
 bool RouteOverlay::OnMouseUp(const MouseEvent& e) { return edit_->OnMouseUp(e); }
 bool RouteOverlay::OnKeyDown(const KeyEvent& e) { return edit_->OnKeyDown(e); }
+
+// ---------------------------------------------------------------------------
+// Properties
+// ---------------------------------------------------------------------------
+
+const std::vector<app::PropertySpec>& RouteOverlay::Describe() const { return RouteSpecs(); }
+
+Status RouteOverlay::GetProperty(const std::string& key, app::PropertyValue* out) const {
+  using app::PropertyValue;
+  PropertyValue v;
+  if (key == "road_color") v = PropertyValue::Color(road_color_);
+  else if (key == "road_width") v = PropertyValue::Int(road_width_);
+  else if (key == "road_style") v = PropertyValue::Choice(road_style_);
+  else if (key == "casing_color") v = PropertyValue::Color(casing_color_);
+  else if (key == "casing_width") v = PropertyValue::Int(casing_width_);
+  else if (key == "beach_casing_color") v = PropertyValue::Color(beach_casing_color_);
+  else if (key == "show_labels") v = PropertyValue::Bool(show_labels_);
+  else if (key == "show_status") v = PropertyValue::Bool(show_status_);
+  else return Status::Error(kNotFound, "no route property '" + key + "'");
+  if (out != nullptr) *out = v;
+  return Status::Ok();
+}
+
+Status RouteOverlay::SetProperty(const std::string& key, const app::PropertyValue& value) {
+  const app::PropertySpec* spec = FindSpec(key);
+  if (spec == nullptr) return Status::Error(kNotFound, "no route property '" + key + "'");
+  if (value.type != spec->type)
+    return Status::Error(kInvalidArg, "wrong type for route property '" + key + "'");
+  if (spec->type == app::PropertyType::kInt && (value.i < spec->min || value.i > spec->max))
+    return Status::Error(kInvalidArg, "route property '" + key + "' out of range");
+  if (spec->type == app::PropertyType::kChoice &&
+      (value.i < 0 || value.i >= static_cast<long long>(spec->choices.size())))
+    return Status::Error(kInvalidArg, "route property '" + key + "' has no such choice");
+  if (key == "road_color") road_color_ = value.color;
+  else if (key == "road_width") road_width_ = static_cast<int>(value.i);
+  else if (key == "road_style") road_style_ = value.i;
+  else if (key == "casing_color") casing_color_ = value.color;
+  else if (key == "casing_width") casing_width_ = static_cast<int>(value.i);
+  else if (key == "beach_casing_color") beach_casing_color_ = value.color;
+  else if (key == "show_labels") show_labels_ = value.b;
+  else if (key == "show_status") show_status_ = value.b;
+  return Status::Ok();
+}
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -581,8 +688,7 @@ Status RegisterRouteOverlayType(app::OverlayTypeRegistry& registry,
     if (planner != nullptr) ov->SetPlanner(planner);
     return ov;
   };
-  // No editor: v1 editing is `SetWaypoints`, wholesale, which is what a
-  // sheet-driven UI produces. route.py keeps its own and is untouched.
+  // The editor is attached by RegisterRouteEditor, which needs the shell's EditorManager.
   return registry.Register(std::move(desc));
 }
 

@@ -46,6 +46,13 @@ class FakeDeskShell : public DeskShell {
   std::vector<std::string> list_rows;           ///< what the last list offered
   std::vector<std::string> notices;
   int data_sources_shown = 0;
+  int route_profile_shown = 0;
+  int layers_shown = 0;
+  int feature_form_shown = 0;
+  int attribute_table_shown = 0;
+  int layer_style_shown = 0;
+  int layer_fields_shown = 0;
+  int new_layer_shown = 0;
 
   SaveAnswer AskSave(const std::string& name) override;
   std::vector<std::string> ChooseFilesToOpen(const app::FileTypeDesc&) override;
@@ -68,6 +75,13 @@ class FakeDeskShell : public DeskShell {
     map_options_shown = std::move(model);
   }
   void ShowDataSources() override { ++data_sources_shown; }
+  void ShowRouteProfile() override { ++route_profile_shown; }
+  void ShowLayers() override { ++layers_shown; }
+  void ShowFeatureForm() override { ++feature_form_shown; }
+  void ShowAttributeTable() override { ++attribute_table_shown; }
+  void ShowLayerStyle() override { ++layer_style_shown; }
+  void ShowLayerFields() override { ++layer_fields_shown; }
+  void ShowNewLayer() override { ++new_layer_shown; }
   std::string ChooseDirectory(const std::string&) override { return directory; }
   void ShowNotice(const std::string& text) override { notices.push_back(text); }
 };

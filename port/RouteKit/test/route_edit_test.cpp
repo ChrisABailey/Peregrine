@@ -112,6 +112,20 @@ TEST(RouteEdit, AClickOnOpenMapIsDeclinedSoThePickSessionCanHaveIt) {
   EXPECT_TRUE(ov.selected().empty());
 }
 
+TEST(RouteEdit, HintSaysWhatAPressWouldDo) {
+  RouteOverlay ov("Route1");
+  ov.SetWaypoints(TwoWaypoints());
+  const MapProjection proj = KiawahProj();
+  DrawOnce(ov, proj);
+  const PixelPoint b = PixelOf(proj, ov.waypoints()[1].position);
+  EXPECT_EQ(ov.EditHintAt(b), "Select waypoint B");
+  EXPECT_EQ(ov.EditHintAt(PixelPoint{5, 5}), "");
+  ov.edit().Select("B");
+  EXPECT_EQ(ov.EditHintAt(b), "Move waypoint B");
+  ov.edit().SetAdding(true);
+  EXPECT_EQ(ov.EditHintAt(PixelPoint{5, 5}), "Add waypoint");
+}
+
 TEST(RouteEdit, AStillHandIsAClickAndNotAnEdit) {
   RouteOverlay ov("Route1");
   ov.SetWaypoints(TwoWaypoints());
@@ -205,7 +219,7 @@ TEST(RouteEdit, ReleasingEditFocusCancelsAGestureInFlight) {
 
 // --- adding, deleting, history ---------------------------------------------
 
-TEST(RouteEdit, AddIsTwoGesturesAndInsertsAfterTheSelection) {
+TEST(RouteEdit, AddStaysArmedAndInsertsAfterTheSelection) {
   RouteOverlay ov("Route1");
   ov.SetWaypoints(TwoWaypoints());
   const MapProjection proj = KiawahProj();
@@ -227,8 +241,16 @@ TEST(RouteEdit, AddIsTwoGesturesAndInsertsAfterTheSelection) {
   // Selected, so the NEXT add lands after it and a route is built by clicking
   // along it.
   EXPECT_EQ("WP3", ov.selected());
-  // The mode is spent by the click, not sticky.
+  // The mode stays armed, so the next click adds again, after WP3.
+  EXPECT_TRUE(ov.edit().adding());
+  EXPECT_TRUE(ov.OnMouseDown(At(650, 450)));
+  ASSERT_EQ(4u, ov.waypoints().size());
+  EXPECT_EQ("WP4", ov.waypoints()[2].label);
+  // The key turns it off again.
+  EXPECT_TRUE(ov.OnKeyDown(KeyOf('A')));
   EXPECT_FALSE(ov.edit().adding());
+  EXPECT_FALSE(ov.OnMouseDown(At(600, 400)));
+  EXPECT_EQ(4u, ov.waypoints().size());
 }
 
 TEST(RouteEdit, LabelsStayUniqueBecauseSelectionIsByLabel) {
@@ -249,9 +271,8 @@ TEST(RouteEdit, DeleteRemovesTheSelectionAndUndoBringsItBack) {
   EXPECT_TRUE(ov.OnKeyDown(KeyOf(fv::Key::kDelete)));
   ASSERT_EQ(1u, ov.waypoints().size());
   EXPECT_EQ("B", ov.waypoints()[0].label);
-  // The selection went with it: a selected label that is not in the document
-  // is a handle onto nothing.
-  EXPECT_TRUE(ov.selected().empty());
+  // The first point went, so the new first is selected.
+  EXPECT_EQ("B", ov.selected());
 
   ASSERT_TRUE(ov.CanUndo());
   ov.Undo();
@@ -259,6 +280,27 @@ TEST(RouteEdit, DeleteRemovesTheSelectionAndUndoBringsItBack) {
   ASSERT_TRUE(ov.CanRedo());
   ov.Redo();
   EXPECT_EQ(1u, ov.waypoints().size());
+}
+
+TEST(RouteEdit, RepeatedDeletesWalkBackAlongTheRoute) {
+  RouteOverlay ov("Route1");
+  ov.SetWaypoints({{"WP1", {32.60, -80.10}},
+                   {"WP2", {32.59, -80.11}},
+                   {"WP3", {32.58, -80.12}},
+                   {"WP4", {32.57, -80.13}}});
+  ov.SetSelected("WP4");
+  for (int i = 0; i < 3; ++i) EXPECT_TRUE(ov.OnKeyDown(KeyOf(fv::Key::kDelete)));
+  ASSERT_EQ(1u, ov.waypoints().size());
+  EXPECT_EQ("WP1", ov.waypoints()[0].label);
+  EXPECT_EQ("WP1", ov.selected());
+}
+
+TEST(RouteEdit, DeletingAnUnselectedPointKeepsTheSelection) {
+  RouteOverlay ov("Route1");
+  ov.SetWaypoints(TwoWaypoints());
+  ov.SetSelected("B");
+  EXPECT_TRUE(ov.edit().Delete("A"));
+  EXPECT_EQ("B", ov.selected());
 }
 
 TEST(RouteEdit, DeletingSomethingThatIsNotThereChangesNothing) {
@@ -342,6 +384,24 @@ TEST(RouteEdit, CtrlZUndoesAndCtrlShiftZRedoes) {
   redo.shift = true;
   EXPECT_TRUE(ov.OnKeyDown(redo));
   EXPECT_EQ(1u, ov.waypoints().size());
+}
+
+TEST(RouteEdit, AChordIsNotItsLetter) {
+  RouteOverlay ov("Route1");
+  ov.SetWaypoints(TwoWaypoints());
+  ov.SetSelected("A");
+  for (int mod = 0; mod < 3; ++mod) {
+    for (int key : {int('A'), int('G'), int('D'), int('U')}) {
+      fv::KeyEvent e = KeyOf(key);
+      e.meta = mod == 0;
+      e.alt = mod == 1;
+      e.ctrl = mod == 2;
+      EXPECT_FALSE(ov.OnKeyDown(e)) << char(key) << " with modifier " << mod;
+    }
+  }
+  EXPECT_FALSE(ov.edit().adding());
+  EXPECT_EQ(fv::LineKind::kGreatCircle, ov.leg_kind());
+  EXPECT_EQ(2u, ov.waypoints().size());
 }
 
 // --- the snap: the reason this session exists ------------------------------

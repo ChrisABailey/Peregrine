@@ -5,6 +5,7 @@
 
 #include "fvkit/app/editor.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -29,6 +30,8 @@ class EditorManager::Hook : public StackObserver {
   void OverlayRemoved(Overlay& overlay) override {
     owner_.OnOverlayRemoved(overlay);
   }
+  void OverlayAdded(Overlay&) override { owner_.OnOverlayAdded(); }
+  void OverlayOrderChanged() override { owner_.OnOrderChanged(); }
 
  private:
   EditorManager& owner_;
@@ -107,6 +110,7 @@ OverlayEditor* EditorManager::EditorFor(const TypeId& id) {
 
 void EditorManager::ReleaseFocus() {
   if (edited_ == nullptr) return;
+  manager_.SetDimOthers(nullptr, 100);
   Overlay* losing = edited_;
   // Cleared FIRST: ReleaseEditFocus is overlay code and may do anything,
   // including asking who is being edited, and the answer by then is nobody.
@@ -119,6 +123,7 @@ void EditorManager::TakeFocus(Overlay* overlay) {
   ReleaseFocus();                  // invariant 3d.4: release BEFORE the switch
   edited_ = overlay;
   if (overlay == nullptr) return;
+  manager_.SetDimOthers(overlay, dim_percent_);
   if (EditTarget* target = overlay->AsEditTarget()) target->EnterEditFocus();
   // INVARIANT 5: THE THING BEING EDITED IS ON TOP. Not the top of its own band
   // -- a route being edited draws over a point set and a point set being
@@ -140,7 +145,12 @@ void EditorManager::TakeFocus(Overlay* overlay) {
 // Entering and leaving a mode
 // ---------------------------------------------------------------------------
 
-void EditorManager::ExitMode(bool notify) {
+void EditorManager::SetDimOthers(int percent) {
+  dim_percent_ = std::clamp(percent, 0, 100);
+  if (edited_ != nullptr) manager_.SetDimOthers(edited_, dim_percent_);
+}
+
+void EditorManager::ExitMode(bool notify, bool restore_order) {
   if (mode_.empty()) {
     // Nothing to leave. Focus cannot outlive a mode, but say so explicitly
     // rather than relying on it.
@@ -165,7 +175,7 @@ void EditorManager::ExitMode(bool notify) {
   // back to the order Add would have built. Overlays that share a display
   // order keep the arrangement they have, so the set most recently edited
   // stays the upper of its peers.
-  {
+  if (restore_order) {
     Transition t(*this);
     manager_.RestoreDefaultOrder();
   }
@@ -357,6 +367,32 @@ void EditorManager::OnOverlayRemoved(Overlay& overlay) {
   // That was the last one: the mode exits. Current is left to A2's rule, and
   // the CurrentChanged it fires finds no mode to chase.
   ExitMode(/*notify=*/true);
+}
+
+// An overlay added mid-edit can land above the edited one by display order;
+// the edited overlay goes back on top.
+void EditorManager::OnOverlayAdded() {
+  if (in_transition_ || edited_ == nullptr) return;
+  std::shared_ptr<Overlay> held = manager_.FindShared(edited_);
+  if (held == nullptr || manager_.TopOfWorking() == held) return;
+  Transition t(*this);
+  manager_.MoveToTopOfWorking(held);
+}
+
+// A reorder the user made (the layers panel) decides what is edited: the
+// editor follows a same-type overlay raised to the top and closes when another
+// type is raised there, leaving the user's order as it is.
+void EditorManager::OnOrderChanged() {
+  if (in_transition_ || mode_.empty()) return;
+  std::shared_ptr<Overlay> top = manager_.TopOfWorking();
+  if (top == nullptr || top.get() == edited_) return;
+  Transition t(*this);
+  if (top->type_id() == mode_) {
+    manager_.MakeCurrent(top);
+    TakeFocus(top.get());
+    return;
+  }
+  if (edited_ != nullptr) ExitMode(/*notify=*/true, /*restore_order=*/false);
 }
 
 }  // namespace app

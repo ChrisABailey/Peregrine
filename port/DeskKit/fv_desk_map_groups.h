@@ -41,6 +41,8 @@ struct MapGroup {
   std::vector<std::string> formats;
   view::LadderKind ladder = view::LadderKind::kUniform;
   double uniform_factor = 2.0;
+  /// The group command's key spelling ("Primary+R"), or empty for none.
+  std::string shortcut;
   /// Checked in order; the first match wins.
   std::vector<NominalScale> nominal_scales;
 

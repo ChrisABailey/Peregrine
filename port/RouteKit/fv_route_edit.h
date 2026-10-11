@@ -69,11 +69,9 @@ class RouteEditSession {
 
   // --- tool state ---------------------------------------------------------
 
-  // Armed by "a" and spent by the next click. WHY ADD IS TWO GESTURES AND NOT
-  // ONE, route.py's reason unchanged: a click has to keep meaning "select" —
-  // an editor where every click on open map appends a point cannot be used to
-  // pick anything — so the key arms the mode and the click supplies the
-  // position.
+  /// Add mode: while on, each click adds a waypoint after the selected one.
+  /// Toggled by "a" or the Add Point tool; Escape or another tool turns it off.
+  /// route.py spends the mode on one click; desktop shells keep it armed.
   bool adding() const { return adding_; }
   void SetAdding(bool on) { adding_ = on; }
 
@@ -126,6 +124,8 @@ class RouteEditSession {
   // every one that MUTATES goes through `Record()`.
 
   void Select(std::string label) { overlay_.SetSelected(std::move(label)); }
+  /// Removes `label`; when it was selected, selects the waypoint before it
+  /// (the new first when it was first). False when there is no such waypoint.
   bool Delete(const std::string& label);
   // Inserts AFTER the selected waypoint (at the end when nothing is selected),
   // selects it and returns its new label. Empty only if the position is not
@@ -178,6 +178,9 @@ class RouteEditSession {
   bool OnMouseMove(const MouseEvent& e);
   bool OnMouseUp(const MouseEvent& e);
   bool OnKeyDown(const KeyEvent& e);
+  /// What a press at `p` would do: "Add waypoint", "Select waypoint 3",
+  /// "Move waypoint 3"; empty when it would pan.
+  std::string HintAt(PixelPoint p);
 
   // --- naming -------------------------------------------------------------
 

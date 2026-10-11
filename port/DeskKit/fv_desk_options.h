@@ -37,14 +37,15 @@ namespace desk {
 class MapGroups;
 class UserSettings;
 
-/// The options of one map group: a property set kept in the settings under
-/// `prefix`, and what applying it does to the renderer.
+/// A property set kept in the settings under `prefix`, and what applying it
+/// does. It is either a map group's page or a section of an overlay type's
+/// page, for settings the shell rather than each overlay acts on.
 struct MapOptionsSource {
-  std::string group_id;
+  std::string group_id;  ///< the map group, or the overlay type for an overlay page
   std::string prefix;  ///< "dted."
   std::function<std::unique_ptr<app::Properties>()> make;
-  /// Pushes the values into process-wide renderer state. Called on Apply and
-  /// when settings load, from the UI thread.
+  /// Pushes the values into process-wide state. Called on Apply (from the UI
+  /// thread) and, for a map group, when settings load.
   std::function<void(const app::Properties&)> apply;
 };
 
@@ -64,10 +65,12 @@ struct OptionsSection {
 
 class OptionsPage {
  public:
-  /// The page for `type` with values read from `settings`, or null when the
-  /// type is hidden, has no factory, or its overlay declares no properties.
+  /// The page for `type` with values read from `settings`: the overlay's own
+  /// properties, then each of `extra` whose `group_id` is the type. Null when
+  /// the type is hidden, has no factory, or the page would have no fields.
   static std::unique_ptr<OptionsPage> ForType(const app::OverlayTypeDesc& type,
-                                              const Settings& settings);
+                                              const Settings& settings,
+                                              const std::vector<MapOptionsSource>& extra = {});
   /// The page for a map group, titled with the group's title, or null when
   /// the source makes no properties or they declare none.
   static std::unique_ptr<OptionsPage> ForMapGroup(const std::string& title,
@@ -98,30 +101,38 @@ class OptionsPage {
 
  private:
   friend class OptionsModel;
+  /// One property set on the page. A part without `apply` is the overlay's
+  /// own: Apply pushes its changed values into the open overlays of the type.
+  struct Part {
+    std::string prefix;
+    std::shared_ptr<app::Properties> prototype;
+    std::function<void(const app::Properties&)> apply;
+  };
+
   OptionsPage() = default;
-  /// Loads `props` from `settings` under `prefix` and builds the fields.
-  /// Null when `props` declares nothing.
-  static std::unique_ptr<OptionsPage> Build(std::shared_ptr<app::Properties> props,
-                                            const std::string& prefix,
-                                            const Settings& settings);
-  OptionsField* MutableField(const std::string& key);
+  /// Loads `props` from `settings` under `prefix` and appends its fields. A
+  /// key already on the page is skipped. False when `props` declares nothing.
+  bool AddPart(std::shared_ptr<app::Properties> props, const std::string& prefix,
+               std::function<void(const app::Properties&)> apply, const Settings& settings);
+  OptionsField* MutableField(const std::string& key, size_t* part = nullptr);
+  bool PartDirty(size_t part) const;
   void MarkApplied();
 
   app::TypeId id_;
   std::string title_;
   std::string icon_;
-  std::string prefix_;
-  std::shared_ptr<app::Properties> prototype_;
-  /// Map pages: what Apply calls. Overlay pages leave it empty.
-  std::function<void(const app::Properties&)> apply_;
+  std::vector<Part> parts_;
   std::vector<OptionsField> fields_;
+  std::vector<size_t> field_part_;  ///< parallel to `fields_`
   std::vector<OptionsSection> sections_;
 };
 
 class OptionsModel {
  public:
-  /// Overlay options: pages for every type in `types`, in registration order.
-  OptionsModel(const app::OverlayTypeRegistry& types, const Settings& settings);
+  /// Overlay options: pages for every type in `types`, in registration order,
+  /// each with the `extra` sources whose `group_id` is its type.
+  OptionsModel(const app::OverlayTypeRegistry& types, const Settings& settings,
+               const std::vector<MapOptionsSource>& extra = {});
   /// Map options: pages for every group in `groups` that has a source, in
   /// table order.
   OptionsModel(const MapGroups& groups, const std::vector<MapOptionsSource>& sources,
@@ -135,8 +146,8 @@ class OptionsModel {
   /// Writes every changed value to `settings` (and to `user`, when non-null,
   /// so it persists), then marks the pages applied. An overlay page sets the
   /// values on each open overlay of its type; an overlay that rejects one
-  /// keeps its own and is named in `warnings`. A map page calls its source's
-  /// `apply`.
+  /// keeps its own and is named in `warnings`. A source's part (a map page,
+  /// or an extra section of an overlay page) calls its source's `apply`.
   Status Apply(Settings& settings, OverlayManager& overlays, UserSettings* user,
                std::vector<std::string>* warnings = nullptr);
 

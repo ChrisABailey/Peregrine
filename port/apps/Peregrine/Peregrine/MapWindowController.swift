@@ -7,21 +7,32 @@ import AppKit
 import CxxStdlib
 import PeregrineCore
 
-/// One map window: the map widget over a status bar showing the scale, the
-/// series drawn, the ladder's message and the position under the cursor, with
-/// the toolbar, menus and dialogs DeskKit's model calls for.
+/// One map window: the map widget over a status bar (feedback from the map and
+/// overlays on the left, scale and series in the centre, position and terrain
+/// height under the cursor on the right), with the toolbar, menus and dialogs
+/// DeskKit's model calls for.
 final class MapWindowController: NSWindowController, NSMenuItemValidation {
     let host: fv.desk.DeskHost
     let canvas: MapCanvasView
+    /// The window title when no overlay file is open: the app and the catalog.
+    private var catalogTitle = "Peregrine"
     private let scaleLabel = MapWindowController.label()
     private let productLabel = MapWindowController.label()
-    private let messageLabel = MapWindowController.label()
+    private let feedbackLabel = MapWindowController.label()
     private let positionLabel = MapWindowController.label(monospaced: true)
+    private let elevationLabel = MapWindowController.label(monospaced: true)
     private var toolbar: CommandToolbar!
     private var jobSheet: JobSheet?
     /// Open options windows, by HostOptionsKind.
     private var optionsWindows: [Int32: OptionsWindowController] = [:]
     private var dataSourcesWindow: DataSourcesWindowController?
+    private var profileWindow: ProfileWindowController?
+    private var layersWindow: LayersWindowController?
+    private var featureFormWindow: FeatureFormWindowController?
+    private var attributeTableWindow: AttributeTableWindowController?
+    private var layerStyleWindow: LayerStyleWindowController?
+    private var layerFieldsWindow: LayerFieldsWindowController?
+    private var newLayerWindow: NewLayerWindowController?
     /// Called after the menu model changed; the app rebuilds the menu bar.
     var onMenusChanged: (() -> Void)?
 
@@ -43,8 +54,18 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         window.tabbingMode = .disallowed
         super.init(window: window)
 
-        let bar = StatusBarView(views: [scaleLabel, productLabel, messageLabel, NSView(), positionLabel])
+        // Three equal thirds keep the scale centred whatever the sides hold.
+        let left = NSStackView(views: [feedbackLabel])
+        let centre = NSStackView()
+        centre.addView(scaleLabel, in: .center)
+        centre.addView(productLabel, in: .center)
+        let right = NSStackView()
+        right.addView(positionLabel, in: .trailing)
+        right.addView(elevationLabel, in: .trailing)
+        for s in [left, centre, right] { s.spacing = 16 }
+        let bar = StatusBarView(views: [left, centre, right])
         bar.orientation = .horizontal
+        bar.distribution = .fillEqually
         bar.spacing = 16
         bar.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
         let content = NSView()
@@ -95,11 +116,16 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         return l
     }
 
+    /// Copies the host's status bar text and hover tool tip into the window.
     func refreshStatus() {
         scaleLabel.stringValue = String(host.StatusScale())
         productLabel.stringValue = String(host.StatusProduct())
-        messageLabel.stringValue = String(host.StatusMessage())
+        feedbackLabel.stringValue = String(host.StatusFeedback())
         positionLabel.stringValue = String(host.StatusPosition())
+        elevationLabel.stringValue = String(host.StatusElevation())
+        let tip = String(host.HoverToolTip())
+        let next: String? = tip.isEmpty ? nil : tip
+        if canvas.toolTip != next { canvas.toolTip = next }
     }
 
     // MARK: Catalog and commands
@@ -123,15 +149,25 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         let path = String(host.CatalogPath())
         guard !path.isEmpty, path != ":memory:" else { return }
         let url = URL(fileURLWithPath: path)
-        window?.title = "Peregrine \u{2014} \(url.deletingPathExtension().lastPathComponent)"
+        catalogTitle = "Peregrine \u{2014} \(url.deletingPathExtension().lastPathComponent)"
+        updateTitle()
         window?.representedURL = url
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         UserDefaults.standard.set(path, forKey: "LastCatalog")
     }
 
+    /// Titles the window after the current or topmost overlay file, or the
+    /// catalog when no overlay file is open.
+    private func updateTitle() {
+        let document = String(host.DocumentName())
+        let title = document.isEmpty ? catalogTitle : document
+        if window?.title != title { window?.title = title }
+    }
+
     /// Reacts to what the host reports each display refresh: menus, the
     /// catalog, a background job and notices.
     private func handle(_ t: fv.desk.HostTick) {
+        updateTitle()
         if t.menus_changed {
             if let window { toolbar.update(window) }
             onMenusChanged?()
@@ -143,6 +179,16 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
             if kind >= 0 { showOptions(kind) }
         }
         if t.sources_requested && host.TakeSourcesRequest() { showDataSources() }
+        if t.profile_requested && host.TakeRouteProfileRequest() { showRouteProfile() }
+        if t.profile_changed { profileWindow?.reload() }
+        if t.layers_requested && host.TakeLayersRequest() { showLayers() }
+        if t.layers_changed { layersWindow?.reload() }
+        if t.form_requested && host.TakeFeatureFormRequest() { showFeatureForm() }
+        if t.table_requested && host.TakeAttributeTableRequest() { showAttributeTable() }
+        if t.style_requested && host.TakeLayerStyleRequest() { showLayerStyle() }
+        if t.fields_requested && host.TakeLayerFieldsRequest() { showLayerFields() }
+        if t.new_layer_requested && host.TakeNewLayerRequest() { showNewLayer() }
+        if t.features_changed { featuresDidChange() }
         let notice = String(host.TakeNotice())
         if !notice.isEmpty { present(notice: notice) }
     }
@@ -181,6 +227,118 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         dataSourcesWindow = controller
         controller.window?.center()
         controller.showWindow(nil)
+    }
+
+    /// Brings up the route elevation profile window, reusing it when it is showing.
+    private func showRouteProfile() {
+        if let existing = profileWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = ProfileWindowController(host: host)
+        controller.onClose = { [weak self] in self?.profileWindow = nil }
+        profileWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the layers panel, reusing it when it is showing.
+    private func showLayers() {
+        if let existing = layersWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = LayersWindowController(host: host)
+        controller.onClose = { [weak self] in self?.layersWindow = nil }
+        layersWindow = controller
+        if let panel = controller.window, let main = window {
+            // Beside the map window's top-right corner, inside the screen.
+            let frame = main.frame
+            panel.setFrameTopLeftPoint(NSPoint(x: frame.maxX - panel.frame.width - 20, y: frame.maxY - 60))
+        }
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the feature form on the model the core just opened.
+    private func showFeatureForm() {
+        if let existing = featureFormWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = FeatureFormWindowController(host: host)
+        controller.onClose = { [weak self] in self?.featureFormWindow = nil }
+        featureFormWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the attribute table on the model the core just opened.
+    private func showAttributeTable() {
+        if let existing = attributeTableWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = AttributeTableWindowController(host: host)
+        controller.onClose = { [weak self] in self?.attributeTableWindow = nil }
+        attributeTableWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the style dialog on the model the core just opened.
+    private func showLayerStyle() {
+        if let existing = layerStyleWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = LayerStyleWindowController(host: host)
+        controller.onClose = { [weak self] in self?.layerStyleWindow = nil }
+        layerStyleWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the Layer Fields dialog on the model the core just opened.
+    private func showLayerFields() {
+        if let existing = layerFieldsWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = LayerFieldsWindowController(host: host)
+        controller.onClose = { [weak self] in self?.layerFieldsWindow = nil }
+        layerFieldsWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the New Feature Layer dialog on a fresh model.
+    private func showNewLayer() {
+        if let existing = newLayerWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = NewLayerWindowController(host: host)
+        controller.onClose = { [weak self] in self?.newLayerWindow = nil }
+        newLayerWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Closes a form, table, style or fields dialog whose overlay closed, and
+    /// refreshes the table. The form and style dialog are not rebuilt here:
+    /// they hold the user's edits.
+    private func featuresDidChange() {
+        if !host.FeatureFormOpen() { featureFormWindow?.close() }
+        if !host.LayerStyleOpen() { layerStyleWindow?.close() }
+        if !host.LayerFieldsOpen() { layerFieldsWindow?.close() }
+        if host.AttributeTableOpen() { attributeTableWindow?.reload() } else { attributeTableWindow?.close() }
     }
 
     /// Shows, advances or dismisses the progress sheet of a catalog build.

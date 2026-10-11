@@ -16,6 +16,7 @@
 
 #include "fvkit/app/capabilities.h"
 #include "fvkit/app/type_registry.h"
+#include "fvkit/canvas/cpu_canvas.h"
 
 namespace fv {
 
@@ -140,6 +141,8 @@ Overlay* OverlayManager::TopWorkingOverlay() const {
   return nullptr;
 }
 
+std::shared_ptr<Overlay> OverlayManager::TopOfWorking() const { return FindShared(TopWorkingOverlay()); }
+
 std::shared_ptr<Overlay> OverlayManager::FindShared(const Overlay* raw) const {
   for (const auto& o : stack_) {
     if (o.get() == raw) return o;
@@ -204,6 +207,7 @@ Status OverlayManager::Remove(const std::shared_ptr<Overlay>& overlay) {
   stack_.erase(it);
 
   if (capture_ == removed.get()) capture_ = nullptr;
+  if (dim_focus_ == removed.get()) dim_focus_ = nullptr;
   if (app::Persistence* p = removed->AsPersistence()) p->set_observer(nullptr);
 
   Overlay* raw = removed.get();
@@ -420,18 +424,49 @@ std::vector<Overlay*> OverlayManager::DrawOrder() const {
   return out;
 }
 
+void OverlayManager::SetDimOthers(const Overlay* focus, int percent) {
+  dim_focus_ = focus;
+  dim_percent_ = std::clamp(percent, 0, 100);
+}
+
 Status OverlayManager::DrawAll(const MapProjection& proj, ICanvas& canvas,
                                const std::function<bool()>& interrupted) {
+  const bool dimming = dim_focus_ != nullptr && dim_percent_ < 100 && !declutter_;
+  // Consecutive dimmed overlays share one offscreen layer, faded once, so
+  // overlaps between them do not darken each other.
+  std::unique_ptr<CpuCanvas> layer;
+  auto flush = [&]() -> Status {
+    if (!layer) return Status::Ok();
+    PixelBuffer& buf = layer->Buffer();
+    for (int y = 0; y < buf.Height(); ++y) {
+      unsigned char* row = buf.Row(y);
+      for (int x = 0; x < buf.Width(); ++x)
+        row[4 * x + 3] = static_cast<unsigned char>(row[4 * x + 3] * dim_percent_ / 100);
+    }
+    const Status s = canvas.DrawPixmap(buf, 0, 0);
+    layer.reset();
+    return s;
+  };
   for (Overlay* o : DrawOrder()) {
     if (interrupted && interrupted())
       return Status::Error(kInterrupted, "overlay drawing interrupted");
-    Status s = o->OnDraw(proj, canvas);
+    const bool dim = dimming && o != dim_focus_ && !IsTopMost(*o);
+    if (!dim) {
+      const Status f = flush();
+      if (!f.ok()) return f;
+    } else if (!layer) {
+      const PixelSize size = canvas.Size();
+      layer = std::make_unique<CpuCanvas>(size.width, size.height);
+      layer->Clear({0, 0, 0, 0});
+      if (!offscreen_font_.empty()) layer->SetDefaultFont(offscreen_font_);
+    }
+    Status s = o->OnDraw(proj, dim ? static_cast<ICanvas&>(*layer) : canvas);
     if (!s.ok()) {
       s.message = "overlay '" + o->Name() + "': " + s.message;
       return s;
     }
   }
-  return Status::Ok();
+  return flush();
 }
 
 // ---------------------------------------------------------------------------

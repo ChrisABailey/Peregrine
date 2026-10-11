@@ -28,6 +28,10 @@ struct SkippedFrame;
 
 namespace desk {
 
+/// A TrueType font installed on this machine for overlay labels, or "" when
+/// none of the known paths exists. Looked up once.
+const std::string& HostLabelFont();
+
 class BaseMapRenderer {
  public:
   BaseMapRenderer();
@@ -52,10 +56,15 @@ class BaseMapRenderer {
                 ICanvas& canvas, const std::function<bool()>& interrupted = {},
                 std::vector<SkippedFrame>* skipped = nullptr);
 
+  /// What the last vector render drew under `p` (that render's pixels);
+  /// empty for a raster product.
+  app::HintText HintAt(PixelPoint p) { return last_vector_ ? vector_.HintAt(p) : app::HintText(); }
+
  private:
   std::shared_ptr<Catalog> catalog_;
   std::unique_ptr<MapEngine> engine_;
   VectorBaseMap vector_;
+  bool last_vector_ = false;  ///< the last Render drew a vector product
 };
 
 }  // namespace desk

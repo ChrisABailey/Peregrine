@@ -221,6 +221,51 @@ TEST_F(ManagerTest, DrawErrorNamesOverlay) {
   EXPECT_NE(s.message.find("'bad'"), std::string::npos);
 }
 
+/// Fills `rect` with one opaque colour.
+class Fill : public fv::Overlay {
+ public:
+  Fill(std::string name, fv::PixelRect rect, fv::FvColor color)
+      : Overlay(std::move(name)), rect_(rect), color_(color) {}
+  fv::Status OnDraw(const fv::MapProjection&, fv::ICanvas& canvas) override {
+    const fv::Brush brush{color_};
+    return canvas.DrawRectangle(rect_, &brush, nullptr);
+  }
+
+ private:
+  fv::PixelRect rect_;
+  fv::FvColor color_;
+};
+
+TEST(OverlayManagerDim, OthersDrawFadedAndTheFocusAtFullStrength) {
+  fv::OverlayManager mgr;
+  auto red = std::make_shared<Fill>("red", fv::PixelRect{0, 0, 20, 10}, fv::FvColor{255, 0, 0, 255});
+  auto green = std::make_shared<Fill>("green", fv::PixelRect{0, 0, 10, 10}, fv::FvColor{0, 255, 0, 255});
+  ASSERT_TRUE(mgr.Add(red).ok());
+  ASSERT_TRUE(mgr.Add(green).ok());
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(20, 10);
+  proj.SetCenter({0, 0});
+  proj.SetScale(1000000);
+  auto pixel = [](fv::CpuCanvas& c, int x) { return c.Buffer().Row(5) + 4 * x; };
+
+  mgr.SetDimOthers(green.get(), 50);
+  fv::CpuCanvas canvas(20, 10);
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(mgr.DrawAll(proj, canvas).ok());
+  const unsigned char* faded = pixel(canvas, 15);
+  EXPECT_EQ(faded[0], 255);
+  EXPECT_NEAR(faded[1], 128, 2);  // half red over white
+  EXPECT_NEAR(faded[2], 128, 2);
+  const unsigned char* focus = pixel(canvas, 5);
+  EXPECT_EQ(focus[0], 0);
+  EXPECT_EQ(focus[1], 255);
+
+  mgr.SetDimOthers(nullptr, 50);
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(mgr.DrawAll(proj, canvas).ok());
+  EXPECT_EQ(pixel(canvas, 15)[1], 0);  // off: full red
+}
+
 // Repinned 2026-08-29 with the real graticule (the 2026-07-17 pin was the
 // 30-line sample). 0 = probe: set a font's hash to 0, run, and the test prints
 // the hash and writes overlay_grid.png for a human to look at.

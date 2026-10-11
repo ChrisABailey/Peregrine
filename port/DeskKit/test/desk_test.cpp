@@ -15,6 +15,10 @@
 #include "fvkit/app/capabilities.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/formats/registry.h"
+#include "fv_route_edit.h"
+#include "fv_route_overlay.h"
+#include "fvkit/overlay/contour_overlay.h"
+#include "fvkit/overlay/ta_mask_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
 #include "fvkit/raster.h"
 #include "scratch.h"
@@ -504,6 +508,195 @@ TEST(DeskData, RendersAGeoTiffBaseMap) {
   fv::ClearFormatRegistryForTest();
 }
 
+// MARK: Elevation overlays
+
+TEST_F(DeskTest, ElevationOverlaysWithoutDtedSayWhy) {
+  FakeDesk fd(64, 64);
+  const std::string id = fv::ContourOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + id}).ok());
+  ASSERT_NE(fd.desk().overlays().FirstOfType(id), nullptr);
+  ASSERT_EQ(fd.shell().errors.size(), 1u);
+  EXPECT_NE(fd.shell().errors[0].message.find("Contour Lines"), std::string::npos);
+  EXPECT_EQ(fd.desk().elevation_source(), nullptr);
+}
+
+TEST(DeskData, ElevationOverlaysDrawFromTheCatalogsDted) {
+  const char* root = std::getenv("FVW_TESTDATA_DIR");
+  const std::string dir = root ? std::string(root) + "/dted" : std::string();
+  if (dir.empty() || !std::filesystem::exists(dir)) GTEST_SKIP() << "no testdata/dted";
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  int64_t src = 0;
+  int added = 0;
+  // Catalogued twice, as Generate Coverage does: elevation and shaded relief.
+  for (const char* format : {"dted", "dted-shaded"}) {
+    ASSERT_TRUE(cat->AddDataSource(dir, format, 0, &src).ok());
+    ASSERT_TRUE(cat->Scan(src, &added).ok());
+  }
+
+  FakeDesk fd(256, 256);
+  auto& mv = fd.desk().map_view();
+  // Inside W084/n34, a cell the shipped sample set also carries.
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{34.5, -83.5}, 250000, 0));
+  // Turned on before the catalog: the catalog change hands it the source.
+  const std::string contour_id = fv::ContourOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + contour_id}).ok());
+  fd.desk().SetCatalog(cat);
+  ASSERT_NE(fd.desk().elevation_source(), nullptr);
+  const size_t errors = fd.shell().errors.size();
+  const std::string mask_id = fv::TAMaskOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + mask_id}).ok());
+  EXPECT_EQ(fd.shell().errors.size(), errors);
+
+  fv::PixelBuffer buf;
+  const fv::Status drawn = fd.Render(&buf);
+  ASSERT_TRUE(drawn.ok()) << drawn.message;
+  auto contour = std::dynamic_pointer_cast<fv::ContourOverlay>(
+      fd.desk().overlays().FirstOfType(contour_id));
+  auto mask = std::dynamic_pointer_cast<fv::TAMaskOverlay>(
+      fd.desk().overlays().FirstOfType(mask_id));
+  ASSERT_TRUE(contour && mask);
+  EXPECT_FALSE(contour->last_draw().no_source);
+  EXPECT_GT(contour->last_draw().lines_drawn, 0);
+  EXPECT_FALSE(mask->last_draw().no_source);
+  int banded = 0;
+  for (int n : mask->last_draw().band_pixels) banded += n;
+  EXPECT_GT(banded, 0);
+  fv::ClearFormatRegistryForTest();
+}
+
+// MARK: Points
+
+TEST_F(DeskTest, PointEditorAddsAPointWhereClicked) {
+  FakeDesk fd(400, 300);
+  fv::desk::Desk& desk = fd.desk();
+  auto& mv = desk.map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.6, -80.0}, 50000, 0));
+
+  ASSERT_TRUE(fd.Run({std::string("editor.mode.") + fv::PointOverlay::kTypeId}).ok());
+  ASSERT_TRUE(desk.Editing());
+  auto points = std::dynamic_pointer_cast<fv::PointOverlay>(
+      desk.overlays().FirstOfType(fv::PointOverlay::kTypeId));
+  ASSERT_NE(points, nullptr);
+  EXPECT_EQ(points->manager(), &desk.overlays());
+  const Menu* editor = desk.menus().Find("editor");
+  ASSERT_NE(editor, nullptr);
+  EXPECT_EQ(editor->title, "Points");
+  std::map<std::string, std::string> by_icon;
+  for (const MenuItem& item : editor->items)
+    if (!item.is_separator()) by_icon[item.icon] = item.command_id;
+  for (const char* icon : {"add_point", "delete_point", "labels", "undo", "redo"})
+    ASSERT_EQ(by_icon.count(icon), 1u) << icon;
+  EXPECT_FALSE(desk.commands().IsEnabled(by_icon["delete_point"]));
+  EXPECT_FALSE(desk.commands().IsEnabled(by_icon["undo"]));
+
+  fv::PixelBuffer buf;
+  ASSERT_TRUE(fd.Render(&buf).ok());  // a point set picks with the last projection
+  ASSERT_TRUE(desk.Execute(by_icon["add_point"]).ok());
+  EXPECT_TRUE(desk.commands().IsChecked(by_icon["add_point"]));
+  ASSERT_TRUE(desk.OverlayPointerDown(200, 150));
+  desk.OverlayPointerUp(200, 150);
+  ASSERT_EQ(points->points().size(), 1u);
+  EXPECT_NEAR(points->points()[0].position.lat, 32.6, 1e-3);
+  EXPECT_NEAR(points->points()[0].position.lon, -80.0, 1e-3);
+  // A point's add mode is spent by the click (route's stays armed).
+  EXPECT_FALSE(desk.commands().IsChecked(by_icon["add_point"]));
+  EXPECT_TRUE(desk.commands().IsEnabled(by_icon["delete_point"]));
+
+  ASSERT_TRUE(desk.Execute(by_icon["labels"]).ok());
+  EXPECT_TRUE(points->show_labels());
+  EXPECT_TRUE(desk.commands().IsChecked(by_icon["labels"]));
+
+  ASSERT_TRUE(desk.Execute(by_icon["delete_point"]).ok());
+  EXPECT_TRUE(points->points().empty());
+  ASSERT_TRUE(desk.Execute(by_icon["undo"]).ok());
+  EXPECT_EQ(points->points().size(), 1u);
+  ASSERT_TRUE(desk.Execute(by_icon["redo"]).ok());
+  EXPECT_TRUE(points->points().empty());
+}
+
+// MARK: Routes
+
+TEST_F(DeskTest, RouteEditorAddsWaypointsWhereClicked) {
+  FakeDesk fd(400, 300);
+  fv::desk::Desk& desk = fd.desk();
+  auto& mv = desk.map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.6, -80.0}, 50000, 0));
+  // Without an editor the stack sees no pointer events, so the map pans.
+  EXPECT_FALSE(desk.OverlayPointerDown(200, 150));
+
+  ASSERT_TRUE(fd.Run({std::string("editor.mode.") + fv::RouteOverlay::kTypeId}).ok());
+  ASSERT_TRUE(desk.Editing());
+  auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
+      desk.overlays().FirstOfType(fv::RouteOverlay::kTypeId));
+  ASSERT_NE(route, nullptr);
+  EXPECT_EQ(route->manager(), &desk.overlays());
+  ASSERT_NE(desk.menus().Find("editor"), nullptr);
+
+  fv::PixelBuffer buf;
+  ASSERT_TRUE(fd.Render(&buf).ok());  // a route picks with the last projection
+  fv::KeyEvent a;
+  a.key = 'A';
+  ASSERT_TRUE(desk.OverlayKeyDown(a));
+  ASSERT_TRUE(desk.OverlayPointerDown(200, 150));
+  desk.OverlayPointerUp(200, 150);
+  // Add mode stays armed for the second click.
+  ASSERT_TRUE(desk.OverlayPointerDown(300, 100));
+  desk.OverlayPointerUp(300, 100);
+  ASSERT_EQ(route->waypoints().size(), 2u);
+  EXPECT_NEAR(route->waypoints()[0].position.lat, 32.6, 1e-3);
+  EXPECT_NEAR(route->waypoints()[0].position.lon, -80.0, 1e-3);
+  EXPECT_GT(route->waypoints()[1].position.lat, 32.6);
+  EXPECT_GT(route->waypoints()[1].position.lon, -80.0);
+
+  // While Add is armed the status bar says what a click does.
+  ASSERT_TRUE(fd.Render(&buf).ok());
+  desk.OverlayHover(200, 150);
+  EXPECT_EQ(desk.CurrentStatus().feedback, "Add waypoint");
+  fv::KeyEvent escape;
+  escape.key = fv::Key::kEscape;
+  ASSERT_TRUE(desk.OverlayKeyDown(escape));
+
+  // Hovering a waypoint puts its hint in the status bar; open map clears it.
+  desk.OverlayHover(200, 150);
+  const std::string label = route->waypoints()[0].label;
+  EXPECT_NE(desk.CurrentStatus().feedback.find("waypoint " + label), std::string::npos)
+      << desk.CurrentStatus().feedback;
+  desk.OverlayHover(20, 280);
+  EXPECT_EQ(desk.CurrentStatus().feedback, "");
+  desk.OverlayHover(200, 150);
+  desk.OverlayHoverExit();
+  EXPECT_EQ(desk.CurrentStatus().feedback, "");
+}
+
+TEST_F(DeskTest, RoutesShareThePlannerFromTheSettings) {
+  FakeDesk fd(64, 64);
+  EXPECT_EQ(fd.desk().route_planner(), nullptr);
+  ASSERT_TRUE(fd.Run({std::string("overlay.new.") + fv::RouteOverlay::kTypeId}).ok());
+  auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
+      fd.desk().overlays().FirstOfType(fv::RouteOverlay::kTypeId));
+  ASSERT_NE(route, nullptr);
+  EXPECT_EQ(route->planner(), nullptr);
+  fd.settings().Set("routing.graph", "/nonexistent/kiawah.fvroad");
+  fd.desk().SettingsLoaded();
+  ASSERT_NE(fd.desk().route_planner(), nullptr);
+  EXPECT_EQ(route->planner(), fd.desk().route_planner());
+}
+
+TEST_F(DeskTest, ANewRouteTakesTheConfiguredProfile) {
+  FakeDesk fd(64, 64);
+  fd.settings().Set("routing.profile", "bicycle");
+  fd.desk().SettingsLoaded();
+  ASSERT_TRUE(fd.Run({std::string("overlay.new.") + fv::RouteOverlay::kTypeId}).ok());
+  auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
+      fd.desk().overlays().FirstOfType(fv::RouteOverlay::kTypeId));
+  ASSERT_NE(route, nullptr);
+  EXPECT_EQ("bicycle", route->profile());
+  EXPECT_FALSE(route->is_dirty());
+}
+
 // MARK: Reachability and shortcuts
 
 /// Every command id in `items` and their submenus.
@@ -540,6 +733,10 @@ TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusOrToolbar) {
   std::set<std::string> reachable;
   for (const Menu& m : desk.menus().Menus()) CollectIds(m.items, &reachable);
   CollectIds(desk.menus().Toolbar(), &reachable);
+  // The feature editor's palette runs these through its own editor.tool ids.
+  for (const char* id : {"overlay.attribute_table", "overlay.edit_feature", "overlay.style",
+                         "overlay.style_feature", "overlay.fields"})
+    reachable.insert(id);
   for (const std::string& id : desk.commands().Ids())
     EXPECT_TRUE(reachable.count(id)) << id << " is in no menu and not on the toolbar";
 }
@@ -557,8 +754,8 @@ TEST_F(DeskTest, TheToolbarShowsOnlyCommandsWithIcons) {
   ASSERT_TRUE(desk.types().Register(std::move(d)).ok());
   desk.Refresh();
   EXPECT_EQ(Ids(desk.menus().Toolbar()),
-            (std::vector<std::string>{"map.zoom_in", "map.zoom_out", "map.recenter",
-                                      "editor.mode.test.sketch"}));
+            (std::vector<std::string>{"editor.mode.fv.points", "editor.mode.fv.features",
+                                      "editor.mode.fv.route", "editor.mode.test.sketch"}));
 
   // While editing, the tools with icons follow; "Locked" and "More ▸ Inner"
   // have none and stay in the Sketch menu.
@@ -584,7 +781,9 @@ TEST_F(DeskTest, ShortcutsFollowThePlatformConventions) {
   EXPECT_EQ(bound("Primary+S"), "file.save");
   EXPECT_EQ(bound("Primary+Shift+S"), "file.save_as");
   EXPECT_EQ(bound("Primary+W"), "file.close");
-  EXPECT_EQ(bound("Primary+O"), "overlay.open");
+  EXPECT_EQ(bound("Primary+Shift+O"), "overlay.open");
+  for (const char* arrow : {"Up", "Down", "Left", "Right"})
+    EXPECT_EQ(bound(arrow).rfind("map.pan.", 0), 0u) << arrow;
   EXPECT_EQ(bound("Primary+Q"), "app.quit");
   EXPECT_EQ(bound("Primary+="), "map.zoom_in");
   EXPECT_EQ(bound("Primary+-"), "map.zoom_out");
@@ -594,6 +793,59 @@ TEST_F(DeskTest, ShortcutsFollowThePlatformConventions) {
   for (const char* reserved :
        {"Primary+H", "Primary+Alt+H", "Primary+M", "Primary+,", "Primary+`", "PageUp", "PageDown"})
     EXPECT_EQ(bound(reserved), "") << reserved;
+}
+
+TEST_F(DeskTest, CmdRAndCmdOChooseRasterAndOpenStreetMap) {
+  StubFrames()["osm"] = {Frame("kiawah", GeoRect{{32.5, -80.2}, {32.7, -80.0}}, "kiawah", 0)};
+  fv::FormatFactories f;
+  f.format_key = "osm";
+  f.make_enumerator = [] { return std::make_shared<StubEnumerator>("osm"); };
+  ASSERT_TRUE(fv::RegisterFormat(f).ok());
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(":memory:").ok());
+  AddSource(*cat, "cadrg");
+  AddSource(*cat, "osm");
+  desk.SetCatalog(cat);
+  fv::desk::Shortcut r, o;
+  ASSERT_TRUE(fv::desk::Shortcut::Parse("Primary+R", &r));
+  ASSERT_TRUE(fv::desk::Shortcut::Parse("Primary+O", &o));
+  ASSERT_NE(desk.commands().FindByShortcut(r), nullptr);
+  ASSERT_NE(desk.commands().FindByShortcut(o), nullptr);
+  EXPECT_EQ(desk.commands().FindByShortcut(r)->id, "map.group.raster");
+  EXPECT_EQ(desk.commands().FindByShortcut(o)->id, "map.group.osm");
+  EXPECT_TRUE(desk.commands().warnings().empty()) << desk.commands().warnings().front();
+}
+
+TEST_F(DeskTest, AnArrowPansHalfAScreen) {
+  FakeDesk fd(200, 100);
+  fv::desk::Desk& desk = fd.desk();
+  desk.GoTo(GeoPoint{0, 0}, 1e6);
+  const fv::view::Viewport v = desk.map_view().View();
+  const fv::view::PointF c = v.SurfaceCenter();
+  const GeoPoint east_edge = v.GeoAt(fv::view::PointF{c.x + v.WidthPt() / 2, c.y});
+  const GeoPoint north_edge = v.GeoAt(fv::view::PointF{c.x, c.y - v.HeightPt() / 2});
+
+  ASSERT_TRUE(desk.Execute("map.pan.east").ok());
+  EXPECT_NEAR(desk.map_view().View().Center().lon, east_edge.lon, 1e-6);
+  EXPECT_NEAR(desk.map_view().View().Center().lat, 0, 1e-6);
+
+  ASSERT_TRUE(desk.Execute("map.pan.west").ok());
+  ASSERT_TRUE(desk.Execute("map.pan.north").ok());
+  EXPECT_NEAR(desk.map_view().View().Center().lat, north_edge.lat, 1e-6);
+  EXPECT_NEAR(desk.map_view().View().Center().lon, 0, 1e-6);
+}
+
+TEST_F(DeskTest, FeedbackReachesTheStatusBarAndElevationNeedsDted) {
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  desk.SetFeedback("Click to add a point");
+  EXPECT_EQ(desk.CurrentStatus().feedback, "Click to add a point");
+  desk.SetFeedback("");
+  EXPECT_TRUE(desk.CurrentStatus().feedback.empty());
+  double feet = 0;
+  EXPECT_FALSE(desk.ElevationFeetAt(GeoPoint{32.6, -80.1}, &feet));
 }
 
 // MARK: Building the catalog

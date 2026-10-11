@@ -186,27 +186,126 @@ TEST(OsmStyleBands, NoScaleThinsNothing) {
 // 2. The declared subset, enforced
 // ---------------------------------------------------------------------------
 
-TEST(OsmStyleLoad, RejectsExpressionFilters) {
-  fv::OsmStyleEngine e;
-  std::string err;
-  const fv::Status s = e.LoadText(
-      Wrap(R"({"id":"roads","type":"line","source-layer":"transportation",
-               "filter":["match",["get","class"],["motorway"],true,false],
-               "paint":{"line-color":"#000"}})"),
-      &err);
-  EXPECT_EQ(s.code, fv::kUnsupported);
-  EXPECT_NE(err.find("roads"), std::string::npos) << err;
-  EXPECT_NE(err.find("match"), std::string::npos) << err;
+TEST(OsmStyleExpression, AnExpressionFilterSelectsLikeItsLegacyTwin) {
+  fv::OsmStyleEngine expr, legacy;
+  ASSERT_TRUE(expr.LoadText(Wrap(
+      R"({"id":"roads","type":"line","source-layer":"transportation",
+          "filter":["match",["get","class"],["motorway","trunk"],true,false],
+          "paint":{"line-color":"#000"}})")).ok());
+  ASSERT_TRUE(legacy.LoadText(Wrap(
+      R"({"id":"roads","type":"line","source-layer":"transportation",
+          "filter":["in","class","motorway","trunk"],
+          "paint":{"line-color":"#000"}})")).ok());
+  EXPECT_EQ(Info(expr, "roads")->filter,
+            R"(["match",["get","class"],["motorway","trunk"],true,false])");
+  fv::StyleContext ctx;
+  for (const char* klass : {"motorway", "trunk", "primary"}) {
+    std::vector<fv::StyleResult> a, b;
+    ASSERT_TRUE(expr.Style(Road(klass), ctx, &a).ok());
+    ASSERT_TRUE(legacy.Style(Road(klass), ctx, &b).ok());
+    EXPECT_EQ(a.size(), b.size()) << klass;
+  }
 }
 
-TEST(OsmStyleLoad, RejectsInterpolateExpressions) {
+TEST(OsmStyleExpression, ComparisonFiltersInExpressionSyntax) {
   fv::OsmStyleEngine e;
-  const fv::Status s = e.LoadText(
-      Wrap(R"({"id":"roads","type":"line","source-layer":"transportation",
-               "paint":{"line-color":"#000",
-                        "line-width":["interpolate",["linear"],["zoom"],10,1,16,8]}})"));
-  EXPECT_EQ(s.code, fv::kUnsupported);
-  EXPECT_NE(s.message.find("line-width"), std::string::npos) << s.message;
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"roads","type":"line","source-layer":"transportation",
+          "filter":["all",["==",["geometry-type"],"LineString"],
+                          ["!=",["get","class"],"primary"]],
+          "paint":{"line-color":"#000"}})")).ok());
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Road("motorway"), ctx, &out).ok());
+  EXPECT_EQ(out.size(), 1u);
+  out.clear();
+  ASSERT_TRUE(e.Style(Road("primary"), ctx, &out).ok());
+  EXPECT_TRUE(out.empty());
+}
+
+TEST(OsmStyleExpression, InterpolateWidthsMatchTheLegacyZoomFunction) {
+  fv::OsmStyleEngine expr, legacy;
+  ASSERT_TRUE(expr.LoadText(Wrap(
+      R"({"id":"r","type":"line","source-layer":"transportation",
+          "paint":{"line-color":"#000",
+                   "line-width":["interpolate",["exponential",1.4],["zoom"],10,2,20,22]}})")).ok());
+  ASSERT_TRUE(legacy.LoadText(Wrap(
+      R"({"id":"r","type":"line","source-layer":"transportation",
+          "paint":{"line-color":"#000",
+                   "line-width":{"base":1.4,"stops":[[10,2],[20,22]]}}})")).ok());
+  fv::StyleContext ctx;
+  for (double z : {4.0, 10.0, 13.0, 16.5, 20.0, 23.0}) {
+    ctx.scale_denominator = fv::webmerc::ScaleForZoomExact(z, 0.0, 0.25);
+    std::vector<fv::StyleResult> a, b;
+    ASSERT_TRUE(expr.Style(Road("motorway"), ctx, &a).ok());
+    ASSERT_TRUE(legacy.Style(Road("motorway"), ctx, &b).ok());
+    ASSERT_EQ(a.size(), 1u);
+    ASSERT_EQ(b.size(), 1u);
+    EXPECT_EQ(a[0].stroke.pen.width, b[0].stroke.pen.width) << z;
+  }
+}
+
+TEST(OsmStyleExpression, DataDrivenColourAndWidth) {
+  fv::OsmStyleEngine e;
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"r","type":"line","source-layer":"transportation",
+          "paint":{"line-color":["match",["get","class"],"motorway","#ff0000","#0000ff"],
+                   "line-width":["case",["==",["get","class"],"motorway"],6,2]}})")).ok());
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Road("motorway"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].stroke.pen.color.r, 255);
+  EXPECT_EQ(out[0].stroke.pen.width, 6);
+  out.clear();
+  ASSERT_TRUE(e.Style(Road("primary"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].stroke.pen.color.b, 255);
+  EXPECT_EQ(out[0].stroke.pen.width, 2);
+}
+
+TEST(OsmStyleExpression, ColourStopsInterpolateInBothForms) {
+  for (const char* color :
+       {R"({"stops":[[10,"#000000"],[20,"#c86432"]]})",
+        R"(["interpolate",["linear"],["zoom"],10,"#000000",20,"#c86432"])"}) {
+    fv::OsmStyleEngine e;
+    e.SetZoomOverride(15.0);
+    ASSERT_TRUE(e.LoadText(Wrap(
+        std::string(R"({"id":"r","type":"line","source-layer":"transportation","paint":{"line-color":)") +
+        color + "}}")).ok()) << color;
+    fv::StyleContext ctx;
+    std::vector<fv::StyleResult> out;
+    ASSERT_TRUE(e.Style(Road("motorway"), ctx, &out).ok());
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].stroke.pen.color.r, 100) << color;
+    EXPECT_EQ(out[0].stroke.pen.color.g, 50) << color;
+  }
+}
+
+TEST(OsmStyleExpression, TextFieldAndIconImageTakeExpressions) {
+  fv::OsmStyleEngine e;
+  ASSERT_TRUE(e.LoadText(Wrap(
+      R"({"id":"t","type":"symbol","source-layer":"transportation",
+          "layout":{"text-field":["concat",["upcase",["get","class"]]," road"]}})")).ok());
+  e.SetDrawLabels(true);
+  fv::StyleContext ctx;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Road("primary"), ctx, &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].label.text, "PRIMARY road");
+  // An expression that yields nothing is a skipped label, like a template.
+  fv::OsmStyleEngine blank;
+  ASSERT_TRUE(blank.LoadText(Wrap(
+      R"({"id":"t","type":"symbol","source-layer":"transportation",
+          "layout":{"text-field":["get","name"]}})")).ok());
+  blank.SetDrawLabels(true);
+  out.clear();
+  ASSERT_TRUE(blank.Style(Road("primary"), ctx, &out).ok());
+  EXPECT_TRUE(out.empty());
+  EXPECT_EQ(blank.empty_labels(), 1u);
+  EXPECT_TRUE(blank.LoadText(Wrap(
+      R"({"id":"b","type":"fill","source-layer":"building",
+          "paint":{"fill-pattern":["get","kind"]}})")).ok());
 }
 
 TEST(OsmStyleLoad, RejectsDataDrivenFunctions) {
@@ -224,14 +323,17 @@ TEST(OsmStyleLoad, RejectsUnsupportedLayerTypesAndExpressions) {
   EXPECT_EQ(e.LoadText(Wrap(R"({"id":"h","type":"hillshade","source-layer":"x"})"))
                 .code,
             fv::kUnsupported);
+  std::string err;
   EXPECT_EQ(e.LoadText(Wrap(R"({"id":"t","type":"symbol","source-layer":"place",
-                                "layout":{"text-field":["get","name"]}})"))
+                                "layout":{"text-field":["format",["get","name"],{}]}})"),
+                       &err)
                 .code,
             fv::kUnsupported);
-  // A pattern NAME is a constant or a token template, never an expression —
-  // the same rule every other property here follows.
-  EXPECT_EQ(e.LoadText(Wrap(R"({"id":"b","type":"fill","source-layer":"building",
-                                "paint":{"fill-pattern":["get","kind"]}})"))
+  EXPECT_NE(err.find("'t'"), std::string::npos) << err;
+  EXPECT_NE(err.find("format"), std::string::npos) << err;
+  EXPECT_EQ(e.LoadText(Wrap(R"({"id":"r","type":"line","source-layer":"transportation",
+                                "paint":{"line-width":["interpolate",["cubic-bezier",0,0,1,1],
+                                                       ["zoom"],1,1,2,2]}})"))
                 .code,
             fv::kUnsupported);
 }

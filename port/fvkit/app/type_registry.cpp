@@ -8,6 +8,7 @@
 #include <cctype>
 
 #include "fvkit/overlay/contour_overlay.h"
+#include "fvkit/overlay/feature_overlay.h"
 #include "fvkit/overlay/grid.h"
 #include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
@@ -76,6 +77,11 @@ const OverlayTypeDesc* OverlayTypeRegistry::FindByExtension(
     if (!d->file) continue;
     if (NormalizeExt(d->file->default_extension) == want) return d.get();
   }
+  for (const auto& d : order_) {
+    if (!d->file) continue;
+    for (const std::string& e : d->file->extra_extensions)
+      if (NormalizeExt(e) == want) return d.get();
+  }
   return nullptr;
 }
 
@@ -135,6 +141,25 @@ Status RegisterBuiltinOverlayTypes(OverlayTypeRegistry& registry) {
   points.file = std::move(file);
   points.factory = [] { return std::make_shared<PointOverlay>(); };
   s = registry.Register(std::move(points));
+  if (!s.ok()) return s;
+
+  // GeoPackage and GeoJSON feature layers. Under the point sets: a point set
+  // is usually what the user is working on, a feature layer the reference.
+  OverlayTypeDesc features;
+  features.id = FeatureOverlay::kTypeId;
+  features.display_name = "Feature Layer";
+  features.icon = "features";
+  features.default_display_order = 940;
+  FileTypeDesc feature_file;
+  feature_file.default_extension = FeatureOverlay::kExtension;
+  feature_file.extra_extensions = {FeatureOverlay::kGeoJsonExtension};
+  feature_file.open_filters = {{"Feature Layers (*.gpkg, *.geojson)", "*.gpkg;*.geojson"},
+                               {"GeoPackage (*.gpkg)", "*.gpkg"},
+                               {"GeoJSON (*.geojson)", "*.geojson"}};
+  feature_file.save_filters = {{"GeoPackage (*.gpkg)", "*.gpkg"}, {"GeoJSON (*.geojson)", "*.geojson"}};
+  features.file = std::move(feature_file);
+  features.factory = [] { return std::make_shared<FeatureOverlay>(); };
+  s = registry.Register(std::move(features));
   if (!s.ok()) return s;
 
   // Contour lines (plan C2). STATIC -- there is one terrain and it has no

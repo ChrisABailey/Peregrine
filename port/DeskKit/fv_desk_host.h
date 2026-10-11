@@ -53,12 +53,25 @@ namespace desk {
 struct HostTick {
   bool new_frame = false;        ///< a newer frame is available
   bool redraw = false;           ///< the widget should repaint
-  bool status_changed = false;   ///< the status bar text changed
+  bool status_changed = false;   ///< the status bar text or the hover tool tip changed
   bool menus_changed = false;    ///< rebuild the menu bar and toolbar
   bool catalog_changed = false;  ///< a different catalog file is open
   bool job_changed = false;      ///< a background job started, progressed or ended
   bool options_requested = false;  ///< show an options dialog; see TakeOptionsRequest
   bool sources_requested = false;  ///< show Map Data Sources; see TakeSourcesRequest
+  bool profile_requested = false;  ///< show the route profile; see TakeRouteProfileRequest
+  bool profile_changed = false;    ///< the route profile was re-sampled; lay it out again
+  bool layers_requested = false;   ///< show the layers panel; see TakeLayersRequest
+  bool layers_changed = false;     ///< the layer rows changed; reload the panel
+  bool form_requested = false;     ///< show the feature form; see TakeFeatureFormRequest
+  bool table_requested = false;    ///< show the attribute table; see TakeAttributeTableRequest
+  bool style_requested = false;    ///< show the style dialog; see TakeLayerStyleRequest
+  bool fields_requested = false;   ///< show Layer Fields; see TakeLayerFieldsRequest
+  bool new_layer_requested = false;  ///< show New Layer; see TakeNewLayerRequest
+  /// A feature dialog (form, table, style, fields, new layer) opened, closed
+  /// or reloaded, or the table's selection moved; re-read them (a closed one
+  /// reads as not open).
+  bool features_changed = false;
 };
 
 /// Shortcut modifier bits (`fv::desk::Modifier`). Primary is Command on
@@ -157,6 +170,12 @@ struct FramePlacement {
   bool valid = false;
 };
 
+/// The route profile's plot box, in points from the window's top-left.
+struct HostChartBox {
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  bool valid = false;  ///< false: draw only `RouteProfileMessage()`, centred
+};
+
 class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost {
  public:
   /// A host with an empty catalog and a reference count of one. Registers
@@ -172,6 +191,10 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// empty string on success, else the error message.
   std::string OpenCatalog(const std::string& path);
   std::string CatalogPath() const;
+  /// The file name the window title shows: the current overlay's, else the
+  /// topmost file overlay's; "unnamed.<ext>" before a first save; empty when
+  /// no file overlay is open.
+  std::string DocumentName() const;
   /// Moves the camera and chooses the product there (`Desk::GoTo`).
   void GoTo(double lat, double lon, double scale_denom);
   double CenterLat() const;
@@ -179,6 +202,11 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   double ScaleDenom() const;
   /// Executes a DeskKit command by id; returns the error message or "".
   std::string Execute(const std::string& command_id);
+  /// True when an overlay type opens `path` by its extension.
+  bool OpensAsOverlay(const std::string& path) const;
+  /// Opens an overlay file by its extension (`OverlaySession::OpenFile`).
+  /// Returns the error message or ""; the error is also queued for `TakeError`.
+  std::string OpenOverlayFile(const std::string& path);
   /// The next error the core reported through the shell, or "" when none.
   std::string TakeError();
   /// The next informational message, or "" when none.
@@ -259,6 +287,266 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// Removes all coverage and rescans every listed directory as a background job.
   std::string GenerateCoverage();
 
+  // MARK: Layers panel
+
+  /// True once after the core asked to show the layers panel (Overlay ▸ Layers…).
+  bool TakeLayersRequest();
+  /// Rows top of the stack first, as of the last `Tick` or layer change
+  /// (`Desk::layers()`). Out-of-range rows read as empty.
+  int LayerCount() const;
+  std::string LayerName(int row) const;
+  std::string LayerTypeName(int row) const;
+  std::string LayerIcon(int row) const;
+  bool LayerVisible(int row) const;
+  bool LayerHasOpacity(int row) const;  ///< false: show no opacity control
+  int LayerOpacity(int row) const;      ///< 0..100
+  bool LayerCurrent(int row) const;
+  bool LayerDirty(int row) const;
+  /// Each returns the error message, or "", and repaints.
+  std::string SetLayerVisible(int row, bool visible);
+  std::string SetLayerOpacity(int row, int percent);
+  std::string MoveLayer(int from, int to);
+  std::string SelectLayer(int row);
+
+  // MARK: Feature form
+
+  /// True once after the core asked to show the feature form (Edit Feature…,
+  /// Edit Point…, a table row).
+  bool TakeFeatureFormRequest();
+  bool FeatureFormOpen() const;
+  std::string FeatureFormTitle() const;
+  /// Controls in form order. Out-of-range indexes read as empty.
+  int FormFieldCount() const;
+  /// A `fv::desk::FormControl` value: 0 text, 1 multi-line, 2 integer,
+  /// 3 number, 4 check box, 5 date, 6 date and time, 7 date range, 8 choice,
+  /// 9 phone, 10 URL, 11 email, 12 read-only.
+  int FormFieldControl(int i) const;
+  std::string FormFieldTitle(int i) const;
+  std::string FormFieldDescription(int i) const;
+  std::string FormFieldUnit(int i) const;
+  bool FormFieldRequired(int i) const;
+  int FormFieldChoiceCount(int i) const;
+  std::string FormFieldChoice(int i, int choice) const;
+  std::string FormFieldText(int i) const;
+  std::string FormFieldEndText(int i) const;  ///< a date range's end
+  /// The last `ValidateFeatureForm` or apply's complaint about this control; "".
+  std::string FormFieldError(int i) const;
+  /// tel:, mailto: or a web URL for the control's text; "" when it has no action.
+  std::string FormFieldActionUrl(int i) const;
+  /// Each returns the error message, or "".
+  std::string SetFormFieldText(int i, const std::string& text);
+  std::string SetFormFieldEndText(int i, const std::string& text);
+  bool FeatureFormDirty() const;
+  std::string ValidateFeatureForm();
+  /// Writes the form to the layer and repaints; the form stays open.
+  std::string ApplyFeatureForm();
+  std::string RevertFeatureForm();
+  void CloseFeatureForm();
+
+  // MARK: Attribute table
+
+  /// True once after the core asked to show the attribute table.
+  bool TakeAttributeTableRequest();
+  bool AttributeTableOpen() const;
+  std::string AttributeTableTitle() const;
+  int TableColumnCount() const;
+  std::string TableColumnTitle(int column) const;
+  bool TableColumnNumeric(int column) const;  ///< align right
+  int TableRowCount() const;
+  std::string TableCell(int row, int column) const;
+  /// `column` -1 sorts by feature id.
+  void SortTable(int column, bool ascending);
+  int TableSortColumn() const;
+  bool TableSortAscending() const;
+  void SetTableFilter(const std::string& text);
+  /// Re-reads the layer, for edits made outside the form (drags, undo).
+  std::string ReloadAttributeTable();
+  /// Selects the row's feature on the map. Returns the error message, or "".
+  std::string SelectTableRow(int row);
+  /// The row of the selected feature; -1 for none.
+  int SelectedTableRow() const;
+  /// Opens the feature form on the row's feature.
+  std::string EditTableRow(int row);
+  void CloseAttributeTable();
+
+  // MARK: Layer style
+
+  /// True once after the core asked to show the style dialog (Layer Style…,
+  /// Style This Feature…).
+  bool TakeLayerStyleRequest();
+  bool LayerStyleOpen() const;
+  std::string LayerStyleTitle() const;
+  /// True when the dialog styles one feature: one entry, no renderer controls.
+  bool LayerStyleIsFeature() const;
+  bool LayerStyleDirty() const;
+  /// 0 single, 1 categorised, 2 graduated.
+  int StyleRenderer() const;
+  /// Each setter returns the error message, or "".
+  std::string SetStyleRenderer(int renderer);
+  /// The fields the current renderer can classify by.
+  int StyleFieldCount() const;
+  std::string StyleFieldName(int i) const;
+  std::string StyleFieldTitle(int i) const;
+  std::string StyleField() const;
+  std::string SetStyleField(const std::string& name);
+  /// Graduated options: class count, mode (0 equal interval, 1 quantile),
+  /// vary (0 colour ramp, 1 size).
+  int StyleClassCount() const;
+  int StyleClassMode() const;
+  int StyleClassVary() const;
+  /// Sets the graduated options (ignored for categorised) and reclassifies.
+  std::string ClassifyStyle(int classes, int mode, int vary);
+  /// Legend rows: the classes, then "Other"; or the one symbol.
+  int StyleEntryCount() const;
+  bool StyleEntryIsOther(int i) const;
+  std::string StyleEntryLabel(int i) const;
+  /// A category value or class lower bound; "" for other rows.
+  std::string StyleEntryValue(int i) const;
+  std::string SetStyleEntryLabel(int i, const std::string& label);
+  std::string SetStyleEntryValue(int i, const std::string& value);
+  std::string AddStyleEntry();
+  std::string RemoveStyleEntry(int i);
+  /// Copies entry `i`'s swatch, RGBA8 on opaque white, rows of `width * 4`
+  /// bytes, into `out`. False when nothing is open or it does not fit.
+  bool CopyStyleSwatch(int i, int width, int height, double scale, uint8_t* out, size_t capacity) const;
+  /// The symbol properties the layer's geometry shows, in dialog order;
+  /// `k` below indexes this list.
+  int StylePropertyCount() const;
+  /// 0 colour, 1 number (pixels), 2 choice.
+  int StylePropertyKind(int k) const;
+  std::string StylePropertyTitle(int k) const;
+  /// "Point", "Line" or "Area".
+  std::string StylePropertyGroup(int k) const;
+  int StylePropertyChoiceCount(int k) const;
+  std::string StylePropertyChoice(int k, int choice) const;
+  /// Entry `i`'s property `k`; a colour is 0xRRGGBBAA.
+  uint32_t StyleColor(int i, int k) const;
+  double StyleNumber(int i, int k) const;
+  int StyleChoice(int i, int k) const;
+  std::string SetStyleColor(int i, int k, uint32_t rgba);
+  std::string SetStyleNumber(int i, int k, double value);
+  std::string SetStyleChoice(int i, int k, int choice);
+  /// Whether the styled feature has its own symbol; false for a layer style.
+  bool StyleHasOverride() const;
+  std::string ClearStyleOverride();
+  /// Fields a label can show (any but blobs).
+  int StyleLabelFieldCount() const;
+  std::string StyleLabelFieldName(int i) const;
+  std::string StyleLabelFieldTitle(int i) const;
+  /// "" = no labels.
+  std::string StyleLabelField() const;
+  double StyleLabelSize() const;
+  std::string SetStyleLabel(const std::string& field, double size_px);
+  /// Writes the draft to the overlay and repaints; the dialog stays open.
+  std::string ApplyLayerStyle();
+  std::string RevertLayerStyle();
+  void CloseLayerStyle();
+
+  // MARK: Layer fields
+
+  /// True once after the core asked to show the Layer Fields dialog.
+  bool TakeLayerFieldsRequest();
+  bool LayerFieldsOpen() const;
+  std::string LayerFieldsTitle() const;
+  bool LayerFieldsDirty() const;
+  /// The storage types and roles the editor's pop-ups offer.
+  int FieldTypeCount() const;
+  std::string FieldTypeTitle(int k) const;
+  int FieldRoleCount() const;
+  std::string FieldRoleTitle(int k) const;
+  int LayerFieldCount() const;
+  std::string LayerFieldName(int i) const;
+  /// The field's name when the dialog opened; "" for a new field.
+  std::string LayerFieldOriginalName(int i) const;
+  /// Indexes into the type and role pop-ups; -1 for a type the editor does
+  /// not offer (binary).
+  int LayerFieldType(int i) const;
+  int LayerFieldRole(int i) const;
+  std::string LayerFieldTitle(int i) const;
+  std::string LayerFieldDescription(int i) const;
+  std::string LayerFieldUnit(int i) const;
+  bool LayerFieldRequired(int i) const;
+  /// The default, minimum and maximum as typed text; "" for none.
+  std::string LayerFieldDefault(int i) const;
+  std::string LayerFieldMin(int i) const;
+  std::string LayerFieldMax(int i) const;
+  /// One choice per line, "value" or "value = Label".
+  std::string LayerFieldChoices(int i) const;
+  /// The index of the new field.
+  int AddLayerField();
+  /// Each setter returns the error message, or "".
+  std::string RemoveLayerField(int i);
+  std::string MoveLayerField(int from, int to);
+  /// Replaces every property of field `i` at once, from the editor's controls.
+  std::string SetLayerField(int i, const std::string& name, int type, int role, const std::string& title,
+                            const std::string& description, const std::string& unit, bool required,
+                            const std::string& default_text, const std::string& min_text,
+                            const std::string& max_text, const std::string& choices);
+  /// What applying would lose, as sentences; "" when nothing. Ask before
+  /// `ApplyLayerFields` when it is not empty.
+  std::string LayerFieldsLoss() const;
+  std::string ApplyLayerFields();
+  std::string RevertLayerFields();
+  void CloseLayerFields();
+
+  // MARK: New layer
+
+  /// True once after the core asked to show the New Layer dialog.
+  bool TakeNewLayerRequest();
+  bool NewLayerOpen() const;
+  int NewLayerTemplateCount() const;
+  std::string NewLayerTemplateTitle(int i) const;
+  int NewLayerTemplate() const;
+  std::string SetNewLayerTemplate(int i);
+  int NewLayerGeometryCount() const;
+  std::string NewLayerGeometryTitle(int k) const;
+  int NewLayerGeometry() const;
+  std::string SetNewLayerGeometry(int k);
+  std::string NewLayerName() const;
+  void SetNewLayerName(const std::string& name);
+  /// 0 GeoPackage, 1 GeoJSON.
+  int NewLayerFormat() const;
+  std::string SetNewLayerFormat(int format);
+  std::string NewLayerPath() const;
+  void SetNewLayerPath(const std::string& path);
+  /// The template's fields, one "Title — Type" per line.
+  std::string NewLayerFieldSummary() const;
+  /// Writes the layer and opens it; the dialog closes on success.
+  std::string CreateNewLayer();
+  void CloseNewLayer();
+
+  // MARK: Route elevation profile
+
+  /// True once after the core asked to show the route profile window.
+  bool TakeRouteProfileRequest();
+  bool RouteProfileOpen() const;
+  /// The window closed; the core stops re-sampling.
+  void CloseRouteProfile();
+  std::string RouteProfileTitle() const;
+  /// The summary line: distance, min, max, gain, loss, sample count.
+  std::string RouteProfileStats() const;
+  /// Lays the chart out for a window of that size, in points; the accessors
+  /// below read that layout. Call again after `profile_changed` or a resize.
+  void LayoutRouteProfile(double width_pt, double height_pt);
+  HostChartBox RouteProfileBox() const;
+  /// Shown instead of the plot when there is nothing to draw.
+  std::string RouteProfileMessage() const;
+  /// Axis 0 is distance (x positions), 1 is elevation (y positions).
+  int RouteProfileTickCount(int axis) const;
+  double RouteProfileTickPos(int axis, int index) const;
+  std::string RouteProfileTickLabel(int axis, int index) const;
+  /// The terrain in runs of known ground; a gap in the data ends a run.
+  int RouteProfileRunCount() const;
+  int RouteProfileRunLength(int run) const;
+  double RouteProfileRunX(int run, int index) const;
+  double RouteProfileRunY(int run, int index) const;
+  /// x of each interior waypoint.
+  int RouteProfileVertexCount() const;
+  double RouteProfileVertexX(int index) const;
+  /// Distance, elevation and position of the sample nearest `x_pt` in the
+  /// last layout; "" outside the plot.
+  std::string RouteProfileReadout(double x_pt) const;
+
   // MARK: Settings
 
   /// Loads peregrine.ini (`fv::Settings::LoadDefault`) and the user settings
@@ -295,9 +583,26 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
               double mm_per_point);
   void Hover(double x, double y);
   void HoverExit();
+  /// The floating tip for what is under the pointer: an overlay's hit, else
+  /// the base map's named feature; empty for none.
+  std::string HoverToolTip() const;
+  /// While an overlay editor is active the press goes to the overlay stack
+  /// first; the drag and release follow it there when an overlay took it,
+  /// and pan the map otherwise.
   void PointerDown(double x, double y);
+  /// `shift` extends a feature selection (shift-click, shift-drag box).
+  void PointerDown(double x, double y, bool shift);
+  /// `clicks` is 2 for the second press of a double-click.
+  void PointerDown(double x, double y, bool shift, int clicks);
+  /// A press that pans the map whatever overlay is being edited (the space
+  /// bar held); the drag and release follow it.
+  void PanPointerDown(double x, double y);
   void PointerDrag(double x, double y);
   void PointerUp(double x, double y);
+  /// A key press for the overlay being edited. `key` is an fv::Key value
+  /// (Win32 virtual-key code; letters uppercase), `text` the character
+  /// typed or 0. False when nothing used it.
+  bool KeyDown(int key, uint32_t text, bool shift, bool ctrl, bool alt, bool meta);
   /// `precise` (trackpad) pans by (dx, dy); a wheel steps the ladder once per
   /// notch of `dy`, positive zooming in.
   void Scroll(double x, double y, double dx, double dy, bool precise);
@@ -336,6 +641,10 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string StatusProduct() const;   ///< "cadrg GNC", or "" when none
   std::string StatusMessage() const;   ///< e.g. the end of the raster ladder
   std::string StatusPosition() const;  ///< the position under the cursor, or ""
+  /// The terrain height under the cursor, "1,234 ft", or "" without DTED there.
+  std::string StatusElevation() const;
+  /// The left-hand slot: map and overlay feedback, then the map's own message.
+  std::string StatusFeedback() const;
 
  private:
   friend void ::fv_desk_host_retain(DeskHost*);

@@ -174,6 +174,7 @@ class PointOverlay : public Overlay,
                      public app::SnapTo,
                      public app::ContextMenu,
                      public app::EditTarget,
+                     public app::EditHint,
                      public app::SearchProvider {
  public:
   explicit PointOverlay(std::string name = "Points");
@@ -190,6 +191,8 @@ class PointOverlay : public Overlay,
   app::ContextMenu* AsContextMenu() override { return this; }
   app::EditTarget* AsEditTarget() override { return this; }
   app::SearchProvider* AsSearch() override { return this; }
+  app::EditHint* AsEditHint() override { return this; }
+  std::string EditHintAt(PixelPoint p) override;
 
   // --- drawing ------------------------------------------------------------
 

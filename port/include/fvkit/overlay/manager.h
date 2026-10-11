@@ -168,6 +168,10 @@ class OverlayManager {
   // Queries by type / document (A3 and A4 dispatch through these)
   // ---------------------------------------------------------------------
 
+  /// The topmost overlay below the top-most band: the one the user works in.
+  /// Null when the stack holds only top-most overlays or nothing.
+  std::shared_ptr<Overlay> TopOfWorking() const;
+
   // TOPMOST overlay of the type, so it is the one an editor adopts. Null if
   // there is none.
   std::shared_ptr<Overlay> FirstOfType(const std::string& type_id) const;
@@ -241,6 +245,16 @@ class OverlayManager {
   Status DrawAll(const MapProjection& proj, ICanvas& canvas,
                  const std::function<bool()>& interrupted = {});
 
+  /// While `focus` is set and `percent` < 100, every ordinary overlay except
+  /// `focus` draws faded to `percent` opacity, each run of them as one layer;
+  /// `focus` and the top-most band draw at full strength. Null turns it off.
+  void SetDimOthers(const Overlay* focus, int percent);
+  const Overlay* dim_focus() const { return dim_focus_; }
+  int dim_percent() const { return dim_percent_; }
+  /// The default font of the offscreen layer dimmed overlays draw into, so
+  /// their labels match the target canvas. Empty leaves it unset.
+  void SetOffscreenFont(std::string path) { offscreen_font_ = std::move(path); }
+
   // Three phases per event, in order (~ C_ovl_mgr::select, minus the
   // dynamic_casts and the re-entry flag):
   //
@@ -292,6 +306,9 @@ class OverlayManager {
   const app::OverlayTypeRegistry* registry_ = nullptr;
   std::unique_ptr<PersistenceBridge> bridge_;
   bool declutter_ = false;
+  const Overlay* dim_focus_ = nullptr;
+  int dim_percent_ = 100;
+  std::string offscreen_font_;
 };
 
 }  // namespace fv

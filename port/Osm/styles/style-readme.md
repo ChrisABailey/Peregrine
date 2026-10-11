@@ -131,39 +131,47 @@ GL draws it — and `text-offset` is then measured from there.
 
 ## Values: constants and zoom functions
 
-A property is either a **constant** or a **zoom function**:
+A colour or number property is a **constant**, a legacy **zoom function**, or an
+**expression**:
 
 ```json
 {"base": 1.2, "stops": [[12, 0.5], [16, 4]]}
+["interpolate", ["exponential", 1.2], ["zoom"], 12, 0.5, 16, 4]
+["match", ["get", "class"], ["motorway", "trunk"], "#e892a2", "#ffffff"]
 ```
 
-`base` is optional and defaults to 1 (linear).
+`base` is optional and defaults to 1 (linear). A zoom function's `type` may be `exponential`
+(the default) or `interval` (a step). Colour stops interpolate, as in GL.
 
-**Rejected:** expressions (`["interpolate", …]`, `["step", …]`, `["case", …]`, `["match", …]`,
-`["get", …]`, `["coalesce", …]`) and **data-driven functions** — a `"property"` member inside a
-function object. The message says which.
+The expression subset is the one `fvkit/style/expression.h` lists — `get`, `has`, `geometry-type`,
+`zoom`, comparisons, `all`/`any`/`!`, `in`, `match`, `case`, `coalesce`, `step`, `interpolate`
+(linear, exponential), `concat`, type conversions and arithmetic. The same evaluator reads feature
+layer styles.
 
-> **Colour stops STEP; numeric stops INTERPOLATE.** GL interpolates colour ramps too. Taking the
-> last stop at or below the zoom is a difference you can only see side by side, and it keeps
-> "interpolate" from quietly meaning two things.
+**Rejected:** `format`, `cubic-bezier` interpolation, any other operator outside the subset, and
+**data-driven functions** — a `"property"` member inside a function object (write it as an
+expression). The message names the layer, the property and the operator.
+
+> Attributes cross the vector seam as text, so `==` and `match` compare `"2"` equal to `2`, and
+> numeric operators read numeric text as numbers.
 
 ## Filters
 
-**Legacy filter syntax only:**
+Both syntaxes, told apart by GL's own rule:
 
 ```json
 ["all", ["==", "$type", "LineString"], ["in", "class", "motorway", "trunk"]]
+["all", ["==", ["geometry-type"], "LineString"], ["match", ["get", "class"], ["motorway", "trunk"], true, false]]
 ```
 
-Operators: `==` `!=` `<` `<=` `>` `>=` `in` `!in` `has` `!has` `all` `any` `none`, over a tag key
-or `$type` (`Point` / `LineString` / `Polygon`).
-
-Expression-syntax filters are **rejected**. GL still accepts legacy filters, so a style can be
-made loadable here by writing its filters the old way — usually a mechanical edit.
+Legacy operators: `==` `!=` `<` `<=` `>` `>=` `in` `!in` `has` `!has` `all` `any` `none`, over a
+tag key or `$type` (`Point` / `LineString` / `Polygon`). An expression filter is any boolean
+expression in the subset above.
 
 ## Token templates
 
-`text-field`, `icon-image` and `fill-pattern` are **token templates**, the `{tag}` form:
+`text-field`, `icon-image` and `fill-pattern` are **token templates**, the `{tag}` form, or an
+expression whose value is used as text:
 
 ```json
 "text-field": "{name:latin} {ref}"
@@ -174,7 +182,7 @@ Each `{…}` is replaced by the feature's value for that tag. A token that resol
 drops out; a template whose tokens *all* fail to resolve produces nothing at all, which is how a
 blank label is skipped rather than drawn empty. A template of pure literal text is always kept.
 
-The expression form of `text-field` (`["get", "name"]`) is rejected.
+An expression that yields null or an empty string draws nothing, like a template.
 
 ## Sprites
 
@@ -258,12 +266,10 @@ without looking at a picture.
 
 In rough order of how often it is what stops a style:
 
-1. Rewrite expression filters as legacy filters.
-2. Replace `["interpolate", …]` with `{"base": …, "stops": […]}`.
-3. Replace an expression `text-field` with the `{tag}` token form.
-4. Remove data-driven (`"property"`) functions, or split the layer by filter.
-5. Drop `raster`/`hillshade`/`fill-extrusion` layers.
-6. Point `sprite` at a local sheet, or set one with `SetSpriteBase`.
+1. Replace `["format", …]` text fields with `concat` or a `{tag}` template.
+2. Rewrite data-driven (`"property"`) functions as `match` or `interpolate` expressions.
+3. Drop `raster`/`hillshade`/`fill-extrusion` layers.
+4. Point `sprite` at a local sheet, or set one with `SetSpriteBase`.
 
 The failure message names the layer and the property every time, so this is a loop: load, read
 the message, fix that one thing.

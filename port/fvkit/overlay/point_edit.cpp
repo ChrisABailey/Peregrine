@@ -265,6 +265,16 @@ bool PointEditSession::OnMouseDown(const MouseEvent& e) {
   return true;
 }
 
+std::string PointEditSession::HintAt(PixelPoint p) const {
+  if (!has_edit_focus_) return std::string();
+  if (adding_) return "Add point";
+  const int64_t id = PointAt(p);
+  const MapPoint* mp = id != 0 ? overlay_.Find(id) : nullptr;
+  if (mp == nullptr) return std::string();
+  const std::string what = "point \u201C" + mp->name + "\u201D";
+  return (overlay_.selected() == id ? "Move " : "Select ") + what;
+}
+
 bool PointEditSession::OnMouseMove(const MouseEvent& e) {
   return DragTo(PixelPoint{e.x, e.y});
 }
@@ -292,11 +302,21 @@ bool PointEditSession::OnKeyDown(const KeyEvent& e) {
     }
     return false;  // nothing to cancel: let the app quit
   }
+  if (e.ctrl && e.key == 'Z') {
+    if (e.shift) {
+      Redo();
+    } else {
+      Undo();
+    }
+    return true;
+  }
+  // A chord is a menu shortcut (Cmd+A is not A), so it goes back to the shell.
+  if (e.ctrl || e.alt || e.meta) return false;
   if (e.key == 'A') {
     adding_ = !adding_;
     return true;
   }
-  if (e.key == 'U' || (e.ctrl && e.key == 'Z')) {
+  if (e.key == 'U') {
     if (e.shift) {
       Redo();
     } else {

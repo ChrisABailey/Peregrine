@@ -3,13 +3,15 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-/// fv_desk_map_options.h — the built-in Map ▸ Options pages.
+/// fv_desk_map_options.h — the built-in Map ▸ Options pages, and the Route
+/// page's routing section of Overlay ▸ Options.
 ///
 /// Each is a `MapOptionsSource` over a small `app::Properties` whose keys are
 /// the ones peregrine.ini already documents for the family, so a value set in
 /// the dialog and one written by hand are the same setting.
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -50,6 +52,11 @@ MapOptionsSource EncMapOptions();
 
 /// OpenStreetMap: `osm.style`.
 MapOptionsSource OsmMapOptions();
+
+/// The Route page's Routing section: `routing.graph`, `routing.rules` and
+/// `routing.profile`, which the shell's one planner reads rather than each
+/// route. `changed` runs after the new values are in the settings.
+MapOptionsSource RoutingOptions(std::function<void()> changed);
 
 /// Every built-in source, in no particular order (pages follow the map
 /// group table).

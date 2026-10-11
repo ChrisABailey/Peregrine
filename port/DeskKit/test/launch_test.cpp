@@ -32,6 +32,14 @@ TEST(LaunchOptions, ReadsEveryOption) {
   EXPECT_DOUBLE_EQ(o.center_scale, 250000);
 }
 
+TEST(LaunchOptions, RunCollectsCommandsInOrder) {
+  const LaunchOptions o = ParseLaunchOptions(
+      {"p", "--run", "overlay.toggle.fv.contour", "--catalog", "c", "--run", "map.recenter", "--run"});
+  ASSERT_EQ(o.run.size(), 2u);
+  EXPECT_EQ(o.run[0], "overlay.toggle.fv.contour");
+  EXPECT_EQ(o.run[1], "map.recenter");
+}
+
 TEST(LaunchOptions, CenterWithoutScaleKeepsTheScale) {
   const LaunchOptions o = ParseLaunchOptions({"p", "--center", "10,20"});
   ASSERT_TRUE(o.has_center);
@@ -59,3 +67,10 @@ TEST(LaunchOptions, LaterOptionWins) {
 }
 
 }  // namespace
+
+TEST(LaunchOptions, OpenCollectsFilesInOrder) {
+  const LaunchOptions o = ParseLaunchOptions({"p", "--open", "a.gpkg", "--open", "b.geojson", "--open"});
+  ASSERT_EQ(o.open.size(), 2u);
+  EXPECT_EQ(o.open[0], "a.gpkg");
+  EXPECT_EQ(o.open[1], "b.geojson");
+}

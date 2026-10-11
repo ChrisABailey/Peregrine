@@ -11,8 +11,9 @@ import PeregrineCore
 ///
 /// Command line: `--catalog <path>` opens a catalog at launch (otherwise the
 /// last one opened is reopened at the last view); `--center lat,lon[,scale]`
-/// moves the camera there; `--shot <png>` writes the window once the first
-/// frame is drawn, then quits.
+/// moves the camera there; `--open <file>` (repeatable) opens an overlay
+/// file; `--run <command-id>` (repeatable) executes a command after those;
+/// `--shot <png>` writes the window once the first frame is drawn, then quits.
 @main @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var main: MapWindowController!
@@ -38,14 +39,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let args = Arguments(CommandLine.arguments)
         let last = UserDefaults.standard.string(forKey: "LastCatalog")
+        var groupsRun = false
         if let path = args.catalog ?? last, FileManager.default.fileExists(atPath: path),
            main.openCatalog(URL(fileURLWithPath: path)) {
+            groupsRun = true
+            // A map group is chosen before the camera, so `--center`'s scale settles
+            // on that group's ladder rather than the one open at launch.
+            for id in args.run where id.hasPrefix("map.group.") { run(id) }
             if let c = args.center {
                 main.goTo(lat: c.lat, lon: c.lon, scale: c.scale)
             } else if path == last {
                 main.restoreView()
             }
         }
+        for path in args.open {
+            let error = String(main.host.OpenOverlayFile(std.string(path)))
+            if !error.isEmpty { FileHandle.standardError.write(Data("--open \(path): \(error)\n".utf8)) }
+        }
+        // After --open, so a command can act on the overlay just opened.
+        for id in args.run where !(groupsRun && id.hasPrefix("map.group.")) { run(id) }
         if let shot = args.shot {
             DispatchQueue.main.async { [main] in
                 do {
@@ -56,6 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
         }
+    }
+
+    /// Executes a `--run` command, reporting a failure on stderr.
+    private func run(_ id: String) {
+        let error = String(main.host.Execute(std.string(id)))
+        if !error.isEmpty { FileHandle.standardError.write(Data("--run \(id): \(error)\n".utf8)) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -73,7 +91,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-        main?.openCatalog(URL(fileURLWithPath: filename)) ?? false
+        guard let main else { return false }
+        if main.host.OpensAsOverlay(std.string(filename)) {
+            return String(main.host.OpenOverlayFile(std.string(filename))).isEmpty
+        }
+        return main.openCatalog(URL(fileURLWithPath: filename))
     }
 }
 
@@ -82,6 +104,8 @@ struct Arguments {
     var catalog: String?
     var shot: String?
     var center: (lat: Double, lon: Double, scale: Double?)?
+    var run: [String] = []
+    var open: [String] = []
 
     init(_ argv: [String]) {
         var it = argv.dropFirst().makeIterator()
@@ -89,6 +113,8 @@ struct Arguments {
             switch a {
             case "--catalog": catalog = it.next()
             case "--shot": shot = it.next()
+            case "--run": if let id = it.next() { run.append(id) }
+            case "--open": if let path = it.next() { open.append(path) }
             case "--center":
                 let v = (it.next() ?? "").split(separator: ",").compactMap { Double($0) }
                 if v.count >= 2 { center = (v[0], v[1], v.count > 2 ? v[2] : nil) }
