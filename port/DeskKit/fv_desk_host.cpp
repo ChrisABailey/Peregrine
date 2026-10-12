@@ -73,6 +73,7 @@ class HostShell : public DeskShell {
   bool fields_requested = false;
   bool new_layer_requested = false;
   bool properties_requested = false;
+  bool properties_tabs = false;
 
   HostRequestFn handler = nullptr;
   void* handler_context = nullptr;
@@ -154,6 +155,7 @@ class HostShell : public DeskShell {
   void ShowLayerFields() override { fields_requested = true; }
   void ShowNewLayer() override { new_layer_requested = true; }
   void ShowLayerProperties() override { properties_requested = true; }
+  bool HostsPropertiesTabs() const override { return properties_tabs; }
   void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
     options_shown[kOptionsMap] = std::move(model);
     options_requested = kOptionsMap;
@@ -1978,6 +1980,65 @@ std::string DeskHost::LayerPropertyKey(int i) const {
 std::string DeskHost::LayerPropertyValue(int i) const {
   const auto& rows = impl_->desk->properties();
   return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].value : std::string();
+}
+
+void DeskHost::SetPropertiesTabs(bool tabbed) { impl_->shell.properties_tabs = tabbed; }
+
+int DeskHost::LayerPropertiesTabCount() const { return static_cast<int>(impl_->desk->PropertiesTabs().size()); }
+
+int DeskHost::LayerPropertiesTabAt(int i) const {
+  const std::vector<PropertiesTab> tabs = impl_->desk->PropertiesTabs();
+  return i >= 0 && i < static_cast<int>(tabs.size()) ? static_cast<int>(tabs[i]) : -1;
+}
+
+std::string DeskHost::LayerPropertiesTabTitle(int i) const {
+  const int tab = LayerPropertiesTabAt(i);
+  return tab < 0 ? std::string() : PropertiesTabTitle(static_cast<PropertiesTab>(tab));
+}
+
+int DeskHost::LayerPropertiesTab() const { return static_cast<int>(impl_->desk->properties_tab()); }
+
+bool DeskHost::LayerPropertiesDirty() const { return impl_->desk->LayerPropertiesDirty(); }
+
+std::string DeskHost::ApplyLayerProperties() {
+  Impl::StackEdit edit(*impl_);
+  return impl_->desk->ApplyLayerProperties().message;
+}
+
+std::string DeskHost::RevertLayerProperties() { return impl_->desk->RevertLayerProperties().message; }
+
+void DeskHost::CloseLayerProperties() { impl_->desk->CloseLayerProperties(); }
+
+bool DeskHost::LayerGeneralOpen() const { return impl_->desk->layer_general() != nullptr; }
+
+namespace {
+
+LayerGeneral GeneralOf(const Desk& desk) {
+  const auto& m = desk.layer_general();
+  return m ? m->general() : LayerGeneral{};
+}
+
+}  // namespace
+
+std::string DeskHost::LayerGeneralName() const { return GeneralOf(*impl_->desk).name; }
+std::string DeskHost::LayerGeneralDescription() const { return GeneralOf(*impl_->desk).description; }
+std::string DeskHost::LayerGeneralCredits() const { return GeneralOf(*impl_->desk).credits; }
+std::string DeskHost::LayerGeneralMinScale() const { return FormatScale(GeneralOf(*impl_->desk).min_scale); }
+std::string DeskHost::LayerGeneralMaxScale() const { return FormatScale(GeneralOf(*impl_->desk).max_scale); }
+
+std::string DeskHost::SetLayerGeneral(const std::string& name, const std::string& description,
+                                      const std::string& credits, const std::string& min_scale,
+                                      const std::string& max_scale) {
+  const auto& m = impl_->desk->layer_general();
+  if (!m) return "no layer's Properties are open";
+  LayerGeneral g;
+  g.name = name;
+  g.description = description;
+  g.credits = credits;
+  Status s = ParseScale(min_scale, &g.min_scale);
+  if (s.ok()) s = ParseScale(max_scale, &g.max_scale);
+  if (s.ok()) s = m->Set(g);
+  return s.message;
 }
 
 // MARK: Map Data Sources dialog

@@ -436,11 +436,8 @@ void Desk::RegisterLayerManagerCommands() {
   };
 
   add("layers.properties", "Properties…", [this] {
-    Overlay* o = overlays_.current();
-    if (o == nullptr) return;
-    properties_title_ = "Layer Properties — " + o->Name();
-    properties_ = LayerProperties(overlays_, *o);
-    shell_.ShowLayerProperties();
+    const Status st = OpenLayerProperties(PropertiesTab::kGeneral);
+    if (!st.ok()) Report(st);
   }, has_current);
   add("layers.zoom_to", "Zoom to Layer", [this, zoom_box] {
     GeoRect box;
@@ -460,8 +457,10 @@ void Desk::RegisterLayerManagerCommands() {
     const std::vector<SourceRow> rows = sources_.Rows();
     const int at = CurrentSource(rows);
     if (at < 0) return;
+    CloseLayerProperties();
     properties_title_ = "Source Properties — " + rows[at].name;
     properties_ = SourceProperties(overlays_, rows[at]);
+    properties_tab_ = PropertiesTab::kSource;
     shell_.ShowLayerProperties();
   }, has_current);
   add("layers.source.show_all", "Show All Layers", [this] {
@@ -502,6 +501,121 @@ std::vector<std::shared_ptr<Overlay>> Desk::CurrentSourceOverlays() const {
   for (size_t i : rows[at].layers)
     if (std::shared_ptr<Overlay> o = overlays_.FindShared(layers[i].overlay)) out.push_back(std::move(o));
   return out;
+}
+
+Status Desk::OpenLayerProperties(PropertiesTab tab) {
+  const std::shared_ptr<Overlay> o = overlays_.FindShared(overlays_.current());
+  if (!o) return Status::Error(kNotFound, "no layer is selected");
+  if (properties_overlay_ != o.get()) CloseLayerProperties();
+  properties_title_ = "Layer Properties — " + o->Name();
+  properties_ = LayerProperties(overlays_, *o);
+  properties_tab_ = PropertiesTab::kSource;
+  if (shell_.HostsPropertiesTabs()) {
+    properties_overlay_ = o.get();
+    if (!general_) {
+      Status s = LayerGeneralModel::Open(o, &general_);
+      if (!s.ok()) return s;
+    }
+    const auto feature = std::dynamic_pointer_cast<FeatureOverlay>(o);
+    if (feature && feature->layer() != nullptr) {
+      if (!PropertiesOwnsStyle()) {
+        std::shared_ptr<LayerStyleModel> style;
+        Status s = LayerStyleModel::Open(feature, 0, "Layer Style — " + o->Name(), &style);
+        if (!s.ok()) return s;
+        style_ = std::move(style);
+      }
+      if (!PropertiesOwnsFields()) {
+        std::shared_ptr<LayerFieldsModel> fields;
+        Status s = LayerFieldsModel::Open(feature, "Layer Fields — " + o->Name(), &fields);
+        if (!s.ok()) return s;
+        fields_ = std::move(fields);
+      }
+    }
+    const std::vector<PropertiesTab> tabs = PropertiesTabs();
+    properties_tab_ = std::find(tabs.begin(), tabs.end(), tab) != tabs.end() ? tab : PropertiesTab::kGeneral;
+  }
+  ++feature_views_gen_;
+  shell_.ShowLayerProperties();
+  return Status::Ok();
+}
+
+std::vector<PropertiesTab> Desk::PropertiesTabs() const {
+  std::vector<PropertiesTab> tabs{PropertiesTab::kSource};
+  if (general_) tabs.push_back(PropertiesTab::kGeneral);
+  if (PropertiesOwnsStyle()) {
+    tabs.push_back(PropertiesTab::kSymbology);
+    tabs.push_back(PropertiesTab::kLabels);
+  }
+  if (PropertiesOwnsFields()) tabs.push_back(PropertiesTab::kFields);
+  return tabs;
+}
+
+bool Desk::PropertiesOwnsStyle() const {
+  return properties_overlay_ != nullptr && style_ && style_->overlay() == properties_overlay_ &&
+         style_->feature() == 0;
+}
+
+bool Desk::PropertiesOwnsFields() const {
+  return properties_overlay_ != nullptr && fields_ && fields_->overlay() == properties_overlay_;
+}
+
+void Desk::ReopenPropertiesStyle() {
+  const auto o = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(properties_overlay_));
+  std::shared_ptr<LayerStyleModel> style;
+  if (o && LayerStyleModel::Open(o, 0, "Layer Style — " + o->Name(), &style).ok()) style_ = std::move(style);
+  else style_.reset();
+}
+
+bool Desk::LayerPropertiesDirty() const {
+  return (general_ && general_->dirty()) || (PropertiesOwnsStyle() && style_->dirty()) ||
+         (PropertiesOwnsFields() && fields_->dirty());
+}
+
+Status Desk::ApplyLayerProperties() {
+  if (general_ && general_->dirty()) {
+    Status s = general_->Apply();
+    if (!s.ok()) return s;
+    const std::shared_ptr<Overlay> o = overlays_.FindShared(general_->overlay());
+    // A feature layer's file keeps these settings; other layers keep them in the workspace.
+    if (o && dynamic_cast<FeatureOverlay*>(o.get()) != nullptr && o->AsPersistence() != nullptr)
+      o->AsPersistence()->set_dirty(true);
+    if (o) {
+      properties_title_ = "Layer Properties — " + o->Name();
+      properties_ = LayerProperties(overlays_, *o);
+    }
+    ++layers_generation_;
+    ++feature_views_gen_;
+    shell_.RequestInvalidate();
+  }
+  if (PropertiesOwnsStyle() && style_->dirty()) {
+    Status s = ApplyLayerStyle();
+    if (!s.ok()) return s;
+  }
+  if (PropertiesOwnsFields() && fields_->dirty()) {
+    Status s = ApplyLayerFields();
+    if (!s.ok()) return s;
+  }
+  return Status::Ok();
+}
+
+Status Desk::RevertLayerProperties() {
+  Status first = Status::Ok();
+  auto keep = [&first](const Status& s) {
+    if (first.ok() && !s.ok()) first = s;
+  };
+  if (general_) keep(general_->Revert());
+  if (PropertiesOwnsStyle()) keep(style_->Revert());
+  if (PropertiesOwnsFields()) keep(fields_->Revert());
+  ++feature_views_gen_;
+  return first;
+}
+
+void Desk::CloseLayerProperties() {
+  if (PropertiesOwnsStyle()) style_.reset();
+  if (PropertiesOwnsFields()) fields_.reset();
+  general_.reset();
+  properties_overlay_ = nullptr;
+  ++feature_views_gen_;
 }
 
 void Desk::RegisterCatalogCommands() {
@@ -1104,6 +1218,7 @@ void Desk::CloseAttributeTable() {
 }
 
 void Desk::DropFeatureViews(const Overlay& overlay) {
+  if (properties_overlay_ == &overlay) CloseLayerProperties();
   if (form_ && form_->overlay() == &overlay) CloseFeatureForm();
   if (table_ && table_->overlay() == &overlay) CloseAttributeTable();
   if (style_ && style_->overlay() == &overlay) CloseLayerStyle();
@@ -1113,6 +1228,7 @@ void Desk::DropFeatureViews(const Overlay& overlay) {
 Status Desk::OpenLayerStyle() {
   const auto o = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(overlays_.current()));
   if (!o) return Status::Error(kNotFound, "the current overlay is not a feature layer");
+  if (shell_.HostsPropertiesTabs() && o->layer() != nullptr) return OpenLayerProperties(PropertiesTab::kSymbology);
   std::shared_ptr<LayerStyleModel> style;
   Status s = LayerStyleModel::Open(o, 0, "Layer Style — " + o->Name(), &style);
   if (!s.ok()) return s;
@@ -1157,6 +1273,7 @@ void Desk::CloseLayerStyle() {
 Status Desk::OpenLayerFields() {
   const auto o = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(overlays_.current()));
   if (!o) return Status::Error(kNotFound, "the current overlay is not a feature layer");
+  if (shell_.HostsPropertiesTabs() && o->layer() != nullptr) return OpenLayerProperties(PropertiesTab::kFields);
   std::shared_ptr<LayerFieldsModel> fields;
   Status s = LayerFieldsModel::Open(o, "Layer Fields — " + o->Name(), &fields);
   if (!s.ok()) return s;
@@ -1183,7 +1300,8 @@ Status Desk::ApplyLayerFields() {
   const std::shared_ptr<Overlay> o = overlays_.FindShared(id);
   if (o && o->AsPersistence() != nullptr) o->AsPersistence()->set_dirty(true);
   if (form_ && form_->overlay() == id) CloseFeatureForm();
-  if (style_ && style_->overlay() == id) CloseLayerStyle();
+  if (PropertiesOwnsStyle() && style_->overlay() == id) ReopenPropertiesStyle();
+  else if (style_ && style_->overlay() == id) CloseLayerStyle();
   if (table_ && table_->overlay() == id) {
     s = table_->Reload();
     if (!s.ok()) Warn("attribute table: " + s.message);

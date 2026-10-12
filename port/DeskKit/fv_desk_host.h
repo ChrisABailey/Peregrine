@@ -348,6 +348,41 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string LayerPropertySection(int i) const;
   std::string LayerPropertyKey(int i) const;
   std::string LayerPropertyValue(int i) const;
+  /// Declares that the shell's Properties dialog shows a layer's General,
+  /// Symbology, Labels and Fields tabs (`DeskShell::HostsPropertiesTabs`);
+  /// Layer Style… and Layer Fields… then open Properties at their tab. Off
+  /// until called.
+  void SetPropertiesTabs(bool tabbed);
+  /// The tabs Properties shows, in order, each a `fv::desk::PropertiesTab`:
+  /// 0 Source (the rows above), 1 General, 2 Symbology, 3 Labels, 4 Fields.
+  /// The style tabs read the layer style accessors, the Fields tab the layer
+  /// fields accessors. Out of range reads as -1 and "".
+  int LayerPropertiesTabCount() const;
+  int LayerPropertiesTabAt(int i) const;
+  std::string LayerPropertiesTabTitle(int i) const;
+  /// The tab to open at, a `fv::desk::PropertiesTab`.
+  int LayerPropertiesTab() const;
+  bool LayerPropertiesDirty() const;
+  /// Applies every tab with changes and repaints; ask about
+  /// `LayerFieldsLoss()` first. Returns the error message, or "".
+  std::string ApplyLayerProperties();
+  std::string RevertLayerProperties();
+  /// The dialog closed; its tabs' unapplied changes are dropped.
+  void CloseLayerProperties();
+  /// The General tab: false for a source or a shell without tabs.
+  bool LayerGeneralOpen() const;
+  std::string LayerGeneralName() const;
+  std::string LayerGeneralDescription() const;
+  std::string LayerGeneralCredits() const;
+  /// The scale range as "1:50,000"; "" for no limit. The minimum is the scale
+  /// zoomed furthest out at which the layer still draws, the maximum the
+  /// scale zoomed furthest in.
+  std::string LayerGeneralMinScale() const;
+  std::string LayerGeneralMaxScale() const;
+  /// Replaces the General draft, the scales as typed ("1:50,000", "50000",
+  /// "" for no limit). Returns the error message, or "".
+  std::string SetLayerGeneral(const std::string& name, const std::string& description, const std::string& credits,
+                              const std::string& min_scale, const std::string& max_scale);
 
   // MARK: Feature form
 
