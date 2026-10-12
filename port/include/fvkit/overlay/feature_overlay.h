@@ -96,17 +96,27 @@ class FeatureOverlay : public Overlay,
 
   /// An empty in-memory layer with no fields and any geometry.
   Status FileNew() override;
-  /// Opens a `.geojson` file, or the first feature table of a `.gpkg`, with
-  /// the style stored in it; a file without one, or with one that does not
-  /// read (logged), gets the default single style.
+  /// Opens a `.geojson` file, or a feature table of a `.gpkg` (the one the
+  /// spec names, `fvkit/app/source_spec.h`, else the first), with the style
+  /// stored in it; a file without one, or with one that does not read
+  /// (logged), gets the default single style. Overlays of one GeoPackage share
+  /// its open package, so their pending edits commit and revert together.
   Status FileOpen(const std::string& spec) override;
   /// Format 0 writes a GeoPackage (replacing any file at `spec`, except that
   /// saving to the open GeoPackage commits its pending edits); format 1
   /// writes GeoJSON. Either stores the style. The document is then reopened
-  /// from `spec`.
+  /// from `spec`. kInvalidArg for a layer of a file of several saved over
+  /// that file under its plain path, which would replace the other layers.
   Status FileSaveAs(const std::string& spec, int format_index) override;
   bool SupportsRevert() const override { return true; }
+  /// Discards the package's pending edits, every layer's, and reopens `spec`.
   Status Revert(const std::string& spec) override;
+
+  /// The feature tables of the GeoPackage at `path`, in file order; empty for
+  /// any other file. `FileTypeDesc::list_layers` for this type.
+  static Status ListLayers(const std::string& path, std::vector<std::string>* layers);
+  /// The GeoPackage the layer lives in; null for any other layer.
+  const std::shared_ptr<GeoPackage>& package() const { return package_; }
 
   /// The layer drawn; null before a file is opened or created.
   const std::shared_ptr<IEditableFeatureLayer>& layer() const { return layer_; }
@@ -170,6 +180,7 @@ class FeatureOverlay : public Overlay,
   std::string engine_json_;  ///< what `engine_` was loaded from
   std::string engine_font_;
   std::shared_ptr<GeoPackage> package_;  ///< set when `layer_` lives in a GeoPackage
+  std::string spec_layer_;               ///< the table the open spec named; empty for a whole file
   FeatureStyle style_;
   std::string label_font_;
   double display_scale_ = 1.0;

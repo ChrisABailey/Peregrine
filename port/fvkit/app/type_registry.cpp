@@ -157,6 +157,7 @@ Status RegisterBuiltinOverlayTypes(OverlayTypeRegistry& registry) {
                                {"GeoPackage (*.gpkg)", "*.gpkg"},
                                {"GeoJSON (*.geojson)", "*.geojson"}};
   feature_file.save_filters = {{"GeoPackage (*.gpkg)", "*.gpkg"}, {"GeoJSON (*.geojson)", "*.geojson"}};
+  feature_file.list_layers = FeatureOverlay::ListLayers;
   features.file = std::move(feature_file);
   features.factory = [] { return std::make_shared<FeatureOverlay>(); };
   s = registry.Register(std::move(features));

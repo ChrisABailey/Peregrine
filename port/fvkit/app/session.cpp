@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "fvkit/app/editor.h"
+#include "fvkit/app/source_spec.h"
 
 namespace fv {
 namespace app {
@@ -30,7 +31,8 @@ namespace {
 // The extension of a file spec, without its dot and without a directory's
 // own dots ("/a.dir/kiawah" has no extension). Both separators, because a
 // Windows shell hands this layer Windows paths.
-std::string ExtensionOf(const std::string& spec) {
+std::string ExtensionOf(const std::string& layer_spec) {
+  const std::string spec = SplitSourceSpec(layer_spec).path;
   const size_t dot = spec.find_last_of('.');
   if (dot == std::string::npos) return std::string();
   const size_t sep = spec.find_last_of("/\\");
@@ -343,6 +345,25 @@ FlowResult OverlaySession::OpenFileImpl(const TypeId& type,
     return FlowResult::kDone;
   }
 
+  // A file of several layers opens as one overlay per layer, its top layer
+  // current; each layer's spec then dedups on its own.
+  if (desc->file.has_value() && desc->file->list_layers && SplitSourceSpec(spec).layer.empty()) {
+    std::vector<std::string> layers;
+    Status s = desc->file->list_layers(spec, &layers);
+    if (!s.ok()) return Fail(s);
+    if (layers.size() > 1) {
+      FlowResult result = FlowResult::kDone;
+      // Bottom first: an overlay of equal display order lands above the last.
+      for (auto it = layers.rbegin(); it != layers.rend(); ++it)
+        result = Worse(result, OpenFileImpl(desc->id, JoinSourceSpec(spec, *it)));
+      if (std::shared_ptr<Overlay> top = manager_.FindByFileSpec(desc->id, JoinSourceSpec(spec, layers.front()))) {
+        s = manager_.MakeCurrent(top);
+        if (!s.ok()) return Fail(s);
+      }
+      return result;
+    }
+  }
+
   std::shared_ptr<Overlay> made = Instantiate(*desc);
   if (made == nullptr) {
     return Fail(Status::Error(kInternal, "factory for overlay type '" +
@@ -428,7 +449,13 @@ FlowResult OverlaySession::SaveAsImpl(Overlay& overlay) {
                                   "' has no registered file type to save as"));
   }
 
-  std::string suggested = p->file_spec();
+  // A layer of a file of several saves as a file of its own, named for it.
+  const SourceSpec source = SplitSourceSpec(p->file_spec());
+  std::string suggested = source.path;
+  if (!source.layer.empty()) {
+    const size_t sep = suggested.find_last_of("/\\");
+    suggested = suggested.substr(0, sep == std::string::npos ? 0 : sep + 1) + source.layer + "." + ExtensionOf(source.path);
+  }
   if (suggested.empty()) {
     suggested = overlay.Name();
     if (!desc->file->default_extension.empty()) {
