@@ -20,7 +20,7 @@ set(PEREGRINE_GTK_WINDOWS
   data_sources_window.cpp
   dialogs.cpp
   feature_form_window.cpp
-  layer_fields_window.cpp
+  layer_fields_panel.cpp
   layer_style_window.cpp
   layers_window.cpp
   properties_window.cpp

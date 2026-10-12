@@ -3,8 +3,8 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-/// layer_fields_window.h — the Layer Fields dialog, the counterpart of
-/// LayerFieldsWindow.swift.
+/// layer_fields_panel.h — the Fields tab of a layer's Properties, the
+/// counterpart of LayerFieldsWindow.swift.
 #pragma once
 
 #include <gtkmm.h>
@@ -19,17 +19,15 @@
 namespace peregrine {
 
 /// The field list with add, delete and reorder, and an editor for the
-/// selected field, over `DeskHost`'s fields model. Edits go to the draft;
-/// Apply asks first when the change loses values, then changes the layer,
-/// and OK applies and closes. Closing the window closes the model.
-class LayerFieldsWindow : public Gtk::Window {
+/// selected field, over `DeskHost`'s fields model. Edits go to the draft as
+/// each control is left; the owner applies it.
+class LayerFieldsPanel : public Gtk::Box {
  public:
-  /// Asked before an apply that loses values, with the loss as sentences;
-  /// true to go ahead. The default asks with a modal dialog.
-  using ConfirmFn = std::function<bool(const std::string& loss)>;
+  /// Receives each edit's error message, "" for success.
+  using ReportFn = std::function<void(const std::string& error)>;
 
-  /// `host` must outlive the window.
-  LayerFieldsWindow(fv::desk::DeskHost& host, Gtk::Window& parent);
+  /// `host` must outlive the panel.
+  LayerFieldsPanel(fv::desk::DeskHost& host, ReportFn report);
 
   /// Re-reads the field list, keeping the selection where it can.
   void Reload();
@@ -41,20 +39,16 @@ class LayerFieldsWindow : public Gtk::Window {
   void AddField();
   /// Writes every editor control to the selected field.
   void CommitEditor();
-  /// Applies the draft, asking first when values would be lost; false when
-  /// it was refused, cancelled or blocked by a shown error.
-  bool Apply();
-  void Ok();
-  void Revert();
-  void set_confirm(ConfirmFn confirm) { confirm_ = std::move(confirm); }
+  /// Writes the editor when a text control changed since it was last written.
+  void CommitPending() {
+    if (editor_dirty_) CommitEditor();
+  }
 
   Gtk::ListBox& list() { return list_; }
   Gtk::Entry& name_entry() { return name_; }
   Gtk::Entry& title_entry() { return title_; }
   Gtk::DropDown& type_drop_down() { return type_; }
   Gtk::DropDown& role_drop_down() { return role_; }
-  /// The message under the controls; "" when hidden.
-  std::string message() const;
 
  private:
   void ReloadEditor();
@@ -66,7 +60,7 @@ class LayerFieldsWindow : public Gtk::Window {
   void WatchEntry(Gtk::Entry& entry);
 
   fv::desk::DeskHost& host_;
-  Gtk::Box box_{Gtk::Orientation::VERTICAL, 10};
+  ReportFn report_;
   Gtk::ScrolledWindow list_scroll_;
   Gtk::ListBox list_;
   Gtk::Button add_{"+"};
@@ -90,12 +84,6 @@ class LayerFieldsWindow : public Gtk::Window {
   Gtk::TextView choices_;
   Gtk::Entry description_;
   Gtk::Label origin_;
-  Gtk::Label message_;
-  Gtk::Button revert_{"Revert"};
-  Gtk::Button cancel_{"Cancel"};
-  Gtk::Button apply_{"Apply"};
-  Gtk::Button ok_{"OK"};
-  ConfirmFn confirm_;
   int selected_ = 0;
   /// Set while controls are filled from the model, so their signals are not edits.
   bool loading_ = false;

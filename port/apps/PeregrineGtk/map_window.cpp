@@ -44,6 +44,7 @@ MapWindow::MapWindow()
     : host_(fv::desk::DeskHost::Create()),
       canvas_(*host_),
       menus_(*host_, [this](const std::string& id) { Execute(id); }) {
+  host_->SetPropertiesTabs(true);
   const std::string settings_error = host_->LoadSettings(std::string());
   const std::string log_error = host_->StartLog(std::string(), kAppVersion);
   if (!log_error.empty()) std::cerr << "Peregrine: no log file: " << log_error << "\n";
@@ -176,8 +177,6 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
     ShowPanel(attribute_table_, [this] { return std::make_unique<AttributeTableWindow>(*host_, *this); });
   if (t.style_requested && host_->TakeLayerStyleRequest())
     ShowPanel(layer_style_, [this] { return std::make_unique<LayerStyleWindow>(*host_, *this); });
-  if (t.fields_requested && host_->TakeLayerFieldsRequest())
-    ShowPanel(layer_fields_, [this] { return std::make_unique<LayerFieldsWindow>(*host_, *this); });
   if (t.new_layer_requested && host_->TakeNewLayerRequest())
     ShowPanel(new_layer_, [this] { return std::make_unique<NewLayerWindow>(*host_, *this); });
   if (t.properties_requested && host_->TakeLayerPropertiesRequest())
@@ -196,12 +195,14 @@ void MapWindow::ShowPanel(std::unique_ptr<W>& window, Make make) {
   window->present();
 }
 
-/// Hides a form, table, style or fields dialog whose model closed, and refreshes the table. The
-/// form is not rebuilt here: it holds the user's edits.
+/// Hides a form, table or style dialog whose model closed, follows the tabs of
+/// Properties, and refreshes the table. The form is not rebuilt here: it holds
+/// the user's edits.
 void MapWindow::FeaturesDidChange() {
   if (feature_form_ && !host_->FeatureFormOpen()) feature_form_->set_visible(false);
-  if (layer_style_ && !host_->LayerStyleOpen()) layer_style_->set_visible(false);
-  if (layer_fields_ && !host_->LayerFieldsOpen()) layer_fields_->set_visible(false);
+  // The style dialog shows one feature's style; a layer's style is a tab of Properties.
+  if (layer_style_ && !(host_->LayerStyleOpen() && host_->LayerStyleIsFeature())) layer_style_->set_visible(false);
+  if (properties_ && properties_->get_visible() && !properties_->Refresh()) properties_->set_visible(false);
   if (attribute_table_) {
     if (!host_->AttributeTableOpen()) attribute_table_->set_visible(false);
     else if (attribute_table_->get_visible()) attribute_table_->Reload();

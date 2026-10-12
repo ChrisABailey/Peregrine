@@ -3,30 +3,23 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-#include "layer_fields_window.h"
+#include "layer_fields_panel.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "dialogs.h"
 
 namespace peregrine {
 
-LayerFieldsWindow::LayerFieldsWindow(fv::desk::DeskHost& host, Gtk::Window& parent) : host_(host) {
-  set_transient_for(parent);
-  set_default_size(640, 480);
-  set_size_request(560, 420);
-  set_hide_on_close(true);
-  confirm_ = [this](const std::string& loss) {
-    ChoiceDialog ask(*this, "Change the layer’s fields?", loss, {"Cancel", "Change Fields"}, 1, 0, 1);
-    return ask.Run() == 1;
-  };
-
+LayerFieldsPanel::LayerFieldsPanel(fv::desk::DeskHost& host, ReportFn report)
+    : Gtk::Box(Gtk::Orientation::HORIZONTAL, 12), host_(host), report_(std::move(report)) {
   list_.set_selection_mode(Gtk::SelectionMode::SINGLE);
   list_.signal_row_selected().connect([this](Gtk::ListBoxRow* row) {
     if (loading_ || !row) return;
     if (editor_dirty_) CommitEditor();
     selected_ = row->get_index();
-    message_.set_visible(false);
+    if (report_) report_(std::string());
     ReloadEditor();
   });
   list_scroll_.set_child(list_);
@@ -96,37 +89,13 @@ LayerFieldsWindow::LayerFieldsWindow(fv::desk::DeskHost& host, Gtk::Window& pare
   AddRow("Description", description_);
   AddRow("", origin_);
 
-  auto* middle = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-  middle->set_vexpand(true);
-  middle->append(*list_column);
-  middle->append(editor_);
-
-  message_.set_xalign(0);
-  message_.set_wrap(true);
-  message_.add_css_class("error");
-  message_.set_visible(false);
-  revert_.signal_clicked().connect([this] { Revert(); });
-  cancel_.signal_clicked().connect([this] { close(); });
-  apply_.signal_clicked().connect([this] { Apply(); });
-  ok_.signal_clicked().connect([this] { Ok(); });
-  ok_.add_css_class("suggested-action");
-
-  SetDialogMargins(box_);
-  box_.append(*middle);
-  box_.append(message_);
-  box_.append(*ButtonRow({&revert_}, {&cancel_, &apply_, &ok_}));
-  set_child(box_);
-  CloseOnEscape(*this);
-  signal_close_request().connect(
-      [this] {
-        host_.CloseLayerFields();
-        return false;
-      },
-      false);
+  set_vexpand(true);
+  append(*list_column);
+  append(editor_);
   Reload();
 }
 
-void LayerFieldsWindow::AddRow(const std::string& title, Gtk::Widget& control) {
+void LayerFieldsPanel::AddRow(const std::string& title, Gtk::Widget& control) {
   auto* label = Gtk::make_managed<Gtk::Label>(title);
   label->set_xalign(1);
   label->set_valign(Gtk::Align::START);
@@ -137,7 +106,7 @@ void LayerFieldsWindow::AddRow(const std::string& title, Gtk::Widget& control) {
   row_labels_.emplace_back(&control, label);
 }
 
-void LayerFieldsWindow::ShowRow(Gtk::Widget& control, bool shown) {
+void LayerFieldsPanel::ShowRow(Gtk::Widget& control, bool shown) {
   control.set_visible(shown);
   for (auto& [c, label] : row_labels_)
     if (c == &control) label->set_visible(shown);
@@ -145,7 +114,7 @@ void LayerFieldsWindow::ShowRow(Gtk::Widget& control, bool shown) {
 
 /// Marks the editor dirty as the entry is typed in; Enter or leaving the
 /// entry writes it to the model.
-void LayerFieldsWindow::WatchEntry(Gtk::Entry& entry) {
+void LayerFieldsPanel::WatchEntry(Gtk::Entry& entry) {
   entry.signal_changed().connect([this] {
     if (!loading_) editor_dirty_ = true;
   });
@@ -157,10 +126,9 @@ void LayerFieldsWindow::WatchEntry(Gtk::Entry& entry) {
   entry.add_controller(focus);
 }
 
-void LayerFieldsWindow::Reload() {
+void LayerFieldsPanel::Reload() {
   reload_pending_ = false;
   loading_ = true;
-  set_title(host_.LayerFieldsTitle());
   while (Gtk::Widget* row = list_.get_first_child()) list_.remove(*row);
   const int count = host_.LayerFieldCount();
   for (int i = 0; i < count; ++i) {
@@ -184,7 +152,7 @@ void LayerFieldsWindow::Reload() {
 
 /// Fills the editor from the selected field; rows that do not apply to its
 /// type or meaning are hidden.
-void LayerFieldsWindow::ReloadEditor() {
+void LayerFieldsPanel::ReloadEditor() {
   const int i = selected();
   editor_.set_visible(i >= 0);
   remove_.set_sensitive(i >= 0);
@@ -217,15 +185,15 @@ void LayerFieldsWindow::ReloadEditor() {
   loading_ = false;
 }
 
-int LayerFieldsWindow::selected() const {
+int LayerFieldsPanel::selected() const {
   return selected_ >= 0 && selected_ < host_.LayerFieldCount() ? selected_ : -1;
 }
 
-void LayerFieldsWindow::SelectField(int i) {
+void LayerFieldsPanel::SelectField(int i) {
   if (Gtk::ListBoxRow* row = list_.get_row_at_index(i)) list_.select_row(*row);
 }
 
-void LayerFieldsWindow::CommitEditor() {
+void LayerFieldsPanel::CommitEditor() {
   const int i = selected();
   editor_dirty_ = false;
   if (i < 0) return;
@@ -235,7 +203,7 @@ void LayerFieldsWindow::CommitEditor() {
                              max_.get_text(), choices_.get_buffer()->get_text()));
 }
 
-void LayerFieldsWindow::AddField() {
+void LayerFieldsPanel::AddField() {
   if (editor_dirty_) CommitEditor();
   const int i = host_.AddLayerField();
   if (i >= 0) selected_ = i;
@@ -243,7 +211,7 @@ void LayerFieldsWindow::AddField() {
   name_.grab_focus();
 }
 
-void LayerFieldsWindow::Move(int step) {
+void LayerFieldsPanel::Move(int step) {
   const int from = selected();
   if (from < 0) return;
   if (editor_dirty_) CommitEditor();
@@ -252,38 +220,17 @@ void LayerFieldsWindow::Move(int step) {
   Report(error);
 }
 
-/// Shows `error` (or clears the message) and re-reads the model once the
-/// signal that made the edit has returned.
-void LayerFieldsWindow::Report(const std::string& error) {
-  message_.set_text(error);
-  message_.set_visible(!error.empty());
+/// Passes `error` on and re-reads the model once the signal that made the
+/// edit has returned.
+void LayerFieldsPanel::Report(const std::string& error) {
+  if (report_) report_(error);
   if (reload_pending_) return;
   reload_pending_ = true;
-  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayerFieldsWindow::ReloadIfPending));
+  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayerFieldsPanel::ReloadIfPending));
 }
 
-void LayerFieldsWindow::ReloadIfPending() {
+void LayerFieldsPanel::ReloadIfPending() {
   if (reload_pending_) Reload();
-}
-
-bool LayerFieldsWindow::Apply() {
-  if (editor_dirty_) CommitEditor();
-  if (message_.get_visible()) return false;
-  const std::string loss = host_.LayerFieldsLoss();
-  if (!loss.empty() && !(confirm_ && confirm_(loss))) return false;
-  const std::string error = host_.ApplyLayerFields();
-  Report(error);
-  return error.empty();
-}
-
-void LayerFieldsWindow::Ok() {
-  if (Apply()) close();
-}
-
-void LayerFieldsWindow::Revert() { Report(host_.RevertLayerFields()); }
-
-std::string LayerFieldsWindow::message() const {
-  return message_.get_visible() ? std::string(message_.get_text()) : std::string();
 }
 
 }  // namespace peregrine

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "dialogs.h"
@@ -57,23 +58,14 @@ Gtk::Entry* CommitEntry(const std::string& text, std::function<void(const std::s
 
 }  // namespace
 
-LayerStyleWindow::LayerStyleWindow(fv::desk::DeskHost& host, Gtk::Window& parent) : host_(host) {
-  set_transient_for(parent);
-  set_default_size(560, 520);
-  set_size_request(480, 420);
-  set_hide_on_close(true);
-  Build();
-  CloseOnEscape(*this);
-  signal_close_request().connect(
-      [this] {
-        host_.CloseLayerStyle();
-        return false;
-      },
-      false);
+LayerStylePanel::LayerStylePanel(fv::desk::DeskHost& host, Part part, ReportFn report)
+    : Gtk::Box(Gtk::Orientation::VERTICAL, 10), host_(host), part_(part), report_(std::move(report)) {
+  if (part_ != Part::kLabels) BuildSymbology();
+  if (part_ != Part::kSymbology) append(*BuildLabels());
   Reload();
 }
 
-void LayerStyleWindow::Build() {
+void LayerStylePanel::BuildSymbology() {
   SetChoices(renderer_, {"Single symbol", "Categorised", "Graduated"}, 0);
   renderer_.property_selected().signal_changed().connect([this] {
     if (!loading_) Report(host_.SetStyleRenderer(SelectedIndex(renderer_)));
@@ -131,6 +123,13 @@ void LayerStyleWindow::Build() {
   entry_buttons_.append(remove_);
   entry_buttons_.append(clear_override_);
 
+  append(renderer_row_);
+  append(graded_row_);
+  append(*middle);
+  append(entry_buttons_);
+}
+
+Gtk::Widget* LayerStylePanel::BuildLabels() {
   label_field_.property_selected().signal_changed().connect([this] {
     if (!loading_) ApplyLabel();
   });
@@ -146,33 +145,26 @@ void LayerStyleWindow::Build() {
   label_row->append(*Gtk::make_managed<Gtk::Label>("size"));
   label_row->append(label_size_);
   label_row->append(*Gtk::make_managed<Gtk::Label>("px"));
-
-  message_.set_xalign(0);
-  message_.set_wrap(true);
-  message_.add_css_class("error");
-  message_.set_visible(false);
-  revert_.signal_clicked().connect([this] { Revert(); });
-  cancel_.signal_clicked().connect([this] { close(); });
-  apply_.signal_clicked().connect([this] { Apply(); });
-  ok_.signal_clicked().connect([this] { Ok(); });
-  ok_.add_css_class("suggested-action");
-  set_default_widget(ok_);
-
-  SetDialogMargins(box_);
-  box_.append(renderer_row_);
-  box_.append(graded_row_);
-  box_.append(*middle);
-  box_.append(entry_buttons_);
-  box_.append(*label_row);
-  box_.append(message_);
-  box_.append(*ButtonRow({&revert_}, {&cancel_, &apply_, &ok_}));
-  set_child(box_);
+  return label_row;
 }
 
-void LayerStyleWindow::Reload() {
+void LayerStylePanel::Reload() {
   reload_pending_ = false;
   loading_ = true;
-  set_title(host_.LayerStyleTitle());
+  if (part_ != Part::kSymbology) {
+    std::vector<std::string> labels{"None"};
+    int label = 0;
+    for (int i = 0; i < host_.StyleLabelFieldCount(); ++i) {
+      labels.push_back(host_.StyleLabelFieldTitle(i));
+      if (host_.StyleLabelFieldName(i) == host_.StyleLabelField()) label = i + 1;
+    }
+    SetChoices(label_field_, labels, label);
+    label_size_.set_value(host_.StyleLabelSize());
+  }
+  if (part_ == Part::kLabels) {
+    loading_ = false;
+    return;
+  }
   const bool feature = host_.LayerStyleIsFeature();
   const int renderer = host_.StyleRenderer();
   renderer_row_.set_visible(!feature);
@@ -196,15 +188,6 @@ void LayerStyleWindow::Reload() {
   clear_override_.set_visible(feature);
   clear_override_.set_sensitive(host_.StyleHasOverride());
 
-  std::vector<std::string> labels{"None"};
-  int label = 0;
-  for (int i = 0; i < host_.StyleLabelFieldCount(); ++i) {
-    labels.push_back(host_.StyleLabelFieldTitle(i));
-    if (host_.StyleLabelFieldName(i) == host_.StyleLabelField()) label = i + 1;
-  }
-  SetChoices(label_field_, labels, label);
-  label_size_.set_value(host_.StyleLabelSize());
-
   while (Gtk::Widget* row = legend_.get_first_child()) legend_.remove(*row);
   const int count = host_.StyleEntryCount();
   for (int i = 0; i < count; ++i) legend_.append(*MakeLegendRow(i));
@@ -216,7 +199,7 @@ void LayerStyleWindow::Reload() {
 
 /// One legend row: the swatch, the class value and the legend label; the
 /// texts are editable for a class of a categorised or graduated layer.
-Gtk::Widget* LayerStyleWindow::MakeLegendRow(int i) {
+Gtk::Widget* LayerStylePanel::MakeLegendRow(int i) {
   auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
   const int scale = std::max(get_scale_factor(), 1);
   const int w = kSwatchWidth * scale, h = kSwatchHeight * scale;
@@ -258,7 +241,7 @@ Gtk::Widget* LayerStyleWindow::MakeLegendRow(int i) {
 }
 
 /// Rebuilds the symbol rows for the selected entry, grouped under headings.
-void LayerStyleWindow::ReloadSymbol() {
+void LayerStylePanel::ReloadSymbol() {
   symbol_grid_ = Gtk::make_managed<Gtk::Grid>();
   symbol_grid_->set_row_spacing(6);
   symbol_grid_->set_column_spacing(8);
@@ -286,7 +269,7 @@ void LayerStyleWindow::ReloadSymbol() {
 }
 
 /// The editor for property `k` of the selected entry.
-Gtk::Widget* LayerStyleWindow::MakePropertyEditor(int k) {
+Gtk::Widget* LayerStylePanel::MakePropertyEditor(int k) {
   const int entry = std::max(selected_, 0);
   switch (host_.StylePropertyKind(k)) {
     case 0: {
@@ -328,35 +311,76 @@ Gtk::Widget* LayerStyleWindow::MakePropertyEditor(int k) {
   }
 }
 
-/// Shows `error` (or clears the message) and redraws the legend once the
-/// signal that made the edit has returned, since the rebuild replaces the
-/// widget that sent it.
-void LayerStyleWindow::Report(const std::string& error) {
-  message_.set_text(error);
-  message_.set_visible(!error.empty());
+/// Passes `error` on and redraws the panel once the signal that made the edit
+/// has returned, since the rebuild replaces the widget that sent it.
+void LayerStylePanel::Report(const std::string& error) {
+  if (report_) report_(error);
   if (reload_pending_) return;
   reload_pending_ = true;
-  // A slot on the window is dropped if the window goes first.
-  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayerStyleWindow::ReloadIfPending));
+  // A slot on the panel is dropped if the panel goes first.
+  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayerStylePanel::ReloadIfPending));
 }
 
-void LayerStyleWindow::ReloadIfPending() {
+void LayerStylePanel::ReloadIfPending() {
   if (reload_pending_) Reload();
 }
 
-void LayerStyleWindow::ApplyLabel() {
+void LayerStylePanel::ApplyLabel() {
   const int i = SelectedIndex(label_field_);
   const std::string name = i <= 0 ? std::string() : host_.StyleLabelFieldName(i - 1);
   Report(host_.SetStyleLabel(name, label_size_.get_value()));
 }
 
-void LayerStyleWindow::SelectEntry(int row) {
+void LayerStylePanel::SelectEntry(int row) {
   if (Gtk::ListBoxRow* r = legend_.get_row_at_index(row)) legend_.select_row(*r);
+}
+
+LayerStyleWindow::LayerStyleWindow(fv::desk::DeskHost& host, Gtk::Window& parent)
+    : host_(host), panel_(host, LayerStylePanel::Part::kAll, [this](const std::string& e) { Report(e); }) {
+  set_transient_for(parent);
+  set_default_size(560, 520);
+  set_size_request(480, 420);
+  set_hide_on_close(true);
+  message_.set_xalign(0);
+  message_.set_wrap(true);
+  message_.add_css_class("error");
+  message_.set_visible(false);
+  revert_.signal_clicked().connect([this] { Revert(); });
+  cancel_.signal_clicked().connect([this] { close(); });
+  apply_.signal_clicked().connect([this] { Apply(); });
+  ok_.signal_clicked().connect([this] { Ok(); });
+  ok_.add_css_class("suggested-action");
+  set_default_widget(ok_);
+  SetDialogMargins(box_);
+  panel_.set_vexpand(true);
+  box_.append(panel_);
+  box_.append(message_);
+  box_.append(*ButtonRow({&revert_}, {&cancel_, &apply_, &ok_}));
+  set_child(box_);
+  CloseOnEscape(*this);
+  signal_close_request().connect(
+      [this] {
+        host_.CloseLayerStyle();
+        return false;
+      },
+      false);
+  Reload();
+}
+
+void LayerStyleWindow::Reload() {
+  set_title(host_.LayerStyleTitle());
+  panel_.Reload();
+}
+
+void LayerStyleWindow::Report(const std::string& error) {
+  message_.set_text(error);
+  message_.set_visible(!error.empty());
 }
 
 bool LayerStyleWindow::Apply() {
   const std::string error = host_.ApplyLayerStyle();
   Report(error);
+  panel_.Reload();
   return error.empty();
 }
 
@@ -364,7 +388,10 @@ void LayerStyleWindow::Ok() {
   if (Apply()) close();
 }
 
-void LayerStyleWindow::Revert() { Report(host_.RevertLayerStyle()); }
+void LayerStyleWindow::Revert() {
+  Report(host_.RevertLayerStyle());
+  panel_.Reload();
+}
 
 std::string LayerStyleWindow::message() const {
   return message_.get_visible() ? std::string(message_.get_text()) : std::string();

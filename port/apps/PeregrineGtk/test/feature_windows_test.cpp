@@ -4,16 +4,17 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 /// feature_windows_test.cpp — the windows the core opens for feature layers
-/// (layers, form, table, style, fields, new layer), the options and profile
-/// windows, and the window title, driven through a real DeskHost and a shown
-/// map window on the Charleston rivers sample. Needs a display (run under
-/// xvfb-run).
+/// (layers, Properties and its tabs, form, table, feature style, new layer),
+/// the options and profile windows, and the window title, driven through a
+/// real DeskHost and a shown map window on the Charleston rivers sample. Needs
+/// a display (run under xvfb-run).
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <string>
 
+#include "fv_desk_layer_properties.h"
 #include "map_window.h"
 #include "test/test_support.h"
 
@@ -166,11 +167,15 @@ TEST_F(FeatureWindowsTest, TableFiltersSelectsAndOpensTheForm) {
   EXPECT_FALSE(host().AttributeTableOpen());
 }
 
-TEST_F(FeatureWindowsTest, StyleDialogClassifiesGraduatedAndApplies) {
+TEST_F(FeatureWindowsTest, SymbologyTabClassifiesGraduatedAndApplies) {
   window().Execute("overlay.style");
-  ASSERT_TRUE(SpinUntil([&] { return window().layer_style_window() != nullptr; }));
-  LayerStyleWindow& style = *window().layer_style_window();
-  EXPECT_EQ(style.get_title(), "Layer Style — Charleston rivers");
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& props = *window().properties_window();
+  EXPECT_EQ(props.get_title(), "Layer Properties — Charleston rivers");
+  EXPECT_EQ(props.notebook().get_n_pages(), 5);
+  EXPECT_EQ(props.current_tab(), static_cast<int>(fv::desk::PropertiesTab::kSymbology));
+  ASSERT_NE(props.symbology(), nullptr);
+  LayerStylePanel& style = *props.symbology();
   EXPECT_FALSE(style.field().get_visible());
   ASSERT_NE(style.symbol_grid(), nullptr);
 
@@ -189,17 +194,27 @@ TEST_F(FeatureWindowsTest, StyleDialogClassifiesGraduatedAndApplies) {
   style.SelectEntry(1);
   EXPECT_NE(style.symbol_grid()->get_child_at(1, 1), nullptr);
 
+  // Labels are their own tab over the same draft.
+  ASSERT_TRUE(props.ShowTab(static_cast<int>(fv::desk::PropertiesTab::kLabels)));
+  ASSERT_NE(props.labels(), nullptr);
+  props.labels()->label_field().set_selected(1);
+  ASSERT_TRUE(SpinUntil([&] { return host().StyleLabelField() == host().StyleLabelFieldName(0); }));
+
   EXPECT_TRUE(host().LayerStyleDirty());
-  style.Ok();
-  EXPECT_FALSE(style.get_visible());
+  EXPECT_TRUE(host().LayerPropertiesDirty());
+  props.Ok();
+  EXPECT_FALSE(props.get_visible());
   EXPECT_FALSE(host().LayerStyleOpen());
+  EXPECT_FALSE(host().LayerGeneralOpen());
 }
 
-TEST_F(FeatureWindowsTest, FieldsDialogAddsAndDropsFieldsAskingFirst) {
+TEST_F(FeatureWindowsTest, FieldsTabAddsAndDropsFieldsAskingFirst) {
   window().Execute("overlay.fields");
-  ASSERT_TRUE(SpinUntil([&] { return window().layer_fields_window() != nullptr; }));
-  LayerFieldsWindow& fields = *window().layer_fields_window();
-  EXPECT_EQ(fields.get_title(), "Layer Fields — Charleston rivers");
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& props = *window().properties_window();
+  EXPECT_EQ(props.current_tab(), static_cast<int>(fv::desk::PropertiesTab::kFields));
+  ASSERT_NE(props.fields(), nullptr);
+  LayerFieldsPanel& fields = *props.fields();
   EXPECT_EQ(fields.selected(), 0);
   EXPECT_EQ(fields.name_entry().get_text().raw(), host().LayerFieldName(0));
 
@@ -217,19 +232,69 @@ TEST_F(FeatureWindowsTest, FieldsDialogAddsAndDropsFieldsAskingFirst) {
   EXPECT_EQ(host().RemoveLayerField(2), "");
   fields.Reload();
   std::string asked;
-  fields.set_confirm([&asked](const std::string& loss) {
+  props.set_confirm([&asked](const std::string& loss) {
     asked = loss;
     return false;
   });
-  EXPECT_FALSE(fields.Apply());
+  EXPECT_FALSE(props.Apply());
   EXPECT_NE(asked, "");
   EXPECT_TRUE(host().LayerFieldsDirty());
-  fields.set_confirm([](const std::string&) { return true; });
-  EXPECT_TRUE(fields.Apply());
+  props.set_confirm([](const std::string&) { return true; });
+  EXPECT_TRUE(props.Apply());
   Drain();
-  EXPECT_EQ(fields.message(), "");
-  fields.close();
+  EXPECT_EQ(props.message(), "");
+  EXPECT_FALSE(host().LayerFieldsDirty());
+  // The style tabs follow the new fields.
+  EXPECT_NE(props.symbology(), nullptr);
+  props.close();
   EXPECT_FALSE(host().LayerFieldsOpen());
+}
+
+TEST_F(FeatureWindowsTest, GeneralTabRenamesAndSetsTheScaleRange) {
+  window().Execute("layers.properties");
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& props = *window().properties_window();
+  EXPECT_EQ(props.current_tab(), static_cast<int>(fv::desk::PropertiesTab::kGeneral));
+  EXPECT_EQ(props.name_entry().get_text().raw(), "Charleston rivers");
+  EXPECT_EQ(props.min_scale_entry().get_text().raw(), "");
+
+  props.min_scale_entry().set_text("1:10,000");
+  props.max_scale_entry().set_text("1:50,000");
+  EXPECT_FALSE(props.Apply());  // never drawn: refused
+  EXPECT_NE(props.message(), "");
+
+  props.name_entry().set_text("Rivers");
+  props.description_view().get_buffer()->set_text("Cooper, Ashley and Wando");
+  props.min_scale_entry().set_text("500000");
+  props.max_scale_entry().set_text("");
+  EXPECT_TRUE(props.Apply());
+  EXPECT_EQ(props.message(), "");
+  EXPECT_EQ(props.min_scale_entry().get_text().raw(), "1:500,000");
+  EXPECT_EQ(props.get_title(), "Layer Properties — Rivers");
+  ASSERT_TRUE(SpinUntil([&] { return host().LayerName(0) == "Rivers"; }));
+  EXPECT_TRUE(host().LayerDirty(0));
+  props.close();
+}
+
+TEST_F(FeatureWindowsTest, StyleThisFeatureTakesTheStyleTabsAway) {
+  window().Execute("layers.properties");
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& props = *window().properties_window();
+  window().Execute("overlay.attribute_table");
+  ASSERT_TRUE(SpinUntil([&] { return host().AttributeTableOpen(); }));
+  ASSERT_EQ(host().SelectTableRow(0), "");
+  window().Execute("overlay.style_feature");
+  ASSERT_TRUE(SpinUntil([&] { return window().layer_style_window() != nullptr; }));
+  LayerStyleWindow& feature = *window().layer_style_window();
+  EXPECT_TRUE(feature.get_visible());
+  EXPECT_TRUE(host().LayerStyleIsFeature());
+  ASSERT_TRUE(SpinUntil([&] { return props.symbology() == nullptr; }));
+  EXPECT_EQ(props.notebook().get_n_pages(), 3);
+
+  // Properties takes the style back; the feature's dialog goes.
+  window().Execute("overlay.style");
+  ASSERT_TRUE(SpinUntil([&] { return props.symbology() != nullptr && !feature.get_visible(); }));
+  props.close();
 }
 
 TEST_F(FeatureWindowsTest, NewLayerCreatesAndOpensAFile) {

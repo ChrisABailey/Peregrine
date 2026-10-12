@@ -28,7 +28,7 @@ the feature-layer dialogs and the route profile.
 | `feature_form_window.{h,cpp}` | `FeatureFormWindow.swift` |
 | `attribute_table_window.{h,cpp}` | `AttributeTableWindow.swift` |
 | `layer_style_window.{h,cpp}` | `LayerStyleWindow.swift` |
-| `layer_fields_window.{h,cpp}` | `LayerFieldsWindow.swift` |
+| `layer_fields_panel.{h,cpp}` | `LayerFieldsWindow.swift` |
 | `new_layer_window.{h,cpp}` | `NewLayerWindow.swift` |
 | `profile_window.{h,cpp}` | `ProfileWindow.swift` |
 
@@ -75,7 +75,7 @@ Layer Fields) and adds the Feature Layer menu.
 | Test | What it proves |
 |---|---|
 | `peregrine_gtk_test` (gtest) | every command in DeskKit's menu bar has one menu item and one action; shortcuts map to GTK accelerators, and a bare key (an arrow) is not one; actions follow the commands' enabled and checked state; the menus rebuild when a catalog with data opens; every icon the macOS toolbar draws has a symbolic icon; GDK keys map to the core's key codes; the frame placement is a transform every GSK renderer draws |
-| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; the style dialog classifies graduated and applies; the fields dialog adds a field and asks before dropping one; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
+| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; Style This Feature… takes the style tabs away and Layer Style… takes them back; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
 | `peregrine_gtk.shot_empty_catalog` | `--shot` writes a PNG and the status line reports the empty catalog |
 | `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, and the PNG holds the picture |
 
@@ -171,18 +171,26 @@ a control re-reads the model after each edit.
   Sources selects the row and shows DeskKit's layer or source menu
   (`LayerMenuEntryAt`, `SourceMenuEntryAt`) as a popover whose actions run
   the commands.
-- **Properties…** (`PropertiesWindow`): the read-only sheet of a layer or a
-  source, a heading per section, values selectable.
+- **Properties…** (`PropertiesWindow`): one page per tab DeskKit lists. A
+  source has the read-only *Source* sheet alone (a heading per section,
+  values selectable). A layer adds *General* (name, description, credits and
+  the scale range it draws in, Current filling a scale from the map) and, for
+  a feature layer, *Symbology*, *Labels* and *Fields*. Layer Style… and
+  Layer Fields… open it at their tab (`SetPropertiesTabs`). One Apply writes
+  every tab, asking first when a change of fields loses values.
 - **Attribute Table, Edit Feature** (`AttributeTableWindow`,
   `FeatureFormWindow`): the table sorts by its headers through the host,
   filters, selects on the map and opens the form on a double-click; the form
   has one control per field kind with the model's errors under each.
-- **Layer Style, Style This Feature** (`LayerStyleWindow`): renderer and
-  field, the legend with swatches the host draws, the selected class's
-  symbol and the labels. An edit rebuilds the legend once its signal has
-  returned, since the rebuild replaces the control that sent it.
-- **Layer Fields, New Feature Layer** (`LayerFieldsWindow`, `NewLayerWindow`):
-  the field list and editor; Apply asks before a change that loses values.
+- **Style panel, Style This Feature** (`LayerStylePanel`,
+  `LayerStyleWindow`): renderer and field, the legend with swatches the host
+  draws and the selected class's symbol (the Symbology tab), and the labels
+  (the Labels tab); the Style This Feature… dialog shows both over one
+  feature's symbol. An edit rebuilds the panel once its signal has returned,
+  since the rebuild replaces the control that sent it.
+- **Fields panel, New Feature Layer** (`LayerFieldsPanel`, `NewLayerWindow`):
+  the field list and editor of the Fields tab; New Layer's template, geometry
+  and file.
 - **Route elevation profile** (`ProfileWindow`): the chart the host lays out,
   drawn with cairo, with a cursor readout and the summary line.
 
