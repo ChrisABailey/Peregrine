@@ -53,6 +53,7 @@ class FakeDeskShell : public DeskShell {
   int layer_style_shown = 0;
   int layer_fields_shown = 0;
   int new_layer_shown = 0;
+  int layer_properties_shown = 0;
 
   SaveAnswer AskSave(const std::string& name) override;
   std::vector<std::string> ChooseFilesToOpen(const app::FileTypeDesc&) override;
@@ -82,6 +83,7 @@ class FakeDeskShell : public DeskShell {
   void ShowLayerStyle() override { ++layer_style_shown; }
   void ShowLayerFields() override { ++layer_fields_shown; }
   void ShowNewLayer() override { ++new_layer_shown; }
+  void ShowLayerProperties() override { ++layer_properties_shown; }
   std::string ChooseDirectory(const std::string&) override { return directory; }
   void ShowNotice(const std::string& text) override { notices.push_back(text); }
 };

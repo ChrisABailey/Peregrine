@@ -27,6 +27,7 @@
 #include "fv_desk_layer_fields.h"
 #include "fv_desk_layer_style.h"
 #include "fv_desk_layers.h"
+#include "fv_desk_sources.h"
 #include "fv_desk_map_groups.h"
 #include "fv_desk_menu_model.h"
 #include "fv_desk_options.h"
@@ -90,6 +91,9 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the New Layer dialog over `Desk::new_layer()`;
   /// the shell creates the layer through `Desk::CreateNewLayer`.
   virtual void ShowNewLayer() {}
+  /// Show (or bring forward) the Properties sheet: `Desk::properties_title()`
+  /// over `Desk::properties()`, read-only.
+  virtual void ShowLayerProperties() {}
 };
 
 /// The status bar content (port/desktop-plan.md §1d), as text.
@@ -245,6 +249,24 @@ class Desk {
   Status SetLayerOpacity(size_t row, int percent);
   Status MoveLayer(size_t from, size_t to);
   Status SelectLayer(size_t row);
+
+  // MARK: Layer manager
+  /// The Sources view: the layer rows grouped by source.
+  const SourcesModel& sources() const { return sources_; }
+  /// Each changes the stack through `sources()` and repaints, as the layer setters do.
+  Status SetSourceVisible(size_t source, bool visible);
+  Status MoveSource(size_t from, size_t to);
+  /// Makes the source's top layer current, so the source menu acts on it.
+  Status SelectSource(size_t source);
+  /// The right-click menus; they act on the current overlay and its source,
+  /// so the shell selects the row first. Enabled per `commands().IsEnabled`.
+  std::vector<MenuItem> LayerMenu() const { return menus_.ResolveLayout(LayerContextLayout()); }
+  std::vector<MenuItem> SourceMenu() const { return menus_.ResolveLayout(SourceContextLayout()); }
+  /// The Properties sheet last asked for (layers.properties, layers.source.properties).
+  const std::string& properties_title() const { return properties_title_; }
+  const std::vector<PropertyRow>& properties() const { return properties_; }
+  /// Centres the map on `box` at the scale that just shows it; a point keeps the scale.
+  void ZoomTo(const GeoRect& box);
 
   // MARK: Feature form and attribute table
   /// The editable feature layer behind `overlay`: a feature overlay's layer,
@@ -406,6 +428,11 @@ class Desk {
   void DropFeatureViews(const Overlay& overlay);
   /// Logs `s` and reports it through the shell.
   app::FlowResult Report(const Status& s);
+  /// The source holding the current overlay, as a `sources()` row; -1 for none.
+  int CurrentSource(const std::vector<SourceRow>& rows) const;
+  /// The current source's overlays, top first.
+  std::vector<std::shared_ptr<Overlay>> CurrentSourceOverlays() const;
+  void RegisterLayerManagerCommands();
   /// Logs a warning at the caller's location and keeps it for `warnings()`.
   void Warn(std::string w, const char* file = __builtin_FILE(), int line = __builtin_LINE());
 
@@ -422,6 +449,9 @@ class Desk {
   std::unique_ptr<app::PickSession> pick_;
   std::unique_ptr<StackHook> stack_hook_;
   LayersModel layers_{overlays_};
+  SourcesModel sources_{overlays_};
+  std::string properties_title_;
+  std::vector<PropertyRow> properties_;
   uint64_t layers_generation_ = 0;
   std::shared_ptr<FeatureFormModel> form_;
   std::shared_ptr<AttributeTableModel> table_;

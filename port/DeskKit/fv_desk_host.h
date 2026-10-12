@@ -68,6 +68,7 @@ struct HostTick {
   bool style_requested = false;    ///< show the style dialog; see TakeLayerStyleRequest
   bool fields_requested = false;   ///< show Layer Fields; see TakeLayerFieldsRequest
   bool new_layer_requested = false;  ///< show New Layer; see TakeNewLayerRequest
+  bool properties_requested = false;  ///< show Properties; see TakeLayerPropertiesRequest
   /// A feature dialog (form, table, style, fields, new layer) opened, closed
   /// or reloaded, or the table's selection moved; re-read them (a closed one
   /// reads as not open).
@@ -307,6 +308,46 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string SetLayerOpacity(int row, int percent);
   std::string MoveLayer(int from, int to);
   std::string SelectLayer(int row);
+
+  // MARK: Layer manager (Sources view)
+
+  /// Sources topmost first, as of the same snapshot as the layer rows
+  /// (`Desk::sources()`). Out-of-range sources read as empty.
+  int SourceCount() const;
+  std::string SourceName(int source) const;
+  std::string SourcePath(int source) const;  ///< "" for an overlay without a file
+  std::string SourceTypeName(int source) const;
+  std::string SourceIcon(int source) const;
+  /// How many layers are shown: 0 none, 1 some, 2 all.
+  int SourceShown(int source) const;
+  bool SourceCurrent(int source) const;
+  bool SourceDirty(int source) const;
+  int SourceLayerCount(int source) const;
+  /// The `i`th layer of the source (top first) as a layer row for `LayerName`
+  /// and its siblings; -1 out of range.
+  int SourceLayerRow(int source, int i) const;
+  /// Each returns an error message, "" on success.
+  std::string SetSourceVisible(int source, bool visible);
+  std::string MoveSource(int from, int to);
+  std::string SelectSource(int source);
+  /// The right-click menus (`Desk::LayerMenu`, `Desk::SourceMenu`), flattened
+  /// at depth 0. They act on the current layer and its source, so the shell
+  /// selects the row first, then runs the chosen item through `Execute`.
+  int LayerMenuEntryCount() const;
+  HostMenuEntry LayerMenuEntryAt(int index) const;
+  int SourceMenuEntryCount() const;
+  HostMenuEntry SourceMenuEntryAt(int index) const;
+
+  // MARK: Properties sheet
+
+  /// True once after the core asked to show the Properties sheet.
+  bool TakeLayerPropertiesRequest();
+  std::string LayerPropertiesTitle() const;
+  /// Rows in order; a row whose section differs from the one before starts a new section.
+  int LayerPropertyCount() const;
+  std::string LayerPropertySection(int i) const;
+  std::string LayerPropertyKey(int i) const;
+  std::string LayerPropertyValue(int i) const;
 
   // MARK: Feature form
 

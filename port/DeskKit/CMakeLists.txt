@@ -24,6 +24,7 @@ add_library(fv_deskkit STATIC
   fv_desk_commands.cpp
   fv_desk_desk.cpp
   fv_desk_layers.cpp
+  fv_desk_sources.cpp
   fv_desk_feature_form.cpp
   fv_desk_layer_fields.cpp
   fv_desk_layer_style.cpp
@@ -55,6 +56,7 @@ if(FVW_BUILD_TESTS)
     test/commands_test.cpp
     test/desk_test.cpp
     test/layers_test.cpp
+    test/sources_test.cpp
     test/feature_form_test.cpp
     test/feature_editor_test.cpp
     test/layer_style_test.cpp

@@ -1022,6 +1022,51 @@ TEST(DeskHost, LayersPanelReadsAndChangesTheStack) {
   h->WaitForRender();
 }
 
+TEST(DeskHost, SourcesViewMenusAndPropertiesFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  EXPECT_EQ(h->Execute(std::string("overlay.toggle.") + fv::app::kGridTypeId), "");
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  EXPECT_TRUE(h->Tick().layers_changed);
+  ASSERT_EQ(h->SourceCount(), 2);
+  EXPECT_EQ(h->SourceName(0), "rivers.geojson");
+  EXPECT_EQ(h->SourcePath(0), rivers);
+  EXPECT_EQ(h->SourceName(1), "Lat/Lon Grid");
+  EXPECT_EQ(h->SourceShown(0), 2);
+  EXPECT_TRUE(h->SourceCurrent(0));
+  ASSERT_EQ(h->SourceLayerCount(0), 1);
+  EXPECT_EQ(h->LayerName(h->SourceLayerRow(0, 0)), "Charleston rivers");
+  EXPECT_EQ(h->SourceLayerRow(0, 1), -1);
+
+  EXPECT_EQ(h->SetSourceVisible(0, false), "");
+  EXPECT_EQ(h->SourceShown(0), 0);
+  EXPECT_EQ(h->MoveSource(0, 1), "");
+  EXPECT_EQ(h->SourceName(0), "Lat/Lon Grid");
+  EXPECT_NE(h->MoveSource(0, 5), "");
+
+  ASSERT_GT(h->LayerMenuEntryCount(), 0);
+  EXPECT_EQ(h->LayerMenuEntryAt(0).id, "layers.properties");
+  EXPECT_EQ(h->LayerMenuEntryAt(0).kind, fv::desk::kMenuCommand);
+  EXPECT_EQ(h->SourceMenuEntryAt(0).id, "layers.source.properties");
+  EXPECT_EQ(h->SourceMenuEntryAt(99).kind, fv::desk::kMenuSeparator);
+
+  EXPECT_EQ(h->SelectSource(1), "");
+  EXPECT_EQ(h->Execute("layers.properties"), "");
+  EXPECT_TRUE(h->Tick().properties_requested);
+  EXPECT_TRUE(h->TakeLayerPropertiesRequest());
+  EXPECT_FALSE(h->TakeLayerPropertiesRequest());
+  EXPECT_EQ(h->LayerPropertiesTitle(), "Layer Properties — Charleston rivers");
+  ASSERT_GT(h->LayerPropertyCount(), 3);
+  EXPECT_EQ(h->LayerPropertySection(0), "Layer");
+  EXPECT_EQ(h->LayerPropertyKey(0), "Name");
+  EXPECT_EQ(h->LayerPropertyValue(0), "Charleston rivers");
+  EXPECT_EQ(h->LayerPropertyKey(999), "");
+  h->WaitForRender();
+}
+
 TEST(DeskHost, FeatureFormAndTableFlattenForAShell) {
   HostRef h;
   h->Resize(200, 100, 1.0, 0.25);

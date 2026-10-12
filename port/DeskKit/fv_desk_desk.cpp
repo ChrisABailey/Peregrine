@@ -399,7 +399,109 @@ void Desk::RegisterStaticCommands() {
     const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
     return f != nullptr && f->selected() != 0;
   });
+  RegisterLayerManagerCommands();
   RegisterCatalogCommands();
+}
+
+void Desk::RegisterLayerManagerCommands() {
+  auto add = [this](const char* id, const char* label, std::function<void()> action,
+                    std::function<bool()> enabled) {
+    Command c;
+    c.id = id;
+    c.label = label;
+    c.action = std::move(action);
+    c.enabled = std::move(enabled);
+    const Status s = commands_.Register(std::move(c));
+    if (!s.ok()) Warn(s.message);
+  };
+  auto has_current = [this] { return overlays_.current() != nullptr; };
+  auto source_shown = [this](SourceShown not_this) {
+    const std::vector<SourceRow> rows = sources_.Rows();
+    const int at = CurrentSource(rows);
+    return at >= 0 && rows[at].shown != not_this;
+  };
+  auto zoom_box = [](const std::vector<std::shared_ptr<Overlay>>& overlays, GeoRect* box) {
+    bool any = false;
+    for (const std::shared_ptr<Overlay>& o : overlays) {
+      GeoRect b;
+      if (!LayerExtent(o, &b)) continue;
+      if (!any) *box = b;
+      box->ll.lat = std::min(box->ll.lat, b.ll.lat);
+      box->ll.lon = std::min(box->ll.lon, b.ll.lon);
+      box->ur.lat = std::max(box->ur.lat, b.ur.lat);
+      box->ur.lon = std::max(box->ur.lon, b.ur.lon);
+      any = true;
+    }
+    return any;
+  };
+
+  add("layers.properties", "Properties…", [this] {
+    Overlay* o = overlays_.current();
+    if (o == nullptr) return;
+    properties_title_ = "Layer Properties — " + o->Name();
+    properties_ = LayerProperties(overlays_, *o);
+    shell_.ShowLayerProperties();
+  }, has_current);
+  add("layers.zoom_to", "Zoom to Layer", [this, zoom_box] {
+    GeoRect box;
+    if (zoom_box({overlays_.FindShared(overlays_.current())}, &box)) ZoomTo(box);
+  }, [this] {
+    GeoRect box;
+    return LayerExtent(overlays_.FindShared(overlays_.current()), &box);
+  });
+  add("layers.close", "Close", [this] {
+    Overlay* o = overlays_.current();
+    if (o == nullptr) return;
+    if (types_.IsFile(o->type_id())) session_->Close(*o);
+    else session_->ToggleStatic(o->type_id());
+  }, has_current);
+
+  add("layers.source.properties", "Properties…", [this] {
+    const std::vector<SourceRow> rows = sources_.Rows();
+    const int at = CurrentSource(rows);
+    if (at < 0) return;
+    properties_title_ = "Source Properties — " + rows[at].name;
+    properties_ = SourceProperties(overlays_, rows[at]);
+    shell_.ShowLayerProperties();
+  }, has_current);
+  add("layers.source.show_all", "Show All Layers", [this] {
+    const int at = CurrentSource(sources_.Rows());
+    if (at >= 0) SetSourceVisible(static_cast<size_t>(at), true);
+  }, [source_shown] { return source_shown(SourceShown::kAll); });
+  add("layers.source.hide_all", "Hide All Layers", [this] {
+    const int at = CurrentSource(sources_.Rows());
+    if (at >= 0) SetSourceVisible(static_cast<size_t>(at), false);
+  }, [source_shown] { return source_shown(SourceShown::kNone); });
+  add("layers.source.zoom_to", "Zoom to Source", [this, zoom_box] {
+    GeoRect box;
+    if (zoom_box(CurrentSourceOverlays(), &box)) ZoomTo(box);
+  }, [this, zoom_box] {
+    GeoRect box;
+    return zoom_box(CurrentSourceOverlays(), &box);
+  });
+  add("layers.source.close", "Close", [this] {
+    for (const std::shared_ptr<Overlay>& o : CurrentSourceOverlays()) {
+      const app::FlowResult r = types_.IsFile(o->type_id()) ? session_->Close(*o) : session_->ToggleStatic(o->type_id());
+      if (r != app::FlowResult::kDone) return;  // a cancelled save prompt keeps the rest open
+    }
+  }, has_current);
+}
+
+int Desk::CurrentSource(const std::vector<SourceRow>& rows) const {
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (rows[i].current) return static_cast<int>(i);
+  return -1;
+}
+
+std::vector<std::shared_ptr<Overlay>> Desk::CurrentSourceOverlays() const {
+  std::vector<std::shared_ptr<Overlay>> out;
+  const std::vector<SourceRow> rows = sources_.Rows();
+  const int at = CurrentSource(rows);
+  if (at < 0) return out;
+  const std::vector<LayerRow> layers = layers_.Rows();
+  for (size_t i : rows[at].layers)
+    if (std::shared_ptr<Overlay> o = overlays_.FindShared(layers[i].overlay)) out.push_back(std::move(o));
+  return out;
 }
 
 void Desk::RegisterCatalogCommands() {
@@ -878,6 +980,37 @@ Status Desk::MoveLayer(size_t from, size_t to) {
 }
 
 Status Desk::SelectLayer(size_t row) { return layers_.Select(row); }
+
+Status Desk::SetSourceVisible(size_t source, bool visible) {
+  Status s = sources_.SetVisible(source, visible);
+  if (s.ok()) {
+    ++layers_generation_;
+    shell_.RequestInvalidate();
+  }
+  return s;
+}
+
+Status Desk::MoveSource(size_t from, size_t to) {
+  Status s = sources_.Move(from, to);
+  if (s.ok()) shell_.RequestInvalidate();
+  return s;
+}
+
+Status Desk::SelectSource(size_t source) { return sources_.Select(source); }
+
+void Desk::ZoomTo(const GeoRect& box) {
+  const view::Viewport& v = view_->View();
+  const GeoPoint center{(box.ll.lat + box.ur.lat) / 2, (box.ll.lon + box.ur.lon) / 2};
+  // Metres on the ground over metres on the screen, with a tenth to spare.
+  const double kMetersPerDegree = 111320.0;
+  const double width_m = (box.ur.lon - box.ll.lon) * kMetersPerDegree * std::cos(center.lat * 3.14159265358979323846 / 180.0);
+  const double height_m = (box.ur.lat - box.ll.lat) * kMetersPerDegree;
+  const double screen_w = v.WidthPt() * v.MmPerPoint() / 1000.0;
+  const double screen_h = v.HeightPt() * v.MmPerPoint() / 1000.0;
+  double scale = 0;
+  if (screen_w > 0 && screen_h > 0) scale = 1.1 * std::max(width_m / screen_w, height_m / screen_h);
+  GoTo(center, scale > 0 ? scale : v.ScaleDenom());
+}
 
 std::shared_ptr<IEditableFeatureLayer> Desk::FeatureLayerOf(const std::shared_ptr<Overlay>& overlay) {
   if (auto f = std::dynamic_pointer_cast<FeatureOverlay>(overlay)) return f->layer();
