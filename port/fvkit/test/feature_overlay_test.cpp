@@ -211,6 +211,17 @@ TEST(FeatureOverlay, SavesAsGeoPackageAndGeoJsonAndReopens) {
   fs::remove(json);
 }
 
+TEST(FeatureOverlay, APlainSaveKeepsTheFormatTheFileWasReadIn) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  EXPECT_EQ(overlay.save_format_index(), FeatureOverlay::kFormatGeoJson);
+  const std::string gpkg = Temp("format.gpkg");
+  fs::remove(gpkg);
+  ASSERT_TRUE(overlay.FileSaveAs(gpkg, FeatureOverlay::kFormatGeoPackage).ok());
+  EXPECT_EQ(overlay.save_format_index(), FeatureOverlay::kFormatGeoPackage);
+  fs::remove(gpkg);
+}
+
 TEST(FeatureOverlay, TheFileCarriesTheLayersNameDescriptionAndScaleRange) {
   FeatureOverlay overlay;
   ASSERT_TRUE(overlay.FileOpen(kRivers).ok());

@@ -317,6 +317,8 @@ Status FeatureOverlay::Load(const std::string& spec) {
     if (!s.ok()) return s;
     SetLayer(std::move(layer));
     spec_layer_.clear();
+    // A plain Save rewrites the file in the format it was read in.
+    set_save_format_index(kFormatGeoJson);
     UseStoredStyle(spec, style_json);
     return Status::Ok();
   }
@@ -344,6 +346,7 @@ Status FeatureOverlay::Load(const std::string& spec) {
   SetLayer(layer);
   package_ = std::move(package);
   spec_layer_ = source.layer;
+  set_save_format_index(kFormatGeoPackage);
   UseStoredStyle(spec, style_json);
   return Status::Ok();
 }
