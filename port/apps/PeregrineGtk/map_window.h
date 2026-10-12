@@ -18,6 +18,7 @@
 #include "feature_form_window.h"
 #include "fv_desk_host.h"
 #include "layer_fields_window.h"
+#include "properties_window.h"
 #include "layer_style_window.h"
 #include "layers_window.h"
 #include "main_menu.h"
@@ -69,6 +70,7 @@ class MapWindow : public Gtk::ApplicationWindow {
   AttributeTableWindow* attribute_table_window() { return attribute_table_.get(); }
   LayerStyleWindow* layer_style_window() { return layer_style_.get(); }
   LayerFieldsWindow* layer_fields_window() { return layer_fields_.get(); }
+  PropertiesWindow* properties_window() { return properties_.get(); }
   NewLayerWindow* new_layer_window() { return new_layer_.get(); }
   ProfileWindow* profile_window() { return profile_.get(); }
   /// The options window of `kind` (a `fv::desk::HostOptionsKind`), or null.
@@ -125,6 +127,7 @@ class MapWindow : public Gtk::ApplicationWindow {
   std::unique_ptr<AttributeTableWindow> attribute_table_;
   std::unique_ptr<LayerStyleWindow> layer_style_;
   std::unique_ptr<LayerFieldsWindow> layer_fields_;
+  std::unique_ptr<PropertiesWindow> properties_;
   std::unique_ptr<NewLayerWindow> new_layer_;
   std::unique_ptr<ProfileWindow> profile_;
   std::unique_ptr<OptionsWindow> map_options_;

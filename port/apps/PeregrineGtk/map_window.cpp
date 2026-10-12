@@ -166,7 +166,9 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
     ShowPanel(profile_, [this] { return std::make_unique<ProfileWindow>(*host_, *this); });
   if (t.profile_changed && profile_ && profile_->get_visible()) profile_->Reload();
   if (t.layers_requested && host_->TakeLayersRequest())
-    ShowPanel(layers_, [this] { return std::make_unique<LayersWindow>(*host_, *this); });
+    ShowPanel(layers_, [this] {
+      return std::make_unique<LayersWindow>(*host_, *this, [this](const std::string& id) { Execute(id); });
+    });
   if (t.layers_changed && layers_ && layers_->get_visible()) layers_->Reload();
   if (t.form_requested && host_->TakeFeatureFormRequest())
     ShowPanel(feature_form_, [this] { return std::make_unique<FeatureFormWindow>(*host_, *this); });
@@ -178,6 +180,8 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
     ShowPanel(layer_fields_, [this] { return std::make_unique<LayerFieldsWindow>(*host_, *this); });
   if (t.new_layer_requested && host_->TakeNewLayerRequest())
     ShowPanel(new_layer_, [this] { return std::make_unique<NewLayerWindow>(*host_, *this); });
+  if (t.properties_requested && host_->TakeLayerPropertiesRequest())
+    ShowPanel(properties_, [this] { return std::make_unique<PropertiesWindow>(*host_, *this); });
   if (t.features_changed) FeaturesDidChange();
   if (t.new_frame || t.redraw || t.status_changed || t.catalog_changed || t.job_changed)
     menus_.Refresh();

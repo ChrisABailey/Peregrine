@@ -87,6 +87,47 @@ TEST_F(FeatureWindowsTest, LayersPanelListsTheStackAndHidesALayer) {
   ASSERT_TRUE(SpinUntil([&] { return layers.get_visible(); }));
 }
 
+TEST_F(FeatureWindowsTest, SourcesViewGroupsLayersUnderTheirFile) {
+  window().Execute("overlay.layers");
+  ASSERT_TRUE(SpinUntil([&] { return window().layers_window() != nullptr; }));
+  LayersWindow& layers = *window().layers_window();
+  layers.ShowView("sources");
+  ASSERT_GE(host().SourceCount(), 1);
+  EXPECT_EQ(host().SourceName(0), "rivers.geojson");
+  const int rows = 2 * host().SourceCount();  // every source here has one layer, all expanded
+  EXPECT_NE(layers.sources_list().get_row_at_index(rows - 1), nullptr);
+  EXPECT_EQ(layers.sources_list().get_row_at_index(rows), nullptr);
+  EXPECT_EQ(layers.SourceEntry(0), std::make_pair(0, -1));
+  EXPECT_EQ(layers.SourceEntry(1), std::make_pair(0, host().SourceLayerRow(0, 0)));
+
+  layers.SetExpanded(0, false);
+  EXPECT_EQ(layers.sources_list().get_row_at_index(rows - 1), nullptr);
+  layers.SetExpanded(0, true);
+
+  // The source's check box hides its layers.
+  auto* box = dynamic_cast<Gtk::Box*>(layers.sources_list().get_row_at_index(0)->get_child());
+  ASSERT_NE(box, nullptr);
+  auto* visible = dynamic_cast<Gtk::CheckButton*>(box->get_first_child()->get_next_sibling());
+  ASSERT_NE(visible, nullptr);
+  EXPECT_TRUE(visible->get_active());
+  visible->set_active(false);
+  EXPECT_EQ(host().SourceShown(0), 0);
+  EXPECT_FALSE(host().LayerVisible(host().SourceLayerRow(0, 0)));
+  Drain();
+
+  // The layer's menu comes from DeskKit; Properties opens the sheet.
+  layers.ShowMenuAt(1, 10, 10);
+  auto model = layers.menu().get_menu_model();
+  ASSERT_TRUE(model);
+  EXPECT_GT(model->get_n_items(), 2);
+  EXPECT_TRUE(layers.activate_action("ctx.layers.properties"));
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& sheet = *window().properties_window();
+  EXPECT_EQ(sheet.get_title(), "Layer Properties — Charleston rivers");
+  EXPECT_NE(sheet.grid().get_child_at(1, 1), nullptr);
+  layers.menu().popdown();
+}
+
 TEST_F(FeatureWindowsTest, TableFiltersSelectsAndOpensTheForm) {
   window().Execute("overlay.attribute_table");
   ASSERT_TRUE(SpinUntil([&] { return window().attribute_table_window() != nullptr; }));
