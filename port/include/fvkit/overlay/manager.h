@@ -232,8 +232,12 @@ class OverlayManager {
   // implementation of "who is on screen and in what order" would drift from
   // the first the day someone changed the top-most band.
   std::vector<Overlay*> DrawOrder() const;
+  /// `DrawOrder()` less the overlays whose scale range leaves them out at
+  /// `proj`'s scale (`Overlay::DrawsAtScale`): what `DrawAll` draws through
+  /// `proj`, and what a hit test through it may find.
+  std::vector<Overlay*> DrawOrderAt(const MapProjection& proj) const;
 
-  // Bottom-up over visible overlays, then the top-most-flagged ones (also
+  // Bottom-up over visible overlays drawn at `proj`'s scale, then the top-most-flagged ones (also
   // bottom-up among themselves) so a crosshair or HUD lands over everything
   // even if the user has reordered it downwards. Stops at the first failure.
   // Under declutter, only the current overlay draws. `interrupted` is polled

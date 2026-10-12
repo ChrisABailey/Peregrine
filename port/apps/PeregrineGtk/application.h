@@ -9,6 +9,7 @@
 #include <gtkmm.h>
 
 #include <memory>
+#include <string>
 
 #include "fv_desk_launch.h"
 
@@ -17,8 +18,10 @@ namespace peregrine {
 class MapWindow;
 
 /// One map window, set up from the launch options: `--catalog` opens a
-/// catalog, `--center` moves the camera, `--shot` writes the window once the
-/// first frame is drawn and quits.
+/// catalog, `--center` moves the camera, `--open` opens overlay files,
+/// `--run` executes commands (map groups before the camera, the rest after
+/// `--open`), `--shot` writes the window once the first frame is drawn and
+/// quits.
 class Application : public Gtk::Application {
  public:
   static Glib::RefPtr<Application> create(fv::desk::LaunchOptions options);
@@ -29,6 +32,7 @@ class Application : public Gtk::Application {
   void on_activate() override;
 
  private:
+  void Run(const std::string& command_id);
   bool ShotWhenReady(const Glib::RefPtr<Gdk::FrameClock>& clock);
 
   fv::desk::LaunchOptions options_;

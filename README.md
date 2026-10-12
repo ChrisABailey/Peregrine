@@ -34,7 +34,7 @@ ctest --test-dir build  # run tests
 `ctest` reports a skipped test as passing; the `(Skipped)` lines in its output
 show which tests skipped and why. With the sample data in `testdata/` (see
 *Test data*) the suite is **2396 tests on macOS, 179 of them skipped**, and
-**2441 on Linux, 185 skipped**: the skips need map data too large to ship
+**2657 on Linux, 186 skipped**: the skips need map data too large to ship
 (CADRG, DNC/GeoSym, the full OSM pyramid).
 
 ### macOS

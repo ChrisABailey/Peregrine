@@ -25,8 +25,10 @@
 #include "fv_desk_commands.h"
 #include "fv_desk_feature_form.h"
 #include "fv_desk_layer_fields.h"
+#include "fv_desk_layer_properties.h"
 #include "fv_desk_layer_style.h"
 #include "fv_desk_layers.h"
+#include "fv_desk_sources.h"
 #include "fv_desk_map_groups.h"
 #include "fv_desk_menu_model.h"
 #include "fv_desk_options.h"
@@ -90,6 +92,14 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the New Layer dialog over `Desk::new_layer()`;
   /// the shell creates the layer through `Desk::CreateNewLayer`.
   virtual void ShowNewLayer() {}
+  /// Show (or bring forward) the Properties sheet: `Desk::properties_title()`
+  /// over `Desk::properties()`, read-only, and the further tabs
+  /// `Desk::PropertiesTabs()` names, opened at `Desk::properties_tab()`.
+  virtual void ShowLayerProperties() {}
+  /// True when the shell's Properties dialog shows a layer's General,
+  /// Symbology, Labels and Fields tabs. Layer Style… and Layer Fields… then
+  /// open it on their tab instead of asking for their own dialogs.
+  virtual bool HostsPropertiesTabs() const { return false; }
 };
 
 /// The status bar content (port/desktop-plan.md §1d), as text.
@@ -246,6 +256,45 @@ class Desk {
   Status MoveLayer(size_t from, size_t to);
   Status SelectLayer(size_t row);
 
+  // MARK: Layer manager
+  /// The Sources view: the layer rows grouped by source.
+  const SourcesModel& sources() const { return sources_; }
+  /// Each changes the stack through `sources()` and repaints, as the layer setters do.
+  Status SetSourceVisible(size_t source, bool visible);
+  Status MoveSource(size_t from, size_t to);
+  /// Makes the source's top layer current, so the source menu acts on it.
+  Status SelectSource(size_t source);
+  /// The right-click menus; they act on the current overlay and its source,
+  /// so the shell selects the row first. Enabled per `commands().IsEnabled`.
+  std::vector<MenuItem> LayerMenu() const { return menus_.ResolveLayout(LayerContextLayout()); }
+  std::vector<MenuItem> SourceMenu() const { return menus_.ResolveLayout(SourceContextLayout()); }
+  /// The Properties sheet last asked for (layers.properties, layers.source.properties).
+  const std::string& properties_title() const { return properties_title_; }
+  const std::vector<PropertyRow>& properties() const { return properties_; }
+  /// Opens Properties on the current layer at `tab`. When the shell hosts the
+  /// tabs it also opens the General model and, for a feature layer, the style
+  /// and fields models over the layer. kNotFound without a current layer.
+  Status OpenLayerProperties(PropertiesTab tab);
+  /// The tabs Properties shows, in order: Source alone for a source, or for a
+  /// shell without tabs; General for a layer; Symbology, Labels and Fields
+  /// while their models are open over the layer.
+  std::vector<PropertiesTab> PropertiesTabs() const;
+  /// The tab Properties opens at.
+  PropertiesTab properties_tab() const { return properties_tab_; }
+  /// Null unless Properties is open on a layer in a shell that hosts the tabs.
+  const std::shared_ptr<LayerGeneralModel>& layer_general() const { return general_; }
+  /// True when a tab has unapplied changes.
+  bool LayerPropertiesDirty() const;
+  /// Applies each dirty tab: General, then Symbology and Labels, then Fields
+  /// (ask about `LayerFieldsLoss()` first). Stops at the first error.
+  Status ApplyLayerProperties();
+  /// Every tab back to the layer's current settings.
+  Status RevertLayerProperties();
+  /// Discards the tabs' models; unapplied changes are lost.
+  void CloseLayerProperties();
+  /// Centres the map on `box` at the scale that just shows it; a point keeps the scale.
+  void ZoomTo(const GeoRect& box);
+
   // MARK: Feature form and attribute table
   /// The editable feature layer behind `overlay`: a feature overlay's layer,
   /// or a point set through `PointsFeatureLayer`. Null for any other overlay.
@@ -274,7 +323,8 @@ class Desk {
   int SelectedTableRow() const;
   /// Opens the form on the table row's feature.
   Status EditTableRow(size_t row);
-  /// The style dialog over the current feature overlay's layer style.
+  /// The style dialog over the current feature overlay's layer style; in a
+  /// shell that hosts the Properties tabs, Properties at Symbology.
   /// kNotFound when the current overlay is not a feature overlay.
   Status OpenLayerStyle();
   /// The style dialog over the selected feature's own symbol.
@@ -284,8 +334,9 @@ class Desk {
   /// Writes the draft style to its overlay, dirties it and repaints.
   Status ApplyLayerStyle();
   void CloseLayerStyle();
-  /// The Layer Fields dialog over the current feature overlay. kNotFound when
-  /// the current overlay is not a feature overlay.
+  /// The Layer Fields dialog over the current feature overlay; in a shell
+  /// that hosts the Properties tabs, Properties at Fields. kNotFound when the
+  /// current overlay is not a feature overlay.
   Status OpenLayerFields();
   /// Null when no Layer Fields dialog is open, or its overlay has closed.
   const std::shared_ptr<LayerFieldsModel>& layer_fields() const { return fields_; }
@@ -293,7 +344,8 @@ class Desk {
   /// shell asks before applying when it is not empty.
   std::string LayerFieldsLoss() const;
   /// Changes the layer's fields, dirties its overlay, closes its form and
-  /// style dialog (they name the old fields), reloads its table and repaints.
+  /// style dialog (they name the old fields; a style tab of Properties is
+  /// reopened instead), reloads its table and repaints.
   Status ApplyLayerFields();
   void CloseLayerFields();
   /// A fresh New Layer dialog, shown by the shell.
@@ -406,6 +458,16 @@ class Desk {
   void DropFeatureViews(const Overlay& overlay);
   /// Logs `s` and reports it through the shell.
   app::FlowResult Report(const Status& s);
+  /// The source holding the current overlay, as a `sources()` row; -1 for none.
+  int CurrentSource(const std::vector<SourceRow>& rows) const;
+  /// The current source's overlays, top first.
+  std::vector<std::shared_ptr<Overlay>> CurrentSourceOverlays() const;
+  void RegisterLayerManagerCommands();
+  /// True while Properties holds the style or fields model as its tabs.
+  bool PropertiesOwnsStyle() const;
+  bool PropertiesOwnsFields() const;
+  /// Reopens the style model over Properties' layer, after its fields changed.
+  void ReopenPropertiesStyle();
   /// Logs a warning at the caller's location and keeps it for `warnings()`.
   void Warn(std::string w, const char* file = __builtin_FILE(), int line = __builtin_LINE());
 
@@ -422,6 +484,13 @@ class Desk {
   std::unique_ptr<app::PickSession> pick_;
   std::unique_ptr<StackHook> stack_hook_;
   LayersModel layers_{overlays_};
+  SourcesModel sources_{overlays_};
+  std::string properties_title_;
+  std::vector<PropertyRow> properties_;
+  PropertiesTab properties_tab_ = PropertiesTab::kSource;
+  /// The layer Properties is open on; null for a source or when closed.
+  const Overlay* properties_overlay_ = nullptr;
+  std::shared_ptr<LayerGeneralModel> general_;
   uint64_t layers_generation_ = 0;
   std::shared_ptr<FeatureFormModel> form_;
   std::shared_ptr<AttributeTableModel> table_;

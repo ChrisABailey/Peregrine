@@ -10,7 +10,9 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <mutex>
 
+#include "fvkit/app/source_spec.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/canvas/geo_draw.h"
 #include "fvkit/feature/geojson.h"
@@ -31,6 +33,51 @@ std::string LowerExtension(const std::string& spec) {
   if (!ext.empty() && ext[0] == '.') ext.erase(0, 1);
   for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return ext;
+}
+
+/// The GeoPackages open in this process by canonical path, so the overlays of
+/// one file's layers share one connection and do not lock each other out.
+struct OpenPackages {
+  std::mutex mu;
+  std::map<std::string, std::weak_ptr<GeoPackage>> by_path;
+};
+
+OpenPackages& Packages() {
+  static OpenPackages packages;
+  return packages;
+}
+
+std::string PackageKey(const std::string& path) {
+  std::error_code ec;
+  const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+  return ec ? path : canonical.string();
+}
+
+/// The open package at `path`, writable when the file allows; opened if no
+/// overlay holds it.
+Status SharedPackage(const std::string& path, std::shared_ptr<GeoPackage>* out) {
+  OpenPackages& open = Packages();
+  const std::string key = PackageKey(path);
+  std::lock_guard<std::mutex> lock(open.mu);
+  auto it = open.by_path.find(key);
+  if (it != open.by_path.end()) {
+    if (std::shared_ptr<GeoPackage> held = it->second.lock()) {
+      *out = std::move(held);
+      return Status::Ok();
+    }
+  }
+  Status s = GeoPackage::Open(path, true, out);
+  if (!s.ok()) s = GeoPackage::Open(path, false, out);
+  if (!s.ok()) return s;
+  open.by_path[key] = *out;
+  return Status::Ok();
+}
+
+/// Drops `path` from the open packages, after the file there was replaced.
+void ForgetPackage(const std::string& path) {
+  OpenPackages& open = Packages();
+  std::lock_guard<std::mutex> lock(open.mu);
+  open.by_path.erase(PackageKey(path));
 }
 
 /// A MapLibre engine loaded from style JSON, labels on.
@@ -261,40 +308,75 @@ Status FeatureOverlay::FileNew() {
 }
 
 Status FeatureOverlay::Load(const std::string& spec) {
-  const std::string ext = LowerExtension(spec);
+  const app::SourceSpec source = app::SplitSourceSpec(spec);
+  const std::string ext = LowerExtension(source.path);
   if (ext == kGeoJsonExtension || ext == "json") {
     std::shared_ptr<MemoryFeatureLayer> layer;
     std::string style_json;
-    Status s = ReadGeoJsonFile(spec, &layer, &style_json);
+    Status s = ReadGeoJsonFile(source.path, &layer, &style_json);
     if (!s.ok()) return s;
     SetLayer(std::move(layer));
+    spec_layer_.clear();
+    // A plain Save rewrites the file in the format it was read in.
+    set_save_format_index(kFormatGeoJson);
     UseStoredStyle(spec, style_json);
     return Status::Ok();
   }
   std::shared_ptr<GeoPackage> package;
-  Status s = GeoPackage::Open(spec, true, &package);
-  if (!s.ok()) s = GeoPackage::Open(spec, false, &package);
+  Status s = SharedPackage(source.path, &package);
   if (!s.ok()) return s;
   std::vector<GeoPackageLayerInfo> infos;
   s = package->Layers(&infos);
   if (!s.ok()) return s;
-  if (infos.empty()) return Status::Error(kNotFound, spec + " has no feature tables");
-  // One overlay shows one layer; a file with several opens its first.
+  if (infos.empty()) return Status::Error(kNotFound, source.path + " has no feature tables");
+  std::string table = infos.front().table;
+  if (!source.layer.empty()) {
+    const auto named = std::find_if(infos.begin(), infos.end(),
+                                    [&source](const GeoPackageLayerInfo& i) { return i.table == source.layer; });
+    if (named == infos.end())
+      return Status::Error(kNotFound, source.path + " has no feature table \"" + source.layer + "\"");
+    table = named->table;
+  }
   std::shared_ptr<GeoPackageFeatureLayer> layer;
-  s = package->OpenLayer(infos.front().table, &layer);
+  s = package->OpenLayer(table, &layer);
   if (!s.ok()) return s;
   std::string style_json;
-  s = package->ReadLayerStyle(infos.front().table, &style_json);
+  s = package->ReadLayerStyle(table, &style_json);
   if (!s.ok() && s.code != kNotFound) FV_LOG_WARNING(spec << ": layer style: " << s.message);
   SetLayer(layer);
   package_ = std::move(package);
+  spec_layer_ = source.layer;
+  set_save_format_index(kFormatGeoPackage);
   UseStoredStyle(spec, style_json);
+  return Status::Ok();
+}
+
+Status FeatureOverlay::ListLayers(const std::string& path, std::vector<std::string>* layers) {
+  layers->clear();
+  if (LowerExtension(path) != kExtension) return Status::Ok();
+  std::shared_ptr<GeoPackage> package;
+  Status s = SharedPackage(path, &package);
+  if (!s.ok()) return s;
+  std::vector<GeoPackageLayerInfo> infos;
+  s = package->Layers(&infos);
+  if (!s.ok()) return s;
+  for (const GeoPackageLayerInfo& i : infos) layers->push_back(i.table);
   return Status::Ok();
 }
 
 void FeatureOverlay::UseStoredStyle(const std::string& spec, const std::string& style_json) {
   style_ = FeatureStyle{};
+  SetDescription(std::string());
+  SetCredits(std::string());
+  SetScaleRange(0, 0);
   if (style_json.empty()) return;
+  FeatureLayerInfo info;
+  if (ReadFeatureLayerInfoJson(style_json, &info).ok()) {
+    if (!info.name.empty()) SetName(info.name);
+    SetDescription(info.description);
+    SetCredits(info.credits);
+    SetScaleRange(info.min_scale, info.max_scale);
+  }
   FeatureStyle style;
   const Status s = ReadFeatureStyleJson(style_json, &style);
   if (!s.ok()) {
@@ -311,6 +393,14 @@ Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
   std::string style_json;
   Status st = WriteFeatureStyleJson(style_, &style_json);
   if (!st.ok()) return st;
+  FeatureLayerInfo info;
+  if (Name() != layer_->Name()) info.name = Name();
+  info.description = description();
+  info.credits = credits();
+  info.min_scale = min_scale();
+  info.max_scale = max_scale();
+  st = WriteFeatureLayerInfoJson(info, &style_json);
+  if (!st.ok()) return st;
   if (format_index == kFormatGeoJson) {
     Status s = WriteGeoJsonFile(*layer_, spec, style_json);
     if (!s.ok()) return s;
@@ -319,8 +409,11 @@ Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
   if (format_index != kFormatGeoPackage)
     return Status::Error(kUnsupported, "feature layers save as GeoPackage (0) or GeoJSON (1), asked for " +
                                            std::to_string(format_index));
+  const app::SourceSpec target = app::SplitSourceSpec(spec);
   std::error_code ec;
-  if (package_ && std::filesystem::equivalent(package_->Path(), spec, ec)) {
+  if (package_ && std::filesystem::equivalent(package_->Path(), target.path, ec)) {
+    if (target.layer.empty() && !spec_layer_.empty())
+      return Status::Error(kInvalidArg, target.path + " holds this layer with others; save it as another file");
     const auto* table = dynamic_cast<const GeoPackageFeatureLayer*>(layer_.get());
     if (table != nullptr) {
       st = package_->WriteLayerStyle(table->Table(), style_json);
@@ -349,6 +442,7 @@ Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
   }
   std::filesystem::rename(temp, spec, ec);
   if (ec) return Status::Error(kIoError, "cannot replace " + spec + ": " + ec.message());
+  ForgetPackage(spec);
   return Load(spec);
 }
 

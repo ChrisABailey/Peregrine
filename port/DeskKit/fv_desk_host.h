@@ -68,6 +68,7 @@ struct HostTick {
   bool style_requested = false;    ///< show the style dialog; see TakeLayerStyleRequest
   bool fields_requested = false;   ///< show Layer Fields; see TakeLayerFieldsRequest
   bool new_layer_requested = false;  ///< show New Layer; see TakeNewLayerRequest
+  bool properties_requested = false;  ///< show Properties; see TakeLayerPropertiesRequest
   /// A feature dialog (form, table, style, fields, new layer) opened, closed
   /// or reloaded, or the table's selection moved; re-read them (a closed one
   /// reads as not open).
@@ -307,6 +308,81 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string SetLayerOpacity(int row, int percent);
   std::string MoveLayer(int from, int to);
   std::string SelectLayer(int row);
+
+  // MARK: Layer manager (Sources view)
+
+  /// Sources topmost first, as of the same snapshot as the layer rows
+  /// (`Desk::sources()`). Out-of-range sources read as empty.
+  int SourceCount() const;
+  std::string SourceName(int source) const;
+  std::string SourcePath(int source) const;  ///< "" for an overlay without a file
+  std::string SourceTypeName(int source) const;
+  std::string SourceIcon(int source) const;
+  /// How many layers are shown: 0 none, 1 some, 2 all.
+  int SourceShown(int source) const;
+  bool SourceCurrent(int source) const;
+  bool SourceDirty(int source) const;
+  int SourceLayerCount(int source) const;
+  /// The `i`th layer of the source (top first) as a layer row for `LayerName`
+  /// and its siblings; -1 out of range.
+  int SourceLayerRow(int source, int i) const;
+  /// Each returns an error message, "" on success.
+  std::string SetSourceVisible(int source, bool visible);
+  std::string MoveSource(int from, int to);
+  std::string SelectSource(int source);
+  /// The right-click menus (`Desk::LayerMenu`, `Desk::SourceMenu`), flattened
+  /// at depth 0. They act on the current layer and its source, so the shell
+  /// selects the row first, then runs the chosen item through `Execute`.
+  int LayerMenuEntryCount() const;
+  HostMenuEntry LayerMenuEntryAt(int index) const;
+  int SourceMenuEntryCount() const;
+  HostMenuEntry SourceMenuEntryAt(int index) const;
+
+  // MARK: Properties sheet
+
+  /// True once after the core asked to show the Properties sheet.
+  bool TakeLayerPropertiesRequest();
+  std::string LayerPropertiesTitle() const;
+  /// Rows in order; a row whose section differs from the one before starts a new section.
+  int LayerPropertyCount() const;
+  std::string LayerPropertySection(int i) const;
+  std::string LayerPropertyKey(int i) const;
+  std::string LayerPropertyValue(int i) const;
+  /// Declares that the shell's Properties dialog shows a layer's General,
+  /// Symbology, Labels and Fields tabs (`DeskShell::HostsPropertiesTabs`);
+  /// Layer Style… and Layer Fields… then open Properties at their tab. Off
+  /// until called.
+  void SetPropertiesTabs(bool tabbed);
+  /// The tabs Properties shows, in order, each a `fv::desk::PropertiesTab`:
+  /// 0 Source (the rows above), 1 General, 2 Symbology, 3 Labels, 4 Fields.
+  /// The style tabs read the layer style accessors, the Fields tab the layer
+  /// fields accessors. Out of range reads as -1 and "".
+  int LayerPropertiesTabCount() const;
+  int LayerPropertiesTabAt(int i) const;
+  std::string LayerPropertiesTabTitle(int i) const;
+  /// The tab to open at, a `fv::desk::PropertiesTab`.
+  int LayerPropertiesTab() const;
+  bool LayerPropertiesDirty() const;
+  /// Applies every tab with changes and repaints; ask about
+  /// `LayerFieldsLoss()` first. Returns the error message, or "".
+  std::string ApplyLayerProperties();
+  std::string RevertLayerProperties();
+  /// The dialog closed; its tabs' unapplied changes are dropped.
+  void CloseLayerProperties();
+  /// The General tab: false for a source or a shell without tabs.
+  bool LayerGeneralOpen() const;
+  std::string LayerGeneralName() const;
+  std::string LayerGeneralDescription() const;
+  std::string LayerGeneralCredits() const;
+  /// The scale range as "1:50,000"; "" for no limit. The minimum is the scale
+  /// zoomed furthest out at which the layer still draws, the maximum the
+  /// scale zoomed furthest in.
+  std::string LayerGeneralMinScale() const;
+  std::string LayerGeneralMaxScale() const;
+  /// Replaces the General draft, the scales as typed ("1:50,000", "50000",
+  /// "" for no limit). Returns the error message, or "".
+  std::string SetLayerGeneral(const std::string& name, const std::string& description, const std::string& credits,
+                              const std::string& min_scale, const std::string& max_scale);
 
   // MARK: Feature form
 

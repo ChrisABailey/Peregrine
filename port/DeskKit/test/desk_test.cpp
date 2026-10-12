@@ -707,7 +707,7 @@ void CollectIds(const std::vector<MenuItem>& items, std::set<std::string>* out) 
   }
 }
 
-TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusOrToolbar) {
+TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusToolbarOrLayerMenus) {
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
   auto cat = std::make_shared<fv::Catalog>();
@@ -733,6 +733,8 @@ TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusOrToolbar) {
   std::set<std::string> reachable;
   for (const Menu& m : desk.menus().Menus()) CollectIds(m.items, &reachable);
   CollectIds(desk.menus().Toolbar(), &reachable);
+  CollectIds(desk.LayerMenu(), &reachable);
+  CollectIds(desk.SourceMenu(), &reachable);
   // The feature editor's palette runs these through its own editor.tool ids.
   for (const char* id : {"overlay.attribute_table", "overlay.edit_feature", "overlay.style",
                          "overlay.style_feature", "overlay.fields"})

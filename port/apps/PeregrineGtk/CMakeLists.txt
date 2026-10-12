@@ -15,24 +15,33 @@ if(NOT GTKMM4_FOUND)
   return()
 endif()
 
-add_executable(peregrine-gtk
-  application.cpp
+set(PEREGRINE_GTK_WINDOWS
+  attribute_table_window.cpp
   data_sources_window.cpp
   dialogs.cpp
-  main.cpp
+  feature_form_window.cpp
+  layer_fields_panel.cpp
+  layer_style_window.cpp
+  layers_window.cpp
+  properties_window.cpp
   main_menu.cpp
   map_canvas.cpp
   map_window.cpp
+  new_layer_window.cpp
+  options_window.cpp
+  profile_window.cpp
 )
+add_executable(peregrine-gtk application.cpp main.cpp ${PEREGRINE_GTK_WINDOWS})
 target_link_libraries(peregrine-gtk PRIVATE fv_deskkit PkgConfig::GTKMM4)
 # The core links the frozen libpng 1.2 fork (fv_png) statically. Without this
 # its png_* symbols are exported from the executable and interpose the system
 # libpng16 that GTK loads, which crashes the first PNG GTK reads or writes.
 target_link_options(peregrine-gtk PRIVATE "LINKER:--exclude-libs,ALL")
 
-# The menu, action, shortcut and frame-placement tests run without a display. The --shot
-# tests need an X server, so they run under xvfb-run when that is present:
-# one with an empty catalog, and one with a catalog built from testdata/.
+# The menu, action, shortcut, key and frame-placement tests run without a display. The
+# window tests and the --shot tests need an X server, so they run under xvfb-run when that
+# is present: the dialogs and feature-layer windows, the window with an empty catalog, and
+# with a catalog built from testdata/.
 if(FVW_BUILD_TESTS)
   add_executable(peregrine_gtk_test test/main_menu_test.cpp main_menu.cpp map_canvas.cpp)
   target_include_directories(peregrine_gtk_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -47,9 +56,11 @@ if(FVW_BUILD_TESTS)
   find_program(XVFB_RUN xvfb-run)
   if(XVFB_RUN)
     # The dialog tests show windows, so the whole binary runs under its own Xvfb.
-    add_executable(peregrine_gtk_dialogs_test test/dialogs_test.cpp
-      data_sources_window.cpp dialogs.cpp main_menu.cpp map_canvas.cpp map_window.cpp)
+    add_executable(peregrine_gtk_dialogs_test test/dialogs_test.cpp test/feature_windows_test.cpp
+      ${PEREGRINE_GTK_WINDOWS})
     target_include_directories(peregrine_gtk_dialogs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(peregrine_gtk_dialogs_test PRIVATE
+      FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson")
     target_link_libraries(peregrine_gtk_dialogs_test PRIVATE
       fv_deskkit PkgConfig::GTKMM4 GTest::gtest_main)
     target_link_options(peregrine_gtk_dialogs_test PRIVATE "LINKER:--exclude-libs,ALL")

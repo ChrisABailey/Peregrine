@@ -24,6 +24,7 @@
 
 #include "fv_desk_catalog_build.h"
 #include "fv_desk_feature_form.h"
+#include "fv_desk_layer_properties.h"
 #include "fv_desk_user_settings.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/formats/dted.h"
@@ -1019,6 +1020,101 @@ TEST(DeskHost, LayersPanelReadsAndChangesTheStack) {
   EXPECT_NE(h->SetLayerOpacity(0, 50), "");  // the grid has no opacity
   EXPECT_NE(h->SetLayerVisible(3, true), "");
   EXPECT_EQ(h->LayerName(3), "");
+  h->WaitForRender();
+}
+
+TEST(DeskHost, SourcesViewMenusAndPropertiesFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  EXPECT_EQ(h->Execute(std::string("overlay.toggle.") + fv::app::kGridTypeId), "");
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  EXPECT_TRUE(h->Tick().layers_changed);
+  ASSERT_EQ(h->SourceCount(), 2);
+  EXPECT_EQ(h->SourceName(0), "rivers.geojson");
+  EXPECT_EQ(h->SourcePath(0), rivers);
+  EXPECT_EQ(h->SourceName(1), "Lat/Lon Grid");
+  EXPECT_EQ(h->SourceShown(0), 2);
+  EXPECT_TRUE(h->SourceCurrent(0));
+  ASSERT_EQ(h->SourceLayerCount(0), 1);
+  EXPECT_EQ(h->LayerName(h->SourceLayerRow(0, 0)), "Charleston rivers");
+  EXPECT_EQ(h->SourceLayerRow(0, 1), -1);
+
+  EXPECT_EQ(h->SetSourceVisible(0, false), "");
+  EXPECT_EQ(h->SourceShown(0), 0);
+  EXPECT_EQ(h->MoveSource(0, 1), "");
+  EXPECT_EQ(h->SourceName(0), "Lat/Lon Grid");
+  EXPECT_NE(h->MoveSource(0, 5), "");
+
+  ASSERT_GT(h->LayerMenuEntryCount(), 0);
+  EXPECT_EQ(h->LayerMenuEntryAt(0).id, "layers.properties");
+  EXPECT_EQ(h->LayerMenuEntryAt(0).kind, fv::desk::kMenuCommand);
+  EXPECT_EQ(h->SourceMenuEntryAt(0).id, "layers.source.properties");
+  EXPECT_EQ(h->SourceMenuEntryAt(99).kind, fv::desk::kMenuSeparator);
+
+  EXPECT_EQ(h->SelectSource(1), "");
+  EXPECT_EQ(h->Execute("layers.properties"), "");
+  EXPECT_TRUE(h->Tick().properties_requested);
+  EXPECT_TRUE(h->TakeLayerPropertiesRequest());
+  EXPECT_FALSE(h->TakeLayerPropertiesRequest());
+  EXPECT_EQ(h->LayerPropertiesTitle(), "Layer Properties — Charleston rivers");
+  ASSERT_GT(h->LayerPropertyCount(), 3);
+  EXPECT_EQ(h->LayerPropertySection(0), "Layer");
+  EXPECT_EQ(h->LayerPropertyKey(0), "Name");
+  EXPECT_EQ(h->LayerPropertyValue(0), "Charleston rivers");
+  EXPECT_EQ(h->LayerPropertyKey(999), "");
+  EXPECT_EQ(h->LayerPropertiesTabCount(), 1);  // no tabs until the shell hosts them
+  EXPECT_FALSE(h->LayerGeneralOpen());
+  h->WaitForRender();
+}
+
+TEST(DeskHost, PropertiesTabsFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  h->SetPropertiesTabs(true);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+
+  EXPECT_EQ(h->Execute("overlay.style"), "");
+  const fv::desk::HostTick t = h->Tick();
+  EXPECT_TRUE(t.properties_requested);
+  EXPECT_FALSE(t.style_requested);
+  ASSERT_EQ(h->LayerPropertiesTabCount(), 5);
+  EXPECT_EQ(h->LayerPropertiesTabTitle(0), "Source");
+  EXPECT_EQ(h->LayerPropertiesTabTitle(4), "Fields");
+  EXPECT_EQ(h->LayerPropertiesTabAt(5), -1);
+  EXPECT_EQ(h->LayerPropertiesTab(), static_cast<int>(fv::desk::PropertiesTab::kSymbology));
+  EXPECT_TRUE(h->LayerStyleOpen());
+  EXPECT_TRUE(h->LayerFieldsOpen());
+
+  ASSERT_TRUE(h->LayerGeneralOpen());
+  EXPECT_EQ(h->LayerGeneralName(), "Charleston rivers");
+  EXPECT_EQ(h->LayerGeneralMinScale(), "");
+  EXPECT_NE(h->SetLayerGeneral("Rivers", "", "", "huge", ""), "");
+  EXPECT_NE(h->SetLayerGeneral("Rivers", "", "", "1:10,000", "1:50,000"), "");
+  EXPECT_FALSE(h->LayerPropertiesDirty());
+  EXPECT_EQ(h->SetLayerGeneral("Rivers", "Three rivers", "USGS", "1:500000", "10000"), "");
+  EXPECT_EQ(h->LayerGeneralMinScale(), "1:500,000");
+  EXPECT_EQ(h->LayerGeneralMaxScale(), "1:10,000");
+  EXPECT_TRUE(h->LayerPropertiesDirty());
+  EXPECT_EQ(h->ApplyLayerProperties(), "");
+  EXPECT_FALSE(h->LayerPropertiesDirty());
+  EXPECT_TRUE(h->Tick().layers_changed);
+  EXPECT_EQ(h->LayerName(0), "Rivers");
+  EXPECT_EQ(h->LayerPropertiesTitle(), "Layer Properties — Rivers");
+
+  EXPECT_EQ(h->SetLayerGeneral("Rivers 2", "", "", "", ""), "");
+  EXPECT_EQ(h->RevertLayerProperties(), "");
+  EXPECT_EQ(h->LayerGeneralName(), "Rivers");
+  h->CloseLayerProperties();
+  EXPECT_FALSE(h->LayerGeneralOpen());
+  EXPECT_FALSE(h->LayerStyleOpen());
+  EXPECT_EQ(h->LayerPropertiesTabCount(), 1);
   h->WaitForRender();
 }
 

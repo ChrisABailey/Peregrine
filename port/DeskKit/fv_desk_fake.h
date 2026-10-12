@@ -32,6 +32,7 @@ class FakeDeskShell : public DeskShell {
   std::optional<int> list_choice;
   bool revert_answer = false;
   std::string directory;                   ///< empty: cancelled
+  bool properties_tabs = false;            ///< the shell hosts the Properties tabs
 
   // What was asked or shown.
   std::vector<std::string> asked_save;
@@ -53,6 +54,7 @@ class FakeDeskShell : public DeskShell {
   int layer_style_shown = 0;
   int layer_fields_shown = 0;
   int new_layer_shown = 0;
+  int layer_properties_shown = 0;
 
   SaveAnswer AskSave(const std::string& name) override;
   std::vector<std::string> ChooseFilesToOpen(const app::FileTypeDesc&) override;
@@ -82,6 +84,8 @@ class FakeDeskShell : public DeskShell {
   void ShowLayerStyle() override { ++layer_style_shown; }
   void ShowLayerFields() override { ++layer_fields_shown; }
   void ShowNewLayer() override { ++new_layer_shown; }
+  void ShowLayerProperties() override { ++layer_properties_shown; }
+  bool HostsPropertiesTabs() const override { return properties_tabs; }
   std::string ChooseDirectory(const std::string&) override { return directory; }
   void ShowNotice(const std::string& text) override { notices.push_back(text); }
 };

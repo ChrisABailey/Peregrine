@@ -21,7 +21,7 @@
 // a PickSession sees a click, the stack has already declined it.
 //
 // WHO IS ASKED, and it is the same set in every method here:
-// OverlayManager::DrawOrder() reversed -- on-screen overlays, topmost first,
+// OverlayManager::DrawOrderAt(proj) reversed -- on-screen overlays, topmost first,
 // honouring visibility and declutter and the top-most band. The pick index a
 // vector overlay hit-tests against is built from the ink it EMITTED (L4's
 // fvkit/vector/pick.h), so asking anything but the drawn set would let a tap
@@ -168,7 +168,7 @@ std::string PickRowText(const HitItem& item);
 // that walk plus the dialog.
 //
 // Asked of the same set as everything else in this header:
-// OverlayManager::DrawOrder() reversed, which is on-screen overlays only. An
+// OverlayManager::DrawOrderAt(proj) reversed, which is on-screen overlays only. An
 // overlay that is invisible or decluttered is not a snap target, because a
 // coordinate that jumped to something the user cannot see is indistinguishable
 // from a bug.

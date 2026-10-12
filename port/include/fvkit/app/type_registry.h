@@ -62,6 +62,11 @@ struct FileTypeDesc {
   // through to Persistence::FileSaveAs.
   std::vector<std::pair<std::string, std::string>> open_filters;
   std::vector<std::pair<std::string, std::string>> save_filters;
+  /// The layers of a file that holds several, top first. Opening such a file
+  /// by its path opens one overlay per layer, each with the spec
+  /// `JoinSourceSpec(path, layer)` (fvkit/app/source_spec.h). Null, or fewer
+  /// than two layers, opens the file as one overlay.
+  std::function<Status(const std::string& path, std::vector<std::string>* layers)> list_layers;
 };
 
 struct OverlayTypeDesc {

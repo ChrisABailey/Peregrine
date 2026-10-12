@@ -195,6 +195,54 @@ TEST_F(MainMenuTest, ShortcutsComeFromTheCommands) {
   EXPECT_TRUE(quit);
 }
 
+TEST_F(MainMenuTest, BareKeysAreLeftToTheMapWidget) {
+  // The arrows pan the map; as window shortcuts they would steal the keys
+  // from text fields, so only modified shortcuts are accelerators.
+  bool pan_has_key = false;
+  for (int i = 0; i < host_->MenuEntryCount(); ++i) {
+    const fv::desk::HostMenuEntry e = host_->MenuEntryAt(i);
+    if (e.id == "map.pan.north") pan_has_key = !e.key.empty() && e.modifiers == 0;
+  }
+  EXPECT_TRUE(pan_has_key);
+  bool undo = false;
+  for (const auto& [action, accel] : menus_->accelerators()) {
+    EXPECT_NE(action, menus_->ActionFor("map.pan.north")) << accel;
+    EXPECT_EQ(accel.find('<'), 0u) << accel << " has no modifier";
+    if (action == menus_->ActionFor("edit.undo")) undo = accel == "<Primary>z";
+  }
+  EXPECT_TRUE(undo);
+}
+
+TEST(IconNames, CoverTheMacToolbarsIcons) {
+  // Toolbar.swift's table: every DeskKit icon the mac app draws.
+  for (const char* icon :
+       {"zoom_in", "zoom_out", "recenter", "grid", "points", "features", "contour", "tamask",
+        "scalebar", "movingmap", "route", "pencil", "add_point", "edit_point", "delete_point",
+        "leg_type", "follow_roads", "follow_roads_bicycle", "straight_legs", "labels", "select",
+        "draw_line", "draw_area", "add_hole", "finish", "delete_vertex", "delete_hole",
+        "delete_feature", "undo", "redo", "elevation_profile", "attribute_table", "layer_style",
+        "style_feature", "layer_fields"}) {
+    const std::string name = IconNameFor(icon);
+    EXPECT_NE(name.find("-symbolic"), std::string::npos) << icon;
+  }
+  EXPECT_EQ(IconNameFor("no_such_icon"), "");
+}
+
+TEST(KeyCode, MapsGdkKeysToTheCoresVirtualKeys) {
+  EXPECT_EQ(KeyCode(GDK_KEY_a), 'A');
+  EXPECT_EQ(KeyCode(GDK_KEY_A), 'A');
+  EXPECT_EQ(KeyCode(GDK_KEY_7), '7');
+  EXPECT_EQ(KeyCode(GDK_KEY_Escape), 0x1B);
+  EXPECT_EQ(KeyCode(GDK_KEY_BackSpace), 0x08);
+  EXPECT_EQ(KeyCode(GDK_KEY_Delete), 0x2E);
+  EXPECT_EQ(KeyCode(GDK_KEY_Return), 0x0D);
+  EXPECT_EQ(KeyCode(GDK_KEY_KP_Enter), 0x0D);
+  EXPECT_EQ(KeyCode(GDK_KEY_Left), 0x25);
+  EXPECT_EQ(KeyCode(GDK_KEY_Down), 0x28);
+  EXPECT_EQ(KeyCode(GDK_KEY_Page_Up), 0x21);
+  EXPECT_EQ(KeyCode(GDK_KEY_F5), 0);
+}
+
 TEST_F(MainMenuTest, ActionsFollowEnabledState) {
   for (const std::string& id : MenuCommands())
     EXPECT_EQ(Action(id)->get_enabled(), host_->IsEnabled(id)) << id;

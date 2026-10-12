@@ -88,6 +88,7 @@ add_library(fv_fvkit STATIC
   app/pick.cpp
   app/search.cpp
   app/vector_hit_test.cpp
+  app/source_spec.cpp
   store/tile_pack.cpp
   vector/renderer.cpp
   vector/symbol_draw.cpp

@@ -72,6 +72,8 @@ class HostShell : public DeskShell {
   bool style_requested = false;
   bool fields_requested = false;
   bool new_layer_requested = false;
+  bool properties_requested = false;
+  bool properties_tabs = false;
 
   HostRequestFn handler = nullptr;
   void* handler_context = nullptr;
@@ -152,6 +154,8 @@ class HostShell : public DeskShell {
   void ShowLayerStyle() override { style_requested = true; }
   void ShowLayerFields() override { fields_requested = true; }
   void ShowNewLayer() override { new_layer_requested = true; }
+  void ShowLayerProperties() override { properties_requested = true; }
+  bool HostsPropertiesTabs() const override { return properties_tabs; }
   void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
     options_shown[kOptionsMap] = std::move(model);
     options_requested = kOptionsMap;
@@ -278,6 +282,7 @@ struct DeskHost::Impl {
   uint64_t catalog_epoch = 0;
   int stack_depth = 0;    // nesting of StackEdit
   std::vector<LayerRow> layer_rows;  // the panel's snapshot of `Desk::layers()`
+  std::vector<SourceRow> source_rows;  // `Desk::sources()` at the same time
   uint64_t layers_gen = UINT64_MAX;  // the generation `layer_rows` was taken at
   uint64_t ticked_features_gen = 0;  // `Desk::FeatureViewsGeneration()` at the last Tick
   int ticked_table_row = -1;         // `Desk::SelectedTableRow()` at the last Tick
@@ -331,6 +336,9 @@ struct DeskHost::Impl {
   bool RefreshLayers();
   const LayerRow* Row(int row) const {
     return row >= 0 && row < static_cast<int>(layer_rows.size()) ? &layer_rows[row] : nullptr;
+  }
+  const SourceRow* Source(int source) const {
+    return source >= 0 && source < static_cast<int>(source_rows.size()) ? &source_rows[source] : nullptr;
   }
 
   std::shared_ptr<const view::Frame> Render(const view::Viewport& v, uint64_t seq);
@@ -502,6 +510,7 @@ bool DeskHost::Impl::RefreshLayers() {
   StackEdit edit(*this);
   layers_gen = desk->LayersGeneration();
   layer_rows = desk->layers().Rows();
+  source_rows = desk->sources().Rows();
   return true;
 }
 
@@ -1844,6 +1853,194 @@ std::string DeskHost::SelectLayer(int row) {
   return s.message;
 }
 
+// MARK: Layer manager
+
+int DeskHost::SourceCount() const { return static_cast<int>(impl_->source_rows.size()); }
+
+std::string DeskHost::SourceName(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr ? s->name : std::string();
+}
+
+std::string DeskHost::SourcePath(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr ? s->path : std::string();
+}
+
+std::string DeskHost::SourceTypeName(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr ? s->type_name : std::string();
+}
+
+std::string DeskHost::SourceIcon(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr ? s->icon : std::string();
+}
+
+int DeskHost::SourceShown(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  if (s == nullptr) return 0;
+  return s->shown == fv::desk::SourceShown::kAll ? 2 : s->shown == fv::desk::SourceShown::kSome ? 1 : 0;
+}
+
+bool DeskHost::SourceCurrent(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr && s->current;
+}
+
+bool DeskHost::SourceDirty(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr && s->dirty;
+}
+
+int DeskHost::SourceLayerCount(int source) const {
+  const SourceRow* s = impl_->Source(source);
+  return s != nullptr ? static_cast<int>(s->layers.size()) : 0;
+}
+
+int DeskHost::SourceLayerRow(int source, int i) const {
+  const SourceRow* s = impl_->Source(source);
+  if (s == nullptr || i < 0 || i >= static_cast<int>(s->layers.size())) return -1;
+  return static_cast<int>(s->layers[i]);
+}
+
+std::string DeskHost::SetSourceVisible(int source, bool visible) {
+  Status s;
+  {
+    Impl::StackEdit edit(*impl_);
+    s = impl_->desk->SetSourceVisible(static_cast<size_t>(std::max(source, 0)), visible);
+  }
+  impl_->RefreshLayers();
+  return s.message;
+}
+
+std::string DeskHost::MoveSource(int from, int to) {
+  Status s;
+  {
+    Impl::StackEdit edit(*impl_);
+    s = impl_->desk->MoveSource(static_cast<size_t>(std::max(from, 0)), static_cast<size_t>(std::max(to, 0)));
+  }
+  impl_->RefreshLayers();
+  return s.message;
+}
+
+std::string DeskHost::SelectSource(int source) {
+  Status s;
+  {
+    Impl::StackEdit edit(*impl_);
+    s = impl_->desk->SelectSource(static_cast<size_t>(std::max(source, 0)));
+  }
+  impl_->RefreshLayers();
+  return s.message;
+}
+
+namespace {
+
+HostMenuEntry EntryAt(const std::vector<MenuItem>& items, int index) {
+  std::vector<HostMenuEntry> flat;
+  Flatten(items, 0, &flat);
+  return index >= 0 && index < static_cast<int>(flat.size()) ? flat[index] : HostMenuEntry();
+}
+
+int EntryCount(const std::vector<MenuItem>& items) {
+  std::vector<HostMenuEntry> flat;
+  Flatten(items, 0, &flat);
+  return static_cast<int>(flat.size());
+}
+
+}  // namespace
+
+int DeskHost::LayerMenuEntryCount() const { return EntryCount(impl_->desk->LayerMenu()); }
+HostMenuEntry DeskHost::LayerMenuEntryAt(int index) const { return EntryAt(impl_->desk->LayerMenu(), index); }
+int DeskHost::SourceMenuEntryCount() const { return EntryCount(impl_->desk->SourceMenu()); }
+HostMenuEntry DeskHost::SourceMenuEntryAt(int index) const { return EntryAt(impl_->desk->SourceMenu(), index); }
+
+// MARK: Properties sheet
+
+bool DeskHost::TakeLayerPropertiesRequest() {
+  const bool asked = impl_->shell.properties_requested;
+  impl_->shell.properties_requested = false;
+  return asked;
+}
+
+std::string DeskHost::LayerPropertiesTitle() const { return impl_->desk->properties_title(); }
+
+int DeskHost::LayerPropertyCount() const { return static_cast<int>(impl_->desk->properties().size()); }
+
+std::string DeskHost::LayerPropertySection(int i) const {
+  const auto& rows = impl_->desk->properties();
+  return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].section : std::string();
+}
+
+std::string DeskHost::LayerPropertyKey(int i) const {
+  const auto& rows = impl_->desk->properties();
+  return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].key : std::string();
+}
+
+std::string DeskHost::LayerPropertyValue(int i) const {
+  const auto& rows = impl_->desk->properties();
+  return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].value : std::string();
+}
+
+void DeskHost::SetPropertiesTabs(bool tabbed) { impl_->shell.properties_tabs = tabbed; }
+
+int DeskHost::LayerPropertiesTabCount() const { return static_cast<int>(impl_->desk->PropertiesTabs().size()); }
+
+int DeskHost::LayerPropertiesTabAt(int i) const {
+  const std::vector<PropertiesTab> tabs = impl_->desk->PropertiesTabs();
+  return i >= 0 && i < static_cast<int>(tabs.size()) ? static_cast<int>(tabs[i]) : -1;
+}
+
+std::string DeskHost::LayerPropertiesTabTitle(int i) const {
+  const int tab = LayerPropertiesTabAt(i);
+  return tab < 0 ? std::string() : PropertiesTabTitle(static_cast<PropertiesTab>(tab));
+}
+
+int DeskHost::LayerPropertiesTab() const { return static_cast<int>(impl_->desk->properties_tab()); }
+
+bool DeskHost::LayerPropertiesDirty() const { return impl_->desk->LayerPropertiesDirty(); }
+
+std::string DeskHost::ApplyLayerProperties() {
+  Impl::StackEdit edit(*impl_);
+  return impl_->desk->ApplyLayerProperties().message;
+}
+
+std::string DeskHost::RevertLayerProperties() { return impl_->desk->RevertLayerProperties().message; }
+
+void DeskHost::CloseLayerProperties() { impl_->desk->CloseLayerProperties(); }
+
+bool DeskHost::LayerGeneralOpen() const { return impl_->desk->layer_general() != nullptr; }
+
+namespace {
+
+LayerGeneral GeneralOf(const Desk& desk) {
+  const auto& m = desk.layer_general();
+  return m ? m->general() : LayerGeneral{};
+}
+
+}  // namespace
+
+std::string DeskHost::LayerGeneralName() const { return GeneralOf(*impl_->desk).name; }
+std::string DeskHost::LayerGeneralDescription() const { return GeneralOf(*impl_->desk).description; }
+std::string DeskHost::LayerGeneralCredits() const { return GeneralOf(*impl_->desk).credits; }
+std::string DeskHost::LayerGeneralMinScale() const { return FormatScale(GeneralOf(*impl_->desk).min_scale); }
+std::string DeskHost::LayerGeneralMaxScale() const { return FormatScale(GeneralOf(*impl_->desk).max_scale); }
+
+std::string DeskHost::SetLayerGeneral(const std::string& name, const std::string& description,
+                                      const std::string& credits, const std::string& min_scale,
+                                      const std::string& max_scale) {
+  const auto& m = impl_->desk->layer_general();
+  if (!m) return "no layer's Properties are open";
+  LayerGeneral g;
+  g.name = name;
+  g.description = description;
+  g.credits = credits;
+  Status s = ParseScale(min_scale, &g.min_scale);
+  if (s.ok()) s = ParseScale(max_scale, &g.max_scale);
+  if (s.ok()) s = m->Set(g);
+  return s.message;
+}
+
 // MARK: Map Data Sources dialog
 
 bool DeskHost::TakeSourcesRequest() {
@@ -2059,6 +2256,7 @@ HostTick DeskHost::Tick() {
   if (m.shell.style_requested) t.style_requested = true;
   if (m.shell.fields_requested) t.fields_requested = true;
   if (m.shell.new_layer_requested) t.new_layer_requested = true;
+  if (m.shell.properties_requested) t.properties_requested = true;
   const int table_row = m.desk->SelectedTableRow();
   if (m.desk->FeatureViewsGeneration() != m.ticked_features_gen || table_row != m.ticked_table_row) {
     m.ticked_features_gen = m.desk->FeatureViewsGeneration();

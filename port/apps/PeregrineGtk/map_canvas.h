@@ -21,6 +21,10 @@ GskTransform* PlacementTransform(const fv::desk::FramePlacement& p);
 /// Translates GTK input into `DeskHost` calls and paints the host's last
 /// frame through the host's preview transform, so a gesture moves the
 /// picture before the next frame is ready.
+/// The fv::Key value (a Win32 virtual-key code, letters upper-case) for a
+/// GDK keyval, or 0 for a key the core has no code for.
+int KeyCode(guint keyval);
+
 class MapCanvas : public Gtk::Widget {
  public:
   /// `host` must outlive the widget.
@@ -57,6 +61,8 @@ class MapCanvas : public Gtk::Widget {
   void InstallControllers();
   bool OnScroll(double dx, double dy);
   bool OnKeyPressed(guint keyval, guint keycode, Gdk::ModifierType state);
+  int CountClick(double x, double y, guint32 time);
+  void ReleaseSpace();
 
   fv::desk::DeskHost& host_;
   GdkTexture* texture_ = nullptr;
@@ -69,6 +75,12 @@ class MapCanvas : public Gtk::Widget {
   double drag_x_ = 0;
   double drag_y_ = 0;
   double wheel_accum_ = 0;
+  /// The space bar is down: a press grabs the map whatever overlay is edited.
+  bool space_held_ = false;
+  int last_click_count_ = 0;
+  guint32 last_click_time_ = 0;
+  double last_click_x_ = 0;
+  double last_click_y_ = 0;
   double pinch_x_ = 0;
   double pinch_y_ = 0;
   double pinch_scale_ = 1;

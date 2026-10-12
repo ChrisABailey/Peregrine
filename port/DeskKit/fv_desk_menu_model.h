@@ -76,6 +76,12 @@ std::vector<MenuSpec> DefaultMenuLayout();
 /// Zoom and recenter, the editor modes, then the active editor's tools.
 std::vector<MenuSlot> DefaultToolbarLayout();
 
+/// The layer manager's right-click menu on a layer; it acts on the current
+/// overlay, so the shell selects the row first (port/layer-manager-plan.md §3).
+std::vector<MenuSlot> LayerContextLayout();
+/// The right-click menu on a source; it acts on the current overlay's source.
+std::vector<MenuSlot> SourceContextLayout();
+
 class MenuModel {
  public:
   /// The toolbar shows only commands with an icon (desktop-plan §1b); its
@@ -95,6 +101,8 @@ class MenuModel {
   /// The menu with `id`, or null.
   const Menu* Find(const std::string& id) const;
   uint64_t Generation() const { return generation_; }
+  /// `slots` resolved against the commands now registered, separators tidied.
+  std::vector<MenuItem> ResolveLayout(const std::vector<MenuSlot>& slots) const { return ResolveSlots(slots); }
 
   /// Called after a rebuild that changed the menus.
   void SetOnChange(std::function<void()> fn) { on_change_ = std::move(fn); }

@@ -99,6 +99,20 @@ std::vector<MenuSlot> DefaultToolbarLayout() {
   return {S::Expand("editor.mode."), S::Sep(), S::Expand("editor.tool.")};
 }
 
+std::vector<MenuSlot> LayerContextLayout() {
+  using S = MenuSlot;
+  return {S::Cmd("layers.properties"), S::Sep(), S::Cmd("overlay.style"), S::Cmd("overlay.fields"),
+          S::Cmd("overlay.attribute_table"), S::Sep(), S::Cmd("layers.zoom_to"), S::Sep(),
+          S::Cmd("layers.close")};
+}
+
+std::vector<MenuSlot> SourceContextLayout() {
+  using S = MenuSlot;
+  return {S::Cmd("layers.source.properties"), S::Sep(), S::Cmd("layers.source.show_all"),
+          S::Cmd("layers.source.hide_all"), S::Cmd("layers.source.zoom_to"), S::Sep(), S::Cmd("file.save"),
+          S::Cmd("layers.source.close")};
+}
+
 MenuModel::MenuModel(const CommandRegistry& commands, std::vector<MenuSpec> layout,
                      std::vector<MenuSlot> toolbar)
     : commands_(commands), layout_(std::move(layout)), toolbar_layout_(std::move(toolbar)) {}

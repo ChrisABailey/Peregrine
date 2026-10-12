@@ -5,6 +5,7 @@
 #include "fv_desk_layers.h"
 
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/source_spec.h"
 #include "fvkit/app/type_registry.h"
 
 namespace fv {
@@ -46,7 +47,10 @@ std::vector<LayerRow> LayersModel::Rows() const {
     r.has_opacity = o->SupportsOpacity();
     r.opacity = o->opacity();
     r.current = o.get() == stack_.current();
-    if (app::Persistence* p = o->AsPersistence()) r.dirty = p->is_dirty();
+    if (app::Persistence* p = o->AsPersistence()) {
+      r.dirty = p->is_dirty();
+      r.source = app::SplitSourceSpec(p->file_spec()).path;
+    }
     rows.push_back(std::move(r));
   }
   return rows;

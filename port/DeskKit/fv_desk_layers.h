@@ -34,6 +34,7 @@ struct LayerRow {
   bool current = false;
   bool dirty = false;
   bool top_most = false;  ///< pinned above the rest; cannot be moved below them
+  std::string source;     ///< the file it comes from (`SplitSourceSpec`); empty without one
 };
 
 class LayersModel {

@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 
+#include "fvkit/app/source_spec.h"
 #include "fvkit/app/type_registry.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/feature/vector_source.h"
@@ -210,6 +211,73 @@ TEST(FeatureOverlay, SavesAsGeoPackageAndGeoJsonAndReopens) {
   fs::remove(json);
 }
 
+TEST(FeatureOverlay, APlainSaveKeepsTheFormatTheFileWasReadIn) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  EXPECT_EQ(overlay.save_format_index(), FeatureOverlay::kFormatGeoJson);
+  const std::string gpkg = Temp("format.gpkg");
+  fs::remove(gpkg);
+  ASSERT_TRUE(overlay.FileSaveAs(gpkg, FeatureOverlay::kFormatGeoPackage).ok());
+  EXPECT_EQ(overlay.save_format_index(), FeatureOverlay::kFormatGeoPackage);
+  fs::remove(gpkg);
+}
+
+TEST(FeatureOverlay, TheFileCarriesTheLayersNameDescriptionAndScaleRange) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  overlay.SetName("Rivers");
+  overlay.SetDescription("Charleston's three rivers");
+  overlay.SetCredits("USGS");
+  overlay.SetScaleRange(1000000, 20000);
+  for (int format : {FeatureOverlay::kFormatGeoPackage, FeatureOverlay::kFormatGeoJson}) {
+    const std::string path = Temp(format == FeatureOverlay::kFormatGeoJson ? "info.geojson" : "info.gpkg");
+    fs::remove(path);
+    ASSERT_TRUE(overlay.FileSaveAs(path, format).ok());
+    FeatureOverlay reopened;
+    ASSERT_TRUE(reopened.FileOpen(path).ok());
+    EXPECT_EQ(reopened.Name(), "Rivers");
+    EXPECT_EQ(reopened.description(), "Charleston's three rivers");
+    EXPECT_EQ(reopened.credits(), "USGS");
+    EXPECT_EQ(reopened.min_scale(), 1000000);
+    EXPECT_EQ(reopened.max_scale(), 20000);
+    fs::remove(path);
+  }
+
+  // A layer never renamed keeps following its file.
+  FeatureOverlay plain;
+  ASSERT_TRUE(plain.FileOpen(kRivers).ok());
+  const std::string json = Temp("plain.geojson");
+  ASSERT_TRUE(plain.FileSaveAs(json, FeatureOverlay::kFormatGeoJson).ok());
+  EXPECT_EQ(plain.Name(), plain.layer()->Name());
+  EXPECT_EQ(plain.description(), "");
+  EXPECT_EQ(plain.min_scale(), 0);
+  fs::remove(json);
+}
+
+TEST(FeatureLayerInfo, WritesIntoAStyleAndReadsBack) {
+  std::string json;
+  ASSERT_TRUE(fv::WriteFeatureStyleJson(fv::FeatureStyle{}, &json).ok());
+  fv::FeatureLayerInfo info;
+  info.description = "d";
+  info.max_scale = 5000;
+  ASSERT_TRUE(fv::WriteFeatureLayerInfoJson(info, &json).ok());
+  fv::FeatureStyle style;
+  EXPECT_TRUE(fv::ReadFeatureStyleJson(json, &style).ok());
+  fv::FeatureLayerInfo back;
+  ASSERT_TRUE(fv::ReadFeatureLayerInfoJson(json, &back).ok());
+  EXPECT_EQ(back.name, "");
+  EXPECT_EQ(back.description, "d");
+  EXPECT_EQ(back.min_scale, 0);
+  EXPECT_EQ(back.max_scale, 5000);
+  // Writing again replaces what was there.
+  ASSERT_TRUE(fv::WriteFeatureLayerInfoJson(fv::FeatureLayerInfo{}, &json).ok());
+  ASSERT_TRUE(fv::ReadFeatureLayerInfoJson(json, &back).ok());
+  EXPECT_EQ(back.description, "");
+  EXPECT_EQ(back.max_scale, 0);
+  std::string bad = "[1]";
+  EXPECT_EQ(fv::WriteFeatureLayerInfoJson(info, &bad).code, fv::kInvalidArg);
+}
+
 TEST(FeatureOverlay, OpenFailuresAreReported) {
   FeatureOverlay overlay;
   EXPECT_FALSE(overlay.FileOpen("/no/such/file.gpkg").ok());
@@ -374,3 +442,80 @@ TEST(FeatureOverlay, GraduatedWidthsAndDashPresetsGoThroughTheEngine) {
     if (Px(rail, px, static_cast<int>(std::lround(y_low)) - 3)[0] != 255) ++across;
   EXPECT_GT(across, 5) << "crossties stand off a 1 px line";
 }
+
+namespace {
+
+/// Writes the rivers sample to `path` twice, as tables "rivers" and "creeks".
+void WriteTwoTables(const std::string& path) {
+  fs::remove(path);
+  FeatureOverlay sample;
+  ASSERT_TRUE(sample.FileOpen(kRivers).ok());
+  std::shared_ptr<fv::GeoPackage> gp;
+  ASSERT_TRUE(fv::GeoPackage::Create(path, &gp).ok());
+  ASSERT_TRUE(gp->WriteLayer(*sample.layer(), "rivers", nullptr).ok());
+  // gpkg_contents identifiers are unique, so the second copy is renamed.
+  fv::MemoryFeatureLayer creeks("Creeks", sample.layer()->Schema());
+  std::vector<fv::Feature> all;
+  ASSERT_TRUE(sample.layer()->All(&all).ok());
+  for (const fv::Feature& f : all) ASSERT_TRUE(creeks.InsertWithId(f).ok());
+  const fv::Status s = gp->WriteLayer(creeks, "creeks", nullptr);
+  ASSERT_TRUE(s.ok()) << s.message;
+  ASSERT_TRUE(gp->Save().ok());
+}
+
+const std::string& TableOf(const FeatureOverlay& o) {
+  return static_cast<const fv::GeoPackageFeatureLayer&>(*o.layer()).Table();
+}
+
+TEST(FeatureOverlay, OpensTheTableTheSpecNames) {
+  const std::string path = Temp("two.gpkg");
+  WriteTwoTables(path);
+  std::vector<std::string> tables;
+  ASSERT_TRUE(FeatureOverlay::ListLayers(path, &tables).ok());
+  EXPECT_EQ(tables, (std::vector<std::string>{"rivers", "creeks"}));
+  ASSERT_TRUE(FeatureOverlay::ListLayers(kRivers, &tables).ok());
+  EXPECT_TRUE(tables.empty());
+
+  {
+    FeatureOverlay whole, creeks, rivers;
+    ASSERT_TRUE(whole.FileOpen(path).ok());
+    EXPECT_EQ(TableOf(whole), "rivers");
+    ASSERT_TRUE(creeks.FileOpen(fv::app::JoinSourceSpec(path, "creeks")).ok());
+    EXPECT_EQ(TableOf(creeks), "creeks");
+    ASSERT_TRUE(rivers.FileOpen(fv::app::JoinSourceSpec(path, "rivers")).ok());
+    EXPECT_EQ(creeks.layer()->Count(), 3u);
+    EXPECT_EQ(FeatureOverlay().FileOpen(fv::app::JoinSourceSpec(path, "lakes")).code, fv::kNotFound);
+
+    // One connection: an edit pending in one table does not lock out the other.
+    EXPECT_EQ(creeks.package(), rivers.package());
+    ASSERT_TRUE(creeks.layer()->Delete(1).ok());
+    ASSERT_TRUE(rivers.layer()->Delete(2).ok());
+    EXPECT_EQ(rivers.layer()->Count(), 2u);
+
+    // Saving a layer of several over the file by its plain path would drop the others.
+    EXPECT_EQ(creeks.FileSaveAs(path, FeatureOverlay::kFormatGeoPackage).code, fv::kInvalidArg);
+    const fv::Status s = creeks.FileSaveAs(fv::app::JoinSourceSpec(path, "creeks"), FeatureOverlay::kFormatGeoPackage);
+    ASSERT_TRUE(s.ok()) << s.message;
+  }
+  {
+    FeatureOverlay creeks, rivers;
+    ASSERT_TRUE(creeks.FileOpen(fv::app::JoinSourceSpec(path, "creeks")).ok());
+    ASSERT_TRUE(rivers.FileOpen(fv::app::JoinSourceSpec(path, "rivers")).ok());
+    EXPECT_EQ(creeks.layer()->Count(), 2u);
+    EXPECT_EQ(rivers.layer()->Count(), 2u);  // the package commits every table's edits
+  }
+  fs::remove(path);
+}
+
+TEST(SourceSpec, SplitsAndJoinsTheLayerName) {
+  const fv::app::SourceSpec whole = fv::app::SplitSourceSpec("/data/a.gpkg");
+  EXPECT_EQ(whole.path, "/data/a.gpkg");
+  EXPECT_TRUE(whole.layer.empty());
+  const fv::app::SourceSpec one = fv::app::SplitSourceSpec("/data/a.gpkg|layername=rivers");
+  EXPECT_EQ(one.path, "/data/a.gpkg");
+  EXPECT_EQ(one.layer, "rivers");
+  EXPECT_EQ(fv::app::JoinSourceSpec("/data/a.gpkg", "rivers"), "/data/a.gpkg|layername=rivers");
+  EXPECT_EQ(fv::app::JoinSourceSpec("/data/a.gpkg", ""), "/data/a.gpkg");
+}
+
+}  // namespace

@@ -25,6 +25,12 @@ namespace peregrine {
 /// @param modifiers `fv::desk::HostModifier` bits.
 std::string AcceleratorFor(const std::string& key, unsigned modifiers);
 
+/// The freedesktop symbolic icon for a DeskKit icon name ("add_point" ->
+/// "list-add-symbolic"); "" when there is none, so a button shows its label.
+std::string IconNameFor(const std::string& icon);
+/// Every DeskKit icon name the shell maps, with its symbolic icon.
+const std::map<std::string, std::string>& IconNames();
+
 /// A valid GAction name for a command id: characters other than letters,
 /// digits, '-' and '.' become '-'.
 std::string ActionNameFor(const std::string& command_id);
@@ -69,7 +75,8 @@ class CommandMenus {
   std::string ActionFor(const std::string& command_id) const;
   /// The command an action name (without prefix) runs, or "".
   std::string CommandFor(const std::string& action_name) const;
-  /// (detailed action name, accelerator) for every command with a shortcut.
+  /// (detailed action name, accelerator) for every command with a modified
+  /// shortcut; a bare key (an arrow) is left to the map widget.
   const std::vector<std::pair<std::string, std::string>>& accelerators() const {
     return accelerators_;
   }

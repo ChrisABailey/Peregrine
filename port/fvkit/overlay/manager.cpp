@@ -424,6 +424,14 @@ std::vector<Overlay*> OverlayManager::DrawOrder() const {
   return out;
 }
 
+std::vector<Overlay*> OverlayManager::DrawOrderAt(const MapProjection& proj) const {
+  std::vector<Overlay*> out = DrawOrder();
+  const double scale = proj.Scale();
+  out.erase(std::remove_if(out.begin(), out.end(), [scale](const Overlay* o) { return !o->DrawsAtScale(scale); }),
+            out.end());
+  return out;
+}
+
 void OverlayManager::SetDimOthers(const Overlay* focus, int percent) {
   dim_focus_ = focus;
   dim_percent_ = std::clamp(percent, 0, 100);
@@ -447,7 +455,7 @@ Status OverlayManager::DrawAll(const MapProjection& proj, ICanvas& canvas,
     layer.reset();
     return s;
   };
-  for (Overlay* o : DrawOrder()) {
+  for (Overlay* o : DrawOrderAt(proj)) {
     if (interrupted && interrupted())
       return Status::Error(kInterrupted, "overlay drawing interrupted");
     const bool dim = dimming && o != dim_focus_ && !IsTopMost(*o);

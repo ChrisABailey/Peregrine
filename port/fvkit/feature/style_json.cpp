@@ -462,4 +462,54 @@ Status ReadFeatureStyleJson(const std::string& text, FeatureStyle* out) {
   return Status::Ok();
 }
 
+Status WriteFeatureLayerInfoJson(const FeatureLayerInfo& info, std::string* style_json) {
+  if (style_json == nullptr) return Bad("null out");
+  try {
+    json root = json::parse(*style_json, nullptr, /*allow_exceptions=*/false);
+    if (root.is_discarded() || !root.is_object()) return Bad("not a JSON object");
+    json meta = root.value("metadata", json::object());
+    if (!meta.is_object()) return Bad("metadata is not an object");
+    root.erase("name");
+    for (const char* key : {"fv:description", "fv:credits", "fv:min-scale", "fv:max-scale"}) meta.erase(key);
+    if (!info.name.empty()) root["name"] = info.name;
+    if (!info.description.empty()) meta["fv:description"] = info.description;
+    if (!info.credits.empty()) meta["fv:credits"] = info.credits;
+    if (info.min_scale > 0) meta["fv:min-scale"] = info.min_scale;
+    if (info.max_scale > 0) meta["fv:max-scale"] = info.max_scale;
+    root["metadata"] = meta;
+    *style_json = root.dump(1, '\t');
+  } catch (const std::exception& e) {
+    return Status::Error(kInternal, std::string("feature layer info: ") + e.what());
+  }
+  return Status::Ok();
+}
+
+Status ReadFeatureLayerInfoJson(const std::string& style_json, FeatureLayerInfo* out) {
+  if (out == nullptr) return Bad("null out");
+  try {
+    const json root = json::parse(style_json, nullptr, /*allow_exceptions=*/false);
+    if (root.is_discarded() || !root.is_object()) return Bad("not a JSON object");
+    const json meta = root.value("metadata", json::object());
+    if (!meta.is_object()) return Bad("metadata is not an object");
+    auto text = [](const json& j, const char* key) {
+      const auto it = j.find(key);
+      return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
+    auto number = [](const json& j, const char* key) {
+      const auto it = j.find(key);
+      return it != j.end() && it->is_number() ? it->get<double>() : 0.0;
+    };
+    FeatureLayerInfo info;
+    info.name = text(root, "name");
+    info.description = text(meta, "fv:description");
+    info.credits = text(meta, "fv:credits");
+    info.min_scale = number(meta, "fv:min-scale");
+    info.max_scale = number(meta, "fv:max-scale");
+    *out = std::move(info);
+  } catch (const std::exception& e) {
+    return Status::Error(kInternal, std::string("feature layer info: ") + e.what());
+  }
+  return Status::Ok();
+}
+
 }  // namespace fv

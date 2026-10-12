@@ -59,7 +59,7 @@ std::vector<HitItem> PickSession::Gather(const MapProjection& proj,
                                          PixelPoint p,
                                          std::vector<int>* ranks) const {
   std::vector<HitItem> out;
-  const std::vector<Overlay*> order = manager_.DrawOrder();
+  const std::vector<Overlay*> order = manager_.DrawOrderAt(proj);
   int rank = 0;
   // DrawOrder is bottom-up; picking walks it topmost-first.
   for (auto it = order.rbegin(); it != order.rend(); ++it, ++rank) {
@@ -171,7 +171,7 @@ std::vector<SnapToItem> SnapCandidates(const OverlayManager& manager,
                                        const MapProjection& proj, PixelPoint p,
                                        double tolerance_px) {
   std::vector<SnapToItem> items;
-  const std::vector<Overlay*> order = manager.DrawOrder();
+  const std::vector<Overlay*> order = manager.DrawOrderAt(proj);
   for (auto it = order.rbegin(); it != order.rend(); ++it) {
     SnapTo* snap = (*it)->AsSnapTo();
     if (snap == nullptr) continue;
@@ -228,7 +228,7 @@ std::optional<SnapToItem> PickSession::SnapToPoint(const MapProjection& proj,
 MenuNode PickSession::BuildContextMenu(const MapProjection& proj,
                                        PixelPoint p) const {
   MenuNode root;
-  const std::vector<Overlay*> order = manager_.DrawOrder();
+  const std::vector<Overlay*> order = manager_.DrawOrderAt(proj);
   for (auto it = order.rbegin(); it != order.rend(); ++it) {
     ContextMenu* menu = (*it)->AsContextMenu();
     if (menu == nullptr) continue;

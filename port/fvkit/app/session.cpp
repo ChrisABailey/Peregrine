@@ -8,10 +8,12 @@
 #include "fvkit/app/properties.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <utility>
 
 #include "fvkit/app/editor.h"
+#include "fvkit/app/source_spec.h"
 
 namespace fv {
 namespace app {
@@ -30,7 +32,8 @@ namespace {
 // The extension of a file spec, without its dot and without a directory's
 // own dots ("/a.dir/kiawah" has no extension). Both separators, because a
 // Windows shell hands this layer Windows paths.
-std::string ExtensionOf(const std::string& spec) {
+std::string ExtensionOf(const std::string& layer_spec) {
+  const std::string spec = SplitSourceSpec(layer_spec).path;
   const size_t dot = spec.find_last_of('.');
   if (dot == std::string::npos) return std::string();
   const size_t sep = spec.find_last_of("/\\");
@@ -59,6 +62,13 @@ FlowResult Worse(FlowResult a, FlowResult b) {
 
 std::string SessionPrefix(const std::string& name) {
   return "session." + name + ".";
+}
+
+// A scale denominator as a settings value: whole numbers without a fraction.
+std::string FormatScaleKey(double scale_denom) {
+  char text[32];
+  std::snprintf(text, sizeof text, "%.15g", scale_denom);
+  return text;
 }
 
 }  // namespace
@@ -343,6 +353,25 @@ FlowResult OverlaySession::OpenFileImpl(const TypeId& type,
     return FlowResult::kDone;
   }
 
+  // A file of several layers opens as one overlay per layer, its top layer
+  // current; each layer's spec then dedups on its own.
+  if (desc->file.has_value() && desc->file->list_layers && SplitSourceSpec(spec).layer.empty()) {
+    std::vector<std::string> layers;
+    Status s = desc->file->list_layers(spec, &layers);
+    if (!s.ok()) return Fail(s);
+    if (layers.size() > 1) {
+      FlowResult result = FlowResult::kDone;
+      // Bottom first: an overlay of equal display order lands above the last.
+      for (auto it = layers.rbegin(); it != layers.rend(); ++it)
+        result = Worse(result, OpenFileImpl(desc->id, JoinSourceSpec(spec, *it)));
+      if (std::shared_ptr<Overlay> top = manager_.FindByFileSpec(desc->id, JoinSourceSpec(spec, layers.front()))) {
+        s = manager_.MakeCurrent(top);
+        if (!s.ok()) return Fail(s);
+      }
+      return result;
+    }
+  }
+
   std::shared_ptr<Overlay> made = Instantiate(*desc);
   if (made == nullptr) {
     return Fail(Status::Error(kInternal, "factory for overlay type '" +
@@ -428,7 +457,13 @@ FlowResult OverlaySession::SaveAsImpl(Overlay& overlay) {
                                   "' has no registered file type to save as"));
   }
 
-  std::string suggested = p->file_spec();
+  // A layer of a file of several saves as a file of its own, named for it.
+  const SourceSpec source = SplitSourceSpec(p->file_spec());
+  std::string suggested = source.path;
+  if (!source.layer.empty()) {
+    const size_t sep = suggested.find_last_of("/\\");
+    suggested = suggested.substr(0, sep == std::string::npos ? 0 : sep + 1) + source.layer + "." + ExtensionOf(source.path);
+  }
   if (suggested.empty()) {
     suggested = overlay.Name();
     if (!desc->file->default_extension.empty()) {
@@ -608,6 +643,11 @@ Status OverlaySession::BuildConfiguration(
     out->emplace_back(row + "file", spec);
     out->emplace_back(row + "visible", o->IsVisible() ? "true" : "false");
     if (o->SupportsOpacity()) out->emplace_back(row + "opacity", std::to_string(o->opacity()));
+    out->emplace_back(row + "name", o->Name());
+    if (!o->description().empty()) out->emplace_back(row + "description", o->description());
+    if (!o->credits().empty()) out->emplace_back(row + "credits", o->credits());
+    if (o->min_scale() > 0) out->emplace_back(row + "min_scale", FormatScaleKey(o->min_scale()));
+    if (o->max_scale() > 0) out->emplace_back(row + "max_scale", FormatScaleKey(o->max_scale()));
     if (o.get() == manager_.current()) current_index = written;
     ++written;
   }
@@ -691,6 +731,12 @@ Status OverlaySession::RestoreConfiguration(const std::string& name) {
 
     overlay->SetVisible(settings_.GetBool(row + "visible", true));
     overlay->SetOpacity(static_cast<int>(settings_.GetInt(row + "opacity", 100)));
+    if (settings_.Has(row + "name") && !settings_.GetString(row + "name").empty())
+      overlay->SetName(settings_.GetString(row + "name"));
+    if (settings_.Has(row + "description")) overlay->SetDescription(settings_.GetString(row + "description"));
+    if (settings_.Has(row + "credits")) overlay->SetCredits(settings_.GetString(row + "credits"));
+    if (settings_.Has(row + "min_scale") || settings_.Has(row + "max_scale"))
+      overlay->SetScaleRange(settings_.GetDouble(row + "min_scale", 0), settings_.GetDouble(row + "max_scale", 0));
     if (i == current_index) want_current = overlay;
     restored.push_back(overlay);
   }

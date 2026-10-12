@@ -6,6 +6,7 @@
 #include "map_canvas.h"
 
 #include <cmath>
+#include <cstdlib>
 
 namespace peregrine {
 
@@ -185,16 +186,25 @@ void MapCanvas::InstallControllers() {
 
   auto drag = Gtk::GestureDrag::create();
   drag->set_button(GDK_BUTTON_PRIMARY);
-  drag->signal_drag_begin().connect([this](double x, double y) {
+  drag->signal_drag_begin().connect([this, drag](double x, double y) {
     grab_focus();
     drag_x_ = x;
     drag_y_ = y;
-    host_.PointerDown(x, y);
+    if (space_held_) {
+      set_cursor("grabbing");
+      host_.PanPointerDown(x, y);
+      return;
+    }
+    const bool shift =
+        (drag->get_current_event_state() & Gdk::ModifierType::SHIFT_MASK) == Gdk::ModifierType::SHIFT_MASK;
+    host_.PointerDown(x, y, shift, CountClick(x, y, drag->get_current_event_time()));
   });
   drag->signal_drag_update().connect(
       [this](double dx, double dy) { host_.PointerDrag(drag_x_ + dx, drag_y_ + dy); });
-  drag->signal_drag_end().connect(
-      [this](double dx, double dy) { host_.PointerUp(drag_x_ + dx, drag_y_ + dy); });
+  drag->signal_drag_end().connect([this](double dx, double dy) {
+    host_.PointerUp(drag_x_ + dx, drag_y_ + dy);
+    if (space_held_) set_cursor("grab");
+  });
   add_controller(drag);
 
   scroll_ = Gtk::EventControllerScroll::create();
@@ -224,7 +234,40 @@ void MapCanvas::InstallControllers() {
 
   auto keys = Gtk::EventControllerKey::create();
   keys->signal_key_pressed().connect(sigc::mem_fun(*this, &MapCanvas::OnKeyPressed), false);
+  keys->signal_key_released().connect([this](guint keyval, guint, Gdk::ModifierType) {
+    if (keyval == GDK_KEY_space) ReleaseSpace();
+  });
   add_controller(keys);
+
+  // A key release lost to another window would leave the map in grab mode.
+  auto focus = Gtk::EventControllerFocus::create();
+  focus->signal_leave().connect([this] { ReleaseSpace(); });
+  add_controller(focus);
+}
+
+/// The press count of a click at (x, y) at `time` (ms): 2 for the second
+/// press of a double-click within the desktop's time and distance, else 1.
+int MapCanvas::CountClick(double x, double y, guint32 time) {
+  int interval = 400;
+  int distance = 5;
+  if (auto settings = Gtk::Settings::get_for_display(get_display())) {
+    interval = settings->property_gtk_double_click_time();
+    distance = settings->property_gtk_double_click_distance();
+  }
+  const bool again = last_click_count_ > 0 && time - last_click_time_ <= static_cast<guint32>(interval) &&
+                     std::abs(x - last_click_x_) <= distance && std::abs(y - last_click_y_) <= distance;
+  // A third press starts a new pair, as two double-clicks would.
+  last_click_count_ = again && last_click_count_ == 1 ? 2 : 1;
+  last_click_time_ = time;
+  last_click_x_ = x;
+  last_click_y_ = y;
+  return last_click_count_;
+}
+
+void MapCanvas::ReleaseSpace() {
+  if (!space_held_) return;
+  space_held_ = false;
+  set_cursor(Glib::RefPtr<Gdk::Cursor>());
 }
 
 /// A touchpad pans; a wheel takes one ladder step per notch, rolled away from
@@ -247,8 +290,61 @@ bool MapCanvas::OnScroll(double dx, double dy) {
   return true;
 }
 
-/// Page Up and Page Down step the ladder about the cursor.
-bool MapCanvas::OnKeyPressed(guint keyval, guint, Gdk::ModifierType) {
+int KeyCode(guint keyval) {
+  const guint upper = gdk_keyval_to_upper(keyval);
+  if ((upper >= 'A' && upper <= 'Z') || (upper >= '0' && upper <= '9')) return static_cast<int>(upper);
+  switch (keyval) {
+    case GDK_KEY_Escape: return 0x1B;
+    case GDK_KEY_BackSpace: return 0x08;
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+    case GDK_KEY_ISO_Enter: return 0x0D;
+    case GDK_KEY_Tab:
+    case GDK_KEY_ISO_Left_Tab: return 0x09;
+    case GDK_KEY_space: return 0x20;
+    case GDK_KEY_Delete:
+    case GDK_KEY_KP_Delete: return 0x2E;
+    case GDK_KEY_Left:
+    case GDK_KEY_KP_Left: return 0x25;
+    case GDK_KEY_Up:
+    case GDK_KEY_KP_Up: return 0x26;
+    case GDK_KEY_Right:
+    case GDK_KEY_KP_Right: return 0x27;
+    case GDK_KEY_Down:
+    case GDK_KEY_KP_Down: return 0x28;
+    case GDK_KEY_Page_Up:
+    case GDK_KEY_KP_Page_Up: return 0x21;
+    case GDK_KEY_Page_Down:
+    case GDK_KEY_KP_Page_Down: return 0x22;
+    case GDK_KEY_Home:
+    case GDK_KEY_KP_Home: return 0x24;
+    case GDK_KEY_End:
+    case GDK_KEY_KP_End: return 0x23;
+    default: return 0;
+  }
+}
+
+/// The overlay being edited sees a key first; otherwise Page Up and Page
+/// Down step the ladder about the cursor and the arrows pan half a screen.
+/// The space bar held makes a press pan the map whatever is edited.
+bool MapCanvas::OnKeyPressed(guint keyval, guint, Gdk::ModifierType state) {
+  const auto has = [state](Gdk::ModifierType m) { return (state & m) == m; };
+  const bool shift = has(Gdk::ModifierType::SHIFT_MASK);
+  const bool ctrl = has(Gdk::ModifierType::CONTROL_MASK);
+  const bool alt = has(Gdk::ModifierType::ALT_MASK);
+  const bool meta = has(Gdk::ModifierType::SUPER_MASK) || has(Gdk::ModifierType::META_MASK);
+  if (keyval == GDK_KEY_space && !ctrl && !alt && !meta) {
+    if (!space_held_) {
+      space_held_ = true;
+      set_cursor("grab");
+    }
+    return true;
+  }
+  if (held_) return false;
+  const uint32_t text = gdk_keyval_to_unicode(keyval);
+  if (host_.KeyDown(KeyCode(keyval), text, shift, ctrl, alt, meta)) return true;
+  if (ctrl || alt || meta) return false;
+  const char* pan = nullptr;
   switch (keyval) {
     case GDK_KEY_Page_Up:
     case GDK_KEY_KP_Page_Up:
@@ -258,9 +354,18 @@ bool MapCanvas::OnKeyPressed(guint keyval, guint, Gdk::ModifierType) {
     case GDK_KEY_KP_Page_Down:
       host_.Step(-1);
       return true;
-    default:
-      return false;
+    case GDK_KEY_Up:
+    case GDK_KEY_KP_Up: pan = "map.pan.north"; break;
+    case GDK_KEY_Down:
+    case GDK_KEY_KP_Down: pan = "map.pan.south"; break;
+    case GDK_KEY_Right:
+    case GDK_KEY_KP_Right: pan = "map.pan.east"; break;
+    case GDK_KEY_Left:
+    case GDK_KEY_KP_Left: pan = "map.pan.west"; break;
+    default: return false;
   }
+  host_.Execute(pan);
+  return true;
 }
 
 }  // namespace peregrine
