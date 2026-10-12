@@ -186,4 +186,23 @@ Status WriteFeatureStyleJson(const FeatureStyle& style, std::string* out,
 /// evaluate.
 Status ReadFeatureStyleJson(const std::string& text, FeatureStyle* out);
 
+/// What a feature layer says about itself, kept with its style so the file
+/// carries it: a name set by hand, a description, credits and the scale range
+/// it draws in (scale denominators, 0 for no limit; `Overlay::SetScaleRange`).
+struct FeatureLayerInfo {
+  std::string name;  ///< empty: the layer's own name
+  std::string description;
+  std::string credits;
+  double min_scale = 0;
+  double max_scale = 0;
+};
+
+/// Adds `info` to the style document in `style_json`: the name as the root
+/// `name`, the rest as `fv:description`, `fv:credits`, `fv:min-scale` and
+/// `fv:max-scale` in the root `metadata`. Empty texts and zero scales are left
+/// out. kInvalidArg when `style_json` is not a JSON object.
+Status WriteFeatureLayerInfoJson(const FeatureLayerInfo& info, std::string* style_json);
+/// Reads what `WriteFeatureLayerInfoJson` writes; what is absent is empty or 0.
+Status ReadFeatureLayerInfoJson(const std::string& style_json, FeatureLayerInfo* out);
+
 }  // namespace fv

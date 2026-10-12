@@ -211,6 +211,62 @@ TEST(FeatureOverlay, SavesAsGeoPackageAndGeoJsonAndReopens) {
   fs::remove(json);
 }
 
+TEST(FeatureOverlay, TheFileCarriesTheLayersNameDescriptionAndScaleRange) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  overlay.SetName("Rivers");
+  overlay.SetDescription("Charleston's three rivers");
+  overlay.SetCredits("USGS");
+  overlay.SetScaleRange(1000000, 20000);
+  for (int format : {FeatureOverlay::kFormatGeoPackage, FeatureOverlay::kFormatGeoJson}) {
+    const std::string path = Temp(format == FeatureOverlay::kFormatGeoJson ? "info.geojson" : "info.gpkg");
+    fs::remove(path);
+    ASSERT_TRUE(overlay.FileSaveAs(path, format).ok());
+    FeatureOverlay reopened;
+    ASSERT_TRUE(reopened.FileOpen(path).ok());
+    EXPECT_EQ(reopened.Name(), "Rivers");
+    EXPECT_EQ(reopened.description(), "Charleston's three rivers");
+    EXPECT_EQ(reopened.credits(), "USGS");
+    EXPECT_EQ(reopened.min_scale(), 1000000);
+    EXPECT_EQ(reopened.max_scale(), 20000);
+    fs::remove(path);
+  }
+
+  // A layer never renamed keeps following its file.
+  FeatureOverlay plain;
+  ASSERT_TRUE(plain.FileOpen(kRivers).ok());
+  const std::string json = Temp("plain.geojson");
+  ASSERT_TRUE(plain.FileSaveAs(json, FeatureOverlay::kFormatGeoJson).ok());
+  EXPECT_EQ(plain.Name(), plain.layer()->Name());
+  EXPECT_EQ(plain.description(), "");
+  EXPECT_EQ(plain.min_scale(), 0);
+  fs::remove(json);
+}
+
+TEST(FeatureLayerInfo, WritesIntoAStyleAndReadsBack) {
+  std::string json;
+  ASSERT_TRUE(fv::WriteFeatureStyleJson(fv::FeatureStyle{}, &json).ok());
+  fv::FeatureLayerInfo info;
+  info.description = "d";
+  info.max_scale = 5000;
+  ASSERT_TRUE(fv::WriteFeatureLayerInfoJson(info, &json).ok());
+  fv::FeatureStyle style;
+  EXPECT_TRUE(fv::ReadFeatureStyleJson(json, &style).ok());
+  fv::FeatureLayerInfo back;
+  ASSERT_TRUE(fv::ReadFeatureLayerInfoJson(json, &back).ok());
+  EXPECT_EQ(back.name, "");
+  EXPECT_EQ(back.description, "d");
+  EXPECT_EQ(back.min_scale, 0);
+  EXPECT_EQ(back.max_scale, 5000);
+  // Writing again replaces what was there.
+  ASSERT_TRUE(fv::WriteFeatureLayerInfoJson(fv::FeatureLayerInfo{}, &json).ok());
+  ASSERT_TRUE(fv::ReadFeatureLayerInfoJson(json, &back).ok());
+  EXPECT_EQ(back.description, "");
+  EXPECT_EQ(back.max_scale, 0);
+  std::string bad = "[1]";
+  EXPECT_EQ(fv::WriteFeatureLayerInfoJson(info, &bad).code, fv::kInvalidArg);
+}
+
 TEST(FeatureOverlay, OpenFailuresAreReported) {
   FeatureOverlay overlay;
   EXPECT_FALSE(overlay.FileOpen("/no/such/file.gpkg").ok());

@@ -830,6 +830,31 @@ TEST_F(SessionTest, AConfigurationRoundTripsThroughSettings) {
   EXPECT_TRUE(session_.warnings().empty());
 }
 
+TEST_F(SessionTest, AConfigurationKeepsEachLayersNameDescriptionAndScaleRange) {
+  ASSERT_EQ(session_.OpenFile(kDocType, "/tmp/a.doc"), FlowResult::kDone);
+  ASSERT_EQ(session_.ToggleStatic(kStaticType), FlowResult::kDone);
+  fv::Overlay& doc = *manager_.Overlays()[0];
+  doc.SetName("Survey");
+  doc.SetDescription("Spring survey");
+  doc.SetCredits("Field team");
+  doc.SetScaleRange(250000, 5000);
+
+  ASSERT_TRUE(session_.SaveConfiguration("work").ok());
+  EXPECT_EQ(settings_.GetString("session.work.0.min_scale"), "250000");
+  EXPECT_FALSE(settings_.Has("session.work.1.description"));
+  ASSERT_EQ(session_.CloseAll(), FlowResult::kDone);
+  ASSERT_TRUE(session_.RestoreConfiguration("work").ok());
+
+  ASSERT_EQ(manager_.Overlays().size(), 2u);
+  const fv::Overlay& back = *manager_.Overlays()[0];
+  EXPECT_EQ(back.Name(), "Survey");
+  EXPECT_EQ(back.description(), "Spring survey");
+  EXPECT_EQ(back.credits(), "Field team");
+  EXPECT_EQ(back.min_scale(), 250000);
+  EXPECT_EQ(back.max_scale(), 5000);
+  EXPECT_EQ(manager_.Overlays()[1]->min_scale(), 0);
+}
+
 // Restore goes through the same flows, so an already-open file is deduped.
 TEST_F(SessionTest, RestoringOverAnOpenSessionDoesNotDoubleAnything) {
   ASSERT_EQ(session_.OpenFile(kDocType, "/tmp/a.doc"), FlowResult::kDone);

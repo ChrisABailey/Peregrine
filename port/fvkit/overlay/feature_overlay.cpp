@@ -363,7 +363,17 @@ Status FeatureOverlay::ListLayers(const std::string& path, std::vector<std::stri
 
 void FeatureOverlay::UseStoredStyle(const std::string& spec, const std::string& style_json) {
   style_ = FeatureStyle{};
+  SetDescription(std::string());
+  SetCredits(std::string());
+  SetScaleRange(0, 0);
   if (style_json.empty()) return;
+  FeatureLayerInfo info;
+  if (ReadFeatureLayerInfoJson(style_json, &info).ok()) {
+    if (!info.name.empty()) SetName(info.name);
+    SetDescription(info.description);
+    SetCredits(info.credits);
+    SetScaleRange(info.min_scale, info.max_scale);
+  }
   FeatureStyle style;
   const Status s = ReadFeatureStyleJson(style_json, &style);
   if (!s.ok()) {
@@ -379,6 +389,14 @@ Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
   if (!layer_) return Status::Error(kInvalidArg, "no feature layer to save");
   std::string style_json;
   Status st = WriteFeatureStyleJson(style_, &style_json);
+  if (!st.ok()) return st;
+  FeatureLayerInfo info;
+  if (Name() != layer_->Name()) info.name = Name();
+  info.description = description();
+  info.credits = credits();
+  info.min_scale = min_scale();
+  info.max_scale = max_scale();
+  st = WriteFeatureLayerInfoJson(info, &style_json);
   if (!st.ok()) return st;
   if (format_index == kFormatGeoJson) {
     Status s = WriteGeoJsonFile(*layer_, spec, style_json);

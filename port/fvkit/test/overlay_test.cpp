@@ -86,6 +86,36 @@ TEST_F(ManagerTest, DrawsBottomUp) {
   EXPECT_EQ(log_, (std::vector<std::string>{"a:draw", "b:draw", "c:draw"}));
 }
 
+TEST_F(ManagerTest, SkipsOverlaysOutsideTheirScaleRange) {
+  a_->SetScaleRange(500000, 0);    // hidden zoomed out beyond 1:500,000
+  b_->SetScaleRange(0, 2000000);   // hidden zoomed in beyond 1:2,000,000
+  c_->SetScaleRange(5000000, 100000);
+  fv::CpuCanvas canvas(100, 100);
+  ASSERT_TRUE(mgr_.DrawAll(proj_, canvas).ok());
+  EXPECT_EQ(log_, (std::vector<std::string>{"c:draw"}));
+  EXPECT_EQ(mgr_.DrawOrderAt(proj_), (std::vector<fv::Overlay*>{c_.get()}));
+  EXPECT_EQ(mgr_.DrawOrder().size(), 3u);
+
+  log_.clear();
+  ASSERT_TRUE(proj_.SetScale(250000).ok());
+  ASSERT_TRUE(mgr_.DrawAll(proj_, canvas).ok());
+  EXPECT_EQ(log_, (std::vector<std::string>{"a:draw", "c:draw"}));
+}
+
+TEST(OverlayScaleRange, BoundsAreInclusiveAndZeroIsUnlimited) {
+  fv::Overlay o("o");
+  EXPECT_TRUE(o.DrawsAtScale(1e9));
+  o.SetScaleRange(100000, 10000);
+  EXPECT_TRUE(o.DrawsAtScale(100000));
+  EXPECT_TRUE(o.DrawsAtScale(10000));
+  EXPECT_FALSE(o.DrawsAtScale(100001));
+  EXPECT_FALSE(o.DrawsAtScale(9999));
+  EXPECT_TRUE(o.DrawsAtScale(0));  // resolution mode
+  o.SetScaleRange(-5, -1);
+  EXPECT_EQ(o.min_scale(), 0);
+  EXPECT_EQ(o.max_scale(), 0);
+}
+
 TEST_F(ManagerTest, RoutesTopDownUntilHandled) {
   // c (top) declines, b handles -> a never sees it
   EXPECT_TRUE(mgr_.RouteMouseDown({10, 10, 0}));

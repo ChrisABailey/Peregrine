@@ -127,6 +127,31 @@ class Overlay {
   void SetOpacity(int percent) { opacity_ = percent < 0 ? 0 : (percent > 100 ? 100 : percent); }
   virtual bool SupportsOpacity() const { return false; }
 
+  /// What the layer is and who made it, as the layer's Properties show them.
+  const std::string& description() const { return description_; }
+  void SetDescription(std::string text) { description_ = std::move(text); }
+  const std::string& credits() const { return credits_; }
+  void SetCredits(std::string text) { credits_ = std::move(text); }
+
+  /// The scales the overlay draws at, as scale denominators; 0 is no limit.
+  /// `min_scale` is the smallest scale, zoomed furthest out (1:1,000,000):
+  /// the overlay is not drawn at a larger denominator. `max_scale` is the
+  /// largest, zoomed furthest in (1:10,000): not drawn at a smaller one.
+  double min_scale() const { return min_scale_; }
+  double max_scale() const { return max_scale_; }
+  /// Negative values are taken as 0.
+  void SetScaleRange(double min_scale, double max_scale) {
+    min_scale_ = min_scale > 0 ? min_scale : 0;
+    max_scale_ = max_scale > 0 ? max_scale : 0;
+  }
+  /// True when the range admits 1:`scale_denom`; a denominator of 0 or less
+  /// (a projection in resolution mode) is always in range.
+  bool DrawsAtScale(double scale_denom) const {
+    if (!(scale_denom > 0)) return true;
+    if (min_scale_ > 0 && scale_denom > min_scale_) return false;
+    return !(max_scale_ > 0 && scale_denom < max_scale_);
+  }
+
   // The registered overlay type this instance came from (app::TypeId, i.e. a
   // string -- "fv.grid"). Empty for an overlay created outside the app layer,
   // which is legal: an ad-hoc pyfvw overlay has no type. Stamped at creation
@@ -185,6 +210,10 @@ class Overlay {
   std::string type_id_;
   bool visible_ = true;
   int opacity_ = 100;
+  std::string description_;
+  std::string credits_;
+  double min_scale_ = 0;
+  double max_scale_ = 0;
 };
 
 }  // namespace fv

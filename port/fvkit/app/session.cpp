@@ -8,6 +8,7 @@
 #include "fvkit/app/properties.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -61,6 +62,13 @@ FlowResult Worse(FlowResult a, FlowResult b) {
 
 std::string SessionPrefix(const std::string& name) {
   return "session." + name + ".";
+}
+
+// A scale denominator as a settings value: whole numbers without a fraction.
+std::string FormatScaleKey(double scale_denom) {
+  char text[32];
+  std::snprintf(text, sizeof text, "%.15g", scale_denom);
+  return text;
 }
 
 }  // namespace
@@ -635,6 +643,11 @@ Status OverlaySession::BuildConfiguration(
     out->emplace_back(row + "file", spec);
     out->emplace_back(row + "visible", o->IsVisible() ? "true" : "false");
     if (o->SupportsOpacity()) out->emplace_back(row + "opacity", std::to_string(o->opacity()));
+    out->emplace_back(row + "name", o->Name());
+    if (!o->description().empty()) out->emplace_back(row + "description", o->description());
+    if (!o->credits().empty()) out->emplace_back(row + "credits", o->credits());
+    if (o->min_scale() > 0) out->emplace_back(row + "min_scale", FormatScaleKey(o->min_scale()));
+    if (o->max_scale() > 0) out->emplace_back(row + "max_scale", FormatScaleKey(o->max_scale()));
     if (o.get() == manager_.current()) current_index = written;
     ++written;
   }
@@ -718,6 +731,12 @@ Status OverlaySession::RestoreConfiguration(const std::string& name) {
 
     overlay->SetVisible(settings_.GetBool(row + "visible", true));
     overlay->SetOpacity(static_cast<int>(settings_.GetInt(row + "opacity", 100)));
+    if (settings_.Has(row + "name") && !settings_.GetString(row + "name").empty())
+      overlay->SetName(settings_.GetString(row + "name"));
+    if (settings_.Has(row + "description")) overlay->SetDescription(settings_.GetString(row + "description"));
+    if (settings_.Has(row + "credits")) overlay->SetCredits(settings_.GetString(row + "credits"));
+    if (settings_.Has(row + "min_scale") || settings_.Has(row + "max_scale"))
+      overlay->SetScaleRange(settings_.GetDouble(row + "min_scale", 0), settings_.GetDouble(row + "max_scale", 0));
     if (i == current_index) want_current = overlay;
     restored.push_back(overlay);
   }
