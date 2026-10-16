@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 
+#include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
 #include "fvkit/canvas/cpu_canvas.h"
@@ -337,3 +338,321 @@ TEST(FeatureStyle, SwatchesInkEachGeometryKind) {
 }
 
 }  // namespace
+
+// MARK: Rules
+
+/// A style.json written by hand: four rule types, filters, zoom expressions,
+/// a hidden rule and members fvkit does not use.
+const char kHandStyle[] = R"j({
+  "version": 8,
+  "name": "Pizza by hand",
+  "sources": {"pizza": {"type": "vector", "url": "mbtiles://pizza.mbtiles"}},
+  "layers": [
+    {"id": "areas", "type": "fill", "source": "pizza", "source-layer": "places",
+     "filter": ["==", ["geometry-type"], "Polygon"], "paint": {"fill-color": "#cce0ff", "fill-opacity": 0.5}},
+    {"id": "roads", "type": "line", "source": "pizza", "source-layer": "places", "minzoom": 8,
+     "paint": {"line-color": "#888888",
+               "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1, 16, 6]}},
+    {"id": "naples", "type": "circle", "source": "pizza", "source-layer": "places",
+     "filter": ["all", ["==", ["get", "style"], "neapolitan"], ["has", "name"]],
+     "paint": {"circle-radius": 7, "circle-color": "#d03020"},
+     "metadata": {"fv:legend": "Neapolitan", "note": "kept"}},
+    {"id": "others", "type": "circle", "source": "pizza", "source-layer": "places",
+     "filter": ["!=", ["get", "style"], "neapolitan"],
+     "layout": {"visibility": "none"}, "paint": {"circle-radius": 4, "circle-color": "#808080"}},
+    {"id": "names", "type": "symbol", "source": "pizza", "source-layer": "places", "minzoom": 10, "maxzoom": 20,
+     "layout": {"text-field": ["get", "name"], "text-size": ["step", ["zoom"], 10, 14, 14]},
+     "paint": {"text-color": "#202020", "text-halo-color": "#ffffff", "text-halo-width": 1},
+     "interactive": true}
+  ]
+})j";
+
+TEST(FeatureStyleRules, APlainStyleJsonReadsAsRulesAndSurvivesASave) {
+  FeatureStyle style;
+  ASSERT_TRUE(fv::ReadFeatureStyleJson(kHandStyle, &style).ok());
+  ASSERT_EQ(style.renderer, FeatureRenderer::kRules);
+  ASSERT_EQ(style.rules.size(), 5u);
+  EXPECT_EQ(style.label.field, "name");
+
+  const fv::StyleRule& areas = style.rules[0];
+  EXPECT_EQ(areas.id, "areas");
+  EXPECT_EQ(areas.type, "fill");
+  EXPECT_EQ(areas.filter, R"(["==",["geometry-type"],"Polygon"])");
+  EXPECT_EQ(areas.paint, R"({"fill-color":"#cce0ff","fill-opacity":0.5})");
+  const fv::StyleRule& roads = style.rules[1];
+  EXPECT_EQ(roads.min_zoom, 8);
+  EXPECT_EQ(roads.max_zoom, 24);
+  EXPECT_EQ(roads.paint, R"({"line-color":"#888888","line-width":["interpolate",["linear"],["zoom"],8,1,16,6]})");
+  const fv::StyleRule& naples = style.rules[2];
+  EXPECT_EQ(naples.filter, R"(["all",["==",["get","style"],"neapolitan"],["has","name"]])");
+  EXPECT_EQ(naples.legend, "Neapolitan");
+  EXPECT_EQ(naples.extra, R"({"metadata":{"note":"kept"}})");
+  EXPECT_FALSE(style.rules[3].shown);
+  EXPECT_EQ(style.rules[3].layout, "{}");
+  const fv::StyleRule& names = style.rules[4];
+  EXPECT_EQ(names.type, "symbol");
+  EXPECT_EQ(names.min_zoom, 10);
+  EXPECT_EQ(names.max_zoom, 20);
+  EXPECT_EQ(names.layout, R"({"text-field":["get","name"],"text-size":["step",["zoom"],10,14,14]})");
+  EXPECT_EQ(names.extra, R"({"interactive":true})");
+
+  std::string json;
+  ASSERT_TRUE(fv::WriteFeatureStyleJson(style, &json).ok());
+  EXPECT_NE(json.find("\"source-layer\": \"features\""), std::string::npos);
+  FeatureStyle back;
+  ASSERT_TRUE(fv::ReadFeatureStyleJson(json, &back).ok());
+  EXPECT_TRUE(back == style);
+
+  // Saved in a file and reopened, the rules come back unchanged.
+  fv::FeatureOverlay overlay;
+  overlay.SetLayer(Pizza());
+  overlay.SetStyle(style);
+  const std::string gpkg = Temp("pizza.gpkg");
+  ASSERT_TRUE(overlay.FileSaveAs(gpkg, fv::FeatureOverlay::kFormatGeoPackage).ok());
+  fv::FeatureOverlay reopened;
+  ASSERT_TRUE(reopened.FileOpen(gpkg).ok());
+  EXPECT_TRUE(reopened.style() == style);
+}
+
+TEST(FeatureStyleRules, RejectsWhatTheEngineCannotDraw) {
+  FeatureStyle style;
+  auto read = [&](const std::string& layers) {
+    return fv::ReadFeatureStyleJson(R"({"version": 8, "metadata": {"fv:renderer": "rules"}, "layers": )" + layers + "}",
+                                    &style)
+        .code;
+  };
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line"}])"), fv::kOk);
+  EXPECT_EQ(read(R"([{"id": "a", "type": "heatmap"}])"), fv::kInvalidArg);
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line"}, {"id": "a", "type": "fill"}])"), fv::kInvalidArg);
+  EXPECT_EQ(read(R"([{"type": "line"}])"), fv::kInvalidArg);
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line", "paint": {"line-width": ["frobnicate", 2]}}])"), fv::kInvalidArg);
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line", "filter": ["frobnicate"]}])"), fv::kInvalidArg);
+  // Expressions only: no legacy filters or zoom functions.
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line", "filter": ["==", "class", "river"]}])"), fv::kInvalidArg);
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line", "filter": ["==", "$type", "Polygon"]}])"), fv::kInvalidArg);
+  EXPECT_EQ(read(R"([{"id": "a", "type": "line", "paint": {"line-width": {"stops": [[8, 1], [16, 6]]}}}])"),
+            fv::kInvalidArg);
+
+  // Written rules are checked the same way.
+  FeatureStyle rules;
+  rules.renderer = FeatureRenderer::kRules;
+  rules.rules.resize(2);
+  rules.rules[0].id = rules.rules[1].id = "same";
+  std::string json;
+  EXPECT_EQ(fv::WriteFeatureStyleJson(rules, &json).code, fv::kInvalidArg);
+  rules.rules[1].id = "other";
+  rules.rules[1].paint = "[1]";
+  EXPECT_EQ(fv::WriteFeatureStyleJson(rules, &json).code, fv::kInvalidArg);
+  rules.rules[1].paint = "{}";
+  rules.rules[1].filter = R"(["has", "name"])";
+  EXPECT_EQ(fv::WriteFeatureStyleJson(rules, &json).code, fv::kOk);
+  rules.rules[1].filter = R"(["!has", "name"])";
+  EXPECT_EQ(fv::WriteFeatureStyleJson(rules, &json).code, fv::kInvalidArg);
+}
+
+TEST(FeatureStyleRules, AGeneratedStyleConvertsToRulesThatDrawTheSame) {
+  auto pizza = Pizza();
+  const FeatureStyle categorised = PizzaStyle(*pizza);
+  FeatureStyle rules;
+  ASSERT_TRUE(fv::FeatureStyleToRules(categorised, &rules).ok());
+  ASSERT_EQ(rules.renderer, FeatureRenderer::kRules);
+  std::vector<std::string> names;
+  for (const fv::StyleRule& r : rules.rules) names.push_back(r.id);
+  EXPECT_EQ(names, (std::vector<std::string>{"Areas", "Area outlines", "Line casings", "Lines", "Points",
+                                             "Point labels", "Labels"}));
+  EXPECT_EQ(rules.rules[1].facet, "fv-area-outline");
+  EXPECT_EQ(rules.rules[5].facet, "");
+  EXPECT_EQ(rules.label.field, "name");
+  EXPECT_EQ(rules.overrides.size(), 1u);
+
+  auto draw = [&](const FeatureStyle& style) {
+    fv::FeatureOverlay overlay;
+    overlay.SetLayer(pizza);
+    overlay.SetStyle(style);
+    fv::MapProjection proj;
+    proj.SetSurfaceSize(300, 300);
+    proj.SetCenter({32.78, -79.94});
+    proj.SetScale(250000.0);
+    auto canvas = std::make_unique<fv::CpuCanvas>(300, 300);
+    canvas->Clear({255, 255, 255, 255});
+    EXPECT_TRUE(overlay.OnDraw(proj, *canvas).ok());
+    return canvas;
+  };
+  const auto a = draw(categorised);
+  const auto b = draw(rules);
+  int differ = 0, inked = 0;
+  for (int y = 0; y < 300; ++y)
+    for (int x = 0; x < 300 * 4; ++x) {
+      differ += a->Buffer().Row(y)[x] != b->Buffer().Row(y)[x];
+      inked += a->Buffer().Row(y)[x] != 255;
+    }
+  EXPECT_GT(inked, 100);
+  EXPECT_EQ(differ, 0);
+
+  // The override and the facets survive a save.
+  std::string json;
+  ASSERT_TRUE(fv::WriteFeatureStyleJson(rules, &json).ok());
+  FeatureStyle back;
+  ASSERT_TRUE(fv::ReadFeatureStyleJson(json, &back).ok());
+  EXPECT_TRUE(back == rules);
+  EXPECT_TRUE(back.overrides.at(1) == categorised.overrides.at(1));
+
+  FeatureStyle again;
+  ASSERT_TRUE(fv::FeatureStyleToRules(rules, &again).ok());
+  EXPECT_TRUE(again == rules);
+}
+
+namespace {
+
+/// Draws `style` over `layer` around Charleston, 300 px square, on white.
+std::unique_ptr<fv::CpuCanvas> DrawPizza(const std::shared_ptr<fv::MemoryFeatureLayer>& layer,
+                                         const FeatureStyle& style) {
+  fv::FeatureOverlay overlay;
+  overlay.SetLayer(layer);
+  overlay.SetStyle(style);
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(300, 300);
+  proj.SetCenter({32.78, -79.94});
+  proj.SetScale(250000.0);
+  auto canvas = std::make_unique<fv::CpuCanvas>(300, 300);
+  canvas->Clear({255, 255, 255, 255});
+  EXPECT_TRUE(overlay.OnDraw(proj, *canvas).ok());
+  return canvas;
+}
+
+int Differing(const fv::CpuCanvas& a, const fv::CpuCanvas& b) {
+  int differ = 0;
+  for (int y = 0; y < a.Buffer().Height(); ++y)
+    for (int x = 0; x < a.Buffer().Width() * 4; ++x) differ += a.Buffer().Row(y)[x] != b.Buffer().Row(y)[x];
+  return differ;
+}
+
+}  // namespace
+
+TEST(FeatureStyleRules, CategoriesSplitIntoOneRulePerValueThatDrawTheSame) {
+  auto pizza = Pizza();
+  const FeatureStyle categorised = PizzaStyle(*pizza);
+  FeatureStyle split;
+  ASSERT_TRUE(fv::CategoriesToRules(categorised, &split, fv::GeometryType::kPoint).ok());
+  ASSERT_EQ(split.renderer, FeatureRenderer::kRules);
+  std::vector<std::string> names, legends;
+  for (const fv::StyleRule& r : split.rules) {
+    names.push_back(r.id);
+    legends.push_back(r.legend);
+  }
+  EXPECT_EQ(names, (std::vector<std::string>{"Points: Other", "Points: Detroit", "Points: New York",
+                                             "Points: Neapolitan", "Point labels"}));
+  EXPECT_EQ(legends, (std::vector<std::string>{"Other", "Detroit", "New York", "Neapolitan", ""}));
+  EXPECT_EQ(split.rules[3].filter,
+            R"(["all",["match",["geometry-type"],["Point","MultiPoint"],true,false],)"
+            R"(["==",["to-string",["get","style"]],"neapolitan"]])");
+  EXPECT_EQ(split.rules[0].filter,
+            R"(["all",["match",["geometry-type"],["Point","MultiPoint"],true,false],)"
+            R"(["match",["to-string",["get","style"]],["neapolitan","new-york","detroit"],false,true]])");
+  EXPECT_EQ(split.rules[3].facet, "fv-circle");
+  EXPECT_EQ(split.overrides.size(), 1u);
+
+  // The points do not overlap, so the drawing, override included, is unchanged.
+  const auto a = DrawPizza(pizza, categorised);
+  const auto b = DrawPizza(pizza, split);
+  EXPECT_EQ(Differing(*a, *b), 0);
+
+  std::vector<std::string> titles;
+  for (const fv::RuleLegendEntry& e : fv::RuleLegend(split)) titles.push_back(e.title);
+  EXPECT_EQ(titles, (std::vector<std::string>{"Point labels", "Neapolitan", "New York", "Detroit", "Other"}));
+
+  FeatureStyle single;
+  EXPECT_EQ(fv::CategoriesToRules(single, &split).code, fv::kInvalidArg);
+}
+
+TEST(FeatureStyleRules, TheLegendListsShownRulesTopFirstAndMergesSharedTitles) {
+  FeatureStyle style;
+  style.renderer = FeatureRenderer::kRules;
+  style.rules.resize(4);
+  style.rules[0].id = "casing";
+  style.rules[0].legend = "Roads";
+  style.rules[1].id = "rail";
+  style.rules[2].id = "road";
+  style.rules[2].legend = "Roads";
+  style.rules[3].id = "hidden";
+  style.rules[3].shown = false;
+  const std::vector<fv::RuleLegendEntry> legend = fv::RuleLegend(style);
+  ASSERT_EQ(legend.size(), 2u);
+  EXPECT_EQ(legend[0].title, "Roads");
+  EXPECT_EQ(legend[0].rules, (std::vector<size_t>{0, 2}));
+  EXPECT_EQ(legend[1].title, "rail");
+  EXPECT_EQ(legend[1].rules, (std::vector<size_t>{1}));
+  EXPECT_TRUE(fv::RuleLegend(FeatureStyle()).empty());
+
+  // A swatch draws a filtered rule, and a label rule as sample text.
+  fv::CpuCanvas canvas(40, 20);
+  canvas.Clear({255, 255, 255, 255});
+  fv::StyleRule fill;
+  fill.id = "a";
+  fill.type = "fill";
+  fill.filter = R"(["==",["get","kind"],"park"])";
+  fill.paint = R"({"fill-color":"#00ff00"})";
+  ASSERT_TRUE(fv::DrawRulesSwatch(canvas, {fill}, fv::GeometryType::kGeometry).ok());
+  EXPECT_EQ(canvas.Buffer().Row(10)[20 * 4 + 1], 255);
+  EXPECT_EQ(canvas.Buffer().Row(10)[20 * 4 + 0], 0);
+  fv::CpuCanvas text(40, 20);
+  text.Clear({255, 255, 255, 255});
+  fv::StyleRule label;
+  label.id = "b";
+  label.type = "symbol";
+  label.layout = R"({"text-field":["get","name"],"text-size":14})";
+  std::string font;
+  for (const char* f : {"/System/Library/Fonts/Supplemental/Arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"})
+    if (fs::exists(f)) font = f;
+  if (font.empty()) GTEST_SKIP() << "no system font to draw a label swatch";
+  ASSERT_TRUE(fv::DrawRulesSwatch(text, {label}, fv::GeometryType::kPoint, 1.0, font).ok());
+  int inked = 0;
+  for (int y = 0; y < 20; ++y)
+    for (int x = 0; x < 40 * 4; ++x) inked += text.Buffer().Row(y)[x] != 255;
+  EXPECT_GT(inked, 10);
+}
+
+TEST(FeatureStyleRules, AnExportedStyleIsPlainMapLibreAndReadsBackWithoutOverrides) {
+  auto pizza = Pizza();
+  FeatureStyle categorised = PizzaStyle(*pizza);
+  categorised.categories[1].symbol.marker = fv::FeatureMarker::kSquare;
+  FeatureStyle split;
+  ASSERT_TRUE(fv::CategoriesToRules(categorised, &split, fv::GeometryType::kPoint).ok());
+  for (const FeatureStyle* style : {&categorised, &split}) {
+    std::string json;
+    ASSERT_TRUE(fv::ExportFeatureStyleJson(*style, &json).ok());
+    const nlohmann::json doc = nlohmann::json::parse(json);
+    int moved = 0;
+    for (const nlohmann::json& l : doc["layers"]) {
+      for (const char* section : {"paint", "layout"})
+        for (const auto& p : l.value(section, nlohmann::json::object()).items())
+          EXPECT_NE(p.key().rfind("fv-", 0), 0u) << l["id"] << " " << p.key();
+      moved += l.value("metadata", nlohmann::json::object()).contains("fv:paint");
+    }
+    EXPECT_GT(moved, 0);
+    EXPECT_EQ(json.find("fv:override"), std::string::npos);
+    EXPECT_EQ(doc.value("glyphs", ""), "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf");
+    FeatureStyle back;
+    ASSERT_TRUE(fv::ImportFeatureStyleJson(json, &back).ok());
+    FeatureStyle expected = *style;
+    expected.overrides.clear();
+    if (style == &categorised) {
+      // The generated reader takes the "Other" symbol and labels from the document as written.
+      EXPECT_EQ(back.renderer, FeatureRenderer::kCategorised);
+      EXPECT_TRUE(back.categories == expected.categories);
+      EXPECT_TRUE(back.symbol == expected.symbol);
+    } else {
+      EXPECT_TRUE(back == expected);
+    }
+  }
+}
+
+TEST(FeatureStyleRules, ImportRefusesWhatIsNotAStyle) {
+  FeatureStyle style;
+  EXPECT_EQ(fv::ImportFeatureStyleJson(R"({"type": "FeatureCollection", "features": []})", &style).code,
+            fv::kInvalidArg);
+  EXPECT_EQ(fv::ImportFeatureStyleJson(R"({"version": 7, "layers": []})", &style).code, fv::kInvalidArg);
+  EXPECT_EQ(fv::ImportFeatureStyleJson("not json", &style).code, fv::kInvalidArg);
+  ASSERT_TRUE(fv::ImportFeatureStyleJson(R"({"version": 8, "layers": [{"id": "a", "type": "line"}]})", &style).ok());
+  EXPECT_EQ(style.renderer, FeatureRenderer::kRules);
+}

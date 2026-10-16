@@ -94,9 +94,14 @@ class LayerStyleModel {
   // MARK: Renderer
   FeatureRenderer renderer() const { return draft_.renderer; }
   /// Switching to categorised or graduated picks the first usable field
-  /// when the current one is not, and classifies. kNotFound when the layer
+  /// when the current one is not, and classifies; from rules this is
+  /// Regenerate…, which replaces the rules. Switching to rules turns the
+  /// generated style into the rules that draw it. kNotFound when the layer
   /// has no usable field; kUnsupported on a feature override.
   Status SetRenderer(FeatureRenderer renderer);
+  /// Turns a categorised draft into one rule per value (`CategoriesToRules`).
+  /// kInvalidArg for any other renderer.
+  Status CategoriseIntoRules();
   /// Fields the current renderer can use: any but blobs for categorised,
   /// integer and real for graduated; empty for single.
   std::vector<StyleFieldChoice> CandidateFields() const;
@@ -111,7 +116,9 @@ class LayerStyleModel {
 
   // MARK: Entries
   /// The rows the dialog and legend show: one per category or class, then
-  /// "Other"; the single symbol alone; or the feature's one symbol.
+  /// "Other"; the single symbol alone; the rules' legend (`RuleLegend`); or
+  /// the feature's one symbol. A rules entry has no symbol, value or class to
+  /// edit; its label is the legend title of each rule it draws.
   size_t EntryCount() const;
   bool EntryIsOther(size_t i) const;
   /// Legend text: a category's label or value, a class's range, "Other",

@@ -75,10 +75,16 @@ bool FeatureLabel::operator==(const FeatureLabel& o) const {
          SameColor(halo_color, o.halo_color) && halo_px == o.halo_px;
 }
 
+bool StyleRule::operator==(const StyleRule& o) const {
+  return id == o.id && type == o.type && filter == o.filter && paint == o.paint && layout == o.layout &&
+         min_zoom == o.min_zoom && max_zoom == o.max_zoom && shown == o.shown && legend == o.legend &&
+         facet == o.facet && extra == o.extra;
+}
+
 bool FeatureStyle::operator==(const FeatureStyle& o) const {
   return renderer == o.renderer && symbol == o.symbol && field == o.field &&
          categories == o.categories && classes == o.classes && overrides == o.overrides &&
-         label == o.label;
+         label == o.label && rules == o.rules;
 }
 
 const FeatureSymbol& FeatureStyle::SymbolFor(const Feature& f, int field_index) const {
@@ -112,13 +118,14 @@ const char* ToString(FeatureRenderer renderer) {
     case FeatureRenderer::kSingle: return "single";
     case FeatureRenderer::kCategorised: return "categorised";
     case FeatureRenderer::kGraduated: return "graduated";
+    case FeatureRenderer::kRules: return "rules";
   }
   return "single";
 }
 
 bool FeatureRendererFromString(const std::string& name, FeatureRenderer* out) {
   for (FeatureRenderer r : {FeatureRenderer::kSingle, FeatureRenderer::kCategorised,
-                            FeatureRenderer::kGraduated}) {
+                            FeatureRenderer::kGraduated, FeatureRenderer::kRules}) {
     if (name == ToString(r)) {
       *out = r;
       return true;

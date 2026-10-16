@@ -7,16 +7,21 @@ import AppKit
 import CxxStdlib
 import PeregrineCore
 
-/// The style dialog (Layer Style…, Style This Feature…) over `DeskHost`'s
-/// style model: renderer and field, the legend of classes with swatches, a
-/// symbol editor for the selected class and the label settings. Edits go to
-/// the model's draft; Apply writes it to the overlay and OK applies and closes.
+/// The style editor over `DeskHost`'s style model: renderer and field, the
+/// legend of classes with swatches and a symbol editor for the selected class
+/// (symbology), and the label settings. Edits go to the model's draft as they
+/// are made. Shown as the Symbology and Labels tabs of a layer's Properties,
+/// and whole in the Style This Feature… dialog.
 @MainActor
-final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource,
-    NSTableViewDelegate, NSTextFieldDelegate {
+final class LayerStylePanel: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+    enum Part { case all, symbology, labels }
+
     let host: fv.desk.DeskHost
-    /// Called once the window has closed.
-    var onClose: (() -> Void)?
+    let part: Part
+    /// The panel's root view.
+    let view = NSView()
+    /// Receives each edit's error message, "" for success.
+    var onReport: ((String) -> Void)?
 
     private let rendererPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let fieldPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -24,6 +29,7 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
     private let modePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let varyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let classifyButton = NSButton(title: "Classify", target: nil, action: nil)
+    private let categoriseButton = NSButton(title: "Categorise into Rules", target: nil, action: nil)
     private let rendererRow = NSStackView()
     private let gradedRow = NSStackView()
     private let table = NSTableView()
@@ -33,7 +39,6 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
     private let symbolGrid = NSGridView()
     private let labelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let labelSize = NSTextField(string: "")
-    private let messageLabel = NSTextField(wrappingLabelWithString: "")
 
     private static let swatchSize = NSSize(width: 36, height: 18)
     private static let valueColumn = NSUserInterfaceItemIdentifier("value")
@@ -42,24 +47,17 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
     /// Tag of the label size field, apart from the symbol rows' property indexes.
     private static let labelSizeTag = 1_000
 
-    init(host: fv.desk.DeskHost) {
+    init(host: fv.desk.DeskHost, part: Part) {
         self.host = host
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
-        window.minSize = NSSize(width: 480, height: 420)
-        super.init(window: window)
-        window.delegate = self
+        self.part = part
+        super.init()
         NSColorPanel.shared.showsAlpha = true
-        buildLayout(in: window)
+        buildLayout()
         reload()
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
     /// Re-reads the whole model, keeping the selected row where it can.
     func reload() {
-        window?.title = String(host.LayerStyleTitle())
         let feature = host.LayerStyleIsFeature()
         rendererRow.isHidden = feature
         rendererPopup.selectItem(at: Int(host.StyleRenderer()))
@@ -69,13 +67,17 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
         for i in 0..<host.StyleFieldCount() where String(host.StyleFieldName(i)) == field {
             fieldPopup.selectItem(at: Int(i))
         }
-        fieldPopup.isHidden = host.StyleRenderer() == 0
-        classifyButton.isHidden = host.StyleRenderer() == 0
+        let renderer = host.StyleRenderer()
+        // Under rules (3) the legend lists the rules; there is no field, class or symbol to edit here.
+        fieldPopup.isHidden = renderer == 0 || renderer == 3
+        classifyButton.isHidden = fieldPopup.isHidden
+        categoriseButton.isHidden = feature || renderer != 1
+        symbolGrid.isHidden = !feature && renderer == 3
         gradedRow.isHidden = feature || host.StyleRenderer() != 2
         classesPopup.selectItem(withTitle: String(host.StyleClassCount()))
         modePopup.selectItem(at: Int(host.StyleClassMode()))
         varyPopup.selectItem(at: Int(host.StyleClassVary()))
-        addButton.isHidden = feature || host.StyleRenderer() == 0
+        addButton.isHidden = feature || renderer == 0 || renderer == 3
         removeButton.isHidden = addButton.isHidden
         clearOverrideButton.isHidden = !feature
         clearOverrideButton.isEnabled = host.StyleHasOverride()
@@ -98,16 +100,19 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
 
     // MARK: Layout
 
-    private func buildLayout(in window: NSWindow) {
-        rendererPopup.addItems(withTitles: ["Single symbol", "Categorised", "Graduated"])
+    private func buildLayout() {
+        rendererPopup.addItems(withTitles: ["Single symbol", "Categorised", "Graduated", "Rules"])
         rendererPopup.target = self
         rendererPopup.action = #selector(rendererChanged)
         fieldPopup.target = self
         fieldPopup.action = #selector(fieldChanged)
         classifyButton.target = self
         classifyButton.action = #selector(classify)
+        categoriseButton.target = self
+        categoriseButton.action = #selector(categoriseIntoRules)
         rendererRow.setViews([NSTextField(labelWithString: "Draw"), rendererPopup,
-                              NSTextField(labelWithString: "by"), fieldPopup, classifyButton], in: .leading)
+                              NSTextField(labelWithString: "by"), fieldPopup, classifyButton, categoriseButton],
+                             in: .leading)
         rendererRow.orientation = .horizontal
 
         classesPopup.addItems(withTitles: (2...10).map(String.init))
@@ -164,40 +169,36 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
         middle.alignment = .top
         middle.distribution = .fill
 
-        messageLabel.textColor = .systemRed
-        messageLabel.isHidden = true
-        let revert = NSButton(title: "Revert", target: self, action: #selector(revertStyle))
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelStyle))
-        cancel.keyEquivalent = "\u{1b}"
-        let apply = NSButton(title: "Apply", target: self, action: #selector(applyStyle))
-        let ok = NSButton(title: "OK", target: self, action: #selector(okStyle))
-        ok.keyEquivalent = "\r"
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let buttons = NSStackView(views: [revert, spacer, cancel, apply, ok])
-        buttons.orientation = .horizontal
-
-        let stack = NSStackView(views: [rendererRow, gradedRow, middle, entryButtons, labelRow, messageLabel, buttons])
+        let symbology: [NSView] = [rendererRow, gradedRow, middle, entryButtons]
+        let views: [NSView]
+        switch part {
+        case .all: views = symbology + [labelRow]
+        case .symbology: views = symbology
+        case .labels: views = [labelRow]
+        }
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 12, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
-        window.contentView = content
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            middle.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            messageLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
-            symbolBox.widthAnchor.constraint(equalToConstant: 220),
-        ])
-        middle.setHuggingPriority(.defaultLow, for: .vertical)
+        view.addSubview(stack)
+        var constraints = [
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+        ]
+        if part == .labels {
+            constraints.append(stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor))
+        } else {
+            constraints += [
+                stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                middle.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
+                symbolBox.widthAnchor.constraint(equalToConstant: 220),
+            ]
+            middle.setHuggingPriority(.defaultLow, for: .vertical)
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     // MARK: Legend table
@@ -208,7 +209,9 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
         guard let id = column?.identifier else { return nil }
         let i = Int32(row)
         if id == Self.swatchColumn { return NSImageView(image: swatch(for: i) ?? NSImage()) }
-        let editable = !host.StyleEntryIsOther(i) && host.StyleRenderer() != 0 && !host.LayerStyleIsFeature()
+        // A rules row has a legend title to edit but no value.
+        let editable = !host.StyleEntryIsOther(i) && host.StyleRenderer() != 0 && !host.LayerStyleIsFeature() &&
+            !(id == Self.valueColumn && host.StyleRenderer() == 3)
         let text = id == Self.valueColumn ? String(host.StyleEntryValue(i)) : String(host.StyleEntryLabel(i))
         let field = NSTextField(string: text)
         field.isBordered = false
@@ -224,7 +227,7 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
 
     /// Entry `i`'s swatch at the window's backing scale.
     private func swatch(for i: Int32) -> NSImage? {
-        let scale = window?.backingScaleFactor ?? 2
+        let scale = view.window?.backingScaleFactor ?? 2
         let w = Int(Self.swatchSize.width * scale), h = Int(Self.swatchSize.height * scale)
         var bytes = Data(count: w * h * 4)
         let copied = bytes.withUnsafeMutableBytes { buf in
@@ -247,6 +250,8 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
 
     /// Rebuilds the symbol rows for the selected entry.
     private func reloadSymbol() {
+        // removeRow(at:) leaves the cells' views in the grid; they must be removed separately.
+        symbolGrid.subviews.forEach { $0.removeFromSuperview() }
         while symbolGrid.numberOfRows > 0 { symbolGrid.removeRow(at: 0) }
         var group = ""
         for k in 0..<host.StylePropertyCount() {
@@ -257,7 +262,12 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
                 heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
                 symbolGrid.addRow(with: [heading, NSGridCell.emptyContentView])
             }
-            symbolGrid.addRow(with: [NSTextField(labelWithString: String(host.StylePropertyTitle(k))), editor(for: k)])
+            let row = symbolGrid.addRow(with: [NSTextField(labelWithString: String(host.StylePropertyTitle(k))), editor(for: k)])
+            // A colour well has no baseline; first-baseline alignment drops it below its label.
+            if host.StylePropertyKind(k) == 0 {
+                row.rowAlignment = .none
+                row.yPlacement = .center
+            }
         }
     }
 
@@ -301,15 +311,27 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
 
     // MARK: Edits
 
-    /// Shows `error` (or clears the message) and redraws the legend.
+    /// Passes `error` on and redraws the panel.
     private func report(_ error: std.string) {
-        let text = String(error)
-        messageLabel.stringValue = text
-        messageLabel.isHidden = text.isEmpty
+        onReport?(String(error))
         reload()
     }
 
-    @objc private func rendererChanged() { report(host.SetStyleRenderer(Int32(rendererPopup.indexOfSelectedItem))) }
+    /// Leaving rules for a generator is Regenerate…, which replaces the rules; it asks first.
+    @objc private func rendererChanged() {
+        let chosen = Int32(rendererPopup.indexOfSelectedItem)
+        if host.StyleRenderer() == 3 && chosen != 3 {
+            let alert = NSAlert()
+            alert.messageText = "Regenerate the style as \(rendererPopup.titleOfSelectedItem ?? "")?"
+            alert.informativeText = "The layer's rules are replaced by a generated style when you apply."
+            alert.addButton(withTitle: "Regenerate")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() != .alertFirstButtonReturn { return reload() }
+        }
+        report(host.SetStyleRenderer(chosen))
+    }
+
+    @objc private func categoriseIntoRules() { report(host.CategoriseStyleIntoRules()) }
 
     @objc private func fieldChanged() {
         report(host.SetStyleField(host.StyleFieldName(Int32(fieldPopup.indexOfSelectedItem))))
@@ -359,14 +381,89 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
             report(host.SetStyleNumber(entry, Int32(field.tag), value))
         }
     }
+}
 
-    // MARK: Buttons
+/// The Style This Feature… dialog: the whole style panel over one feature's
+/// symbol, with Apply, OK, Revert and Cancel. Closing it closes the model.
+@MainActor
+final class LayerStyleWindowController: NSWindowController, NSWindowDelegate {
+    let host: fv.desk.DeskHost
+    /// Called once the window has closed.
+    var onClose: (() -> Void)?
+
+    private let panel: LayerStylePanel
+    /// Cleared by `dismiss()`, when the model now belongs to Properties.
+    private var closesModel = true
+    private let messageLabel = NSTextField(wrappingLabelWithString: "")
+
+    init(host: fv.desk.DeskHost) {
+        self.host = host
+        panel = LayerStylePanel(host: host, part: .all)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
+        window.minSize = NSSize(width: 480, height: 420)
+        super.init(window: window)
+        window.delegate = self
+        panel.onReport = { [weak self] in self?.show(message: $0) }
+        buildLayout(in: window)
+        reload()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Re-reads the title and the panel.
+    func reload() {
+        window?.title = String(host.LayerStyleTitle())
+        panel.reload()
+    }
+
+    private func buildLayout(in window: NSWindow) {
+        messageLabel.textColor = .systemRed
+        messageLabel.isHidden = true
+        let revert = NSButton(title: "Revert", target: self, action: #selector(revertStyle))
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelStyle))
+        cancel.keyEquivalent = "\u{1b}"
+        let apply = NSButton(title: "Apply", target: self, action: #selector(applyStyle))
+        let ok = NSButton(title: "OK", target: self, action: #selector(okStyle))
+        ok.keyEquivalent = "\r"
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let buttons = NSStackView(views: [revert, spacer, cancel, apply, ok])
+        buttons.orientation = .horizontal
+
+        let stack = NSStackView(views: [panel.view, messageLabel, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 12, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView()
+        content.addSubview(stack)
+        window.contentView = content
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: content.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            panel.view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            messageLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+        ])
+        panel.view.setContentHuggingPriority(.defaultLow, for: .vertical)
+    }
+
+    private func show(message: String) {
+        messageLabel.stringValue = message
+        messageLabel.isHidden = message.isEmpty
+    }
 
     @discardableResult
     private func apply() -> Bool {
         window?.makeFirstResponder(nil)  // ends an edit in progress
         let error = String(host.ApplyLayerStyle())
-        report(std.string(error))
+        show(message: error)
+        panel.reload()
         return error.isEmpty
     }
 
@@ -378,10 +475,19 @@ final class LayerStyleWindowController: NSWindowController, NSWindowDelegate, NS
 
     @objc private func cancelStyle() { close() }
 
-    @objc private func revertStyle() { report(host.RevertLayerStyle()) }
+    @objc private func revertStyle() {
+        show(message: String(host.RevertLayerStyle()))
+        panel.reload()
+    }
+
+    /// Closes the window without closing the style model.
+    func dismiss() {
+        closesModel = false
+        close()
+    }
 
     func windowWillClose(_ notification: Notification) {
-        host.CloseLayerStyle()
+        if closesModel { host.CloseLayerStyle() }
         onClose?()
     }
 }

@@ -432,6 +432,156 @@ bool ExceptsMotorCar(const std::string& except) {
   return false;
 }
 
+/// The direction a way may be travelled, from `oneway`, `junction` and the
+/// motorway implication. kBoth when `honor_oneway` is off.
+EdgeDir ResolveDirection(const OsmWay& w, RoadClass klass, const RoadGraphBuildOptions& opts) {
+  if (!opts.honor_oneway) return EdgeDir::kBoth;
+
+  bool implied = klass == RoadClass::kMotorway || klass == RoadClass::kMotorwayLink;
+  const std::string* junction = w.Find("junction");
+  if (junction != nullptr && (*junction == "roundabout" || *junction == "circular")) {
+    implied = true;
+  }
+
+  const std::string* oneway = w.Find("oneway");
+  if (oneway == nullptr) return implied ? EdgeDir::kForward : EdgeDir::kBoth;
+  if (IsTrue(*oneway)) return EdgeDir::kForward;
+  // `oneway=-1` is deprecated upstream and still all over the planet file.
+  if (*oneway == "-1" || *oneway == "reverse") return EdgeDir::kBackward;
+  // An explicit `oneway=no` beats the motorway/roundabout implication.
+  if (IsFalse(*oneway)) return EdgeDir::kBoth;
+  return implied ? EdgeDir::kForward : EdgeDir::kBoth;
+}
+
+/// Why ReadWay kept or dropped a way.
+enum class WayVerdict { kKept, kNotRoad, kDroppedAccess };
+
+/// Reads everything the graph keeps from a way's own tags into `kept`: class,
+/// access, speed, direction, lanes, surface and bike provision. The way's id,
+/// refs and name are left to the caller. Anything but kKept leaves `kept` partial.
+WayVerdict ReadWay(const OsmWay& w, const RoadGraphBuildOptions& opts, KeptWay* kept) {
+  // `route=ferry` takes first refusal over `highway=*` (O5e). A few ferry
+  // ways also carry a highway tag for the slipway at either end, and a way
+  // that says it is a ferry line is a ferry line whatever else is on it.
+  RoadClass klass = RoadClass::kNone;
+  const std::string* route = w.Find("route");
+  const bool is_ferry = opts.include_ferries && route != nullptr && *route == "ferry";
+  if (is_ferry) {
+    klass = RoadClass::kFerry;
+  } else {
+    const std::string* highway = w.Find("highway");
+    if (highway == nullptr) return WayVerdict::kNotRoad;
+    klass = RoadClassFromHighwayTag(*highway);
+  }
+  if (klass == RoadClass::kNone) return WayVerdict::kNotRoad;
+  uint16_t access_flags = 0;
+  if (opts.honor_access) {
+    // `vehicle` is bicycle AND motor_vehicle in OSM's hierarchy, so it sits
+    // between the two mode keys and the generic one for a bike, and is not
+    // in foot's chain at all.
+    const Access bicycle = AccessFor(w, {"bicycle", "vehicle", "access"});
+    const Access foot = AccessFor(w, {"foot", "access"});
+    const Access motor = AccessFor(w, {"motor_vehicle", "vehicle", "access"});
+    if (bicycle == Access::kDenied) access_flags |= kArcNoBicycle;
+    if (bicycle == Access::kPrivate) access_flags |= kArcPrivateBicycle;
+    if (foot == Access::kDenied) access_flags |= kArcNoFoot;
+    if (foot == Access::kPrivate) access_flags |= kArcPrivateFoot;
+    if (motor == Access::kDenied) access_flags |= kArcNoMotorVehicle;
+    if (motor == Access::kPrivate) access_flags |= kArcPrivateMotorVehicle;
+    // Nobody at all may travel it: not worth a node. A way barred to only
+    // SOME modes stays, carrying the bits above — that is what lets one
+    // graph serve a driving, a walking and a bicycle query. Only an
+    // outright `no` counts here: a bare `access=private` marks all three
+    // modes private and this test does not fire, which is the whole of the
+    // Kiawah fix — the way stays in the graph and costs more to use.
+    const uint16_t kAllModes = kArcNoBicycle | kArcNoFoot | kArcNoMotorVehicle;
+    if ((access_flags & kAllModes) == kAllModes) return WayVerdict::kDroppedAccess;
+  }
+
+  // A toll is not an access statement — everyone may use the road, it just
+  // costs — so it is read whatever `honor_access` says. The mode-qualified
+  // forms (`toll:hgv`, `toll:N3`) are lorry signage and are left alone.
+  const std::string* toll = w.Find("toll");
+  if (toll != nullptr && IsTrue(*toll)) access_flags |= kArcToll;
+  if (const std::string* golf = w.Find("golf")) {
+    if (*golf == "cartpath") access_flags |= kArcGolfCartpath;
+    if (*golf == "path") access_flags |= kArcGolfPath;
+  }
+  const std::string* bicycle = w.Find("bicycle");
+  if (bicycle != nullptr && *bicycle == "designated") access_flags |= kArcBicycleDesignated;
+
+  if (opts.cycle_only) {
+    if (!IsCycleable(klass) || (access_flags & kArcNoBicycle) != 0) return WayVerdict::kNotRoad;
+  }
+  // cycle_only wins over the driving filter, the same way it does in the
+  // router: a bike graph that then dropped every non-driveable class would
+  // throw away the cycleways and paths it exists to hold.
+  if (!opts.cycle_only && !opts.include_non_driveable && !IsDriveable(klass))
+    return WayVerdict::kNotRoad;
+
+  // A `highway=pedestrian` + `area=yes` is a plaza polygon, not a line to
+  // travel along; routing across one needs a mesh nobody has built.
+  const std::string* area = w.Find("area");
+  if (area != nullptr && IsTrue(*area)) return WayVerdict::kNotRoad;
+
+  kept->klass = klass;
+  kept->access_flags = access_flags;
+
+  int speed = 0;
+  if (klass == RoadClass::kFerry) {
+    // A boat has no speed limit posted on it. What the crossing takes is
+    // `duration`, and a speed cannot be had from it until the geometry is
+    // resolved and the line has a length — so the duration is carried and
+    // the class default stands in until then.
+    const std::string* duration = w.Find("duration");
+    if (duration != nullptr) kept->duration_s = ParseDurationSeconds(*duration);
+  } else {
+    const std::string* maxspeed = w.Find("maxspeed");
+    if (maxspeed != nullptr) speed = ParseMaxSpeedKph(*maxspeed);
+    if (speed > 0) kept->access_flags |= kArcSpeedPosted;
+  }
+  if (speed == 0) speed = DefaultSpeedKph(klass);
+  kept->speed_kph = static_cast<uint8_t>(speed);
+
+  kept->dir = ResolveDirection(w, klass, opts);
+  kept->lanes = ParseLanes(w.Find("lanes"));
+  kept->surface = SurfaceFromValue(w.Find("surface"));
+  // Right-hand traffic: the right side is ridden with the way, the left
+  // against it. On a one-way street either side is ridden with the traffic,
+  // unless the side is tagged as contraflow.
+  const BikeProvision right = SideProvision(w, "right");
+  const BikeProvision left = SideProvision(w, "left");
+  if (kept->dir == EdgeDir::kBoth) {
+    kept->bike_fwd = right;
+    kept->bike_bwd = left;
+  } else {
+    auto with_traffic = [&](BikeProvision p, const char* side) {
+      const std::string* o = w.Find(std::string("cycleway:") + side + ":oneway");
+      return o != nullptr && *o == "-1" ? BikeProvision::kNone : p;
+    };
+    const BikeProvision best = std::max(with_traffic(right, "right"), with_traffic(left, "left"));
+    (kept->dir == EdgeDir::kForward ? kept->bike_fwd : kept->bike_bwd) = best;
+  }
+  return WayVerdict::kKept;
+}
+
+/// The arc a kept way or built edge makes in its own direction, without
+/// geometry, name, length or target.
+template <class Way>
+RoadArc ForwardArcOf(const Way& e) {
+  RoadArc a;
+  a.klass = e.klass;
+  a.speed_kph = e.speed_kph;
+  a.lanes = e.lanes;
+  a.surface = e.surface;
+  a.bike = e.bike_fwd;
+  a.bike_route = e.route_fwd;
+  a.flags = static_cast<uint16_t>((e.dir != EdgeDir::kBackward ? kArcForward : 0) |
+                                  (e.dir != EdgeDir::kForward ? kArcBackward : 0) |
+                                  e.access_flags);
+  return a;
+}
+
 // Pass 1: ways and restriction relations. Collects the ways worth keeping and
 // every node ID they touch (endpoints twice, so an endpoint always ends up a
 // vertex). Relations come after ways in every OSM file, XML or PBF, so one
@@ -529,71 +679,10 @@ class WayPass : public OsmSink {
   void Way(const OsmWay& w) override {
     ++stats_->ways_seen;
     if (beach_ != nullptr) CollectBeach(w);
-    // `route=ferry` takes first refusal over `highway=*` (O5e). A few ferry
-    // ways also carry a highway tag for the slipway at either end, and a way
-    // that says it is a ferry line is a ferry line whatever else is on it.
-    RoadClass klass = RoadClass::kNone;
-    const std::string* route = w.Find("route");
-    const bool is_ferry = opts_.include_ferries && route != nullptr && *route == "ferry";
-    if (is_ferry) {
-      klass = RoadClass::kFerry;
-    } else {
-      const std::string* highway = w.Find("highway");
-      if (highway == nullptr) return;
-      klass = RoadClassFromHighwayTag(*highway);
-    }
-    if (klass == RoadClass::kNone) return;
-    uint16_t access_flags = 0;
-    if (opts_.honor_access) {
-      // `vehicle` is bicycle AND motor_vehicle in OSM's hierarchy, so it sits
-      // between the two mode keys and the generic one for a bike, and is not
-      // in foot's chain at all.
-      const Access bicycle = AccessFor(w, {"bicycle", "vehicle", "access"});
-      const Access foot = AccessFor(w, {"foot", "access"});
-      const Access motor = AccessFor(w, {"motor_vehicle", "vehicle", "access"});
-      if (bicycle == Access::kDenied) access_flags |= kArcNoBicycle;
-      if (bicycle == Access::kPrivate) access_flags |= kArcPrivateBicycle;
-      if (foot == Access::kDenied) access_flags |= kArcNoFoot;
-      if (foot == Access::kPrivate) access_flags |= kArcPrivateFoot;
-      if (motor == Access::kDenied) access_flags |= kArcNoMotorVehicle;
-      if (motor == Access::kPrivate) access_flags |= kArcPrivateMotorVehicle;
-      // Nobody at all may travel it: not worth a node. A way barred to only
-      // SOME modes stays, carrying the bits above — that is what lets one
-      // graph serve a driving, a walking and a bicycle query. Only an
-      // outright `no` counts here: a bare `access=private` marks all three
-      // modes private and this test does not fire, which is the whole of the
-      // Kiawah fix — the way stays in the graph and costs more to use.
-      const uint16_t kAllModes = kArcNoBicycle | kArcNoFoot | kArcNoMotorVehicle;
-      if ((access_flags & kAllModes) == kAllModes) {
-        ++stats_->ways_dropped_access;
-        return;
-      }
-    }
-
-    // A toll is not an access statement — everyone may use the road, it just
-    // costs — so it is read whatever `honor_access` says. The mode-qualified
-    // forms (`toll:hgv`, `toll:N3`) are lorry signage and are left alone.
-    const std::string* toll = w.Find("toll");
-    if (toll != nullptr && IsTrue(*toll)) access_flags |= kArcToll;
-    if (const std::string* golf = w.Find("golf")) {
-      if (*golf == "cartpath") access_flags |= kArcGolfCartpath;
-      if (*golf == "path") access_flags |= kArcGolfPath;
-    }
-    const std::string* bicycle = w.Find("bicycle");
-    if (bicycle != nullptr && *bicycle == "designated") access_flags |= kArcBicycleDesignated;
-
-    if (opts_.cycle_only) {
-      if (!IsCycleable(klass) || (access_flags & kArcNoBicycle) != 0) return;
-    }
-    // cycle_only wins over the driving filter, the same way it does in the
-    // router: a bike graph that then dropped every non-driveable class would
-    // throw away the cycleways and paths it exists to hold.
-    if (!opts_.cycle_only && !opts_.include_non_driveable && !IsDriveable(klass)) return;
-
-    // A `highway=pedestrian` + `area=yes` is a plaza polygon, not a line to
-    // travel along; routing across one needs a mesh nobody has built.
-    const std::string* area = w.Find("area");
-    if (area != nullptr && IsTrue(*area)) return;
+    KeptWay kept;
+    const WayVerdict verdict = ReadWay(w, opts_, &kept);
+    if (verdict == WayVerdict::kDroppedAccess) ++stats_->ways_dropped_access;
+    if (verdict != WayVerdict::kKept) return;
 
     if (w.refs.size() < 2) return;
 
@@ -604,50 +693,13 @@ class WayPass : public OsmSink {
     // the number of inputs.
     if (seen_way_ids_ != nullptr && !seen_way_ids_->insert(w.id).second) return;
 
-    KeptWay kept;
     kept.id = w.id;
-    kept.klass = klass;
     kept.refs = w.refs;
-    kept.access_flags = access_flags;
-
-    int speed = 0;
-    if (klass == RoadClass::kFerry) {
-      // A boat has no speed limit posted on it. What the crossing takes is
-      // `duration`, and a speed cannot be had from it until the geometry is
-      // resolved and the line has a length — so the duration is carried and
-      // the class default stands in until then.
-      ++stats_->ways_ferry;
-      const std::string* duration = w.Find("duration");
-      if (duration != nullptr) kept.duration_s = ParseDurationSeconds(*duration);
-      if (kept.duration_s > 0) ++stats_->ferries_timed;
-    } else {
-      const std::string* maxspeed = w.Find("maxspeed");
-      if (maxspeed != nullptr) speed = ParseMaxSpeedKph(*maxspeed);
-      if (speed > 0) kept.access_flags |= kArcSpeedPosted;
-    }
-    if (speed == 0) speed = DefaultSpeedKph(klass);
-    kept.speed_kph = static_cast<uint8_t>(speed);
-
-    kept.dir = ResolveDirection(w, klass);
-    kept.lanes = ParseLanes(w.Find("lanes"));
-    kept.surface = SurfaceFromValue(w.Find("surface"));
-    // Right-hand traffic: the right side is ridden with the way, the left
-    // against it. On a one-way street either side is ridden with the traffic,
-    // unless the side is tagged as contraflow.
-    const BikeProvision right = SideProvision(w, "right");
-    const BikeProvision left = SideProvision(w, "left");
-    if (kept.dir == EdgeDir::kBoth) {
-      kept.bike_fwd = right;
-      kept.bike_bwd = left;
-    } else {
-      auto with_traffic = [&](BikeProvision p, const char* side) {
-        const std::string* o = w.Find(std::string("cycleway:") + side + ":oneway");
-        return o != nullptr && *o == "-1" ? BikeProvision::kNone : p;
-      };
-      const BikeProvision best = std::max(with_traffic(right, "right"), with_traffic(left, "left"));
-      (kept.dir == EdgeDir::kForward ? kept.bike_fwd : kept.bike_bwd) = best;
-    }
     kept.name = InternName(w);
+    if (kept.klass == RoadClass::kFerry) {
+      ++stats_->ways_ferry;
+      if (kept.duration_s > 0) ++stats_->ferries_timed;
+    }
 
     for (int64_t ref : w.refs) ref_uses_->push_back(ref);
     ref_uses_->push_back(w.refs.front());  // endpoints are always vertices
@@ -658,25 +710,6 @@ class WayPass : public OsmSink {
   }
 
  private:
-  EdgeDir ResolveDirection(const OsmWay& w, RoadClass klass) const {
-    if (!opts_.honor_oneway) return EdgeDir::kBoth;
-
-    bool implied = klass == RoadClass::kMotorway || klass == RoadClass::kMotorwayLink;
-    const std::string* junction = w.Find("junction");
-    if (junction != nullptr && (*junction == "roundabout" || *junction == "circular")) {
-      implied = true;
-    }
-
-    const std::string* oneway = w.Find("oneway");
-    if (oneway == nullptr) return implied ? EdgeDir::kForward : EdgeDir::kBoth;
-    if (IsTrue(*oneway)) return EdgeDir::kForward;
-    // `oneway=-1` is deprecated upstream and still all over the planet file.
-    if (*oneway == "-1" || *oneway == "reverse") return EdgeDir::kBackward;
-    // An explicit `oneway=no` beats the motorway/roundabout implication.
-    if (IsFalse(*oneway)) return EdgeDir::kBoth;
-    return implied ? EdgeDir::kForward : EdgeDir::kBoth;
-  }
-
   // A `forward` member is signed only in the way's direction, `backward` only
   // against it. Relation members (super-routes) are skipped: their children
   // are routes in their own right. A relation seen twice in merged inputs
@@ -900,6 +933,17 @@ RoadClass RoadClassFromName(const std::string& name) {
   if (name == "beach") return RoadClass::kBeach;
   if (name == "beach_access") return RoadClass::kBeachAccess;
   return RoadClassFromHighwayTag(name);
+}
+
+bool ReadWayTags(const OsmWay& way, const RoadGraphBuildOptions& options, RoadArc* forward) {
+  KeptWay kept;
+  if (ReadWay(way, options, &kept) != WayVerdict::kKept) return false;
+  if (forward != nullptr) *forward = ForwardArcOf(kept);
+  return true;
+}
+
+RoadCrossing CrossingClassOf(RoadClass met) {
+  return static_cast<RoadCrossing>(CrossingLevel(met, false));
 }
 
 bool IsDriveable(RoadClass klass) {
@@ -2002,27 +2046,16 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
   std::vector<int64_t> arc_way(arcs.size(), 0);
   std::vector<uint32_t> fill(begin.begin(), begin.end());
   for (const BuiltEdge& e : edges) {
-    RoadArc a;
-    a.geom_begin = e.geom_begin;
-    a.geom_count = e.geom_count;
-    a.name = e.name;
-    a.length_m = e.length_m;
-    a.klass = e.klass;
-    a.speed_kph = e.speed_kph;
-    a.lanes = e.lanes;
-    a.surface = e.surface;
-
-    RoadArc fwd = a;
+    RoadArc fwd = ForwardArcOf(e);
+    fwd.geom_begin = e.geom_begin;
+    fwd.geom_count = e.geom_count;
+    fwd.name = e.name;
+    fwd.length_m = e.length_m;
     fwd.target = e.v;
-    fwd.bike = e.bike_fwd;
-    fwd.bike_route = e.route_fwd;
-    fwd.flags = static_cast<uint16_t>((e.dir != EdgeDir::kBackward ? kArcForward : 0) |
-                                      (e.dir != EdgeDir::kForward ? kArcBackward : 0) |
-                                      e.access_flags);
     arc_way[fill[e.u]] = e.way_id;
     arcs[fill[e.u]++] = fwd;
 
-    RoadArc rev = a;
+    RoadArc rev = fwd;
     rev.target = e.u;
     rev.bike = e.bike_bwd;
     rev.bike_route = e.route_bwd;

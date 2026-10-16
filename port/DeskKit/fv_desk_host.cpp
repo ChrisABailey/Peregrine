@@ -6,6 +6,7 @@
 #include "fv_desk_host.h"
 
 #include <algorithm>
+#include <utility>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -27,6 +28,8 @@
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/engine.h"
+#include "fvkit/overlay/feature_overlay.h"
+#include "fvkit/style/expression.h"
 #include "fvkit/feature/value_text.h"
 #include "fvkit/formats/registry.h"
 #include "fvkit/log.h"
@@ -43,6 +46,9 @@ void fv_desk_host_release(fv::desk::DeskHost* host) {
 namespace fv {
 namespace desk {
 namespace {
+
+/// A shell's int row or index as a size_t; a negative one becomes 0.
+size_t Index(int i) { return static_cast<size_t>(std::max(i, 0)); }
 
 static_assert(kFieldBool == static_cast<int>(app::PropertyType::kBool) &&
                   kFieldColor == static_cast<int>(app::PropertyType::kColor) &&
@@ -74,6 +80,12 @@ class HostShell : public DeskShell {
   bool new_layer_requested = false;
   bool properties_requested = false;
   bool properties_tabs = false;
+  bool select_requested = false;
+  bool add_rule_requested = false;
+  bool rule_rename_requested = false;
+  bool rule_type_requested = false;
+  bool rule_filter_requested = false;
+  bool rule_style_requested = false;
 
   HostRequestFn handler = nullptr;
   void* handler_context = nullptr;
@@ -156,6 +168,12 @@ class HostShell : public DeskShell {
   void ShowNewLayer() override { new_layer_requested = true; }
   void ShowLayerProperties() override { properties_requested = true; }
   bool HostsPropertiesTabs() const override { return properties_tabs; }
+  void ShowSelectByAttributes() override { select_requested = true; }
+  void ShowAddRule() override { add_rule_requested = true; }
+  void BeginRuleRename() override { rule_rename_requested = true; }
+  void ShowRuleType() override { rule_type_requested = true; }
+  void ShowRuleFilter() override { rule_filter_requested = true; }
+  void ShowRuleStyle() override { rule_style_requested = true; }
   void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
     options_shown[kOptionsMap] = std::move(model);
     options_requested = kOptionsMap;
@@ -334,6 +352,9 @@ struct DeskHost::Impl {
   class StackEdit;
   /// Re-reads `layer_rows` when the Desk's layer generation moved; true when it did.
   bool RefreshLayers();
+  /// Runs a rule edit with the stack held, then re-reads the rows; the error message or "".
+  template <typename Fn>
+  std::string EditRules(Fn&& fn);
   const LayerRow* Row(int row) const {
     return row >= 0 && row < static_cast<int>(layer_rows.size()) ? &layer_rows[row] : nullptr;
   }
@@ -504,6 +525,17 @@ class DeskHost::Impl::StackEdit {
  private:
   Impl& m_;
 };
+
+template <typename Fn>
+std::string DeskHost::Impl::EditRules(Fn&& fn) {
+  Status s;
+  {
+    StackEdit edit(*this);
+    s = fn(*desk);
+  }
+  RefreshLayers();
+  return s.message;
+}
 
 bool DeskHost::Impl::RefreshLayers() {
   if (desk->LayersGeneration() == layers_gen) return false;
@@ -703,6 +735,10 @@ bool DeskHost::OptionsOpen(int kind) const {
 int DeskHost::OptionsPageCount(int kind) const {
   if (!OptionsOpen(kind)) return 0;
   return static_cast<int>(impl_->shell.options_shown[kind]->pages().size());
+}
+
+int DeskHost::OptionsInitialPage(int kind) const {
+  return OptionsOpen(kind) ? impl_->shell.options_shown[kind]->initial_page() : -1;
 }
 
 std::string DeskHost::OptionsPageTitle(int kind, int page) const {
@@ -1044,13 +1080,13 @@ std::string DeskHost::FormFieldActionUrl(int i) const {
 std::string DeskHost::SetFormFieldText(int i, const std::string& text) {
   const auto& form = impl_->desk->feature_form();
   if (!form) return "no feature form is open";
-  return form->SetText(static_cast<size_t>(std::max(i, 0)), text).message;
+  return form->SetText(Index(i), text).message;
 }
 
 std::string DeskHost::SetFormFieldEndText(int i, const std::string& text) {
   const auto& form = impl_->desk->feature_form();
   if (!form) return "no feature form is open";
-  return form->SetEndText(static_cast<size_t>(std::max(i, 0)), text).message;
+  return form->SetEndText(Index(i), text).message;
 }
 
 bool DeskHost::FeatureFormDirty() const {
@@ -1147,14 +1183,14 @@ std::string DeskHost::ReloadAttributeTable() {
 
 std::string DeskHost::SelectTableRow(int row) {
   Impl::StackEdit edit(*impl_);
-  return impl_->desk->SelectTableRow(static_cast<size_t>(std::max(row, 0))).message;
+  return impl_->desk->SelectTableRow(Index(row)).message;
 }
 
 int DeskHost::SelectedTableRow() const { return impl_->desk->SelectedTableRow(); }
 
 std::string DeskHost::EditTableRow(int row) {
   Impl::StackEdit edit(*impl_);
-  return impl_->desk->EditTableRow(static_cast<size_t>(std::max(row, 0))).message;
+  return impl_->desk->EditTableRow(Index(row)).message;
 }
 
 void DeskHost::CloseAttributeTable() { impl_->desk->CloseAttributeTable(); }
@@ -1228,8 +1264,14 @@ int DeskHost::StyleRenderer() const {
 std::string DeskHost::SetStyleRenderer(int renderer) {
   const auto& st = impl_->desk->layer_style();
   if (!st) return kNoStyle;
-  if (renderer < 0 || renderer > 2) return "no renderer " + std::to_string(renderer);
+  if (renderer < 0 || renderer > 3) return "no renderer " + std::to_string(renderer);
   return st->SetRenderer(static_cast<FeatureRenderer>(renderer)).message;
+}
+
+std::string DeskHost::CategoriseStyleIntoRules() {
+  const auto& st = impl_->desk->layer_style();
+  if (!st) return kNoStyle;
+  return st->CategoriseIntoRules().message;
 }
 
 int DeskHost::StyleFieldCount() const {
@@ -1312,13 +1354,13 @@ std::string DeskHost::StyleEntryValue(int i) const {
 std::string DeskHost::SetStyleEntryLabel(int i, const std::string& label) {
   const auto& st = impl_->desk->layer_style();
   if (!st) return kNoStyle;
-  return st->SetEntryLabel(static_cast<size_t>(std::max(i, 0)), label).message;
+  return st->SetEntryLabel(Index(i), label).message;
 }
 
 std::string DeskHost::SetStyleEntryValue(int i, const std::string& value) {
   const auto& st = impl_->desk->layer_style();
   if (!st) return kNoStyle;
-  return st->SetEntryValue(static_cast<size_t>(std::max(i, 0)), value).message;
+  return st->SetEntryValue(Index(i), value).message;
 }
 
 std::string DeskHost::AddStyleEntry() {
@@ -1330,7 +1372,7 @@ std::string DeskHost::AddStyleEntry() {
 std::string DeskHost::RemoveStyleEntry(int i) {
   const auto& st = impl_->desk->layer_style();
   if (!st) return kNoStyle;
-  return st->RemoveEntry(static_cast<size_t>(std::max(i, 0))).message;
+  return st->RemoveEntry(Index(i)).message;
 }
 
 bool DeskHost::CopyStyleSwatch(int i, int width, int height, double scale, uint8_t* out,
@@ -1721,6 +1763,19 @@ void DeskHost::SetNewLayerName(const std::string& name) {
   if (const auto& m = impl_->desk->new_layer()) m->SetName(name);
 }
 
+int DeskHost::NewLayerTarget() const {
+  const auto& m = impl_->desk->new_layer();
+  return m ? static_cast<int>(m->target()) : 0;
+}
+
+std::string DeskHost::SetNewLayerTarget(int target) {
+  const auto& m = impl_->desk->new_layer();
+  if (!m) return kNoNewLayer;
+  if (target < 0 || target > 2) return "no target " + std::to_string(target);
+  m->SetTarget(static_cast<fv::desk::NewLayerTarget>(target));
+  return std::string();
+}
+
 int DeskHost::NewLayerFormat() const {
   const auto& m = impl_->desk->new_layer();
   return m ? m->format() : 0;
@@ -1816,7 +1871,7 @@ std::string DeskHost::SetLayerVisible(int row, bool visible) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->SetLayerVisible(static_cast<size_t>(std::max(row, 0)), visible);
+    s = impl_->desk->SetLayerVisible(Index(row), visible);
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1826,7 +1881,7 @@ std::string DeskHost::SetLayerOpacity(int row, int percent) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->SetLayerOpacity(static_cast<size_t>(std::max(row, 0)), percent);
+    s = impl_->desk->SetLayerOpacity(Index(row), percent);
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1836,8 +1891,7 @@ std::string DeskHost::MoveLayer(int from, int to) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->MoveLayer(static_cast<size_t>(std::max(from, 0)),
-                               static_cast<size_t>(std::max(to, 0)));
+    s = impl_->desk->MoveLayer(Index(from), Index(to));
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1847,7 +1901,7 @@ std::string DeskHost::SelectLayer(int row) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->SelectLayer(static_cast<size_t>(std::max(row, 0)));
+    s = impl_->desk->SelectLayer(Index(row));
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1908,7 +1962,7 @@ std::string DeskHost::SetSourceVisible(int source, bool visible) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->SetSourceVisible(static_cast<size_t>(std::max(source, 0)), visible);
+    s = impl_->desk->SetSourceVisible(Index(source), visible);
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1918,7 +1972,7 @@ std::string DeskHost::MoveSource(int from, int to) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->MoveSource(static_cast<size_t>(std::max(from, 0)), static_cast<size_t>(std::max(to, 0)));
+    s = impl_->desk->MoveSource(Index(from), Index(to));
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1928,7 +1982,7 @@ std::string DeskHost::SelectSource(int source) {
   Status s;
   {
     Impl::StackEdit edit(*impl_);
-    s = impl_->desk->SelectSource(static_cast<size_t>(std::max(source, 0)));
+    s = impl_->desk->SelectSource(Index(source));
   }
   impl_->RefreshLayers();
   return s.message;
@@ -1954,6 +2008,381 @@ int DeskHost::LayerMenuEntryCount() const { return EntryCount(impl_->desk->Layer
 HostMenuEntry DeskHost::LayerMenuEntryAt(int index) const { return EntryAt(impl_->desk->LayerMenu(), index); }
 int DeskHost::SourceMenuEntryCount() const { return EntryCount(impl_->desk->SourceMenu()); }
 HostMenuEntry DeskHost::SourceMenuEntryAt(int index) const { return EntryAt(impl_->desk->SourceMenu(), index); }
+
+// MARK: Style rules
+
+namespace {
+
+const RuleRow* RuleOf(const LayerRow* r, int rule) {
+  if (r == nullptr || rule < 0 || rule >= static_cast<int>(r->rules.size())) return nullptr;
+  return &r->rules[static_cast<size_t>(rule)];
+}
+
+}  // namespace
+
+int DeskHost::RuleCount(int row) const {
+  const LayerRow* r = impl_->Row(row);
+  return r != nullptr ? static_cast<int>(r->rules.size()) : 0;
+}
+
+std::string DeskHost::RuleName(int row, int rule) const {
+  const RuleRow* r = RuleOf(impl_->Row(row), rule);
+  return r != nullptr ? r->id : std::string();
+}
+
+std::string DeskHost::RuleType(int row, int rule) const {
+  const RuleRow* r = RuleOf(impl_->Row(row), rule);
+  return r != nullptr ? r->type : std::string();
+}
+
+bool DeskHost::RuleShown(int row, int rule) const {
+  const RuleRow* r = RuleOf(impl_->Row(row), rule);
+  return r != nullptr && r->shown;
+}
+
+std::string DeskHost::RuleFilter(int row, int rule) const {
+  const RuleRow* r = RuleOf(impl_->Row(row), rule);
+  return r != nullptr ? r->filter : std::string();
+}
+
+std::string DeskHost::RuleLegend(int row, int rule) const {
+  const RuleRow* r = RuleOf(impl_->Row(row), rule);
+  return r != nullptr ? r->legend : std::string();
+}
+
+int DeskHost::CurrentRule() const { return impl_->desk->CurrentRule(); }
+
+int DeskHost::RuleTypeCount() const { return static_cast<int>(RuleTypes().size()); }
+
+std::string DeskHost::RuleTypeName(int i) const {
+  return i >= 0 && i < RuleTypeCount() ? RuleTypes()[static_cast<size_t>(i)] : std::string();
+}
+
+std::string DeskHost::SelectRule(int row, int rule) {
+  return impl_->EditRules([&](Desk& d) { return d.SelectRule(Index(row), Index(rule)); });
+}
+
+std::string DeskHost::AddRule(int row, const std::string& name, const std::string& type) {
+  return impl_->EditRules([&](Desk& d) { return d.AddRule(Index(row), name, type); });
+}
+
+std::string DeskHost::DuplicateRule(int row, int rule) {
+  return impl_->EditRules([&](Desk& d) { return d.DuplicateRule(Index(row), Index(rule)); });
+}
+
+std::string DeskHost::RenameRule(int row, int rule, const std::string& name) {
+  return impl_->EditRules([&](Desk& d) { return d.RenameRule(Index(row), Index(rule), name); });
+}
+
+std::string DeskHost::SetRuleType(int row, int rule, const std::string& type) {
+  return impl_->EditRules([&](Desk& d) { return d.SetRuleType(Index(row), Index(rule), type); });
+}
+
+std::string DeskHost::SetRuleShown(int row, int rule, bool shown) {
+  return impl_->EditRules([&](Desk& d) { return d.SetRuleShown(Index(row), Index(rule), shown); });
+}
+
+std::string DeskHost::MoveRule(int row, int from, int to) {
+  return impl_->EditRules([&](Desk& d) { return d.MoveRule(Index(row), Index(from), Index(to)); });
+}
+
+std::string DeskHost::DeleteRule(int row, int rule) {
+  return impl_->EditRules([&](Desk& d) { return d.DeleteRule(Index(row), Index(rule)); });
+}
+
+int DeskHost::RuleMenuEntryCount() const { return EntryCount(impl_->desk->RuleMenu()); }
+HostMenuEntry DeskHost::RuleMenuEntryAt(int index) const { return EntryAt(impl_->desk->RuleMenu(), index); }
+
+bool DeskHost::TakeAddRuleRequest() { return std::exchange(impl_->shell.add_rule_requested, false); }
+bool DeskHost::TakeRuleRenameRequest() { return std::exchange(impl_->shell.rule_rename_requested, false); }
+bool DeskHost::TakeRuleTypeRequest() { return std::exchange(impl_->shell.rule_type_requested, false); }
+bool DeskHost::TakeRuleFilterRequest() { return std::exchange(impl_->shell.rule_filter_requested, false); }
+
+std::string DeskHost::RuleFilterTitle() const {
+  const auto& q = impl_->desk->rule_filter();
+  if (!q) return std::string();
+  const Overlay* o = q->overlay();
+  return "Rule Filter \u2014 " + impl_->desk->rule_filter_rule() + " (" + (o != nullptr ? o->Name() : std::string()) +
+         ")";
+}
+
+std::string DeskHost::ApplyRuleFilter() {
+  return impl_->EditRules([](Desk& d) { return d.ApplyRuleFilter(); });
+}
+
+void DeskHost::CloseRuleFilter() { impl_->desk->CloseRuleFilter(); }
+
+// MARK: Rule style pages
+
+namespace {
+
+const char* const kNoRuleStyle = "no rule style is open";
+
+/// Property `k` of the open rule style, or null.
+const RuleProperty* RuleProp(const Desk& d, int k) {
+  const auto& m = d.rule_style();
+  if (!m || k < 0 || k >= static_cast<int>(m->properties().size())) return nullptr;
+  return &m->properties()[static_cast<size_t>(k)];
+}
+
+const RulePropertyValue* RuleValue(const Desk& d, int k) {
+  return RuleProp(d, k) != nullptr ? &d.rule_style()->value(static_cast<size_t>(k)) : nullptr;
+}
+
+/// Edits a copy of property `k`'s value and sets it back.
+template <typename Fn>
+std::string EditRuleValue(Desk& d, int k, Fn&& fn) {
+  if (RuleProp(d, k) == nullptr) return kNoRuleStyle;
+  RulePropertyValue v = d.rule_style()->value(static_cast<size_t>(k));
+  Status s = fn(&v);
+  if (s.ok()) s = d.rule_style()->SetValue(static_cast<size_t>(k), v);
+  return s.message;
+}
+
+}  // namespace
+
+bool DeskHost::TakeRuleStyleRequest() { return std::exchange(impl_->shell.rule_style_requested, false); }
+bool DeskHost::RuleStyleOpen() const { return impl_->desk->rule_style() != nullptr; }
+
+std::string DeskHost::RuleStyleTitle() const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? m->Title() : std::string();
+}
+
+std::string DeskHost::RuleStyleType() const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? m->type() : std::string();
+}
+
+bool DeskHost::RuleStyleDirty() const {
+  const auto& m = impl_->desk->rule_style();
+  return m && m->dirty();
+}
+
+int DeskHost::RuleStylePropertyCount() const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? static_cast<int>(m->properties().size()) : 0;
+}
+
+std::string DeskHost::RuleStylePropertyKey(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? p->key : std::string();
+}
+
+std::string DeskHost::RuleStylePropertyPage(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? p->page : std::string();
+}
+
+std::string DeskHost::RuleStylePropertyTitle(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? p->title : std::string();
+}
+
+int DeskHost::RuleStylePropertyKind(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? static_cast<int>(p->kind) : 0;
+}
+
+double DeskHost::RuleStylePropertyMin(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? p->min : 0;
+}
+
+double DeskHost::RuleStylePropertyMax(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? p->max : 0;
+}
+
+int DeskHost::RuleStylePropertyChoiceCount(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? static_cast<int>(p->choices.size()) : 0;
+}
+
+std::string DeskHost::RuleStylePropertyChoice(int k, int i) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  if (!p || i < 0 || i >= static_cast<int>(p->choices.size())) return std::string();
+  return p->choices[static_cast<size_t>(i)];
+}
+
+int DeskHost::RuleStyleModeCount(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p ? static_cast<int>(p->modes.size()) : 0;
+}
+
+int DeskHost::RuleStyleModeAt(int k, int i) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  if (!p || i < 0 || i >= static_cast<int>(p->modes.size())) return 0;
+  return static_cast<int>(p->modes[static_cast<size_t>(i)]);
+}
+
+int DeskHost::RuleStyleMode(int k) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  return v ? static_cast<int>(v->mode) : 0;
+}
+
+std::string DeskHost::RuleStyleConstant(int k) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  return v ? v->constant : std::string();
+}
+
+std::string DeskHost::RuleStyleField(int k) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  return v ? v->field : std::string();
+}
+
+std::string DeskHost::RuleStyleExpression(int k) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  return v ? v->expression : std::string();
+}
+
+int DeskHost::RuleStyleStopCount(int k) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  return v ? static_cast<int>(v->stops.size()) : 0;
+}
+
+std::string DeskHost::RuleStyleStopKey(int k, int i) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  if (!v || i < 0 || i >= static_cast<int>(v->stops.size())) return std::string();
+  return v->stops[static_cast<size_t>(i)].key;
+}
+
+std::string DeskHost::RuleStyleStopValue(int k, int i) const {
+  const RulePropertyValue* v = RuleValue(*impl_->desk, k);
+  if (!v || i < 0 || i >= static_cast<int>(v->stops.size())) return std::string();
+  return v->stops[static_cast<size_t>(i)].value;
+}
+
+std::string DeskHost::SetRuleStyleMode(int k, int mode) {
+  if (RuleProp(*impl_->desk, k) == nullptr) return kNoRuleStyle;
+  if (mode < 0 || mode > static_cast<int>(RuleValueMode::kExpression)) return "no such mode";
+  return impl_->desk->rule_style()->SetMode(static_cast<size_t>(k), static_cast<RuleValueMode>(mode)).message;
+}
+
+std::string DeskHost::SetRuleStyleConstant(int k, const std::string& value) {
+  return EditRuleValue(*impl_->desk, k, [&](RulePropertyValue* v) {
+    v->constant = value;
+    return Status::Ok();
+  });
+}
+
+std::string DeskHost::SetRuleStyleField(int k, const std::string& field) {
+  return EditRuleValue(*impl_->desk, k, [&](RulePropertyValue* v) {
+    v->field = field;
+    return Status::Ok();
+  });
+}
+
+std::string DeskHost::SetRuleStyleStop(int k, int i, const std::string& key, const std::string& value) {
+  return EditRuleValue(*impl_->desk, k, [&](RulePropertyValue* v) {
+    if (i < 0 || i >= static_cast<int>(v->stops.size())) return Status::Error(kInvalidArg, "no such row");
+    v->stops[static_cast<size_t>(i)] = {key, value};
+    return Status::Ok();
+  });
+}
+
+std::string DeskHost::AddRuleStyleStop(int k) {
+  return EditRuleValue(*impl_->desk, k, [&](RulePropertyValue* v) {
+    RuleStop next;
+    next.value = v->stops.empty() ? v->constant : v->stops.back().value;
+    if (v->mode == RuleValueMode::kByField) {
+      for (int n = static_cast<int>(v->stops.size()) + 1;; ++n) {
+        next.key = "value " + std::to_string(n);
+        if (std::none_of(v->stops.begin(), v->stops.end(), [&](const RuleStop& s) { return s.key == next.key; }))
+          break;
+      }
+    } else {
+      const double last = v->stops.empty() ? 0 : std::atof(v->stops.back().key.c_str());
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%g", v->stops.empty() ? last : last + 1);
+      next.key = buf;
+    }
+    v->stops.push_back(std::move(next));
+    return Status::Ok();
+  });
+}
+
+std::string DeskHost::RemoveRuleStyleStop(int k, int i) {
+  return EditRuleValue(*impl_->desk, k, [&](RulePropertyValue* v) {
+    if (i < 0 || i >= static_cast<int>(v->stops.size())) return Status::Error(kInvalidArg, "no such row");
+    v->stops.erase(v->stops.begin() + i);
+    return Status::Ok();
+  });
+}
+
+std::string DeskHost::FillRuleStyleValues(int k) {
+  if (RuleProp(*impl_->desk, k) == nullptr) return kNoRuleStyle;
+  return impl_->desk->rule_style()->FillFieldValues(static_cast<size_t>(k)).message;
+}
+
+std::string DeskHost::SetRuleStyleExpression(int k, const std::string& json) {
+  return EditRuleValue(*impl_->desk, k, [&](RulePropertyValue* v) {
+    v->expression = json;
+    return Status::Ok();
+  });
+}
+
+std::string DeskHost::VerifyRuleStyleExpression(int k, const std::string& json) const {
+  if (RuleProp(*impl_->desk, k) == nullptr) return kNoRuleStyle;
+  return impl_->desk->rule_style()->Verify(static_cast<size_t>(k), json).message;
+}
+
+int DeskHost::RuleStyleFieldCount(bool numeric) const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? static_cast<int>(m->Fields(numeric).size()) : 0;
+}
+
+std::string DeskHost::RuleStyleFieldName(bool numeric, int i) const {
+  const auto& m = impl_->desk->rule_style();
+  if (!m) return std::string();
+  const std::vector<std::string> fields = m->Fields(numeric);
+  return i >= 0 && i < static_cast<int>(fields.size()) ? fields[static_cast<size_t>(i)] : std::string();
+}
+
+std::string DeskHost::RuleStyleLegend() const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? m->legend() : std::string();
+}
+
+void DeskHost::SetRuleStyleLegend(const std::string& legend) {
+  if (const auto& m = impl_->desk->rule_style()) m->SetLegend(legend);
+}
+
+double DeskHost::RuleStyleMinZoom() const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? m->min_zoom() : 0;
+}
+
+double DeskHost::RuleStyleMaxZoom() const {
+  const auto& m = impl_->desk->rule_style();
+  return m ? m->max_zoom() : 24;
+}
+
+std::string DeskHost::SetRuleStyleZoomRange(double min_zoom, double max_zoom) {
+  const auto& m = impl_->desk->rule_style();
+  return m ? m->SetZoomRange(min_zoom, max_zoom).message : kNoRuleStyle;
+}
+
+std::string DeskHost::ApplyRuleStyle() {
+  return impl_->EditRules([](Desk& d) { return d.ApplyRuleStyle(); });
+}
+
+std::string DeskHost::RevertRuleStyle() { return impl_->desk->RevertRuleStyle().message; }
+void DeskHost::CloseRuleStyle() { impl_->desk->CloseRuleStyle(); }
+
+uint32_t DeskHost::RuleColorRGBA(const std::string& css, uint32_t fallback) {
+  FvColor c;
+  if (!ParseCssColor(css, &c)) return fallback;
+  return (uint32_t{c.r} << 24) | (uint32_t{c.g} << 16) | (uint32_t{c.b} << 8) | uint32_t{c.a};
+}
+
+std::string DeskHost::RuleColorText(uint32_t rgba) {
+  const unsigned r = rgba >> 24, g = (rgba >> 16) & 0xff, b = (rgba >> 8) & 0xff, a = rgba & 0xff;
+  char buf[48];
+  if (a == 0xff) std::snprintf(buf, sizeof buf, "#%02x%02x%02x", r, g, b);
+  else std::snprintf(buf, sizeof buf, "rgba(%u, %u, %u, %.3g)", r, g, b, a / 255.0);
+  return buf;
+}
 
 // MARK: Properties sheet
 
@@ -2040,6 +2469,254 @@ std::string DeskHost::SetLayerGeneral(const std::string& name, const std::string
   if (s.ok()) s = m->Set(g);
   return s.message;
 }
+
+namespace {
+
+LayerDisplay DisplayOf(const Desk& desk) {
+  const auto& m = desk.layer_display();
+  return m ? m->display() : LayerDisplay{};
+}
+
+LayerSelection SelectionOf(const Desk& desk) {
+  const auto& m = desk.layer_selection();
+  return m ? m->selection() : LayerSelection{};
+}
+
+const FieldDef* DisplayField(const Desk& desk, int i) {
+  const auto& m = desk.layer_display();
+  if (!m || i < 0 || static_cast<size_t>(i) >= m->fields().size()) return nullptr;
+  return &m->fields()[static_cast<size_t>(i)];
+}
+
+uint32_t PackColor(const FvColor& c) {
+  return (uint32_t{c.r} << 24) | (uint32_t{c.g} << 16) | (uint32_t{c.b} << 8) | c.a;
+}
+
+QueryBuilderModel* QueryOf(const Desk& desk, int which) {
+  if (which == DeskHost::kQuerySelect) return desk.select_query().get();
+  if (which == DeskHost::kQueryRule) return desk.rule_filter().get();
+  return desk.layer_query().get();
+}
+
+const QueryClause* ClauseOf(const Desk& desk, int which, int i) {
+  const QueryBuilderModel* q = QueryOf(desk, which);
+  if (q == nullptr || i < 0 || static_cast<size_t>(i) >= q->query().clauses.size()) return nullptr;
+  return &q->query().clauses[static_cast<size_t>(i)];
+}
+
+}  // namespace
+
+bool DeskHost::LayerDisplayOpen() const { return impl_->desk->layer_display() != nullptr; }
+bool DeskHost::LayerDisplayHasOpacity() const {
+  const auto& m = impl_->desk->layer_display();
+  return m && m->has_opacity();
+}
+int DeskHost::LayerDisplayOpacity() const { return DisplayOf(*impl_->desk).opacity; }
+int DeskHost::LayerDisplayFieldCount() const {
+  const auto& m = impl_->desk->layer_display();
+  return m ? static_cast<int>(m->fields().size()) : 0;
+}
+std::string DeskHost::LayerDisplayFieldName(int i) const {
+  const FieldDef* f = DisplayField(*impl_->desk, i);
+  return f ? f->name : std::string();
+}
+std::string DeskHost::LayerDisplayFieldTitle(int i) const {
+  const FieldDef* f = DisplayField(*impl_->desk, i);
+  return f ? f->DisplayTitle() : std::string();
+}
+std::string DeskHost::LayerDisplayMapTipField() const { return DisplayOf(*impl_->desk).map_tip_field; }
+std::string DeskHost::LayerDisplayHyperlinkField() const { return DisplayOf(*impl_->desk).hyperlink_field; }
+
+std::string DeskHost::SetLayerDisplay(int opacity, const std::string& map_tip_field,
+                                      const std::string& hyperlink_field) {
+  const auto& m = impl_->desk->layer_display();
+  if (!m) return "no layer's Display tab is open";
+  return m->Set(LayerDisplay{opacity, map_tip_field, hyperlink_field}).message;
+}
+
+bool DeskHost::LayerSelectionOpen() const { return impl_->desk->layer_selection() != nullptr; }
+bool DeskHost::LayerSelectionUsesDefault() const { return SelectionOf(*impl_->desk).use_default; }
+uint32_t DeskHost::LayerSelectionColor() const { return PackColor(SelectionOf(*impl_->desk).style.color); }
+double DeskHost::LayerSelectionWidth() const { return SelectionOf(*impl_->desk).style.width_px; }
+int DeskHost::LayerSelectionCount() const {
+  const auto& m = impl_->desk->layer_selection();
+  return m ? static_cast<int>(m->selected_count()) : 0;
+}
+
+std::string DeskHost::SetLayerSelection(bool use_default, uint32_t rgba, double width_px) {
+  const auto& m = impl_->desk->layer_selection();
+  if (!m) return "no layer's Selection tab is open";
+  LayerSelection sel;
+  sel.use_default = use_default;
+  sel.style.color = FvColor{static_cast<unsigned char>(rgba >> 24), static_cast<unsigned char>(rgba >> 16),
+                            static_cast<unsigned char>(rgba >> 8), static_cast<unsigned char>(rgba)};
+  sel.style.width_px = width_px;
+  return m->Set(sel).message;
+}
+
+// MARK: Query builder
+
+bool DeskHost::QueryOpen(int which) const { return QueryOf(*impl_->desk, which) != nullptr; }
+
+int DeskHost::QueryFieldCount(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  return q ? static_cast<int>(q->fields().size()) : 0;
+}
+
+std::string DeskHost::QueryFieldName(int which, int i) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  if (q == nullptr || i < 0 || static_cast<size_t>(i) >= q->fields().size()) return std::string();
+  return q->fields()[static_cast<size_t>(i)].name;
+}
+
+std::string DeskHost::QueryFieldTitle(int which, int i) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  if (q == nullptr || i < 0 || static_cast<size_t>(i) >= q->fields().size()) return std::string();
+  return q->fields()[static_cast<size_t>(i)].DisplayTitle();
+}
+
+int DeskHost::QueryOpCount() const { return kQueryOpCount; }
+std::string DeskHost::QueryOpTitle(int op) const {
+  return op >= 0 && op < kQueryOpCount ? desk::QueryOpTitle(static_cast<QueryOp>(op)) : std::string();
+}
+bool DeskHost::QueryOpTakesValue(int op) const {
+  return op >= 0 && op < kQueryOpCount && desk::QueryOpTakesValue(static_cast<QueryOp>(op));
+}
+
+bool DeskHost::QueryMatchAny(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  return q != nullptr && q->query().match_any;
+}
+
+void DeskHost::SetQueryMatchAny(int which, bool any) {
+  if (QueryBuilderModel* q = QueryOf(*impl_->desk, which)) q->SetMatchAny(any);
+}
+
+int DeskHost::QueryClauseCount(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  return q ? static_cast<int>(q->query().clauses.size()) : 0;
+}
+
+std::string DeskHost::QueryClauseField(int which, int i) const {
+  const QueryClause* c = ClauseOf(*impl_->desk, which, i);
+  return c ? c->field : std::string();
+}
+
+int DeskHost::QueryClauseOp(int which, int i) const {
+  const QueryClause* c = ClauseOf(*impl_->desk, which, i);
+  return c ? static_cast<int>(c->op) : 0;
+}
+
+std::string DeskHost::QueryClauseValue(int which, int i) const {
+  const QueryClause* c = ClauseOf(*impl_->desk, which, i);
+  return c ? c->value : std::string();
+}
+
+int DeskHost::AddQueryClause(int which) {
+  QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  return q ? static_cast<int>(q->AddClause()) : -1;
+}
+
+std::string DeskHost::RemoveQueryClause(int which, int i) {
+  QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  if (q == nullptr || i < 0) return "no such clause";
+  return q->RemoveClause(static_cast<size_t>(i)).message;
+}
+
+std::string DeskHost::SetQueryClause(int which, int i, const std::string& field, int op, const std::string& value) {
+  QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  if (q == nullptr || i < 0) return "no such clause";
+  if (op < 0 || op >= kQueryOpCount) return "no such comparison";
+  return q->SetClause(static_cast<size_t>(i), QueryClause{field, static_cast<QueryOp>(op), value}).message;
+}
+
+bool DeskHost::QueryIsCustom(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  return q != nullptr && q->custom();
+}
+
+std::string DeskHost::QueryExpression(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  std::string json;
+  if (q == nullptr || !q->Expression(&json).ok()) return std::string();
+  return json;
+}
+
+std::string DeskHost::QueryExpressionError(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  std::string json;
+  return q != nullptr ? q->Expression(&json).message : std::string();
+}
+
+std::string DeskHost::SetQueryExpression(int which, const std::string& json) {
+  QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  if (q == nullptr) return "no query is open";
+  return q->SetExpression(json).message;
+}
+
+std::string DeskHost::QueryText(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  return q ? q->Text() : std::string();
+}
+
+std::string DeskHost::VerifyQuery(int which) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  if (q == nullptr) return "no query is open";
+  std::vector<int64_t> ids;
+  size_t tested = 0;
+  // A definition query picks among all features; the others among those the layer shows.
+  const Status s = q->Matching(which != kQueryDefinition, &ids, &tested);
+  if (!s.ok()) return s.message;
+  return std::to_string(ids.size()) + " of " + std::to_string(tested) + (tested == 1 ? " feature" : " features") +
+         (ids.size() == 1 ? " matches" : " match");
+}
+
+std::string DeskHost::QuerySampleValues(int which, const std::string& field) const {
+  const QueryBuilderModel* q = QueryOf(*impl_->desk, which);
+  std::vector<std::string> values;
+  if (q == nullptr || !q->SampleValues(field, 200, &values).ok()) return std::string();
+  std::string out;
+  for (const std::string& v : values) {
+    if (!out.empty()) out += '\n';
+    out += v;
+  }
+  return out;
+}
+
+// MARK: Select by Attributes
+
+bool DeskHost::TakeSelectByAttributesRequest() {
+  const bool asked = impl_->shell.select_requested;
+  impl_->shell.select_requested = false;
+  return asked;
+}
+
+std::string DeskHost::SelectByAttributesTitle() const {
+  const auto& q = impl_->desk->select_query();
+  if (!q) return std::string();
+  const Overlay* o = q->overlay();
+  return "Select by Attributes \u2014 " + (o != nullptr ? o->Name() : std::string());
+}
+
+int DeskHost::SelectionMethodCount() const { return 4; }
+
+std::string DeskHost::SelectionMethodTitle(int method) const {
+  return method >= 0 && method < 4 ? desk::SelectionMethodTitle(static_cast<SelectionMethod>(method)) : std::string();
+}
+
+std::string DeskHost::ApplySelectByAttributes(int method) {
+  if (method < 0 || method >= 4) return "no such selection method";
+  return impl_->desk->ApplySelectByAttributes(static_cast<SelectionMethod>(method)).message;
+}
+
+int DeskHost::SelectByAttributesSelectedCount() const {
+  const auto& q = impl_->desk->select_query();
+  const std::shared_ptr<Overlay> o = q ? impl_->desk->overlays().FindShared(q->overlay()) : nullptr;
+  const auto* f = dynamic_cast<const FeatureOverlay*>(o.get());
+  return f ? static_cast<int>(f->selection().size()) : 0;
+}
+
+void DeskHost::CloseSelectByAttributes() { impl_->desk->CloseSelectByAttributes(); }
 
 // MARK: Map Data Sources dialog
 
@@ -2257,6 +2934,12 @@ HostTick DeskHost::Tick() {
   if (m.shell.fields_requested) t.fields_requested = true;
   if (m.shell.new_layer_requested) t.new_layer_requested = true;
   if (m.shell.properties_requested) t.properties_requested = true;
+  if (m.shell.select_requested) t.select_requested = true;
+  if (m.shell.add_rule_requested) t.add_rule_requested = true;
+  if (m.shell.rule_rename_requested) t.rule_rename_requested = true;
+  if (m.shell.rule_type_requested) t.rule_type_requested = true;
+  if (m.shell.rule_filter_requested) t.rule_filter_requested = true;
+  if (m.shell.rule_style_requested) t.rule_style_requested = true;
   const int table_row = m.desk->SelectedTableRow();
   if (m.desk->FeatureViewsGeneration() != m.ticked_features_gen || table_row != m.ticked_table_row) {
     m.ticked_features_gen = m.desk->FeatureViewsGeneration();

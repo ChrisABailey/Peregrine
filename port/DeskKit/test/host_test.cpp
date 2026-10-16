@@ -24,6 +24,7 @@
 
 #include "fv_desk_catalog_build.h"
 #include "fv_desk_feature_form.h"
+#include "fv_desk_query.h"
 #include "fv_desk_layer_properties.h"
 #include "fv_desk_user_settings.h"
 #include "fvkit/catalog/catalog.h"
@@ -1070,6 +1071,195 @@ TEST(DeskHost, SourcesViewMenusAndPropertiesFlattenForAShell) {
   h->WaitForRender();
 }
 
+TEST(DeskHost, StyleRulesFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  EXPECT_EQ(h->Execute(std::string("overlay.toggle.") + fv::app::kGridTypeId), "");
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+  const int row = h->SourceLayerRow(0, 0);
+  ASSERT_GT(h->RuleCount(row), 1);
+  EXPECT_EQ(h->RuleCount(1 - row), 0);  // the grid has no rules
+  int lines = -1;
+  for (int i = 0; i < h->RuleCount(row); ++i)
+    if (h->RuleName(row, i) == "Lines") lines = i;
+  ASSERT_GE(lines, 0);
+  EXPECT_EQ(h->RuleType(row, lines), "line");
+  EXPECT_TRUE(h->RuleShown(row, lines));
+  EXPECT_EQ(h->RuleName(row, 99), "");
+  EXPECT_EQ(h->RuleTypeCount(), 4);
+  EXPECT_EQ(h->RuleTypeName(3), "symbol");
+  EXPECT_EQ(h->CurrentRule(), -1);
+
+  EXPECT_EQ(h->SelectRule(row, lines), "");
+  EXPECT_EQ(h->CurrentRule(), lines);
+  EXPECT_EQ(h->RuleMenuEntryAt(0).id, "layers.rule.edit_style");
+  ASSERT_GT(h->RuleMenuEntryCount(), 6);
+  EXPECT_EQ(h->Execute("layers.rule.rename"), "");
+  EXPECT_TRUE(h->Tick().rule_rename_requested);
+  EXPECT_TRUE(h->TakeRuleRenameRequest());
+  EXPECT_FALSE(h->TakeRuleRenameRequest());
+  EXPECT_EQ(h->RenameRule(row, lines, "Rivers"), "");
+  EXPECT_EQ(h->RuleName(row, lines), "Rivers");
+  EXPECT_NE(h->RenameRule(row, lines, ""), "");
+
+  EXPECT_EQ(h->Execute("layers.rule.edit_filter"), "");
+  EXPECT_TRUE(h->TakeRuleFilterRequest());
+  EXPECT_EQ(h->RuleFilterTitle(), "Rule Filter \u2014 Rivers (Charleston rivers)");
+  EXPECT_EQ(h->SetQueryExpression(fv::desk::DeskHost::kQueryRule, R"([">",["get","depth"],7])"), "");
+  EXPECT_EQ(h->VerifyQuery(fv::desk::DeskHost::kQueryRule), "2 of 3 features match");
+  EXPECT_EQ(h->ApplyRuleFilter(), "");
+  EXPECT_NE(h->RuleFilter(row, lines).find(R"([">",["get","depth"],7.0])"), std::string::npos);
+  h->CloseRuleFilter();
+
+  EXPECT_EQ(h->SetRuleShown(row, lines, false), "");
+  EXPECT_FALSE(h->RuleShown(row, lines));
+  EXPECT_EQ(h->AddRule(row, "Names", "symbol"), "");
+  EXPECT_EQ(h->RuleName(row, 0), "Names");
+  EXPECT_EQ(h->SetRuleType(row, 0, "circle"), "");
+  EXPECT_EQ(h->RuleType(row, 0), "circle");
+  EXPECT_EQ(h->MoveRule(row, 0, 1), "");
+  EXPECT_EQ(h->RuleName(row, 1), "Names");
+  EXPECT_EQ(h->DuplicateRule(row, 1), "");
+  EXPECT_EQ(h->RuleName(row, 1), "Names copy");
+  EXPECT_EQ(h->DeleteRule(row, 1), "");
+  EXPECT_EQ(h->RuleName(row, 1), "Names");
+  EXPECT_TRUE(h->LayerDirty(row));
+  h->WaitForRender();
+}
+
+TEST(DeskHost, RuleStylePagesFlattenForAShell) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+  const int row = h->SourceLayerRow(0, 0);
+  ASSERT_EQ(h->AddRule(row, "Roads", "line"), "");
+  EXPECT_EQ(h->Execute("layers.rule.edit_style"), "");
+  EXPECT_TRUE(h->Tick().rule_style_requested);
+  EXPECT_TRUE(h->TakeRuleStyleRequest());
+  ASSERT_TRUE(h->RuleStyleOpen());
+  EXPECT_EQ(h->RuleStyleTitle(), "Rule Style \u2014 Roads (Charleston rivers)");
+  EXPECT_EQ(h->RuleStyleType(), "line");
+  int width = -1;
+  for (int k = 0; k < h->RuleStylePropertyCount(); ++k)
+    if (h->RuleStylePropertyKey(k) == "line-width") width = k;
+  ASSERT_GE(width, 0);
+  EXPECT_EQ(h->RuleStylePropertyPage(width), "Line");
+  EXPECT_EQ(h->RuleStylePropertyKind(width), 1);
+  EXPECT_EQ(h->RuleStyleModeCount(width), 6);
+  EXPECT_EQ(h->RuleStyleMode(width), 1);
+  EXPECT_EQ(h->RuleStyleConstant(width), "2");
+
+  EXPECT_EQ(h->SetRuleStyleMode(width, 3), "");  // by class
+  EXPECT_EQ(h->RuleStyleFieldName(true, 0), "depth");
+  EXPECT_EQ(h->SetRuleStyleField(width, "depth"), "");
+  EXPECT_EQ(h->AddRuleStyleStop(width), "");
+  EXPECT_EQ(h->SetRuleStyleStop(width, 0, "8", "5"), "");
+  EXPECT_NE(h->SetRuleStyleStop(width, 0, "eight", "5"), "");
+  EXPECT_EQ(h->RuleStyleStopKey(width, 0), "8");
+  EXPECT_TRUE(h->RuleStyleDirty());
+  EXPECT_NE(h->VerifyRuleStyleExpression(width, R"(["bogus"])"), "");
+  EXPECT_EQ(h->ApplyRuleStyle(), "");
+  EXPECT_FALSE(h->RuleStyleDirty());
+  EXPECT_EQ(h->RuleStyleMode(width), 3);
+  EXPECT_TRUE(h->LayerDirty(row));
+
+  EXPECT_EQ(fv::desk::DeskHost::RuleColorRGBA("#1e5ac8", 0), 0x1e5ac8ffu);
+  EXPECT_EQ(fv::desk::DeskHost::RuleColorRGBA("nope", 7), 7u);
+  EXPECT_EQ(fv::desk::DeskHost::RuleColorText(0x1e5ac8ffu), "#1e5ac8");
+  EXPECT_EQ(fv::desk::DeskHost::RuleColorText(0x1e5ac880u), "rgba(30, 90, 200, 0.502)");
+  h->CloseRuleStyle();
+  EXPECT_FALSE(h->RuleStyleOpen());
+  h->WaitForRender();
+}
+
+TEST(DeskHost, DisplaySelectionAndQueriesThroughTheHost) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  h->SetPropertiesTabs(true);
+  fv::desk::test::Scratch scratch;
+  const std::string rivers = scratch.Path("rivers.geojson");
+  std::filesystem::copy_file(FV_FEATURE_RIVERS, rivers);
+  ASSERT_EQ(h->OpenOverlayFile(rivers), "");
+  h->Tick();
+  constexpr int kDef = fv::desk::DeskHost::kQueryDefinition;
+  constexpr int kSel = fv::desk::DeskHost::kQuerySelect;
+
+  // Select by Attributes.
+  EXPECT_FALSE(h->QueryOpen(kSel));
+  EXPECT_EQ(h->Execute("layers.select_by_attributes"), "");
+  EXPECT_TRUE(h->Tick().select_requested);
+  EXPECT_TRUE(h->TakeSelectByAttributesRequest());
+  EXPECT_EQ(h->SelectByAttributesTitle(), "Select by Attributes \u2014 Charleston rivers");
+  ASSERT_TRUE(h->QueryOpen(kSel));
+  EXPECT_EQ(h->QueryFieldCount(kSel), 3);
+  EXPECT_EQ(h->QueryFieldTitle(kSel, 2), "Average flow");
+  EXPECT_EQ(h->QueryOpCount(), 9);
+  EXPECT_EQ(h->QueryOpTitle(6), "contains");
+  EXPECT_FALSE(h->QueryOpTakesValue(7));
+  EXPECT_EQ(h->SelectionMethodTitle(0), "Create a new selection");
+  const int c = h->AddQueryClause(kSel);
+  ASSERT_EQ(c, 0);
+  EXPECT_EQ(h->SetQueryClause(kSel, c, "flow", static_cast<int>(fv::desk::QueryOp::kGreaterEqual), "40"), "");
+  EXPECT_EQ(h->QueryClauseOp(kSel, c), static_cast<int>(fv::desk::QueryOp::kGreaterEqual));
+  EXPECT_EQ(h->QueryText(kSel), "flow \u2265 40");
+  EXPECT_EQ(h->VerifyQuery(kSel), "2 of 3 features match");
+  EXPECT_EQ(h->QuerySampleValues(kSel, "depth"), "6\n9\n12");
+  EXPECT_EQ(h->ApplySelectByAttributes(0), "");
+  EXPECT_EQ(h->SelectByAttributesSelectedCount(), 2);
+  EXPECT_EQ(h->SetQueryClause(kSel, c, "flow", static_cast<int>(fv::desk::QueryOp::kLess), ""), "");
+  EXPECT_EQ(h->QueryExpression(kSel), "");
+  EXPECT_NE(h->QueryExpressionError(kSel), "");
+  EXPECT_NE(h->ApplySelectByAttributes(0), "");
+
+  // The Properties tabs.
+  EXPECT_EQ(h->Execute("layers.properties"), "");
+  h->Tick();
+  ASSERT_TRUE(h->LayerDisplayOpen());
+  EXPECT_TRUE(h->LayerDisplayHasOpacity());
+  EXPECT_EQ(h->LayerDisplayOpacity(), 100);
+  EXPECT_EQ(h->LayerDisplayFieldName(1), "depth");
+  EXPECT_EQ(h->LayerDisplayMapTipField(), "");
+  EXPECT_NE(h->SetLayerDisplay(50, "nope", ""), "");
+  EXPECT_EQ(h->SetLayerDisplay(50, "depth", "name"), "");
+  ASSERT_TRUE(h->LayerSelectionOpen());
+  EXPECT_TRUE(h->LayerSelectionUsesDefault());
+  EXPECT_EQ(h->LayerSelectionColor(), 0xffc800ffu);
+  EXPECT_EQ(h->LayerSelectionCount(), 2);
+  EXPECT_EQ(h->SetLayerSelection(false, 0x00c8ffffu, 3), "");
+  ASSERT_TRUE(h->QueryOpen(kDef));
+  EXPECT_EQ(h->QueryClauseCount(kDef), 0);
+  EXPECT_EQ(h->SetQueryExpression(kDef, R"(["any", ["has", "name"], ["==", ["get", "depth"], 6]])"), "");
+  EXPECT_FALSE(h->QueryIsCustom(kDef));
+  EXPECT_TRUE(h->QueryMatchAny(kDef));
+  EXPECT_EQ(h->QueryClauseField(kDef, 1), "depth");
+  EXPECT_EQ(h->QueryClauseValue(kDef, 1), "6");
+  EXPECT_EQ(h->RemoveQueryClause(kDef, 0), "");
+  EXPECT_EQ(h->VerifyQuery(kDef), "1 of 3 features matches");
+  EXPECT_TRUE(h->LayerPropertiesDirty());
+  EXPECT_EQ(h->ApplyLayerProperties(), "");
+  EXPECT_FALSE(h->LayerPropertiesDirty());
+  EXPECT_EQ(h->LayerDisplayOpacity(), 50);
+  EXPECT_EQ(h->LayerDisplayHyperlinkField(), "name");
+  EXPECT_FALSE(h->LayerSelectionUsesDefault());
+  EXPECT_EQ(h->LayerSelectionWidth(), 3);
+  EXPECT_EQ(h->LayerSelectionCount(), 0);  // the query hides both selected rivers
+  EXPECT_EQ(h->QueryExpression(kDef), R"(["==",["get","depth"],6.0])");
+
+  h->CloseSelectByAttributes();
+  EXPECT_FALSE(h->QueryOpen(kSel));
+  h->CloseLayerProperties();
+  EXPECT_FALSE(h->QueryOpen(kDef));
+  h->WaitForRender();
+}
+
 TEST(DeskHost, PropertiesTabsFlattenForAShell) {
   HostRef h;
   h->Resize(200, 100, 1.0, 0.25);
@@ -1084,10 +1274,12 @@ TEST(DeskHost, PropertiesTabsFlattenForAShell) {
   const fv::desk::HostTick t = h->Tick();
   EXPECT_TRUE(t.properties_requested);
   EXPECT_FALSE(t.style_requested);
-  ASSERT_EQ(h->LayerPropertiesTabCount(), 5);
+  ASSERT_EQ(h->LayerPropertiesTabCount(), 8);
   EXPECT_EQ(h->LayerPropertiesTabTitle(0), "Source");
-  EXPECT_EQ(h->LayerPropertiesTabTitle(4), "Fields");
-  EXPECT_EQ(h->LayerPropertiesTabAt(5), -1);
+  EXPECT_EQ(h->LayerPropertiesTabTitle(2), "Display");
+  EXPECT_EQ(h->LayerPropertiesTabTitle(5), "Fields");
+  EXPECT_EQ(h->LayerPropertiesTabTitle(7), "Definition Query");
+  EXPECT_EQ(h->LayerPropertiesTabAt(8), -1);
   EXPECT_EQ(h->LayerPropertiesTab(), static_cast<int>(fv::desk::PropertiesTab::kSymbology));
   EXPECT_TRUE(h->LayerStyleOpen());
   EXPECT_TRUE(h->LayerFieldsOpen());

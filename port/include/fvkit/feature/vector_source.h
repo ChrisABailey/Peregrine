@@ -8,6 +8,7 @@
 /// product.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,14 +37,19 @@ class FeatureVectorSource : public IVectorSource {
   bool IsOpen() const override { return layer_ != nullptr; }
   GeoRect Bounds() const override;
   std::vector<std::string> Layers() const override { return {kFeatureSourceLayer}; }
-  /// Features whose envelope meets `q.area`; `q.max_features` is not applied.
+  /// Features whose envelope meets `q.area` and that pass the filter;
+  /// `q.max_features` is not applied.
   Status Query(const VectorQuery& q, std::vector<VectorFeature>* out) override;
+
+  /// Leaves out features `keep` rejects; an empty function keeps all.
+  void SetFilter(std::function<bool(const Feature&)> keep) { keep_ = std::move(keep); }
 
   /// Distinct features the last Query returned.
   size_t features_returned() const { return features_returned_; }
 
  private:
   std::shared_ptr<const IFeatureLayer> layer_;
+  std::function<bool(const Feature&)> keep_;
   size_t features_returned_ = 0;
 };
 

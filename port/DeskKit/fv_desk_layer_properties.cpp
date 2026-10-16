@@ -5,11 +5,13 @@
 
 #include "fv_desk_layer_properties.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 
 #include "fv_desk_desk.h"
+#include "fvkit/overlay/feature_overlay.h"
 
 namespace fv {
 namespace desk {
@@ -41,6 +43,9 @@ std::string PropertiesTabTitle(PropertiesTab tab) {
     case PropertiesTab::kSymbology: return "Symbology";
     case PropertiesTab::kLabels: return "Labels";
     case PropertiesTab::kFields: return "Fields";
+    case PropertiesTab::kDisplay: return "Display";
+    case PropertiesTab::kSelection: return "Selection";
+    case PropertiesTab::kDefinitionQuery: return "Definition Query";
   }
   return std::string();
 }
@@ -101,6 +106,119 @@ Status LayerGeneralModel::Revert() {
   const std::shared_ptr<Overlay> o = overlay_.lock();
   if (!o) return Status::Error(kNotFound, "the layer has closed");
   applied_ = Read(*o);
+  draft_ = applied_;
+  return Status::Ok();
+}
+
+namespace {
+
+LayerDisplay ReadDisplay(const Overlay& o) {
+  LayerDisplay d;
+  d.opacity = o.opacity();
+  if (const auto* f = dynamic_cast<const FeatureOverlay*>(&o)) {
+    d.map_tip_field = f->map_tip_field();
+    d.hyperlink_field = f->hyperlink_field();
+  }
+  return d;
+}
+
+LayerSelection ReadSelection(const FeatureOverlay& o) {
+  LayerSelection s;
+  s.use_default = !o.has_selection_style();
+  s.style = o.selection_style();
+  return s;
+}
+
+}  // namespace
+
+Status LayerDisplayModel::Open(const std::shared_ptr<Overlay>& overlay, std::shared_ptr<LayerDisplayModel>* out) {
+  if (!overlay) return Status::Error(kInvalidArg, "no overlay");
+  std::shared_ptr<LayerDisplayModel> m(new LayerDisplayModel());
+  m->overlay_ = overlay;
+  m->overlay_id_ = overlay.get();
+  m->has_opacity_ = overlay->SupportsOpacity();
+  if (const auto* f = dynamic_cast<const FeatureOverlay*>(overlay.get()); f != nullptr && f->layer()) {
+    for (const FieldDef& d : f->layer()->Schema().fields)
+      if (d.type != FieldType::kBlob) m->fields_.push_back(d);
+  }
+  if (!m->has_opacity_ && m->fields_.empty())
+    return Status::Error(kUnsupported, overlay->Name() + " has no display settings");
+  m->applied_ = ReadDisplay(*overlay);
+  m->draft_ = m->applied_;
+  *out = std::move(m);
+  return Status::Ok();
+}
+
+Status LayerDisplayModel::Set(const LayerDisplay& display) {
+  if (display.opacity < 0 || display.opacity > 100) return Status::Error(kInvalidArg, "opacity is 0 to 100 percent");
+  for (const std::string* name : {&display.map_tip_field, &display.hyperlink_field}) {
+    if (name->empty()) continue;
+    const bool known = std::any_of(fields_.begin(), fields_.end(), [name](const FieldDef& f) { return f.name == *name; });
+    if (!known) return Status::Error(kInvalidArg, "the layer has no field \u201C" + *name + "\u201D");
+  }
+  draft_ = display;
+  return Status::Ok();
+}
+
+Status LayerDisplayModel::Apply() {
+  const std::shared_ptr<Overlay> o = overlay_.lock();
+  if (!o) return Status::Error(kNotFound, "the layer has closed");
+  if (has_opacity_) o->SetOpacity(draft_.opacity);
+  if (auto* f = dynamic_cast<FeatureOverlay*>(o.get())) {
+    f->SetMapTipField(draft_.map_tip_field);
+    f->SetHyperlinkField(draft_.hyperlink_field);
+  }
+  applied_ = ReadDisplay(*o);
+  draft_ = applied_;
+  return Status::Ok();
+}
+
+Status LayerDisplayModel::Revert() {
+  const std::shared_ptr<Overlay> o = overlay_.lock();
+  if (!o) return Status::Error(kNotFound, "the layer has closed");
+  applied_ = ReadDisplay(*o);
+  draft_ = applied_;
+  return Status::Ok();
+}
+
+Status LayerSelectionModel::Open(const std::shared_ptr<FeatureOverlay>& overlay,
+                                 std::shared_ptr<LayerSelectionModel>* out) {
+  if (!overlay) return Status::Error(kInvalidArg, "no overlay");
+  std::shared_ptr<LayerSelectionModel> m(new LayerSelectionModel());
+  m->overlay_ = overlay;
+  m->overlay_id_ = overlay.get();
+  m->applied_ = ReadSelection(*overlay);
+  m->draft_ = m->applied_;
+  *out = std::move(m);
+  return Status::Ok();
+}
+
+size_t LayerSelectionModel::selected_count() const {
+  const std::shared_ptr<FeatureOverlay> o = overlay_.lock();
+  return o ? o->selection().size() : 0;
+}
+
+Status LayerSelectionModel::Set(const LayerSelection& selection) {
+  if (!selection.use_default && !(selection.style.width_px >= 0.5 && selection.style.width_px <= 40))
+    return Status::Error(kInvalidArg, "the selection width is 0.5 to 40 pixels");
+  draft_ = selection;
+  return Status::Ok();
+}
+
+Status LayerSelectionModel::Apply() {
+  const std::shared_ptr<FeatureOverlay> o = overlay_.lock();
+  if (!o) return Status::Error(kNotFound, "the layer has closed");
+  if (draft_.use_default) o->ClearSelectionStyle();
+  else o->SetSelectionStyle(draft_.style);
+  applied_ = ReadSelection(*o);
+  draft_ = applied_;
+  return Status::Ok();
+}
+
+Status LayerSelectionModel::Revert() {
+  const std::shared_ptr<FeatureOverlay> o = overlay_.lock();
+  if (!o) return Status::Error(kNotFound, "the layer has closed");
+  applied_ = ReadSelection(*o);
   draft_ = applied_;
   return Status::Ok();
 }

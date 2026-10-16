@@ -57,6 +57,7 @@ struct MapScreen: View {
     @State private var problemShown = false
     @State private var aboutShown = false
     @State private var tidesShown = false
+    @State private var legendShown = false
 
     /// The unit preference. `@ObservedObject` because this view does not own
     /// it; `DisplayUnits.shared` is also observed from views across sheet
@@ -173,6 +174,12 @@ struct MapScreen: View {
                 if let tide = model.tide {
                     TideCard(tide: tide, onClose: { tidesShown = false })
                 }
+            }
+            // Medium with the map live above it, so a pinch redraws the swatches.
+            .sheet(isPresented: $legendShown) {
+                LegendSheet(model: model, onClose: { legendShown = false })
+                    .presentationDetents([.medium, .large])
+                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
             .sheet(item: $editing) { draft in
                 pointEditSheet(draft)
@@ -697,6 +704,7 @@ struct MapScreen: View {
                             ridesShown = true
                         },
                         onTides: model.tide == nil ? nil : { tidesShown = true },
+                        onMapKey: model.hasLegend ? { legendShown = true } : nil,
                         onAbout: { aboutShown = true },
                         onReportProblem: { problemShown = true })
                         .equatable()

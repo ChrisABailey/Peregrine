@@ -4,11 +4,13 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "fvkit/detail/sqlite.h"
@@ -493,6 +495,54 @@ TEST_F(FeatureGeoPackage, SaveCommitsAndRevertDiscards) {
   EXPECT_EQ(ro->CreateLayer("more", RiverSchema(), {}, nullptr).code, fv::kUnsupported);
 }
 
+TEST_F(FeatureGeoPackage, ALayerSavesWithoutTheOthersEdits) {
+  {
+    auto gp = Create();
+    ASSERT_NE(gp, nullptr);
+    WriteExamples(*gp);
+  }
+  auto gp = Open(true);
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> pizza, rivers;
+  ASSERT_TRUE(gp->OpenLayer("pizza", &pizza).ok());
+  ASSERT_TRUE(gp->OpenLayer("rivers", &rivers).ok());
+  ASSERT_TRUE(pizza->Delete(1).ok());
+  Feature river;
+  ASSERT_TRUE(rivers->Get(1, &river).ok());
+  river.values[0] = std::string("Cooper");
+  ASSERT_TRUE(rivers->Update(river).ok());
+
+  ASSERT_TRUE(pizza->Save().ok());
+  EXPECT_FALSE(pizza->HasEdits());
+  EXPECT_TRUE(rivers->HasEdits());
+  EXPECT_TRUE(gp->HasUnsavedChanges());
+  {
+    fv::detail::SqliteDb db;
+    ASSERT_TRUE(db.OpenReadOnly(path_).ok());
+    EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM pizza"), 1);
+    EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM rivers WHERE name = 'Cooper'"), 0);
+  }
+
+  // A schema change after a move rebuilds the table on save; the R-tree follows the move.
+  river.geometry = Geometry::LineString({{10.0, 20.0}, {10.5, 20.5}});
+  ASSERT_TRUE(rivers->Update(river).ok());
+  fv::SchemaChange change;
+  change.schema = RiverSchema();
+  change.schema.fields[0].name = "label";
+  change.source = {0, 1, 2};
+  ASSERT_TRUE(rivers->ChangeSchema(change).ok());
+  EXPECT_EQ(rivers->Schema().fields[0].name, "label");
+  ASSERT_TRUE(rivers->Save().ok());
+  EXPECT_FALSE(gp->HasUnsavedChanges());
+  fv::detail::SqliteDb db;
+  ASSERT_TRUE(db.OpenReadOnly(path_).ok());
+  EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM rivers WHERE label = 'Cooper'"), 1);
+  EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM rtree_rivers_geom WHERE minx >= 19.9 AND maxx <= 20.6"), 1);
+  std::vector<Feature> hits;
+  ASSERT_TRUE(rivers->Query(GeoRect{{9.9, 19.9}, {10.6, 20.6}}, &hits).ok());
+  EXPECT_EQ(hits.size(), 1u);
+}
+
 TEST_F(FeatureGeoPackage, CopiesAMemoryLayerKeepingIdsAndZ) {
   FeatureSchema schema = RiverSchema();
   fv::MemoryFeatureLayer src("Rivers of the Lowcountry", schema);
@@ -523,6 +573,38 @@ TEST_F(FeatureGeoPackage, CopiesAMemoryLayerKeepingIdsAndZ) {
   flat.geometry.has_z = true;
   ASSERT_TRUE(layer->Insert(&flat).ok());
   EXPECT_EQ(flat.id, 13);
+}
+
+TEST_F(FeatureGeoPackage, OneLayerReadsFromTwoThreadsAtOnce) {
+  fv::MemoryFeatureLayer src("Rivers", RiverSchema());
+  for (int i = 0; i < 2000; ++i) {
+    Feature f = Make(Geometry::LineString({{32.0 + i * 1e-4, -80.0}, {32.1, -79.9}}),
+                     {std::string("river ") + std::to_string(i)});
+    ASSERT_TRUE(src.Insert(&f).ok());
+  }
+  auto gp = Create();
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> layer;
+  ASSERT_TRUE(gp->WriteLayer(src, "rivers", &layer).ok());
+  ASSERT_TRUE(gp->Save().ok());
+
+  // The render thread scans the layer while the UI thread fetches features
+  // from it, as a frame and the toolbar's tool state do.
+  std::atomic<bool> scan_ok{true};
+  std::thread scan([&] {
+    for (int pass = 0; pass < 10; ++pass) {
+      std::vector<Feature> all;
+      if (!layer->All(&all).ok() || all.size() != 2000) scan_ok = false;
+    }
+  });
+  bool get_ok = true;
+  for (int i = 0; i < 4000; ++i) {
+    Feature f;
+    if (!layer->Get(1 + i % 2000, &f).ok()) get_ok = false;
+  }
+  scan.join();
+  EXPECT_TRUE(scan_ok);
+  EXPECT_TRUE(get_ok);
 }
 
 TEST_F(FeatureGeoPackage, RefusesWhatTheLayerCannotHold) {

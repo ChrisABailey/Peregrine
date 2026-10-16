@@ -26,6 +26,7 @@
 
 {
   "version": 1,
+  "name": "City Rules",
   "default_profile": "bicycle",
 
   "profiles": {
@@ -76,7 +77,12 @@
       "signal_seconds": 20.0,
       "crossing_seconds": { "secondary": 15.0, "primary": 45.0, "trunk": 90.0 },
       "golf_cartpath_penalty": "exclude",
-      "golf_path_penalty": 10.0
+      "golf_path_penalty": 10.0,
+
+      // Map legend words by cost per metre; a residential street is 0.8.
+      "legend_tiers": [[0.75, "Most preferred"], [1.0, "Preferred"], [2.0, "Acceptable"],
+                       [5.0, "Avoided"], [null, "Last resort"]],
+      "legend_baseline": { "highway": "residential" }
     },
 
     "foot": {

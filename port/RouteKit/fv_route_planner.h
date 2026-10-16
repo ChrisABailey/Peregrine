@@ -249,6 +249,9 @@ class RoutePlanner {
   // The profiles the rule file defines, for a UI that offers them.
   std::vector<std::string> profile_names() const;
 
+  /// The rules in force (the file's, or the builtin ones), polled now.
+  std::shared_ptr<const routing::RouteRules> rules() const;
+
   // With `options.tide` enabled, a through route whose beach stretch the tide
   // judges poor (or unknown, when the gate does not keep unknown stretches) is
   // planned a second time with the beach excluded, and that route is returned

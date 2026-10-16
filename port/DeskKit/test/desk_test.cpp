@@ -735,10 +735,13 @@ TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusToolbarOrLayerMenus) {
   CollectIds(desk.menus().Toolbar(), &reachable);
   CollectIds(desk.LayerMenu(), &reachable);
   CollectIds(desk.SourceMenu(), &reachable);
+  CollectIds(desk.RuleMenu(), &reachable);
   // The feature editor's palette runs these through its own editor.tool ids.
   for (const char* id : {"overlay.attribute_table", "overlay.edit_feature", "overlay.style",
                          "overlay.style_feature", "overlay.fields"})
     reachable.insert(id);
+  // An alias of Overlay ▸ New ▸ Feature Layer… that PeregrineGtk runs by id.
+  reachable.insert("overlay.new_layer");
   for (const std::string& id : desk.commands().Ids())
     EXPECT_TRUE(reachable.count(id)) << id << " is in no menu and not on the toolbar";
 }

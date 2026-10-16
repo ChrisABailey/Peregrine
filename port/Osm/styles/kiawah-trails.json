@@ -4,8 +4,184 @@
   "id": "kiawah-trails",
   "metadata": {
     "peregrine:note": "A base map for riding and walking on Kiawah Island, against the peregrine tilemaker profile (OpenMapTiles plus the golf layer). The bike network is the strongest line on the map, walking routes second, golf third, and roads recede to a quiet white. Written inside the subset in style-readme.md.",
-    "peregrine:palette": "Land #f3eee3, water #a3cfdc, marsh #cfd8b8, beach #f6e6bf, course #d6e8bd, fairway #c3df9f, green #86c86a, bunker #efdcaa, bike #d9472f, walk #8a5236, boardwalk #b98a55, golf path #8a9e76.",
-    "peregrine:golf-paths": "Golf paths reach the tiles as class=path subclass=path with foot=designated and/or bicycle=no, and cart paths as paved or bicycle=no tracks. The profile now writes `golf` (path|cartpath) on those ways; the tag heuristics remain for tiles built before it did."
+    "peregrine:palette": "Land #f3eee3, water #a3cfdc, marsh #cfd8b8, beach #f6e6bf, course #d6e8bd, fairway #c3df9f, green #86c86a, bunker #efdcaa, bike #c0c0c0 cased #404040, walk #8a5236, boardwalk #b98a55, golf path #8a9e76.",
+    "peregrine:golf-paths": "Golf paths reach the tiles as class=path subclass=path with foot=designated and/or bicycle=no, and cart paths as paved or bicycle=no tracks. The profile now writes `golf` (path|cartpath) on those ways; the tag heuristics remain for tiles built before it did.",
+    "peregrine:legend": {
+      "groups": [
+        {
+          "title": "Paths",
+          "entries": [
+            {
+              "id": "bike",
+              "label": "Bike path",
+              "detail": "Light grey with a dark grey outline; the outline alone below zoom 13.5. OSM highway=cycleway, or a path with bicycle=yes, designated or permissive.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "path",
+                    "subclass": "cycleway"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "cycleway"
+              }
+            },
+            {
+              "id": "bike-bridge",
+              "label": "Bike path bridge",
+              "detail": "A brown-grey outline outside the path, from zoom 14. OSM bridge=yes on a bike path.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "path",
+                    "subclass": "cycleway",
+                    "brunnel": "bridge"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "cycleway",
+                "bridge": "yes",
+                "layer": "1"
+              }
+            },
+            {
+              "id": "boardwalk",
+              "label": "Boardwalk",
+              "detail": "Tan with a dark brown outline, from zoom 14. OSM bridge=boardwalk.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "path",
+                    "subclass": "footway",
+                    "brunnel": "bridge",
+                    "boardwalk": "yes"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "footway",
+                "bridge": "boardwalk"
+              }
+            },
+            {
+              "id": "walk",
+              "label": "Walking path",
+              "detail": "Dashed brown. OSM highway=footway or path that does not admit bicycles.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "path",
+                    "subclass": "footway"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "footway"
+              }
+            },
+            {
+              "id": "golf-path",
+              "label": "Golf cart path",
+              "detail": "Dashed sage, from zoom 15. OSM golf=cartpath or golf=path.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "path",
+                    "subclass": "path",
+                    "golf": "cartpath"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "path",
+                "golf": "cartpath"
+              }
+            },
+            {
+              "id": "track",
+              "label": "Dirt track",
+              "detail": "Dashed tan. OSM highway=track with an unpaved surface.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "track"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "track"
+              }
+            }
+          ]
+        },
+        {
+          "title": "Roads",
+          "entries": [
+            {
+              "id": "main-road",
+              "label": "Main road",
+              "detail": "Cream with a gold edge. OSM highway=tertiary, secondary, primary or trunk.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "tertiary"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "tertiary"
+              }
+            },
+            {
+              "id": "street",
+              "label": "Street",
+              "detail": "White with a grey edge, from zoom 12. OSM highway=residential or unclassified.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "minor",
+                    "subclass": "residential"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "residential"
+              }
+            },
+            {
+              "id": "service",
+              "label": "Service road",
+              "detail": "Narrow white, from zoom 14. OSM highway=service, other than driveways and parking aisles.",
+              "specimen": [
+                {
+                  "layer": "transportation",
+                  "tags": {
+                    "class": "service"
+                  }
+                }
+              ],
+              "osm": {
+                "highway": "service"
+              }
+            }
+          ]
+        }
+      ],
+      "unlisted_layers": [
+        "road-driveway*",
+        "pier"
+      ]
+    }
   },
   "sources": {"openmaptiles": {"type": "vector"}},
   "sprite": "symbols/osm-liberty-topo",
@@ -161,11 +337,11 @@
      "paint": {"line-color": "#8a5236", "line-width": {"base": 1.3, "stops": [[13, 0.8], [16, 1.8], [19, 4]]},
                "line-dasharray": [2.5, 1.5]}},
 
-    {"_comment": "Cycling: highway=cycleway, and any path that admits bicycles. A red casing around a pale fill; below z14 the casing alone.",
+    {"_comment": "Cycling: highway=cycleway, and any path that admits bicycles. A thin dark grey casing around a light grey fill; below z13.5 the casing alone.",
      "id": "bike-casing", "type": "line", "source-layer": "transportation", "minzoom": 11,
      "filter": ["all", ["==", "$type", "LineString"], ["==", "class", "path"], ["!has", "golf"],
                 ["any", ["==", "subclass", "cycleway"], ["in", "bicycle", "yes", "designated", "permissive"]]],
-     "paint": {"line-color": "#d24a34",
+     "paint": {"line-color": "#404040",
                "line-width": {"base": 1.4, "stops": [[11, 0.7], [14, 2.4], [16, 3.8], [19, 7.5]]}}},
     {"id": "bike-bridge-casing", "type": "line", "source-layer": "transportation", "minzoom": 14,
      "filter": ["all", ["==", "$type", "LineString"], ["==", "class", "path"], ["==", "brunnel", "bridge"], ["!=", "boardwalk", "yes"],
@@ -174,8 +350,8 @@
     {"id": "bike", "type": "line", "source-layer": "transportation", "minzoom": 13.5,
      "filter": ["all", ["==", "$type", "LineString"], ["==", "class", "path"], ["!has", "golf"],
                 ["any", ["==", "subclass", "cycleway"], ["in", "bicycle", "yes", "designated", "permissive"]]],
-     "paint": {"line-color": "#fbe4dc",
-               "line-width": {"base": 1.4, "stops": [[13.5, 0.3], [14, 0.9], [16, 1.8], [19, 4]]}}},
+     "paint": {"line-color": "#c0c0c0",
+               "line-width": {"base": 1.4, "stops": [[13.5, 0.3], [14, 1.6], [16, 3.0], [19, 6.5]]}}},
 
     {"id": "gate", "type": "circle", "source-layer": "poi", "minzoom": 15.5,
      "filter": ["all", ["==", "$type", "Point"], ["==", "class", "barrier"]],

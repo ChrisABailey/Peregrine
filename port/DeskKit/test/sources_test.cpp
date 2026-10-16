@@ -191,10 +191,12 @@ TEST_F(SourcesTest, PropertiesDescribeTheLayerAndTheSource) {
   EXPECT_EQ(Value(desk.properties(), "Source", "Layers"), "2");
   EXPECT_EQ(Value(desk.properties(), "Layers", "Creeks"), "Line, 3 features");
 
+  // The built-in grid's Properties is its Overlay Options page.
   ASSERT_TRUE(desk.SelectSource(1).ok());
   ASSERT_TRUE(fd_.Run({"layers.properties"}).ok());
-  EXPECT_EQ(Value(desk.properties(), "Source", "Path"), "Built in");
-  EXPECT_EQ(Value(desk.properties(), "Layer", "Features"), "-");
+  EXPECT_EQ(fd_.shell().layer_properties_shown, 2);  // the layer's and the source's, not the grid's
+  ASSERT_TRUE(fd_.shell().options_shown);
+  EXPECT_GE(fd_.shell().options_shown->initial_page(), 0);
 }
 
 TEST_F(SourcesTest, MenusListTheirCommandsAndFollowTheRow) {
@@ -207,10 +209,13 @@ TEST_F(SourcesTest, MenusListTheirCommandsAndFollowTheRow) {
   };
   EXPECT_EQ(ids(desk.LayerMenu()),
             (std::vector<std::string>{"layers.properties", "overlay.style", "overlay.fields",
-                                      "overlay.attribute_table", "layers.zoom_to", "layers.close"}));
+                                      "overlay.attribute_table", "layers.select_by_attributes",
+                                      "layers.clear_selection", "layers.rule.add", "layers.import_style",
+                                      "layers.export_style", "layers.zoom_to", "layers.close"}));
   EXPECT_EQ(ids(desk.SourceMenu()),
             (std::vector<std::string>{"layers.source.properties", "layers.source.show_all", "layers.source.hide_all",
-                                      "layers.source.zoom_to", "file.save", "layers.source.close"}));
+                                      "layers.source.zoom_to", "layers.source.new_layer", "file.save",
+                                      "layers.source.close"}));
   EXPECT_TRUE(desk.commands().IsEnabled("overlay.style"));
   EXPECT_TRUE(desk.commands().IsEnabled("layers.zoom_to"));
   ASSERT_TRUE(desk.SelectSource(1).ok());  // the grid: no features to style or zoom to
@@ -252,6 +257,65 @@ TEST_F(SourcesTest, AWorkspaceReopensEachTable) {
   ASSERT_EQ(sources.size(), 2u);
   EXPECT_EQ(sources[0].layers.size(), 2u);
   EXPECT_EQ(sources[0].shown, SourceShown::kSome);
+}
+
+/// The overlay of the layer named `name`.
+FeatureOverlay* LayerNamed(FakeDesk& fd, const std::string& name) {
+  for (const auto& o : fd.desk().overlays().OfType(FeatureOverlay::kTypeId))
+    if (o->Name() == name) return dynamic_cast<FeatureOverlay*>(o.get());
+  return nullptr;
+}
+
+TEST_F(SourcesTest, StylingOneTableLeavesTheOtherAlone) {
+  fd_.shell().properties_tabs = true;
+  FeatureOverlay* rivers = LayerNamed(fd_, "Charleston rivers");
+  FeatureOverlay* creeks = LayerNamed(fd_, "Creeks");
+  ASSERT_TRUE(rivers && creeks);
+  const double before = rivers->style().symbol.line_width_px;
+  ASSERT_TRUE(fd_.desk().SelectLayer(Sources()[0].layers[1]).ok());
+  ASSERT_EQ(fd_.desk().overlays().current(), creeks);
+  ASSERT_TRUE(fd_.Run({"layers.properties"}).ok());
+  auto style = fd_.desk().layer_style();
+  ASSERT_TRUE(style);
+  fv::FeatureSymbol symbol = style->EntrySymbol(0);
+  symbol.line_width_px = before + 5;
+  ASSERT_TRUE(style->SetEntrySymbol(0, symbol).ok());
+  ASSERT_TRUE(fd_.desk().ApplyLayerProperties().ok());
+  EXPECT_EQ(creeks->style().symbol.line_width_px, before + 5);
+  EXPECT_EQ(rivers->style().symbol.line_width_px, before);
+
+  // Saved and reopened, each table keeps its own style.
+  ASSERT_TRUE(fd_.Run({"file.save"}).ok()) << (fd_.shell().errors.empty() ? "" : fd_.shell().errors.back().message);
+  FeatureOverlay a, b;
+  ASSERT_TRUE(a.FileOpen(fv::app::JoinSourceSpec(gpkg_, "rivers")).ok());
+  ASSERT_TRUE(b.FileOpen(fv::app::JoinSourceSpec(gpkg_, "creeks")).ok());
+  EXPECT_EQ(a.style().symbol.line_width_px, before);
+  EXPECT_EQ(b.style().symbol.line_width_px, before + 5);
+}
+
+TEST_F(SourcesTest, TheEditorEditsTheLayerChosenOfSeveralOfItsType) {
+  auto& desk = fd_.desk();
+  FeatureOverlay* creeks = LayerNamed(fd_, "Creeks");
+  FeatureOverlay* rivers = LayerNamed(fd_, "Charleston rivers");
+  ASSERT_TRUE(creeks && rivers);
+  // Creeks is the lower of the two; the editor takes it because it is current.
+  ASSERT_TRUE(desk.SelectLayer(Sources()[0].layers[1]).ok());
+  ASSERT_TRUE(fd_.Run({std::string("editor.mode.") + FeatureOverlay::kTypeId}).ok());
+  EXPECT_EQ(desk.overlays().current(), creeks);
+  EXPECT_TRUE(creeks->edit().has_edit_focus());
+  EXPECT_FALSE(rivers->edit().has_edit_focus());
+  EXPECT_EQ(Layers()[0].name, "Creeks");  // the edited layer draws on top
+
+  fv::PixelBuffer out;
+  ASSERT_TRUE(fd_.Render(&out).ok());
+  for (const std::string& id : desk.commands().IdsWithPrefix("editor.tool."))
+    if (desk.commands().Find(id)->label == "Draw Line") ASSERT_TRUE(fd_.Run({id}).ok());
+  desk.OverlayPointerDown(100, 100);
+  desk.OverlayPointerUp(100, 100);
+  ASSERT_TRUE(fd_.Render(&out).ok());
+  EXPECT_EQ(desk.overlays().current(), creeks);
+  EXPECT_TRUE(creeks->edit().sketching());
+  EXPECT_FALSE(rivers->edit().sketching());
 }
 
 }  // namespace

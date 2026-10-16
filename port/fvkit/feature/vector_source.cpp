@@ -95,8 +95,11 @@ Status FeatureVectorSource::Query(const VectorQuery& q, std::vector<VectorFeatur
   Status s = layer_->Query(q.area, &features);
   if (!s.ok()) return s;
   const FeatureSchema& schema = layer_->Schema();
-  for (const Feature& f : features) FeatureToVector(f, schema, out);
-  features_returned_ = features.size();
+  for (const Feature& f : features) {
+    if (keep_ && !keep_(f)) continue;
+    FeatureToVector(f, schema, out);
+    ++features_returned_;
+  }
   return Status::Ok();
 }
 

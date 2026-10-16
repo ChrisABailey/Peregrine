@@ -19,14 +19,18 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fv_osm_style.h"
 #include "fv_osm_vector_source.h"
+#include "fv_route_legend.h"
 #include "fvkit/app/pick.h"
 #include "fvkit/app/search.h"
 #include "fvkit/canvas/cpu_canvas.h"
@@ -62,6 +66,7 @@
 #include "fvkit/nav/trip.h"
 #include "fvkit/proj.h"
 #include "fvkit/settings.h"
+#include "fvkit/style/legend.h"
 #include "fvkit/symbol/builtin.h"
 #include "fvkit/vector/renderer.h"
 
@@ -383,6 +388,82 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
 @end
 
+@implementation PPLegendEntry {
+  CGImageRef _swatch;
+}
+
+/// Retains `swatch`.
+- (instancetype)initWithIdentifier:(NSString*)identifier
+                             label:(NSString*)label
+                            detail:(NSString*)detail
+                    routerSentence:(NSString*)routerSentence
+                         termsLine:(NSString*)termsLine
+                          tierWord:(NSString*)tierWord
+                          tierRank:(NSInteger)tierRank
+                            factor:(double)factor
+                           minZoom:(double)minZoom
+                             shown:(BOOL)shown
+                             onMap:(BOOL)onMap
+                            swatch:(CGImageRef)swatch
+              swatchPixelsPerPoint:(double)swatchPixelsPerPoint {
+  self = [super init];
+  if (self == nil) return nil;
+  _identifier = [identifier copy];
+  _label = [label copy];
+  _detail = [detail copy];
+  _routerSentence = [routerSentence copy];
+  _termsLine = [termsLine copy];
+  _tierWord = [tierWord copy];
+  _tierRank = tierRank;
+  _factor = factor;
+  _minZoom = minZoom;
+  _shown = shown;
+  _onMap = onMap;
+  _swatch = swatch != nullptr ? CGImageRetain(swatch) : nullptr;
+  _swatchPixelsPerPoint = swatchPixelsPerPoint > 0.0 ? swatchPixelsPerPoint : 1.0;
+  return self;
+}
+
+- (void)dealloc {
+  if (_swatch != nullptr) CGImageRelease(_swatch);
+}
+
+- (CGImageRef)swatch { return _swatch; }
+
+@end
+
+@implementation PPLegendGroup
+
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                      entries:(NSArray<PPLegendEntry*>*)entries {
+  self = [super init];
+  if (self == nil) return nil;
+  _title = [title copy];
+  _subtitle = [subtitle copy];
+  _entries = [entries copy];
+  return self;
+}
+
+@end
+
+namespace {
+
+/// A swatch already drawn, and whether any layer drew it.
+struct LegendSwatch {
+  CGImageRef image = nullptr;
+  /// Style layers that drew the swatch; empty when the row is not drawn.
+  std::vector<std::string> layers;
+  /// Hash of the swatch's pixels, to spot a row drawn exactly like another.
+  size_t pixelHash = 0;
+};
+
+NSString* NSStr(const std::string& s) {
+  return [NSString stringWithUTF8String:s.c_str()] ?: @"";
+}
+
+}  // namespace
+
 @implementation PPMap {
   std::string _packRoot;
   fv::Settings _settings;
@@ -546,6 +627,25 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   CGImageRef _baseImage;
   PPViewport* _baseViewport;
   pippin::BaseCoverageLimits _baseLimits;
+
+  // The legend's own engine, loaded from the map's current sheet. Separate so
+  // legend renders leave the map's diagnostics and retained scene alone, and
+  // reloaded when the sheet, the latitude band or the pixel pitch changes,
+  // since layer minzooms become scale bands at load.
+  std::unique_ptr<fv::OsmStyleEngine> _legendStyle;
+  BOOL _legendDark;
+  double _legendRefLat;
+  double _legendMmPerPoint;
+  // Swatches for the loaded legend engine, keyed by (row index, quarter
+  // zoom); cleared with the engine or when the swatch geometry changes.
+  std::map<std::pair<size_t, int>, LegendSwatch> _legendSwatches;
+  std::vector<double> _legendMinZooms;
+  double _legendSwatchKey[4];  // width, height, pixels per point, symbol zoom
+  // Style layers that drew in the last base render that styled features; kept
+  // across frames served from the base cache or the retained scene.
+  std::vector<std::string> _mapLayerIds;
+  BOOL _mapLayerIdsKnown;
+  BOOL _hasLegend;
 }
 
 - (nullable instancetype)initWithDataPackURL:(NSURL*)packURL
@@ -634,6 +734,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _style->SetDrawLabels(_hasLabelFont ? true : false);
 
   _styleName = [NSString stringWithUTF8String:_style->style_name().c_str()];
+  _hasLegend = _style->legend().empty() ? NO : YES;
+  if (!_style->legend_error().empty())
+    NSLog(@"PPMap: legend not loaded: %s", _style->legend_error().c_str());
 
   _homeBounds.southWest = PPGeoPointMake(32.55, -80.17);
   _homeBounds.northEast = PPGeoPointMake(32.67, -79.97);
@@ -907,6 +1010,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 }
 
 - (void)dealloc {
+  [self dropLegendSwatches];
   // The cached images are CF references held outside ARC's reach.
   if (_baseImage != nullptr) CGImageRelease(_baseImage);
   if (_overlayImage != nullptr) CGImageRelease(_overlayImage);
@@ -980,6 +1084,157 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   }
   ++_contentEpoch;
   [self invalidateBaseLayer];
+}
+
+- (BOOL)hasLegend {
+  return _hasLegend;
+}
+
+- (NSString*)legendRulesName {
+  return _routeStore ? NSStr(_routeStore->rules()->name()) : @"";
+}
+
+- (void)dropLegendSwatches {
+  for (auto& kv : _legendSwatches)
+    if (kv.second.image != nullptr) CGImageRelease(kv.second.image);
+  _legendSwatches.clear();
+}
+
+/// Loads the legend engine for `viewport` when it is missing or stale.
+/// Returns NO when the sheet does not load.
+- (BOOL)prepareLegendStyleForViewport:(PPViewport*)viewport {
+  const double mmPerPoint = viewport.mmPerPoint;
+  const double lat =
+      std::round(viewport.center.latitude / kRefLatStep) * kRefLatStep;
+  if (_legendStyle && _legendDark == _darkStyle && _legendRefLat == lat &&
+      _legendMmPerPoint == mmPerPoint)
+    return YES;
+  auto engine = std::make_unique<fv::OsmStyleEngine>();
+  engine->SetDisplayMmPerPixel(mmPerPoint);
+  engine->SetReferenceLatitude(lat);
+  engine->SetDrawLabels(false);
+  std::string styleError;
+  const std::string& path = _darkStyle ? _darkStylePath : _lightStylePath;
+  if (!engine->LoadFile(path, &styleError).ok()) {
+    NSLog(@"PPMap: legend style %s did not load: %s", path.c_str(), styleError.c_str());
+    return NO;
+  }
+  [self dropLegendSwatches];
+  _legendStyle = std::move(engine);
+  _legendDark = _darkStyle;
+  _legendRefLat = lat;
+  _legendMmPerPoint = mmPerPoint;
+  _legendMinZooms.clear();
+  for (const fv::MapLibreLegendGroup& g : _legendStyle->legend())
+    for (const fv::MapLibreLegendEntry& e : g.entries)
+      _legendMinZooms.push_back(fv::LegendEntryMinZoom(*_legendStyle, e));
+  return YES;
+}
+
+- (NSArray<PPLegendGroup*>*)legendForViewport:(PPViewport*)viewport
+                                   swatchSize:(CGSize)swatchSize
+                                      appName:(NSString*)appName {
+  if (!_hasLegend || ![self prepareLegendStyleForViewport:viewport]) return @[];
+  fv::OsmStyleEngine& engine = *_legendStyle;
+
+  // The map's lines are scaled by the symbol zoom; the swatch is drawn at the
+  // same device dpi on a canvas shrunk by it, so it stays `swatchSize` points.
+  const double ppp = viewport.displayScale > 0 ? viewport.displayScale : 1.0;
+  const double renderPpp = ppp * _symbolZoom;
+  const int widthPt = std::max(1, static_cast<int>(std::lround(swatchSize.width / _symbolZoom)));
+  const int heightPt = std::max(1, static_cast<int>(std::lround(swatchSize.height / _symbolZoom)));
+  const double key[4] = {swatchSize.width, swatchSize.height, ppp, _symbolZoom};
+  if (!std::equal(key, key + 4, _legendSwatchKey)) {
+    [self dropLegendSwatches];
+    std::copy(key, key + 4, _legendSwatchKey);
+  }
+
+  // Quarter zoom: the scale is moved to the quantised zoom so a cached swatch
+  // is exactly what that zoom draws.
+  const double scale = viewport.scaleDenominator;
+  const double zoom = engine.ZoomForScale(scale);
+  const int quarter = static_cast<int>(std::lround(zoom * 4.0));
+  const double drawScale = scale * std::exp2(zoom - quarter / 4.0);
+
+  std::shared_ptr<const fv::routing::RouteRules> rules =
+      _routeStore ? _routeStore->rules() : fv::routing::RouteRules::Builtin();
+  const fv::routing::RouteProfile* profile = rules->Find(_routeDefaultProfile.UTF8String);
+  if (profile == nullptr) profile = rules->default_profile();
+  const std::string app = appName.UTF8String ?: "";
+
+  // Keeps about eight quarter zooms of swatches; a pinch through the whole
+  // range would otherwise hold every zoom's images.
+  if (_legendSwatches.size() > 8 * std::max<size_t>(_legendMinZooms.size(), 1))
+    [self dropLegendSwatches];
+
+  NSMutableArray<PPLegendGroup*>* groups = [NSMutableArray array];
+  size_t row = 0;
+  // A row whose specimen draws only the layers under it (a bike lane below
+  // the lane's minzoom) looks exactly like an earlier row and is not listed
+  // as on the map a second time.
+  std::set<size_t> onMapSwatches;
+  for (const fv::MapLibreLegendGroup& g : engine.legend()) {
+    NSMutableArray<PPLegendEntry*>* entries = [NSMutableArray array];
+    for (const fv::MapLibreLegendEntry& e : g.entries) {
+      const size_t index = row++;
+      LegendSwatch& sw = _legendSwatches[{index, quarter}];
+      if (sw.image == nullptr) {
+        fv::CpuCanvas canvas(static_cast<int>(std::lround(widthPt * renderPpp)),
+                             static_cast<int>(std::lround(heightPt * renderPpp)));
+        sw.layers = fv::RenderLegendSwatch(engine, e, drawScale, renderPpp, widthPt,
+                                           heightPt, &canvas);
+        const fv::PixelBuffer& px = canvas.Buffer();
+        sw.pixelHash = std::hash<std::string_view>{}(std::string_view(
+            reinterpret_cast<const char*>(px.Data()),
+            static_cast<size_t>(px.StrideBytes()) * px.Height()));
+        sw.image = PPCreateCGImageFromPixelBuffer(canvas.Buffer());
+      }
+
+      NSString* sentence = @"";
+      NSString* terms = @"";
+      NSString* tier = @"";
+      NSInteger rank = -1;
+      double factor = NAN;
+      if (!e.osm.empty() && profile != nullptr) {
+        std::vector<fv::routing::OsmTag> tags;
+        for (const auto& kv : e.osm) tags.push_back({kv.first, kv.second});
+        const fv::routing::LegendCost cost = fv::routing::CostOfTags(*profile, tags);
+        sentence = NSStr(fv::routing::LegendSentence(*profile, cost, app));
+        terms = NSStr(fv::routing::LegendTermsLine(cost));
+        tier = NSStr(fv::routing::LegendTierWord(*profile, cost));
+        if (!cost.excluded) {
+          factor = cost.factor;
+          rank = 0;
+          while (rank + 1 < static_cast<NSInteger>(profile->legend_tiers.size()) &&
+                 factor > profile->legend_tiers[rank].first)
+            ++rank;
+        }
+      }
+      BOOL onMap = (_mapLayerIdsKnown ? fv::LegendEntryOnMap(sw.layers, _mapLayerIds)
+                                      : !sw.layers.empty())
+                       ? YES
+                       : NO;
+      if (onMap && !onMapSwatches.insert(sw.pixelHash).second) onMap = NO;
+      const double minZoom = index < _legendMinZooms.size() ? _legendMinZooms[index] : -1.0;
+      [entries addObject:[[PPLegendEntry alloc] initWithIdentifier:NSStr(e.id)
+                                                             label:NSStr(e.label)
+                                                            detail:NSStr(e.detail)
+                                                    routerSentence:sentence
+                                                         termsLine:terms
+                                                          tierWord:tier
+                                                          tierRank:rank
+                                                            factor:factor
+                                                           minZoom:minZoom
+                                                             shown:sw.layers.empty() ? NO : YES
+                                                             onMap:onMap
+                                                            swatch:sw.image
+                                              swatchPixelsPerPoint:ppp]];
+    }
+    [groups addObject:[[PPLegendGroup alloc] initWithTitle:NSStr(g.title)
+                                                  subtitle:NSStr(g.subtitle)
+                                                   entries:entries]];
+  }
+  return groups;
 }
 
 /// Sets the source's and style's pitch and the style's reference latitude
@@ -1149,10 +1404,17 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     bg.a = 255;  // the base layer handed to the compositor is opaque
     _baseCanvas->Clear(bg);
 
+    // The legend's "on this map" set. A reused scene styles nothing, so the
+    // previous set still describes it.
+    _style->ResetDiagnostics();
     const fv::Status rs = _renderer->Render(bandProj, _baseCanvas.get());
     if (!rs.ok()) {
       if (error) *error = ErrorFromStatus(PPErrorRenderFailed, rs, @"render");
       return nil;
+    }
+    if (!_renderer->scene_reused()) {
+      _mapLayerIds = _style->layer_ids_that_drew();
+      _mapLayerIdsKnown = YES;
     }
 
     CGImageRef base = PPCreateCGImageFromPixelBuffer(_baseCanvas->Buffer());

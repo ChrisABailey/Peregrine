@@ -3070,6 +3070,399 @@ profile.
 `stage_data.py --region atlanta`, Atlanta build on Chris's phone, a ride on a route that uses a
 painted lane and passes a gate.
 
+### LG — the map legend (planned 2026-10-14)
+
+Chris, 2026-10-14: Atlanta Streets is hard to read without a key. Road edges are coloured by
+riding comfort, and three kinds of green line are drawn over them. A solid centre line is a
+signed route, with the shade giving the network (Defoors Ferry Rd NW). A dashed line is a
+painted lane (Collier Rd NW). A pale line is a local route on a path that admits no bikes. The
+legend should show each style as it is drawn, with a very short label. Tapping a row should
+explain what OSM data it encodes and how the router weights it, in words a rider uses:
+**Most preferred, Preferred, Acceptable, Avoided, Last resort, Never**.
+
+A mockup was built in the 2026-10-14 session; the layout below is the one Chris preferred.
+
+**The card is grouped by how a line is drawn, not by router tier.** One road can carry three
+encodings at once (amber edge, dashed lane, solid route), so the tier is a tag on each row, not
+the organising axis:
+
+| Group | Rows (Atlanta Streets) |
+|---|---|
+| Road colour — the edge of the road | Quiet street, Moderate road, Busy road, Arterial, Bikes designated, No bicycles |
+| On-road markings — a line along the road | Painted bike lane (dashed), Shared-lane marking (dotted, z15+), Protected track (solid teal) |
+| Signed bike routes — a solid line down the middle | National (#0b6b3a), Regional (#2e9e57), Local (#8fcfa6) |
+| Trails and paths | Paved trail, Unpaved trail, Walking path, Steps |
+
+Each row shows: a swatch drawn by the style engine at the map's current scale, a label of two to
+four words, and a tier tag. Expanded, it shows one or two sentences on the OSM tags behind the
+row and the router's factor in plain words. Rows the map does not draw at the current zoom are
+dimmed and say "From zoom 15".
+
+**Three rules shape the design:**
+
+1. **The swatch is rendered, never painted by hand.** A legend that copies colours and widths
+   drifts the first time the style is edited, and the dark style would need a second copy. Each
+   row is a *specimen*: a synthetic feature with the tags the row stands for. It is pushed
+   through `MapLibreStyleEngine::Style()` at the viewport's own `scaleDenominator` and drawn by
+   the same renderer as the map. The specimen therefore runs through the real filters as well as
+   the paint, so a filter edit that stops matching it shows as an empty swatch and fails a test.
+   The mockup showed why this matters: at z16 a quiet street's coloured edge is 0.85 pt per side
+   (casing 5.5, fill 3.8). Hand-drawn swatches got that ratio badly wrong.
+2. **Draw the swatch at 1:1 with the map.** An authored pixel is a point (P12), and the widest
+   line at z19 is the interstate casing at 30 pt, which fits a 36 pt row. So the swatch is
+   exactly what the rider sees on the map, with no magnification factor to explain. Revisit only
+   if riding shows that low-zoom rows are too thin to read.
+3. **The tier comes from the active rules file, not the style.** The style colours by tile
+   attributes. The router multiplies class × bike provision × posted speed × signed route ×
+   surface, and walked classes also pay `profile kph / class_kph`. Kiawah Rules and City Rules
+   rank the same colour differently, and the legend must say what *this* pack's router does.
+
+| # | Step | Size | Needs | Proved on |
+|---|---|---|---|---|
+| LG1 | Legend entries in the style metadata, and the specimen renderer | M | — | mac — **BUILT 2026-10-14** |
+| LG2 | The tier: a specimen's cost under the active rules, in words | M | CR2–CR5 | mac — **BUILT 2026-10-14** |
+| LG3 | PPMap facade and the legend sheet | M | LG1, LG2 | sim — **BUILT 2026-10-14** |
+| LG4 | Only what is on screen | S–M | LG3 | mac + sim — **BUILT 2026-10-15** |
+| LG5 | Tap a road: why this colour | M | LG2, LG3 | sim + phone |
+| LG6 | The route's breakdown by tier | S–M | LG2 | mac + sim |
+
+LG1–LG3 make a complete feature. LG4–LG6 are optional and independent of each other.
+
+#### LG1 — legend entries in the style, and the specimen renderer (M, mac)
+
+**Data.** A `peregrine:legend` object in the style's `metadata`, next to the existing
+`peregrine:note` and `peregrine:bike-tiers`. GL leaves `metadata` to the author, so the file
+stays valid MapLibre JSON:
+
+```json
+"peregrine:legend": {
+  "groups": [
+    {"title": "On-road markings", "subtitle": "A line along the road",
+     "entries": [
+       {"id": "bike-lane",
+        "label": "Painted bike lane",
+        "detail": "Dashed green. OSM cycleway=lane or share_busway, on either side.",
+        "specimen": [
+          {"layer": "transportation",
+           "tags": {"class": "tertiary", "cycleway": "lane"}}],
+        "osm": {"highway": "tertiary", "cycleway:right": "lane"}}
+     ]}
+  ]
+}
+```
+
+- `specimen` is one or more line features in **tile vocabulary**: `layer` is the source layer,
+  and `tags` are the attributes the tilemaker profile writes. A signed-route row needs two: the
+  road in `transportation` and the route in `bike_route`.
+- `osm` is the same thing in **raw OSM tags**, which LG2 feeds to the graph builder's way reader.
+  Tile `class=minor` merges residential and unclassified, so the tiles cannot stand in for the
+  router. `bike_tags_check.py` (CR6) gains a pass that runs each entry's `osm` tags through the
+  lua and checks that the output equals `tags`. That check is how the two vocabularies are kept
+  in agreement.
+- `detail` holds only what the style knows (the line and the OSM tags). The router sentence is
+  generated by LG2 and appended, so it cannot go stale when weights change.
+- Point and area rows (POIs, crossings, parks) use the same mechanism with a point or polygon
+  specimen. They come after the line rows, which are what Chris asked about.
+
+**Loading.** `MapLibreStyleEngine` parses the legend in `LoadText` into a
+`std::vector<MapLibreLegendGroup>`, exposed as `legend()`, beside `layers()`.
+**Recommendation (decision for Chris, see Open item 9):** a malformed legend does *not* fail the
+style load. That departs from the engine's all-or-nothing rule. A typo in a key should not cost
+the rider the map, and the legend is not part of what is drawn. Instead the legend comes back
+empty, with the error in `legend_error()`, and the tests below catch it before it ships.
+
+**Rendering.** A free function in `fvkit/style/legend.{h,cpp}`:
+
+```cpp
+/// Draws one legend entry's specimens through `engine` at `scale_denominator`, onto a
+/// `width_pt` × `height_pt` canvas cleared to the style's background.
+/// Returns the layer ids that drew; empty means the row is not shown at this scale.
+std::vector<std::string> RenderLegendSwatch(MapLibreStyleEngine& engine,
+                                            const MapLibreLegendEntry& entry,
+                                            double scale_denominator, double pixels_per_point,
+                                            int width_pt, int height_pt, ICanvas* canvas);
+```
+
+- Build each specimen as a `VectorFeature` (`type` line, `layer` = source layer, `attributes`
+  from `tags`) whose single part is a horizontal segment across the swatch. Place it in
+  geographic coordinates at the engine's reference latitude, sized from `scale_denominator`.
+- Build a one-off `VectorScene` from the specimens and render it with the map's own
+  `VectorRenderer::Render`.
+  The scene sorts by `StyleResult::priority`, so casing → fill → lane → route order comes from
+  the style, as on the map. Do not reimplement stroking.
+- Clear the canvas to `engine.background(scale)`, so the dark style's swatches sit on the dark
+  ground with no extra code.
+- **Minimum zoom for a dimmed row:** the smallest `minzoom` among the layers that draw the
+  specimen at z22, read from `layers()`.
+- The engine's diagnostics (`layers_that_drew`, `empty_labels`) must not count legend renders.
+  Snapshot them and restore after, or render with a separate engine loaded from the same file.
+  **Recommendation: a separate engine.** It also keeps the legend off the render queue's epoch,
+  so opening the legend never invalidates the retained scene.
+
+**Dark style.** `make_atlanta_dark_style.py` currently replaces `metadata` wholesale with its
+`METADATA` constant (line 157). Change it to copy `peregrine:legend` across from the light style
+unchanged, since the legend is all labels and tags with no colours.
+
+**Tests (gtest, mac):**
+- Parse: a good legend round-trips; each kind of malformed legend leaves the style loaded and
+  sets `legend_error()`.
+- **Every shipped style with a legend** (Atlanta Streets light and dark) loads with no
+  `legend_error()`, and every specimen draws at least one layer at z16.
+- **Coverage:** every `line` layer on `transportation` and `bike_route` is drawn by at least one
+  entry's specimen at some zoom. A deliberate exception is listed in
+  `peregrine:legend.unlisted_layers` (`road-driveway*`, `rail*`, `tunnel-wash`, `oneway-arrow`),
+  so a newly added layer cannot slip in without a row.
+- Golden PNGs of the Atlanta legend at z12, z14, z16 and z19, light and dark, using the existing
+  golden harness.
+
+**As built (2026-10-14).** `MapLibreStyleEngine::legend()`, `legend_error()` and
+`legend_unlisted_layers()`; `fvkit/style/legend.h` has `RenderLegendSwatch`,
+`LegendEntryLayers` and `LegendEntryMinZoom`. The swatch renders through a one-off source and
+the map's own `VectorRenderer`. Open item 9 was taken as recommended: a bad legend leaves the
+map loaded. The parser also rejects unknown keys, duplicate ids, a specimen on a source layer no
+style layer reads, and an `unlisted_layers` name that matches no layer. A specimen may set
+`"geometry": "point"` or `"area"`; Atlanta has only line rows. It has 21 entries, more than the
+table above lists: Service road, Interstate, Bridge, Sidewalk and Dirt track are there because
+the coverage test asks for a row for each of their lines. Minor-road specimens carry
+`subclass=residential`, because the profile writes it and the style reads `subclass`.
+`bike_tags_check.py --legend` runs the real Lua through `legend_way_harness.lua` and passes on
+both Atlanta files. `make_atlanta_dark_style.py` also gained the `bike-route` colours that CR6
+had added to the dark file by hand, so regenerating changes only the metadata.
+
+Found while building it, not fixed here:
+- **Layer minzooms become scale bands at load,** using the latitude and pitch set before
+  `LoadFile`. PPMap's first load runs at the defaults (equator, 0.25 mm), and
+  `prepareStyleForViewport` sets the phone's values afterwards. So in Atlanta the light map shows
+  each layer about 0.4 zoom after its `minzoom` until the first dark toggle, which reloads with
+  the phone's values. The legend tests set both before loading. The fix (recompute the bands in
+  the two setters) moves the OSM goldens and what the rider sees, so it is a session of its own.
+- **Every bike-route way also writes a `boundary` feature** (`admin_level` 11):
+  `way_function`'s boundary loop counts any relation, and `route=bicycle` relations are now
+  accepted. Nothing draws it; it only adds bytes to the tiles.
+
+#### LG2 — the tier: a specimen's cost under the active rules (M, mac)
+
+In `Routing/`:
+
+```cpp
+/// The routing cost of riding one metre of the way described by `osm_tags` under `profile`,
+/// relative to riding one metre at the profile's own speed. `excluded` is set when the way
+/// is not routable.
+struct LegendCost { double factor; bool excluded; std::vector<CostTerm> terms; };
+LegendCost CostOfTags(const RouteProfile& profile, const OsmTags& osm_tags);
+```
+
+- Run `osm_tags` through **the same way reader the graph builder uses** (class, bike provision,
+  posted speed, surface, access), then through the router's arc cost. Do not re-derive the
+  multipliers, because then the legend and the router could disagree, which is what CR set out
+  to prevent. Today both halves are internal: the tag readers are file-static helpers in
+  `fv_road_graph.cpp` (`RoadClassFromHighwayTag` is the only public one), and the cost lives in
+  `fv_router.cpp`. LG2 promotes them to two public functions, `ReadWayTags(tags) → arc
+  attributes` and `ArcCostFactor(profile, attributes)`. The builder and the router are then
+  switched to call them, so each has a single definition.
+- `terms` lists each factor that applied, e.g. `secondary 2.5`, `painted lane ×0.6`,
+  `walked at 5 km/h ×2.8`, `private ×25`. LG5 and the expanded row display them.
+- Signed-route membership is a relation, not a tag. Represent it as the pseudo-tag
+  `peregrine:route_network` in the entry's `osm` object. The reader takes it as the arc's
+  `BikeRoute` value.
+- Signal and crossing costs are per node, not per metre. They go in the row text ("crossing one
+  without a signal adds 45 s") rather than the factor.
+
+**Tier words** go in the rules file, so Kiawah Rules and City Rules can draw the lines
+differently:
+
+```json
+"legend_tiers": [[0.75, "Most preferred"], [1.0, "Preferred"], [2.0, "Acceptable"],
+                 [5.0, "Avoided"], [null, "Last resort"]],
+"legend_baseline": {"highway": "residential"}
+```
+
+`excluded` is always "Never". Add `legend_tiers` and `legend_baseline` to the parser's list of
+known keys in `fv_route_rules.cpp`, which today rejects any key it doesn't know.
+
+**The sentence a rider reads** compares the row with the baseline (a quiet residential street),
+because "×2.5" means nothing on a bike:
+- cheaper than the baseline: "Pippin will ride up to 33% further to use this."
+- dearer: "Pippin will ride up to 3 times as far to avoid this."
+- excluded: "Pippin never routes a bike here."
+
+**Tests:** a table test against City Rules that pins the numbers worked out on 2026-10-14:
+
+| Entry | Expected |
+|---|---|
+| Cycleway | 0.6, Most preferred |
+| Tertiary + track | 0.675, Most preferred |
+| Residential | 0.8, Preferred |
+| Tertiary + lane | 0.9, Preferred |
+| Unclassified | 1.2, Acceptable |
+| Service | 1.5, Acceptable |
+| Secondary + lane | 1.5, Acceptable |
+| Secondary | 2.5, Avoided |
+| Primary | 4.0, Avoided |
+| Footway | 1.2 × 14/5 = 3.36, Avoided |
+| Trunk | 8.0, Last resort |
+| Residential + access=private | 20, Last resort |
+| Motorway, steps, bicycle=no | Never |
+
+A second table pins the same entries under Kiawah Rules, to show that the tags are shared and
+the rules decide the words.
+
+**As built (2026-10-14).** `port/Routing/fv_route_legend.{h,cpp}`: `CostOfTags(profile, tags)`
+→ `LegendCost {factor, excluded, terms, crossing_seconds}`, `LegendTierWord`, `LegendSentence(profile,
+cost, app_name)` and `LegendTermsLine` ("secondary 2.5 × painted lane 0.6 = 1.5"). The builder's
+way reader is now the file-static `ReadWay` behind a public `ReadWayTags(way, options, &arc)`; the
+builder and the legend both go through it, and `ForwardArcOf` is the one place a kept way becomes
+an arc. The cost side needed no promotion: `ArcCost` and `ArcUsable` were already public, so the
+factor is `ArcCost` on a 1 km synthetic arc over the profile's own-speed time. `terms` is a named
+account of the same multipliers; the tests check their product equals the factor, so a new
+multiplier in `ArcCost` without a term fails. `SelectProfile` was split so `ApplyProfile(profile,
+options)` can be called without a rule set. Departures from the plan:
+- `legend_tiers` and `legend_baseline` are **profile** keys (inherited through `extends`), not
+  file-level, so foot can have its own words later. Both default to the plan's values; both
+  shipped rule files write them out in `bicycle`.
+- Sentences: below 2× the comparison is a percentage ("13% further to avoid this"); "1.1 times as
+  far" read badly. Equal to the baseline: "weighs this the same as a residential street". A
+  road busier than minor appends "Crossing it without a signal adds 45 s." The app name is a
+  parameter, since Peregrine shares the router.
+- The speed term reads "at 5 km/h", not "walked at": the clock comes from `class_kph`, and the
+  core does not know whether the rider walks.
+Tests `RouteLegend.*`: both tables above (all numbers as planned), the term lines and sentences,
+parser rejections, and every Atlanta Streets legend row's `osm` tags under City Rules with its
+tier pinned (21 rows; a new row fails until it is given one).
+
+#### LG3 — the PPMap facade and the legend sheet (M, sim)
+
+**PippinKit.** `PPLegendEntry` (group title, label, detail, router sentence, tier word, factor,
+`minZoom`, `shown`, swatch `CGImage`) and on `PPMap`:
+
+```objc
+/// The style's legend drawn at `scaleDenominator`, on the render queue. Empty when the
+/// active style has no legend.
+- (NSArray<PPLegendGroup *> *)legendAtScaleDenominator:(double)scaleDenominator
+                                         pixelsPerPoint:(double)scale;
+@property(nonatomic, readonly) BOOL hasLegend;
+```
+
+- The legend engine (LG1) is loaded beside the map's engine when the style loads, and again when
+  `darkStyle` flips. It follows the same reload path as DM, so dark swatches come for free.
+- The tier comes from the profile the route sheet would use by default (`bicycle`).
+  **Recommendation:** the legend speaks for cycling. A foot legend would need its own words and
+  is not asked for.
+- Swatches are cached by (entry, rounded zoom to 0.25, dark). There are about 20 entries, so the
+  cache is tiny.
+
+**Swift.** `LegendSheet.swift`, opened from a new **Map Key** item in `MapMenu` (beside Tides):
+- `.presentationDetents([.medium, .large])` with background interaction enabled at `.medium`,
+  so the map stays visible and pinchable above the sheet. The swatches re-render on each settled
+  zoom change (debounced, the same signal the render gate uses), which is the zoom-aware
+  behaviour Chris asked for.
+- One `Section` per group. Each row is a `DisclosureGroup`: swatch (`Image(decorative:)` at
+  1:1), label, tier capsule, then the detail and router sentence when expanded.
+- Tier capsule colours: the system semantic colours (green, blue, grey, orange, red) rather
+  than the map's colours, so the tag never looks like a line on the map.
+- Dimmed rows sit at the end of their group with "From zoom 15".
+- A header line names the style and the rules ("Atlanta Streets · City Rules"), so a rider can
+  see why Kiawah and Atlanta read differently.
+- VoiceOver: each row reads label, tier, then detail. Swatches are decorative.
+- No legend in the style → no menu item.
+
+**Proved:** sim screenshots of the sheet at z12, z14 and z16, light and dark. Pinch the map with
+the sheet at `.medium` and watch the swatches change. Compare a swatch against a crop of the map
+at the same zoom.
+
+**As built (2026-10-14).** PippinKit: `PPLegendEntry` (identifier, label, detail, routerSentence,
+termsLine, tierWord, tierRank, factor, minZoom, shown, swatch, swatchPixelsPerPoint) and
+`PPLegendGroup` live in `PPMap.h` beside `PPOwnship` (no new files, so no pbxproj churn for them).
+`PPMap.hasLegend` (a launch constant), `legendRulesName`, `legendForViewport:swatchSize:appName:`.
+Departure from the plan: it takes the whole viewport, not a bare scale, because the legend engine
+needs the latitude band and pixel pitch before `LoadFile` (minzooms become scale bands at load).
+The legend engine is therefore a separate `OsmStyleEngine`, reloaded when dark/light, the 0.5°
+latitude step or mm-per-point changes; the legend does not have the LG1-noted 0.4-zoom late-band
+defect on first load.
+- Swatches are drawn at the quantised quarter zoom (the scale is moved to it, so a cached swatch is
+  exactly that zoom). Cache key (row, quarter zoom); dropped on engine reload, on swatch size,
+  display scale or symbolZoom change, and when it exceeds 8 quarter-zooms of rows. Symbol zoom is
+  honoured: the same device dpi on a canvas shrunk by it, so the swatch stays its point size and
+  its lines match the map.
+- The tier comes from `routing.profile` (bicycle) in the pack's rule file. Rule files gained an
+  optional top-level `"name"` ("City Rules", "Kiawah Rules"), parsed by `RouteRules::name()`;
+  `RoutePlanner::rules()` and `pippin::RouteStore::rules()` expose the rules in force. The header
+  reads "Atlanta Streets · City Rules". Tests: RouteRules name assertions in
+  `ShippedRuleFileParses`, `CityRuleFileParses`, `RejectsWhatItCannotUnderstand`.
+- Swift: `LegendSheet.swift`; Map Key item in `MapMenu` after Tides (hidden when the style has no
+  legend); sheet at medium/large with background interaction through medium; re-fetched on a 250 ms
+  debounced change of quarter zoom and on colour-scheme change. Rows the map draws come first,
+  dimmed ones after with "From zoom N". Tier capsules: rank 0 green, 1 blue, 2 grey, 3 orange,
+  last resort and Never red. Swatch 56×36 pt.
+- Proved on sim (iPhone 17 Pro, Atlanta pack, dark): the menu shows Map Key and no Tides; the sheet
+  shows the header and the Road colour group with rendered swatches and tiers (Moderate road
+  Acceptable, Busy road Avoided, Arterial Avoided, No bicycles Never). Screenshot
+  `port/apps/Pippin/docs/lg3-map-key-dark.png`. **Not yet proved:** light mode, the z12/z14/z16
+  set, pinch-updates, expanded rows, swatch-vs-map crop. The headless simulator stopped repainting
+  after a tap or two (the app sampled idle; the panel lagged one input behind), so these wait for a
+  run in Simulator.app or on the phone.
+
+#### LG4 — only what is on screen (S–M, mac + sim, optional)
+
+A toggle at the top of the sheet, on by default: **On this map / All**. The engine already
+counts `layers_that_drew()`. Add `layer_ids_that_drew()`, a set reset by `ResetDiagnostics()`
+at each base render, and expose it from PPMap. A row is "on this map" when any layer its
+specimen draws with is in the set. When a frame was served from the base cache
+(`baseWasDrawn == NO`), keep the last set. This keeps a city legend down to the 6–10 rows the
+rider can actually see, which is how Gaia and Strava keep theirs short.
+
+**As built (2026-10-15).** `MapLibreStyleEngine::layer_ids_that_drew()` (style order; cleared by
+`ResetDiagnostics`). `fv::LegendEntryOnMap(entry_layers, map_layers)` in `fvkit/style/legend.h`
+is true when every swatch layer drew, not any as planned (a bike-lane specimen also draws the road
+under it). PPMap calls `_style->ResetDiagnostics()` before each base render and, when
+`!_renderer->scene_reused()`, snapshots `_mapLayerIds`. Frames from the base cache or a reused
+retained scene keep the last set (the plan named only the base cache; the retained scene styles
+nothing either). The set covers the guard band, not just the screen. `PPLegendEntry.onMap`
+(`isOnMap`); before the first render it falls back to `shown`.
+- Departure: a row whose swatch is pixel-identical (hash of the swatch buffer) to an earlier
+  on-map row is not on the map. At z11 the bike-lane/track specimens draw only the tertiary road
+  layer and would duplicate "Moderate road". Consequence: "No bicycles" is dropped at z11 because
+  its swatch equals "Arterial" (same layer, same red); the red is still explained.
+- `LegendSheet.swift`: segmented "On this map / All" picker at the top, default On this map; empty
+  groups dropped; "Nothing in the key is on this part of the map." when none. Reloads on any
+  settled camera move (250 ms debounce), not only a quarter-zoom change, since a pan changes the
+  set; swatches stay cached per quarter zoom.
+- Test `StyleLegend.RowIsOnTheMapWhenOneOfItsLayersDrew`. Full ctest 2756 passed, 0 failed.
+- Proved on sim (iPhone 17 Pro, Atlanta, dark, ~z11): On this map lists Moderate road, Busy road,
+  Arterial, Interstate; All lists every row as before. Screenshot
+  `port/apps/Pippin/docs/lg4-map-key-on-this-map.png`. **Not proved:** pan-driven change at high
+  zoom, light mode.
+
+#### LG5 — tap a road: why this colour (M, sim + phone, optional)
+
+The pick and info sheet gains a "How Pippin rides this" row for the road under the crosshair.
+`describePlaceAt:` already finds the nearest road arc. Pass that arc's attributes through LG2's
+cost function and show `terms`: "Secondary 2.5 × painted lane 0.6 = 1.5 · Acceptable". Add the
+legend row whose `osm` specimen matches the arc, with its swatch. Explaining a road the rider is
+looking at is the most direct answer to "what does this colour mean".
+
+#### LG6 — the route's breakdown by tier (S–M, mac + sim, optional)
+
+Komoot-style: in the route sheet, a single bar of distance by tier ("62% Most preferred, 25%
+Preferred, 8% Avoided") and the count of unsignalled arterial crossings. `PPRouteStore` sums arc
+lengths by LG2 tier. It answers "why did it go this way" without opening the legend.
+
+#### Style issues the legend exposed (not LG steps; for Chris)
+
+- **One green, four meanings.** #2e9e57 is the regional-route centre line, the bikes-designated
+  casing, the painted-lane dash and the shared-lane dot. Only the pattern separates them. A
+  distinct hue for "signed route" (centre line) and another for "on-road provision" (lane, dot)
+  would make the legend's job possible rather than just documented.
+- **A signed route hides a painted lane on the same road.** `bike-route` is drawn after
+  `bike-lane` and covers it. Possible fixes: offset the lane line, or draw the route as a
+  thinner line under the lane dash.
+- **Service roads** are drawn with the quiet-street casing from z15, but City Rules weights them
+  1.5, the same as tertiary (amber).
+- **Private ways** (×25) are not drawn differently from public ones.
+- **Stale text:** the Atlanta Streets `peregrine:bike-tiers` note and the `style-readme.md`
+  paragraph still say the tiles carry no `maxspeed`. CR6 added it, and `road-moderate*` already
+  filters on it.
+
 ### Open for Chris
 
 1. **Which tide station stands for the beach.** The default is 8667062 Kiawah River Bridge —
@@ -3090,6 +3483,12 @@ painted lane and passes a gate.
    plane, points of interest upright (PV4).
 8. ~~Keeping the band at rest~~ (DR2) — **answered by the build, 2026-09-25**: the band is held at
    rest (2.25× the screen), reversing P18's choice; the memory-warning drop is unchanged.
+9. ~~A malformed legend (LG1)~~ — **built as recommended, 2026-10-14:** the style stays loaded
+   with an empty legend and `legend_error()`; tests catch it before it ships. Override if a bad
+   legend should fail the load.
+10. **The style issues LG exposed** — one green with four meanings, a signed route hiding a
+   painted lane, service roads drawn as quiet streets, private ways not drawn. Whether to fix
+   them in Atlanta Streets before LG3, so the legend documents a clearer map.
 
 ## What is deliberately NOT in v1
 Server/gazetteer lookup, other areas of interest (the manifest is data-driven, so a second

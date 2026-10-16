@@ -81,6 +81,8 @@ std::vector<MenuSlot> DefaultToolbarLayout();
 std::vector<MenuSlot> LayerContextLayout();
 /// The right-click menu on a source; it acts on the current overlay's source.
 std::vector<MenuSlot> SourceContextLayout();
+/// The right-click menu on a style rule; it acts on the current rule.
+std::vector<MenuSlot> RuleContextLayout();
 
 class MenuModel {
  public:

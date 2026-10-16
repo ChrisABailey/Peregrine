@@ -2097,6 +2097,20 @@ final class MapModel: ObservableObject {
     // MARK: - Misc
 
     var styleName: String { renderer?.styleName ?? "" }
+
+    /// The style carries a map key. Fixed for the pack.
+    var hasLegend: Bool { renderer?.hasLegend ?? false }
+
+    /// The map key at the current camera's scale, drawn on the render queue
+    /// after any style switch already queued. Empty before the first layout.
+    func legend(swatchSize: CGSize) async -> [PPLegendGroup] {
+        guard let renderer, let vp = viewport, vp.hasSurface else { return [] }
+        return await withCheckedContinuation { continuation in
+            renderQueue.async {
+                continuation.resume(returning: renderer.legend(at: vp, swatchSize: swatchSize))
+            }
+        }
+    }
     var hasLabelFont: Bool { renderer?.hasLabelFont ?? false }
 
     /// `Documents/current.fvrte`. Nil only if Foundation cannot name the
@@ -2187,6 +2201,9 @@ private final class Renderer: @unchecked Sendable {
     let followMinMovePoints: Double
     /// The pack's tide table, or nil. Immutable, so read from any thread.
     let tide: PPTide?
+    /// The style has a legend, and the rule file's name for its header.
+    let hasLegend: Bool
+    let legendRulesName: String
 
     init(map: PPMap) {
         self.map = map
@@ -2216,6 +2233,8 @@ private final class Renderer: @unchecked Sendable {
         followFramesPerSecond = map.followFramesPerSecond
         followMinMovePoints = map.followMinMovePoints
         tide = map.tide
+        hasLegend = map.hasLegend
+        legendRulesName = map.legendRulesName
     }
 
     /// Render queue only. See `PPMap.h` for `band` and `reuseBase`.
@@ -2232,6 +2251,11 @@ private final class Renderer: @unchecked Sendable {
     /// Render queue only. See `PPMap.darkStyle`.
     func setDarkStyle(_ dark: Bool) {
         map.darkStyle = dark
+    }
+
+    /// Render queue only. See `PPMap.legendForViewport:swatchSize:appName:`.
+    func legend(at viewport: PPViewport, swatchSize: CGSize) -> [PPLegendGroup] {
+        map.legend(for: viewport, swatchSize: swatchSize, appName: AppName.display)
     }
 
     /// Render queue only. Drops the cached base map; see `PPMap.symbolZoom`.

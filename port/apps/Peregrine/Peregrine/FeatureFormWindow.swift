@@ -47,6 +47,8 @@ final class FeatureFormWindowController: NSWindowController, NSWindowDelegate, N
     /// Rebuilds the rows from the form model.
     func reload() {
         window?.title = String(host.FeatureFormTitle())
+        // removeRow(at:) leaves the cells' views in the grid; they must be removed separately.
+        grid.subviews.forEach { $0.removeFromSuperview() }
         while grid.numberOfRows > 0 { grid.removeRow(at: 0) }
         errorLabels = [:]
         for i in 0..<host.FormFieldCount() {

@@ -394,6 +394,9 @@ class RouteStore {
   std::vector<std::string> ProfileNames() const;
   std::string rules_error() const { return planner_->rules_error(); }
 
+  // The rules in force, for the map legend's tier words.
+  std::shared_ptr<const fv::routing::RouteRules> rules() const { return planner_->rules(); }
+
   // What the last plan cost, in milliseconds. Planning happens on the queue
   // that draws, so this is how long a frame was not being drawn, and it is the
   // measurement that decides whether a plan needs its own queue (`PPMap.h`).

@@ -188,6 +188,15 @@ OptionsPage* OptionsModel::Page(const app::TypeId& id) {
   return nullptr;
 }
 
+bool OptionsModel::SelectPage(const app::TypeId& id) {
+  for (size_t i = 0; i < pages_.size(); ++i) {
+    if (pages_[i]->id() != id) continue;
+    initial_page_ = static_cast<int>(i);
+    return true;
+  }
+  return false;
+}
+
 bool OptionsModel::dirty() const {
   for (const auto& p : pages_)
     if (p->dirty()) return true;

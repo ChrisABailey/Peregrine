@@ -73,9 +73,19 @@
 // or off the busier road pays half and riding along it pays nothing. Both are
 // seconds of cost (on a distance profile, the metres covered in that time at
 // "speed"); reported times omit them. A graph built before signals were read has none.
+//
+// "legend_tiers" names a map legend row by its cost per metre relative to the
+// profile's own speed: [[bound, "word"], ...] with ascending bounds, the last
+// [null, "word"]. A row takes the word of the first bound it does not exceed;
+// a way the profile may not use is "Never". "legend_baseline" is the raw OSM
+// tags of the street the legend compares each row with ("ride up to 33%
+// further to use this"). Both default to the values written out below.
+//
+// "name" is what a legend's header calls this file.
 
 {
   "version": 1,
+  "name": "Kiawah Rules",
   "default_profile": "car",
 
   "profiles": {
@@ -171,7 +181,11 @@
       // Cart paths are for carts. A golfers' footpath is used only for a real
       // saving, unless the way says bicycle=designated.
       "golf_cartpath_penalty": "exclude",
-      "golf_path_penalty": 10.0
+      "golf_path_penalty": 10.0,
+
+      "legend_tiers": [[0.75, "Most preferred"], [1.0, "Preferred"], [2.0, "Acceptable"],
+                       [5.0, "Avoided"], [null, "Last resort"]],
+      "legend_baseline": { "highway": "residential" }
     },
 
     // -----------------------------------------------------------------------

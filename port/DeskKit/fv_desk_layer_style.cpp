@@ -189,8 +189,16 @@ const FeatureSchema* LayerStyleModel::Schema() const {
 Status LayerStyleModel::SetRenderer(FeatureRenderer renderer) {
   if (feature_ != 0) return Status::Error(kUnsupported, "a feature's own style has no renderer");
   if (renderer == draft_.renderer) return Status::Ok();
+  if (renderer == FeatureRenderer::kRules) {
+    FeatureStyle rules;
+    Status s = FeatureStyleToRules(draft_, &rules, geometry_);
+    if (s.ok()) draft_ = std::move(rules);
+    return s;
+  }
   const FeatureRenderer before = draft_.renderer;
   draft_.renderer = renderer;
+  // A rules style has no symbol entries; leaving it starts the generator afresh.
+  draft_.rules.clear();
   if (renderer == FeatureRenderer::kSingle) {
     draft_.field.clear();
     draft_.categories.clear();
@@ -210,6 +218,15 @@ Status LayerStyleModel::SetRenderer(FeatureRenderer renderer) {
   draft_.categories.clear();
   draft_.classes.clear();
   return Classify();
+}
+
+Status LayerStyleModel::CategoriseIntoRules() {
+  if (feature_ != 0 || draft_.renderer != FeatureRenderer::kCategorised)
+    return Bad("only a categorised layer style splits into rules");
+  FeatureStyle rules;
+  Status s = CategoriesToRules(draft_, &rules, geometry_);
+  if (s.ok()) draft_ = std::move(rules);
+  return s;
 }
 
 std::vector<StyleFieldChoice> LayerStyleModel::CandidateFields() const {
@@ -248,18 +265,22 @@ size_t LayerStyleModel::EntryCount() const {
   switch (draft_.renderer) {
     case FeatureRenderer::kCategorised: return draft_.categories.size() + 1;
     case FeatureRenderer::kGraduated: return draft_.classes.size() + 1;
+    case FeatureRenderer::kRules: return RuleLegend(draft_).size();
     default: return 1;
   }
 }
 
 bool LayerStyleModel::EntryIsOther(size_t i) const {
-  return feature_ == 0 && draft_.renderer != FeatureRenderer::kSingle && i + 1 == EntryCount();
+  return feature_ == 0 &&
+         (draft_.renderer == FeatureRenderer::kCategorised || draft_.renderer == FeatureRenderer::kGraduated) &&
+         i + 1 == EntryCount();
 }
 
 std::string LayerStyleModel::EntryLabel(size_t i) const {
   if (i >= EntryCount()) return "";
   if (feature_ != 0) return "This feature";
   if (draft_.renderer == FeatureRenderer::kSingle) return "All features";
+  if (draft_.renderer == FeatureRenderer::kRules) return RuleLegend(draft_)[i].title;
   if (EntryIsOther(i)) return "Other";
   if (draft_.renderer == FeatureRenderer::kCategorised) {
     const FeatureCategory& c = draft_.categories[i];
@@ -291,6 +312,7 @@ const FeatureSymbol& LayerStyleModel::EntrySymbol(size_t i) const {
 
 FeatureSymbol* LayerStyleModel::MutableEntry(size_t i) {
   if (i >= EntryCount()) return nullptr;
+  if (feature_ == 0 && draft_.renderer == FeatureRenderer::kRules) return nullptr;
   if (feature_ != 0) {
     const FeatureSymbol current = EntrySymbol(0);
     return &draft_.overrides.emplace(feature_, current).first->second;
@@ -312,6 +334,12 @@ Status LayerStyleModel::SetEntrySymbol(size_t i, const FeatureSymbol& symbol) {
 }
 
 Status LayerStyleModel::SetEntryLabel(size_t i, const std::string& label) {
+  if (feature_ == 0 && draft_.renderer == FeatureRenderer::kRules && i < EntryCount()) {
+    const std::string title = Trim(label);
+    const std::vector<RuleLegendEntry> legend = RuleLegend(draft_);
+    for (size_t r : legend[i].rules) draft_.rules[r].legend = title;
+    return Status::Ok();
+  }
   if (feature_ != 0 || i >= EntryCount() || EntryIsOther(i) || draft_.renderer == FeatureRenderer::kSingle)
     return Bad("only a category or class has a label");
   if (draft_.renderer == FeatureRenderer::kCategorised) draft_.categories[i].label = Trim(label);
@@ -320,7 +348,8 @@ Status LayerStyleModel::SetEntryLabel(size_t i, const std::string& label) {
 }
 
 Status LayerStyleModel::SetEntryValue(size_t i, const std::string& text) {
-  if (feature_ != 0 || i >= EntryCount() || EntryIsOther(i) || draft_.renderer == FeatureRenderer::kSingle)
+  if (feature_ != 0 || i >= EntryCount() || EntryIsOther(i) || draft_.renderer == FeatureRenderer::kSingle ||
+      draft_.renderer == FeatureRenderer::kRules)
     return Bad("only a category or class has a value");
   const std::string t = Trim(text);
   if (draft_.renderer == FeatureRenderer::kCategorised) {
@@ -342,7 +371,7 @@ Status LayerStyleModel::SetEntryValue(size_t i, const std::string& text) {
 }
 
 Status LayerStyleModel::AddEntry() {
-  if (feature_ != 0 || draft_.renderer == FeatureRenderer::kSingle)
+  if (feature_ != 0 || draft_.renderer == FeatureRenderer::kSingle || draft_.renderer == FeatureRenderer::kRules)
     return Bad("only a categorised or graduated style has classes");
   if (draft_.renderer == FeatureRenderer::kCategorised) {
     FeatureCategory c;
@@ -372,7 +401,8 @@ Status LayerStyleModel::AddEntry() {
 }
 
 Status LayerStyleModel::RemoveEntry(size_t i) {
-  if (feature_ != 0 || i >= EntryCount() || EntryIsOther(i) || draft_.renderer == FeatureRenderer::kSingle)
+  if (feature_ != 0 || i >= EntryCount() || EntryIsOther(i) || draft_.renderer == FeatureRenderer::kSingle ||
+      draft_.renderer == FeatureRenderer::kRules)
     return Bad("only a category or class can be removed");
   if (draft_.renderer == FeatureRenderer::kCategorised) draft_.categories.erase(draft_.categories.begin() + i);
   else draft_.classes.erase(draft_.classes.begin() + i);
@@ -384,7 +414,17 @@ Status LayerStyleModel::RenderSwatch(size_t i, int width, int height, double sca
   if (width <= 0 || height <= 0 || width > 1024 || height > 1024) return Bad("swatch size out of range");
   CpuCanvas canvas(width, height);
   canvas.Clear({255, 255, 255, 255});
-  Status s = DrawFeatureSwatch(canvas, EntrySymbol(i), geometry_, scale);
+  Status s;
+  if (feature_ == 0 && draft_.renderer == FeatureRenderer::kRules) {
+    const std::vector<RuleLegendEntry> legend = RuleLegend(draft_);
+    if (i >= legend.size()) return Bad("no style entry " + std::to_string(i));
+    std::vector<StyleRule> rules;
+    for (size_t r : legend[i].rules) rules.push_back(draft_.rules[r]);
+    const auto o = overlay_.lock();
+    s = DrawRulesSwatch(canvas, rules, geometry_, scale, o ? o->label_font() : std::string());
+  } else {
+    s = DrawFeatureSwatch(canvas, EntrySymbol(i), geometry_, scale);
+  }
   if (!s.ok()) return s;
   *out = canvas.Buffer();
   return Status::Ok();

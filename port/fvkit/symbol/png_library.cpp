@@ -139,15 +139,27 @@ Status PngSymbolLibrary::OpenSheet(const std::string& png_path,
   std::string text;
   if (!ReadTextFile(index, &text))
     return Status::Error(kNotFound, "cannot read sprite index " + index);
-  json j = json::parse(text, nullptr, false);
-  if (j.is_discarded() || !j.is_object())
-    return Status::Error(kIoError, "bad sprite index " + index);
-
-  // Both failures above happen BEFORE Reset(), so an Open that fails leaves
-  // the library exactly as it was rather than half-replaced.
   PixelBuffer sheet;
   Status s = ReadPngFile(png_path, &sheet);
   if (!s.ok()) return s;
+  return AdoptSheet(std::move(sheet), text, index);
+}
+
+Status PngSymbolLibrary::OpenSheetData(const void* png, size_t png_size,
+                                       const std::string& json_text) {
+  PixelBuffer sheet;
+  Status s = DecodePng(png, png_size, &sheet);
+  if (!s.ok()) return s;
+  return AdoptSheet(std::move(sheet), json_text, "in memory");
+}
+
+Status PngSymbolLibrary::AdoptSheet(PixelBuffer sheet, const std::string& index,
+                                    const std::string& what) {
+  json j = json::parse(index, nullptr, false);
+  if (j.is_discarded() || !j.is_object())
+    return Status::Error(kIoError, "bad sprite index " + what);
+  // Every failure happens before Reset(), so an Open that fails leaves the
+  // library as it was rather than half-replaced.
   Reset();
   sheet_ = std::move(sheet);
 
@@ -169,6 +181,8 @@ Status PngSymbolLibrary::OpenSheet(const std::string& png_path,
       continue;
     e.pixel_ratio = NumberOr(v, "pixelRatio", 1.0);
     if (!(e.pixel_ratio > 0.0)) e.pixel_ratio = 1.0;
+    auto sdf = v.find("sdf");
+    e.sdf = sdf != v.end() && sdf->is_boolean() && sdf->get<bool>();
     // NOTE prefer_high_dpi_ does nothing in the SHEET form and that is not an
     // oversight: a sprite index states one rectangle per id, so there are no
     // two variants to choose between — the ratio is a property of the sprite
@@ -205,6 +219,7 @@ bool PngSymbolLibrary::LoadEntry(const Entry& e, SymbolPixmap* out) const {
     if (!ReadPngFile(e.path, &out->tile).ok()) return false;
   }
   out->pixel_ratio = e.pixel_ratio;
+  out->sdf = e.sdf;
   if (e.has_pivot) {
     out->pivot_x = e.pivot_x;
     out->pivot_y = e.pivot_y;

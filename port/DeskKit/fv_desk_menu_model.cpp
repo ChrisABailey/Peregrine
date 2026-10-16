@@ -76,7 +76,8 @@ std::vector<MenuSpec> DefaultMenuLayout() {
   using S = MenuSlot;
   return {
       {"file", "File",
-       {S::Cmd("file.save"), S::Cmd("file.save_as"), S::Cmd("file.close"), S::Sep(),
+       {S::Sub("New Overlay", {S::Expand("overlay.new.")}), S::Cmd("overlay.open"), S::Sep(),
+        S::Cmd("file.save"), S::Cmd("file.save_as"), S::Cmd("file.close"), S::Sep(),
         S::Cmd("file.open_workspace"), S::Cmd("file.save_workspace"), S::Sep(),
         S::Cmd("file.export_image"), S::Sep(), S::Cmd("app.quit")}},
       {"edit", "Edit", {S::Cmd("edit.undo"), S::Cmd("edit.redo")}},
@@ -87,8 +88,7 @@ std::vector<MenuSpec> DefaultMenuLayout() {
         S::Cmd("map.sources"), S::Cmd("map.generate_coverage"),
         S::Sep(), S::Cmd("map.options")}},
       {"overlay", "Overlay",
-       {S::Expand("overlay.toggle."), S::Sep(), S::Sub("New", {S::Expand("overlay.new.")}), S::Cmd("overlay.new_layer"),
-        S::Cmd("overlay.open"), S::Sub("Edit", {S::Expand("editor.mode.")}), S::Sep(),
+       {S::Expand("overlay.toggle."), S::Sep(), S::Sub("Edit", {S::Expand("editor.mode.")}), S::Sep(),
         S::Expand("overlay.instance."), S::Sep(),
         S::Cmd("overlay.layers"), S::Cmd("overlay.options")}},
   };
@@ -102,15 +102,25 @@ std::vector<MenuSlot> DefaultToolbarLayout() {
 std::vector<MenuSlot> LayerContextLayout() {
   using S = MenuSlot;
   return {S::Cmd("layers.properties"), S::Sep(), S::Cmd("overlay.style"), S::Cmd("overlay.fields"),
-          S::Cmd("overlay.attribute_table"), S::Sep(), S::Cmd("layers.zoom_to"), S::Sep(),
+          S::Cmd("overlay.attribute_table"), S::Cmd("layers.select_by_attributes"), S::Cmd("layers.clear_selection"),
+          S::Sep(), S::Cmd("layers.rule.add"), S::Cmd("layers.import_style"), S::Cmd("layers.export_style"), S::Sep(),
+          S::Cmd("layers.zoom_to"), S::Sep(),
           S::Cmd("layers.close")};
 }
 
 std::vector<MenuSlot> SourceContextLayout() {
   using S = MenuSlot;
   return {S::Cmd("layers.source.properties"), S::Sep(), S::Cmd("layers.source.show_all"),
-          S::Cmd("layers.source.hide_all"), S::Cmd("layers.source.zoom_to"), S::Sep(), S::Cmd("file.save"),
+          S::Cmd("layers.source.hide_all"), S::Cmd("layers.source.zoom_to"), S::Sep(), S::Cmd("layers.source.new_layer"), S::Cmd("file.save"),
           S::Cmd("layers.source.close")};
+}
+
+std::vector<MenuSlot> RuleContextLayout() {
+  using S = MenuSlot;
+  return {S::Cmd("layers.rule.edit_style"), S::Cmd("layers.rule.edit_filter"), S::Sep(),
+          S::Cmd("layers.rule.duplicate"), S::Cmd("layers.rule.rename"), S::Cmd("layers.rule.change_type"),
+          S::Cmd("layers.rule.add_casing"), S::Sep(),
+          S::Cmd("layers.rule.delete")};
 }
 
 MenuModel::MenuModel(const CommandRegistry& commands, std::vector<MenuSpec> layout,

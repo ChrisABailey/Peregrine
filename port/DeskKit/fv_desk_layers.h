@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "fv_desk_style_rules.h"
 #include "fvkit/overlay/manager.h"
 
 namespace fv {
@@ -35,6 +36,7 @@ struct LayerRow {
   bool dirty = false;
   bool top_most = false;  ///< pinned above the rest; cannot be moved below them
   std::string source;     ///< the file it comes from (`SplitSourceSpec`); empty without one
+  std::vector<RuleRow> rules;  ///< a feature layer's style rules, top-drawn first
 };
 
 class LayersModel {
@@ -42,6 +44,10 @@ class LayersModel {
   explicit LayersModel(OverlayManager& stack) : stack_(stack) {}
 
   std::vector<LayerRow> Rows() const;
+  /// The overlays behind `Rows()`, top first, without building the rows.
+  std::vector<std::shared_ptr<Overlay>> Listed() const;
+  /// The overlay at row `row`; kInvalidArg past the end.
+  Status At(size_t row, std::shared_ptr<Overlay>* out) const;
 
   /// kInvalidArg for a row past the end.
   Status SetVisible(size_t row, bool visible);
@@ -54,10 +60,6 @@ class LayersModel {
   Status Select(size_t row);
 
  private:
-  /// The overlays behind `Rows()`, top first.
-  std::vector<std::shared_ptr<Overlay>> Listed() const;
-  Status At(size_t row, std::shared_ptr<Overlay>* out) const;
-
   OverlayManager& stack_;
 };
 

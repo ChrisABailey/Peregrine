@@ -701,5 +701,18 @@ Status BuildRoadGraph(const std::vector<std::string>& inputs,
                       const RoadGraphBuildOptions& options, RoadGraph* out,
                       RoadGraphBuildStats* stats = nullptr);
 
+struct OsmWay;
+
+/// Reads one way's own tags as the builder does and returns, in `forward`, the
+/// arc it makes in the way's direction: class, access and golf bits, speed,
+/// one-way flags, lanes, surface and bike provision. Returns false when the
+/// builder would not keep the way. Refs are not read. Signed routes, signals and
+/// crossings come from relations and nodes, so those fields are left clear.
+bool ReadWayTags(const OsmWay& way, const RoadGraphBuildOptions& options, RoadArc* forward);
+
+/// What crossing a road of class `met` counts as at an unsignalled junction;
+/// links count as nothing.
+RoadCrossing CrossingClassOf(RoadClass met);
+
 }  // namespace routing
 }  // namespace fv

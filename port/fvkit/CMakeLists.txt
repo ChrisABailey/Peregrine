@@ -96,6 +96,7 @@ add_library(fv_fvkit STATIC
   symbol/library_composite.cpp
   symbol/builtin.cpp
   symbol/png_library.cpp
+  symbol/builtin_icons.cpp
   vector/pick.cpp
   vector/feature_rows.cpp
   vector/rules.cpp
@@ -113,9 +114,11 @@ add_library(fv_fvkit STATIC
   feature/templates.cpp
   style/expression.cpp
   style/maplibre_style.cpp
+  style/legend.cpp
   feature/value_text.cpp
   feature/points_layer.cpp
   feature/vector_source.cpp
+  feature/feature_filter.cpp
   overlay/feature_edit.cpp
   overlay/feature_overlay.cpp
 )
@@ -161,6 +164,7 @@ if(FVW_BUILD_TESTS)
     test/feature_style_test.cpp
     test/feature_schema_change_test.cpp
     test/style_expression_test.cpp
+    test/style_legend_test.cpp
     test/geo_contour_test.cpp
     test/terrain_contour_test.cpp
     test/geo_draw_test.cpp

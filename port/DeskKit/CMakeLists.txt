@@ -25,9 +25,13 @@ add_library(fv_deskkit STATIC
   fv_desk_desk.cpp
   fv_desk_layers.cpp
   fv_desk_sources.cpp
+  fv_desk_style_rules.cpp
+  fv_desk_rule_style.cpp
+  fv_desk_rules.cpp
   fv_desk_feature_form.cpp
   fv_desk_layer_fields.cpp
   fv_desk_layer_properties.cpp
+  fv_desk_query.cpp
   fv_desk_layer_style.cpp
   fv_desk_attribute_table.cpp
   fv_desk_fake.cpp
@@ -58,11 +62,14 @@ if(FVW_BUILD_TESTS)
     test/desk_test.cpp
     test/layers_test.cpp
     test/sources_test.cpp
+    test/style_rules_test.cpp
+    test/rule_style_test.cpp
     test/feature_form_test.cpp
     test/feature_editor_test.cpp
     test/layer_style_test.cpp
     test/layer_fields_test.cpp
     test/layer_properties_test.cpp
+    test/query_test.cpp
     test/host_test.cpp
     test/launch_test.cpp
     test/map_groups_test.cpp
@@ -75,7 +82,7 @@ if(FVW_BUILD_TESTS)
     test/vector_map_test.cpp
     test/workspace_test.cpp
   )
-  target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm GTest::gtest_main)
+  target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm fv_json GTest::gtest_main)
   target_compile_definitions(fv_deskkit_test PRIVATE
     FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson"
     FV_MAP_GROUPS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/map-groups.json"

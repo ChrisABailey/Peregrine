@@ -70,6 +70,8 @@ class LayerFieldsModel {
   Status Validate() const;
   /// What applying would lose; kNotFound when the overlay has closed.
   Status Assess(SchemaChangeImpact* out) const;
+  /// What applying would break in the layer's style, one sentence each.
+  std::vector<std::string> StyleBreaks() const;
   /// Changes the overlay's layer to the draft; the draft then restarts from
   /// the new schema. kNotFound when the overlay has closed.
   Status Apply();
@@ -93,6 +95,13 @@ const std::vector<GeometryType>& NewLayerGeometries();
 /// "Point", "Line", "Area", "Multipoint", ..., "Any geometry".
 std::string GeometryTitle(GeometryType type);
 
+/// Where the New Layer dialog puts the layer.
+enum class NewLayerTarget : int {
+  kNewFile = 0,   ///< a new GeoPackage or GeoJSON file at `path`, replacing any file there
+  kPackage = 1,   ///< a new table in the existing GeoPackage at `path`
+  kUnsaved = 2,   ///< an untitled layer, saved through Save As
+};
+
 class NewLayerModel {
  public:
   /// Starts on the first template.
@@ -112,7 +121,13 @@ class NewLayerModel {
   const std::string& name() const { return name_; }
   void SetName(std::string name);
 
-  /// 0 GeoPackage, 1 GeoJSON (`FeatureOverlay::kFormat*`).
+  NewLayerTarget target() const { return target_; }
+  /// An existing GeoPackage target sets the format to GeoPackage and drops a
+  /// path of another type.
+  void SetTarget(NewLayerTarget target);
+
+  /// 0 GeoPackage, 1 GeoJSON (`FeatureOverlay::kFormat*`). kInvalidArg for
+  /// GeoJSON when adding to a GeoPackage.
   int format() const { return format_; }
   Status SetFormat(int format);
   const std::string& path() const { return path_; }
@@ -120,10 +135,13 @@ class NewLayerModel {
   /// any other gets the current format's extension.
   void SetPath(std::string path);
 
-  /// kInvalidArg for an empty name or path.
+  /// kInvalidArg for an empty name, or an empty path for a file target;
+  /// kNotFound for a GeoPackage target that does not exist.
   Status Validate() const;
-  /// Writes the empty layer to `path()` (`CreateFeatureLayerFile`).
-  Status Create() const;
+  /// Writes the empty layer to its file: a new file (`CreateFeatureLayerFile`)
+  /// or a table added to the package (`AddFeatureLayerToPackage`). `spec`
+  /// receives what to open. kInvalidArg for the unsaved target, which has no file.
+  Status Create(std::string* spec) const;
 
  private:
   size_t template_ = 0;
@@ -132,6 +150,7 @@ class NewLayerModel {
   bool name_by_hand_ = false;
   int format_ = 0;
   std::string path_;
+  NewLayerTarget target_ = NewLayerTarget::kNewFile;
 };
 
 }  // namespace desk

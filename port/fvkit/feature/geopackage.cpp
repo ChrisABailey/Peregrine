@@ -620,10 +620,20 @@ Status GeoPackage::Begin() {
   return db_->Exec("BEGIN");
 }
 
-// A failed edit can leave the transaction open with nothing in it; only a
+// A failed change can leave the transaction open with nothing in it; only a
 // successful one marks a table dirty.
 bool GeoPackage::HasUnsavedChanges() const {
-  return db_->IsOpen() && sqlite3_get_autocommit(db_->get()) == 0 && !dirty_tables_.empty();
+  if (db_->IsOpen() && sqlite3_get_autocommit(db_->get()) == 0 && !dirty_tables_.empty()) return true;
+  for (const auto& layer : OpenLayers())
+    if (layer->HasEdits()) return true;
+  return false;
+}
+
+std::vector<std::shared_ptr<GeoPackageFeatureLayer>> GeoPackage::OpenLayers() const {
+  std::vector<std::shared_ptr<GeoPackageFeatureLayer>> out;
+  for (const auto& weak : layers_)
+    if (auto layer = weak.lock()) out.push_back(std::move(layer));
+  return out;
 }
 
 Status GeoPackage::Layers(std::vector<GeoPackageLayerInfo>* out) const {
@@ -659,6 +669,10 @@ Status GeoPackage::OpenLayer(const std::string& table,
   layer->table_ = table;
   Status s = layer->Load();
   if (!s.ok()) return s;
+  layers_.erase(std::remove_if(layers_.begin(), layers_.end(),
+                               [](const std::weak_ptr<GeoPackageFeatureLayer>& w) { return w.expired(); }),
+                layers_.end());
+  layers_.push_back(layer);
   *out = std::move(layer);
   return Status::Ok();
 }
@@ -772,7 +786,10 @@ Status GeoPackage::WriteLayer(const IFeatureLayer& source, const std::string& ta
       r = layer->InsertWithId(f);
       if (!r.ok()) return r;
     }
-    return Status::Ok();
+    // The copy is part of the table-level change, not an edit of the layer.
+    r = layer->WriteEdits();
+    if (r.ok()) layer->ClearEdits(/*saved=*/true);
+    return r;
   });
   if (!s.ok()) return s;
   if (out != nullptr) *out = std::move(layer);
@@ -780,15 +797,36 @@ Status GeoPackage::WriteLayer(const IFeatureLayer& source, const std::string& ta
 }
 
 Status GeoPackage::Save() {
+  std::vector<GeoPackageFeatureLayer*> edited;
+  const auto open = OpenLayers();
+  for (const auto& layer : open)
+    if (layer->HasEdits()) edited.push_back(layer.get());
+  return Commit(edited);
+}
+
+Status GeoPackage::Commit(const std::vector<GeoPackageFeatureLayer*>& layers) {
+  if (!layers.empty()) {
+    Status s = Begin();
+    if (!s.ok()) return s;
+    s = Atomically(*db_, [&]() -> Status {
+      for (GeoPackageFeatureLayer* layer : layers) {
+        Status r = layer->WriteEdits();
+        if (!r.ok()) return r;
+      }
+      return Status::Ok();
+    });
+    if (!s.ok()) return s;
+  }
   if (sqlite3_get_autocommit(db_->get()) != 0) return Status::Ok();
+  Status s = Status::Ok();
   for (const std::string& table : dirty_tables_) {
     std::shared_ptr<GeoPackageFeatureLayer> layer;
     if (!OpenLayer(table, &layer).ok()) continue;
     SqliteStmt st;
-    Status s = st.Prepare(*db_, "UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, "
-                                "max_y = ?, last_change = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
-                                "WHERE table_name = ?");
-    if (!s.ok()) return s;
+    s = st.Prepare(*db_, "UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, "
+                         "max_y = ?, last_change = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                         "WHERE table_name = ?");
+    if (!s.ok()) break;
     GeoRect box;
     if (layer->Extent(&box).ok()) {
       st.BindDouble(1, box.ll.lon);
@@ -798,15 +836,36 @@ Status GeoPackage::Save() {
     }
     st.BindText(5, table);
     st.Step(&s);
-    if (!s.ok()) return s;
+    if (!s.ok()) break;
   }
-  Status s = db_->Exec("COMMIT");
-  if (!s.ok()) return s;
+  if (s.ok()) s = db_->Exec("COMMIT");
+  if (!s.ok()) {
+    // The layers' rows are in the transaction and still in their edits; the
+    // rollback keeps the two from both reaching the file on the next save.
+    if (!layers.empty()) {
+      db_->Exec("ROLLBACK");
+      dirty_tables_.clear();
+    }
+    return s;
+  }
   dirty_tables_.clear();
+  for (GeoPackageFeatureLayer* layer : layers) layer->ClearEdits(/*saved=*/true);
   return Status::Ok();
 }
 
 Status GeoPackage::Revert() {
+  if (sqlite3_get_autocommit(db_->get()) == 0) {
+    Status s = db_->Exec("ROLLBACK");
+    if (!s.ok()) return s;
+    dirty_tables_.clear();
+  }
+  for (const auto& layer : OpenLayers()) layer->ClearEdits(/*saved=*/false);
+  return Status::Ok();
+}
+
+Status GeoPackage::SaveTableChanges() { return Commit({}); }
+
+Status GeoPackage::RevertTableChanges() {
   if (sqlite3_get_autocommit(db_->get()) != 0) return Status::Ok();
   Status s = db_->Exec("ROLLBACK");
   if (!s.ok()) return s;
@@ -1023,37 +1082,63 @@ Status GeoPackageFeatureLayer::Load() {
 }
 
 size_t GeoPackageFeatureLayer::Count() const {
+  if (rebuild_) {
+    size_t n = 0;
+    for (const auto& entry : edits_)
+      if (entry.second.feature) ++n;
+    return n;
+  }
   SqliteStmt st;
   if (!st.Prepare(*package_->db_, ("SELECT COUNT(*) FROM " + Quote(table_)).c_str()).ok()) return 0;
-  return st.Step() ? static_cast<size_t>(st.ColInt64(0)) : 0;
+  int64_t n = st.Step() ? st.ColInt64(0) : 0;
+  for (const auto& entry : edits_) {
+    const Edit& e = entry.second;
+    if (e.feature && !e.stored) ++n;
+    if (!e.feature && e.stored) --n;
+  }
+  return n > 0 ? static_cast<size_t>(n) : 0;
 }
 
 Status GeoPackageFeatureLayer::Extent(GeoRect* out) const {
-  SqliteStmt st;
-  Status s = st.Prepare(*package_->db_, ("SELECT " + Quote(geometry_column_) + " FROM " +
-                                         Quote(table_) + " WHERE " + Quote(geometry_column_) +
-                                         " IS NOT NULL").c_str());
-  if (!s.ok()) return s;
   bool any = false;
   double box[4] = {0, 0, 0, 0};
-  while (st.Step(&s)) {
-    double env[4];
-    bool empty = false;
-    if (!BlobEnvelope(static_cast<const uint8_t*>(st.ColBlob(0)),
-                      static_cast<size_t>(st.ColBytes(0)), env, &empty) ||
-        empty)
-      continue;
+  auto take = [&](const double env[4]) {
     if (!any) {
       std::copy(env, env + 4, box);
       any = true;
-      continue;
+      return;
     }
     box[0] = std::min(box[0], env[0]);
     box[1] = std::max(box[1], env[1]);
     box[2] = std::min(box[2], env[2]);
     box[3] = std::max(box[3], env[3]);
+  };
+  if (!HasEdits()) {
+    SqliteStmt st;
+    Status s = st.Prepare(*package_->db_, ("SELECT " + Quote(geometry_column_) + " FROM " +
+                                           Quote(table_) + " WHERE " + Quote(geometry_column_) +
+                                           " IS NOT NULL").c_str());
+    if (!s.ok()) return s;
+    while (st.Step(&s)) {
+      double env[4];
+      bool empty = false;
+      if (BlobEnvelope(static_cast<const uint8_t*>(st.ColBlob(0)),
+                       static_cast<size_t>(st.ColBytes(0)), env, &empty) &&
+          !empty)
+        take(env);
+    }
+    if (!s.ok()) return s;
+  } else {
+    std::vector<Feature> all;
+    Status s = All(&all);
+    if (!s.ok()) return s;
+    for (const Feature& f : all) {
+      GeoRect b;
+      if (!f.geometry.Envelope(&b)) continue;
+      const double env[4] = {b.ll.lon, b.ur.lon, b.ll.lat, b.ur.lat};
+      take(env);
+    }
   }
-  if (!s.ok()) return s;
   if (!any) return Status::Error(kNotFound, "layer \"" + identifier_ + "\" has no geometry");
   if (out != nullptr) *out = GeoRect{{box[2], box[0]}, {box[3], box[1]}};
   return Status::Ok();
@@ -1086,13 +1171,42 @@ Status GeoPackageFeatureLayer::Select(const std::string& where_sql, const std::v
   return s;
 }
 
+void GeoPackageFeatureLayer::Merge(std::vector<Feature>* stored, const GeoRect* box) const {
+  if (edits_.empty()) return;
+  stored->erase(std::remove_if(stored->begin(), stored->end(),
+                               [this](const Feature& f) { return edits_.count(f.id) != 0; }),
+                stored->end());
+  for (const auto& entry : edits_) {
+    const std::optional<Feature>& f = entry.second.feature;
+    if (!f) continue;
+    if (box != nullptr) {
+      GeoRect b;
+      if (!f->geometry.Envelope(&b) || !box->Intersects(b)) continue;
+    }
+    stored->push_back(*f);
+  }
+  std::sort(stored->begin(), stored->end(), [](const Feature& a, const Feature& b) { return a.id < b.id; });
+}
+
 Status GeoPackageFeatureLayer::All(std::vector<Feature>* out) const {
   if (out == nullptr) return Bad("All: null out");
   out->clear();
-  return Select("", {}, out);
+  if (!rebuild_) {
+    Status s = Select("", {}, out);
+    if (!s.ok()) return s;
+  }
+  Merge(out, nullptr);
+  return Status::Ok();
 }
 
 Status GeoPackageFeatureLayer::Get(int64_t id, Feature* out) const {
+  const auto edit = edits_.find(id);
+  if (edit != edits_.end() || rebuild_) {
+    if (edit == edits_.end() || !edit->second.feature)
+      return Status::Error(kNotFound, "no feature " + std::to_string(id) + " in \"" + identifier_ + "\"");
+    if (out != nullptr) *out = *edit->second.feature;
+    return Status::Ok();
+  }
   std::vector<Feature> found;
   Status s = Select(Quote(id_column_) + " = ?", {id}, &found);
   if (!s.ok()) return s;
@@ -1107,7 +1221,9 @@ Status GeoPackageFeatureLayer::Query(const GeoRect& box, std::vector<Feature>* o
   out->clear();
   std::vector<Feature> candidates;
   Status s;
-  if (has_rtree_) {
+  if (rebuild_) {
+    // Every row is in the edits.
+  } else if (has_rtree_) {
     const std::string rtree = Quote("rtree_" + table_ + "_" + geometry_column_);
     std::string where;
     std::vector<int64_t> unused;
@@ -1125,6 +1241,7 @@ Status GeoPackageFeatureLayer::Query(const GeoRect& box, std::vector<Feature>* o
     s = Select(Quote(geometry_column_) + " IS NOT NULL", {}, &candidates);
   }
   if (!s.ok()) return s;
+  Merge(&candidates, &box);
   for (Feature& f : candidates) {
     GeoRect b;
     if (f.geometry.Envelope(&b) && box.Intersects(b)) out->push_back(std::move(f));
@@ -1154,89 +1271,102 @@ Status GeoPackageFeatureLayer::CheckFeature(Feature* f) const {
   return Status::Ok();
 }
 
-Status GeoPackageFeatureLayer::Write(const Feature& feature, bool with_id, bool replace,
-                                     int64_t* id_out) {
-  Feature f = feature;
-  Status s = CheckFeature(&f);
-  if (!s.ok()) return s;
-  std::vector<uint8_t> blob;
-  if (!f.geometry.IsNull()) {
-    s = WriteGpkgGeometry(f.geometry, srs_id_, &blob);
+Status GeoPackageFeatureLayer::NextId(int64_t* out) {
+  if (next_id_ == 0) {
+    SqliteDb& db = *package_->db_;
+    int64_t used = 0;
+    SqliteStmt max;
+    Status s = max.Prepare(db, ("SELECT MAX(" + Quote(id_column_) + ") FROM " + Quote(table_)).c_str());
     if (!s.ok()) return s;
+    if (max.Step(&s)) used = max.ColInt64(0);
+    if (!s.ok()) return s;
+    // AUTOINCREMENT never reuses an id, even one whose row was deleted.
+    if (TableExists(db, "sqlite_sequence")) {
+      SqliteStmt seq;
+      s = seq.Prepare(db, "SELECT seq FROM sqlite_sequence WHERE name = ?");
+      if (!s.ok()) return s;
+      seq.BindText(1, table_);
+      if (seq.Step(&s)) used = std::max(used, seq.ColInt64(0));
+      if (!s.ok()) return s;
+    }
+    if (!edits_.empty()) used = std::max(used, edits_.rbegin()->first);
+    next_id_ = used + 1;
   }
-  s = package_->Begin();
-  if (!s.ok()) return s;
-
-  SqliteDb& db = *package_->db_;
-  std::string sql;
-  if (replace) {
-    sql = "UPDATE " + Quote(table_) + " SET " + Quote(geometry_column_) + " = ?";
-    for (const FieldDef& d : schema_.fields) sql += ", " + Quote(d.name) + " = ?";
-    sql += " WHERE " + Quote(id_column_) + " = ?";
-  } else {
-    sql = "INSERT INTO " + Quote(table_) + " (" + Quote(geometry_column_);
-    for (const FieldDef& d : schema_.fields) sql += ", " + Quote(d.name);
-    if (with_id) sql += ", " + Quote(id_column_);
-    sql += ") VALUES (?";
-    for (size_t i = 0; i < schema_.fields.size(); ++i) sql += ", ?";
-    if (with_id) sql += ", ?";
-    sql += ")";
-  }
-  SqliteStmt st;
-  s = st.Prepare(db, sql.c_str());
-  if (!s.ok()) return s;
-  if (!blob.empty()) st.BindBlob(1, blob.data(), blob.size());
-  for (size_t i = 0; i < f.values.size(); ++i) Bind(st, static_cast<int>(i) + 2, f.values[i]);
-  if (with_id || replace) st.BindInt64(static_cast<int>(f.values.size()) + 2, f.id);
-  st.Step(&s);
-  if (!s.ok())
-    return Status::Error(s.code, s.message + ": " + sqlite3_errmsg(db.get()));
-  if (replace && sqlite3_changes(db.get()) == 0)
-    return Status::Error(kNotFound, "no feature " + std::to_string(f.id) + " in \"" + identifier_ + "\"");
-  package_->dirty_tables_.insert(table_);
-  if (id_out != nullptr) *id_out = replace || with_id ? f.id : db.LastInsertRowId();
+  *out = next_id_;
   return Status::Ok();
 }
 
 Status GeoPackageFeatureLayer::Insert(Feature* feature) {
   if (feature == nullptr) return Bad("Insert: null feature");
-  int64_t id = 0;
-  Status s = Write(*feature, false, false, &id);
+  Status s = package_->RequireWritable();
   if (!s.ok()) return s;
+  Feature f = *feature;
+  s = CheckFeature(&f);
+  if (!s.ok()) return s;
+  int64_t id = 0;
+  s = NextId(&id);
+  if (!s.ok()) return s;
+  f.id = id;
+  next_id_ = id + 1;
   feature->id = id;
-  feature->values.resize(schema_.fields.size());
+  feature->values = f.values;
+  edits_[id] = Edit{std::move(f), /*stored=*/false, /*geometry_changed=*/true};
   return Status::Ok();
 }
 
 Status GeoPackageFeatureLayer::InsertWithId(const Feature& feature) {
+  Status s = package_->RequireWritable();
+  if (!s.ok()) return s;
   if (feature.id <= 0) return Bad("feature id must be positive");
   if (Get(feature.id, nullptr).ok())
     return Bad("feature id " + std::to_string(feature.id) + " is in use");
-  return Write(feature, true, false, nullptr);
-}
-
-Status GeoPackageFeatureLayer::Update(const Feature& feature) {
-  return Write(feature, false, true, nullptr);
-}
-
-Status GeoPackageFeatureLayer::Delete(int64_t id) {
-  Status s = package_->Begin();
+  Feature f = feature;
+  s = CheckFeature(&f);
   if (!s.ok()) return s;
-  SqliteDb& db = *package_->db_;
-  SqliteStmt st;
-  s = st.Prepare(db, ("DELETE FROM " + Quote(table_) + " WHERE " + Quote(id_column_) + " = ?").c_str());
+  int64_t next = 0;
+  s = NextId(&next);
   if (!s.ok()) return s;
-  st.BindInt64(1, id);
-  st.Step(&s);
-  if (!s.ok()) return s;
-  if (sqlite3_changes(db.get()) == 0)
-    return Status::Error(kNotFound, "no feature " + std::to_string(id) + " in \"" + identifier_ + "\"");
-  package_->dirty_tables_.insert(table_);
+  next_id_ = std::max(next, f.id + 1);
+  // A row deleted and restored (an undo) is still in the file.
+  const auto deleted = edits_.find(f.id);
+  const bool stored = deleted != edits_.end() && deleted->second.stored;
+  edits_[f.id] = Edit{std::move(f), stored, /*geometry_changed=*/true};
   return Status::Ok();
 }
 
-// The table is rebuilt rather than altered column by column: retyping and
-// reordering need a new table anyway, and one path keeps every case alike.
+Status GeoPackageFeatureLayer::Update(const Feature& feature) {
+  Status s = package_->RequireWritable();
+  if (!s.ok()) return s;
+  Feature old;
+  s = Get(feature.id, &old);
+  if (!s.ok()) return s;
+  Feature f = feature;
+  s = CheckFeature(&f);
+  if (!s.ok()) return s;
+  const auto it = edits_.find(f.id);
+  Edit e;
+  e.stored = it == edits_.end() ? true : it->second.stored;
+  e.geometry_changed = (it != edits_.end() && it->second.geometry_changed) || !(old.geometry == f.geometry);
+  e.feature = std::move(f);
+  edits_[feature.id] = std::move(e);
+  return Status::Ok();
+}
+
+Status GeoPackageFeatureLayer::Delete(int64_t id) {
+  Status s = package_->RequireWritable();
+  if (!s.ok()) return s;
+  s = Get(id, nullptr);
+  if (!s.ok()) return s;
+  const auto it = edits_.find(id);
+  const bool stored = it == edits_.end() ? true : it->second.stored;
+  if (!stored || rebuild_) {
+    edits_.erase(id);
+  } else {
+    edits_[id] = Edit{std::nullopt, /*stored=*/true, /*geometry_changed=*/false};
+  }
+  return Status::Ok();
+}
+
 Status GeoPackageFeatureLayer::ChangeSchema(const SchemaChange& change) {
   Status s = package_->RequireWritable();
   if (!s.ok()) return s;
@@ -1252,108 +1382,231 @@ Status GeoPackageFeatureLayer::ChangeSchema(const SchemaChange& change) {
   std::vector<Feature> features;
   s = All(&features);
   if (!s.ok()) return s;
-  for (Feature& f : features) {
+  std::map<int64_t, Edit> next;
+  for (const Feature& f : features) {
     Feature mapped;
     RemapFeature(f, schema_, change, &mapped);
     for (size_t i = 0; i < mapped.values.size(); ++i) {
       s = ValidateValue(change.schema.fields[i], mapped.values[i]);
       if (!s.ok()) return Status::Error(s.code, s.message + " (feature " + std::to_string(f.id) + ")");
     }
-    f = std::move(mapped);
+    const auto old = edits_.find(f.id);
+    Edit e;
+    e.stored = old == edits_.end() ? !rebuild_ : old->second.stored;
+    e.geometry_changed = old != edits_.end() && old->second.geometry_changed;
+    e.feature = std::move(mapped);
+    next.emplace(f.id, std::move(e));
+  }
+  edits_ = std::move(next);
+  rebuild_ = true;
+  schema_ = change.schema;
+  return Status::Ok();
+}
+
+Status GeoPackageFeatureLayer::WriteRow(const Feature& f, bool replace) {
+  SqliteDb& db = *package_->db_;
+  std::vector<uint8_t> blob;
+  if (!f.geometry.IsNull()) {
+    Status s = WriteGpkgGeometry(f.geometry, srs_id_, &blob);
+    if (!s.ok()) return s;
+  }
+  std::string sql;
+  if (replace) {
+    sql = "UPDATE " + Quote(table_) + " SET " + Quote(geometry_column_) + " = ?";
+    for (const FieldDef& d : schema_.fields) sql += ", " + Quote(d.name) + " = ?";
+    sql += " WHERE " + Quote(id_column_) + " = ?";
+  } else {
+    sql = "INSERT INTO " + Quote(table_) + " (" + Quote(geometry_column_);
+    for (const FieldDef& d : schema_.fields) sql += ", " + Quote(d.name);
+    sql += ", " + Quote(id_column_) + ") VALUES (?";
+    for (size_t i = 0; i < schema_.fields.size(); ++i) sql += ", ?";
+    sql += ", ?)";
+  }
+  SqliteStmt st;
+  Status s = st.Prepare(db, sql.c_str());
+  if (!s.ok()) return s;
+  if (!blob.empty()) st.BindBlob(1, blob.data(), blob.size());
+  for (size_t i = 0; i < f.values.size(); ++i) Bind(st, static_cast<int>(i) + 2, f.values[i]);
+  st.BindInt64(static_cast<int>(f.values.size()) + 2, f.id);
+  st.Step(&s);
+  if (!s.ok()) return Status::Error(s.code, s.message + ": " + sqlite3_errmsg(db.get()));
+  return Status::Ok();
+}
+
+Status GeoPackageFeatureLayer::WriteEdits() {
+  if (!HasEdits()) return Status::Ok();
+  if (rebuild_) {
+    Status s = RebuildTable();
+    if (!s.ok()) return s;
+  } else {
+    for (const auto& entry : edits_) {
+      const Edit& e = entry.second;
+      Status s = Status::Ok();
+      if (e.feature) {
+        s = WriteRow(*e.feature, e.stored);
+      } else if (e.stored) {
+        SqliteStmt del;
+        s = del.Prepare(*package_->db_,
+                        ("DELETE FROM " + Quote(table_) + " WHERE " + Quote(id_column_) + " = ?").c_str());
+        if (s.ok()) {
+          del.BindInt64(1, entry.first);
+          del.Step(&s);
+        }
+      }
+      if (!s.ok()) return s;
+    }
+  }
+  // An id inserted and deleted before the save never reached the table; the
+  // sequence still records it so AUTOINCREMENT does not hand it out again.
+  SqliteDb& db = *package_->db_;
+  if (next_id_ > 1 && TableExists(db, "sqlite_sequence")) {
+    SqliteStmt up;
+    Status s = up.Prepare(db, "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?");
+    if (!s.ok()) return s;
+    up.BindInt64(1, next_id_ - 1);
+    up.BindText(2, table_);
+    up.Step(&s);
+    if (!s.ok()) return s;
+  }
+  package_->dirty_tables_.insert(table_);
+  return Status::Ok();
+}
+
+// The table is rebuilt rather than altered column by column: retyping and
+// reordering need a new table anyway, and one path keeps every case alike.
+Status GeoPackageFeatureLayer::RebuildTable() {
+  SqliteDb& db = *package_->db_;
+  // Geometry the edits did not touch is copied as stored.
+  std::map<int64_t, std::vector<uint8_t>> blobs;
+  SqliteStmt geo;
+  Status r = geo.Prepare(db, ("SELECT " + Quote(id_column_) + ", " + Quote(geometry_column_) +
+                              " FROM " + Quote(table_)).c_str());
+  if (!r.ok()) return r;
+  while (geo.Step(&r)) {
+    const int64_t id = geo.ColInt64(0);
+    const auto e = edits_.find(id);
+    if (geo.ColType(1) == SQLITE_NULL || e == edits_.end() || e->second.geometry_changed) continue;
+    const auto* p = static_cast<const uint8_t*>(geo.ColBlob(1));
+    blobs[id].assign(p, p + geo.ColBytes(1));
+  }
+  if (!r.ok()) return r;
+
+  // Triggers and indexes go with the old table and are recreated on the new one.
+  std::vector<std::pair<std::string, std::string>> dependents;  // type, sql
+  SqliteStmt dep;
+  r = dep.Prepare(db, "SELECT type, sql FROM sqlite_master WHERE tbl_name = ? "
+                      "AND type IN ('trigger', 'index') AND sql IS NOT NULL");
+  if (!r.ok()) return r;
+  dep.BindText(1, table_);
+  while (dep.Step(&r)) dependents.emplace_back(dep.ColText(0), dep.ColText(1));
+  if (!r.ok()) return r;
+  int64_t sequence = -1;
+  if (TableExists(db, "sqlite_sequence")) {
+    SqliteStmt seq;
+    r = seq.Prepare(db, "SELECT seq FROM sqlite_sequence WHERE name = ?");
+    if (!r.ok()) return r;
+    seq.BindText(1, table_);
+    if (seq.Step(&r)) sequence = seq.ColInt64(0);
+    if (!r.ok()) return r;
   }
 
-  SqliteDb& db = *package_->db_;
-  s = package_->Begin();
-  if (!s.ok()) return s;
-  s = Atomically(db, [&]() -> Status {
-    // The geometry blobs are copied as stored.
-    std::map<int64_t, std::vector<uint8_t>> blobs;
-    SqliteStmt geo;
-    Status r = geo.Prepare(db, ("SELECT " + Quote(id_column_) + ", " + Quote(geometry_column_) +
-                                " FROM " + Quote(table_)).c_str());
-    if (!r.ok()) return r;
-    while (geo.Step(&r)) {
-      if (geo.ColType(1) == SQLITE_NULL) continue;
-      const auto* p = static_cast<const uint8_t*>(geo.ColBlob(1));
-      blobs[geo.ColInt64(0)].assign(p, p + geo.ColBytes(1));
-    }
-    if (!r.ok()) return r;
-
-    // Triggers and indexes go with the old table and are recreated on the new one.
-    std::vector<std::pair<std::string, std::string>> dependents;  // type, sql
-    SqliteStmt dep;
-    r = dep.Prepare(db, "SELECT type, sql FROM sqlite_master WHERE tbl_name = ? "
-                        "AND type IN ('trigger', 'index') AND sql IS NOT NULL");
-    if (!r.ok()) return r;
-    dep.BindText(1, table_);
-    while (dep.Step(&r)) dependents.emplace_back(dep.ColText(0), dep.ColText(1));
-    if (!r.ok()) return r;
-    int64_t sequence = -1;
-    if (TableExists(db, "sqlite_sequence")) {
-      SqliteStmt seq;
-      r = seq.Prepare(db, "SELECT seq FROM sqlite_sequence WHERE name = ?");
+  const std::string temp = "fv_rebuild_" + table_;
+  r = db.Exec(("DROP TABLE IF EXISTS " + Quote(temp)).c_str());
+  if (r.ok()) r = db.Exec(TableDdl(temp, id_column_, geometry_column_, schema_).c_str());
+  if (!r.ok()) return r;
+  std::string sql = "INSERT INTO " + Quote(temp) + " (" + Quote(id_column_) + ", " + Quote(geometry_column_);
+  for (const FieldDef& f : schema_.fields) sql += ", " + Quote(f.name);
+  sql += ") VALUES (?, ?";
+  for (size_t i = 0; i < schema_.fields.size(); ++i) sql += ", ?";
+  sql += ")";
+  SqliteStmt ins;
+  r = ins.Prepare(db, sql.c_str());
+  if (!r.ok()) return r;
+  for (const auto& entry : edits_) {
+    if (!entry.second.feature) continue;
+    const Feature& f = *entry.second.feature;
+    ins.Reset();
+    ins.BindInt64(1, f.id);
+    std::vector<uint8_t> encoded;
+    const auto blob = blobs.find(f.id);
+    if (blob != blobs.end()) {
+      ins.BindBlob(2, blob->second.data(), blob->second.size());
+    } else if (!f.geometry.IsNull()) {
+      r = WriteGpkgGeometry(f.geometry, srs_id_, &encoded);
       if (!r.ok()) return r;
-      seq.BindText(1, table_);
-      if (seq.Step(&r)) sequence = seq.ColInt64(0);
-      if (!r.ok()) return r;
+      ins.BindBlob(2, encoded.data(), encoded.size());
     }
+    for (size_t i = 0; i < f.values.size(); ++i) Bind(ins, static_cast<int>(i) + 3, f.values[i]);
+    ins.Step(&r);
+    if (!r.ok()) return Status::Error(r.code, r.message + ": " + sqlite3_errmsg(db.get()));
+  }
 
-    const std::string temp = "fv_rebuild_" + table_;
-    r = db.Exec(("DROP TABLE IF EXISTS " + Quote(temp)).c_str());
-    if (r.ok()) r = db.Exec(TableDdl(temp, id_column_, geometry_column_, change.schema).c_str());
+  r = db.Exec(("DROP TABLE " + Quote(table_)).c_str());
+  if (r.ok()) r = db.Exec(("ALTER TABLE " + Quote(temp) + " RENAME TO " + Quote(table_)).c_str());
+  if (!r.ok()) return r;
+  for (const auto& d : dependents) {
+    r = db.Exec(d.second.c_str());
+    if (r.ok()) continue;
+    // An index on a deleted column cannot come back; a trigger is part of the file's integrity.
+    if (d.first == "trigger") return r;
+    FV_LOG_WARNING(package_->Path() << ": index dropped with its column: " << r.message);
+  }
+  // The R-tree outlives the old table and the new rows went in without its
+  // triggers, so it is refilled from them.
+  if (has_rtree_) {
+    const std::string rtree = Quote("rtree_" + table_ + "_" + geometry_column_);
+    const std::string g = Quote(geometry_column_);
+    r = db.Exec(("DELETE FROM " + rtree + "; INSERT INTO " + rtree + " SELECT " + Quote(id_column_) +
+                 ", ST_MinX(" + g + "), ST_MaxX(" + g + "), ST_MinY(" + g + "), ST_MaxY(" + g + ") FROM " +
+                 Quote(table_) + " WHERE " + g + " NOT NULL AND NOT ST_IsEmpty(" + g + ")")
+                    .c_str());
     if (!r.ok()) return r;
-    std::string sql = "INSERT INTO " + Quote(temp) + " (" + Quote(id_column_) + ", " + Quote(geometry_column_);
-    for (const FieldDef& f : change.schema.fields) sql += ", " + Quote(f.name);
-    sql += ") VALUES (?, ?";
-    for (size_t i = 0; i < change.schema.fields.size(); ++i) sql += ", ?";
-    sql += ")";
-    SqliteStmt ins;
-    r = ins.Prepare(db, sql.c_str());
+  }
+  if (sequence >= 0) {
+    SqliteStmt seq;
+    r = seq.Prepare(db, "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?");
     if (!r.ok()) return r;
-    for (const Feature& f : features) {
-      ins.Reset();
-      ins.BindInt64(1, f.id);
-      const auto blob = blobs.find(f.id);
-      if (blob != blobs.end()) ins.BindBlob(2, blob->second.data(), blob->second.size());
-      for (size_t i = 0; i < f.values.size(); ++i) Bind(ins, static_cast<int>(i) + 3, f.values[i]);
-      ins.Step(&r);
-      if (!r.ok()) return Status::Error(r.code, r.message + ": " + sqlite3_errmsg(db.get()));
-    }
+    seq.BindInt64(1, sequence);
+    seq.BindText(2, table_);
+    seq.Step(&r);
+    if (!r.ok()) return r;
+  }
 
-    r = db.Exec(("DROP TABLE " + Quote(table_)).c_str());
-    if (r.ok()) r = db.Exec(("ALTER TABLE " + Quote(temp) + " RENAME TO " + Quote(table_)).c_str());
+  r = DropFieldMetadata(db, table_);
+  if (!r.ok()) return r;
+  for (const FieldDef& f : schema_.fields) {
+    r = WriteFieldMetadata(db, table_, f);
     if (!r.ok()) return r;
-    for (const auto& d : dependents) {
-      r = db.Exec(d.second.c_str());
-      if (r.ok()) continue;
-      // An index on a deleted column cannot come back; a trigger is part of the file's integrity.
-      if (d.first == "trigger") return r;
-      FV_LOG_WARNING(package_->Path() << ": index dropped with its column: " << r.message);
-    }
-    if (sequence >= 0) {
-      SqliteStmt seq;
-      r = seq.Prepare(db, "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?");
-      if (!r.ok()) return r;
-      seq.BindInt64(1, sequence);
-      seq.BindText(2, table_);
-      seq.Step(&r);
-      if (!r.ok()) return r;
-    }
+  }
+  return Status::Ok();
+}
 
-    r = DropFieldMetadata(db, table_);
-    if (!r.ok()) return r;
-    for (const FieldDef& f : change.schema.fields) {
-      r = WriteFieldMetadata(db, table_, f);
-      if (!r.ok()) return r;
-    }
-    return Status::Ok();
-  });
-  if (!s.ok()) return s;
-  package_->dirty_tables_.insert(table_);
-
+void GeoPackageFeatureLayer::ClearEdits(bool saved) {
+  const bool reload = rebuild_;
+  edits_.clear();
+  rebuild_ = false;
+  if (!saved) next_id_ = 0;
+  if (!reload) return;
+  // The schema is read back: the rebuilt table's after a save, the old one's after a discard.
   id_column_.clear();
   schema_ = FeatureSchema{};
-  return Load();
+  Status s = Load();
+  if (!s.ok()) FV_LOG_WARNING(package_->Path() << ": " << table_ << ": " << s.message);
+}
+
+Status GeoPackageFeatureLayer::Save(const std::string* style_json) {
+  Status s = package_->RequireWritable();
+  if (!s.ok()) return s;
+  sqlite3* db = package_->db_->get();
+  const bool began = sqlite3_get_autocommit(db) != 0;
+  if (style_json != nullptr) s = package_->WriteLayerStyle(table_, *style_json);
+  if (s.ok()) s = package_->Commit({this});
+  // A transaction this call opened holds only its own writes, so it goes.
+  if (!s.ok() && began && sqlite3_get_autocommit(db) == 0) {
+    package_->db_->Exec("ROLLBACK");
+    package_->dirty_tables_.clear();
+  }
+  return s;
 }
 
 }  // namespace fv

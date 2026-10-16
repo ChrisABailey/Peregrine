@@ -375,7 +375,7 @@ std::vector<int64_t> FeatureEditSession::FeaturesInRect(const PixelRect& r) cons
   GeoRect box;
   if (!GeoBox(proj, r.x, r.y, r.x + r.width, r.y + r.height, &box)) return ids;
   std::vector<Feature> features;
-  if (!layer->Query(box, &features).ok()) return ids;
+  if (!overlay_.QueryDrawn(box, proj.Scale(), &features).ok()) return ids;
   const Px centre{r.x + r.width / 2.0, r.y + r.height / 2.0};
   for (const Feature& f : features) {
     bool meets = false;
@@ -407,8 +407,11 @@ std::vector<int64_t> FeatureEditSession::FeaturesInRect(const PixelRect& r) cons
 int64_t FeatureEditSession::AddFeature(const Geometry& geometry, const std::string& label) {
   const auto& layer = overlay_.layer();
   if (!layer) return 0;
+  const FeatureSchema& schema = layer->Schema();
   Feature f;
-  if (!Conform(layer->Schema().geometry_type, geometry, &f.geometry)) return 0;
+  if (!Conform(schema.geometry_type, geometry, &f.geometry)) return 0;
+  // A new feature starts from the field defaults; a required field without one fails the insert.
+  for (const FieldDef& d : schema.fields) f.values.push_back(d.default_value);
   if (!layer->Insert(&f).ok()) return 0;
   Feature stored;
   if (!layer->Get(f.id, &stored).ok()) return 0;
@@ -638,7 +641,7 @@ int64_t FeatureEditSession::FeatureAt(PixelPoint p) const {
   GeoRect box;
   if (!GeoBox(proj, p.x - reach, p.y - reach, p.x + reach, p.y + reach, &box)) return 0;
   std::vector<Feature> features;
-  if (!layer->Query(box, &features).ok()) return 0;
+  if (!overlay_.QueryDrawn(box, proj.Scale(), &features).ok()) return 0;
   // Later features draw on top, so they are hit first.
   for (auto f = features.rbegin(); f != features.rend(); ++f) {
     bool hit = false;

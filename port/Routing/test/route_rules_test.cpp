@@ -398,6 +398,10 @@ TEST(RouteRules, RejectsWhatItCannotUnderstand) {
             std::string::npos);
   EXPECT_NE(ParseError(R"({"version":1,"profils":{}})").find("unknown key 'profils'"),
             std::string::npos);
+  EXPECT_NE(ParseError(R"({"version":1,"name":7,"profiles":{"p":{"mode":"foot"}}})")
+                .find("'name' must be a string"),
+            std::string::npos);
+  EXPECT_EQ(ParseOk(kOk)->name(), "");
   EXPECT_NE(ParseError(R"({"version":1,"profiles":{"p":{"mode":"hovercraft"}}})")
                 .find("unknown mode"),
             std::string::npos);
@@ -479,6 +483,7 @@ TEST(RouteRules, ShippedRuleFileParses) {
   EXPECT_NE(rules->Find("bicycle"), nullptr);
   EXPECT_NE(rules->Find("foot"), nullptr);
   EXPECT_NE(rules->default_profile(), nullptr);
+  EXPECT_EQ(rules->name(), "Kiawah Rules");
 }
 
 // A gated street (`access=private`, gate node 4) is the short way from n1 to
@@ -534,6 +539,7 @@ TEST(RouteRules, CityRuleFileParses) {
   EXPECT_NE(rules->Find("car"), nullptr);
   EXPECT_GE(rules->Find("bicycle")->private_penalty, 10.0);
   EXPECT_GE(rules->Find("foot")->private_penalty, 10.0);
+  EXPECT_EQ(rules->name(), "City Rules");
 }
 
 TEST(RouteRules, CityRulesRideAroundAGatedStreet) {

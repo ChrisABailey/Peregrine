@@ -66,6 +66,10 @@ class PngSymbolLibrary : public ISymbolLibrary {
   Status OpenSheet(const std::string& png_path,
                    const std::string& json_path = std::string());
 
+  /// Reads a sheet held in memory: the PNG bytes and the sprite.json text.
+  Status OpenSheetData(const void* png, size_t png_size,
+                       const std::string& json_text);
+
   // Ids this library can answer, sorted. Cheap: the catalogue is names.
   std::vector<std::string> ids() const;
   size_t size() const { return entries_.size(); }
@@ -87,6 +91,7 @@ class PngSymbolLibrary : public ISymbolLibrary {
     std::string path;  // loose form; empty for a sheet entry
     int x = 0, y = 0, w = 0, h = 0;  // sheet form
     double pixel_ratio = 1.0;
+    bool sdf = false;
     bool has_pivot = false;
     double pivot_x = 0.0, pivot_y = 0.0;
   };
@@ -95,6 +100,10 @@ class PngSymbolLibrary : public ISymbolLibrary {
   // Open* once they are past every failure that should leave the library
   // untouched.
   void Reset();
+
+  /// Parses the sprite.json `index` and, when it is good, replaces the
+  /// library with `sheet` and its entries. `what` names the index in errors.
+  Status AdoptSheet(PixelBuffer sheet, const std::string& index, const std::string& what);
 
   bool LoadEntry(const Entry& e, SymbolPixmap* out) const;
 

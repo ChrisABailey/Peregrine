@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -61,6 +62,10 @@ class AttributeTableModel {
   /// Keeps rows with a cell containing `text`, ignoring ASCII case. "" keeps all.
   void SetFilter(std::string text);
   const std::string& filter() const { return filter_; }
+  /// Leaves out the features `keep` rejects, such as those a layer's
+  /// definition query hides; an empty function keeps all. Takes effect at
+  /// the next `Reload`.
+  void SetFeatureFilter(std::function<bool(const Feature&)> keep) { keep_ = std::move(keep); }
 
  private:
   struct Row {
@@ -82,6 +87,7 @@ class AttributeTableModel {
   int sort_column_ = -1;
   bool ascending_ = true;
   std::string filter_;
+  std::function<bool(const Feature&)> keep_;
 };
 
 }  // namespace desk

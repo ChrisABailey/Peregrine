@@ -33,6 +33,8 @@
 #include "fv_desk_menu_model.h"
 #include "fv_desk_options.h"
 #include "fv_desk_profile.h"
+#include "fv_desk_query.h"
+#include "fv_desk_rule_style.h"
 #include "fv_desk_workspace.h"
 #include "fv_view_map_view.h"
 #include "fvkit/app/editor.h"
@@ -100,6 +102,21 @@ class DeskShell : public app::AppShell {
   /// Symbology, Labels and Fields tabs. Layer Style… and Layer Fields… then
   /// open it on their tab instead of asking for their own dialogs.
   virtual bool HostsPropertiesTabs() const { return false; }
+  /// Show (or bring forward) Select by Attributes over `Desk::select_query()`;
+  /// the shell selects through `Desk::ApplySelectByAttributes`.
+  virtual void ShowSelectByAttributes() {}
+  /// Ask for a new rule's name and type, then call `Desk::AddRule` on the current layer.
+  virtual void ShowAddRule() {}
+  /// Start editing the current rule's name in place; commit through `Desk::RenameRule`.
+  virtual void BeginRuleRename() {}
+  /// Ask for the current rule's new type (`RuleTypes()`), then call `Desk::SetRuleType`.
+  virtual void ShowRuleType() {}
+  /// Show (or bring forward) the rule filter builder over `Desk::rule_filter()`;
+  /// the shell applies it through `Desk::ApplyRuleFilter`.
+  virtual void ShowRuleFilter() {}
+  /// Show (or bring forward) the rule style pages over `Desk::rule_style()`;
+  /// the shell applies them through `Desk::ApplyRuleStyle`.
+  virtual void ShowRuleStyle() {}
 };
 
 /// The status bar content (port/desktop-plan.md §1d), as text.
@@ -268,6 +285,8 @@ class Desk {
   /// so the shell selects the row first. Enabled per `commands().IsEnabled`.
   std::vector<MenuItem> LayerMenu() const { return menus_.ResolveLayout(LayerContextLayout()); }
   std::vector<MenuItem> SourceMenu() const { return menus_.ResolveLayout(SourceContextLayout()); }
+  /// The right-click menu on a rule; it acts on the current rule (`SelectRule`).
+  std::vector<MenuItem> RuleMenu() const { return menus_.ResolveLayout(RuleContextLayout()); }
   /// The Properties sheet last asked for (layers.properties, layers.source.properties).
   const std::string& properties_title() const { return properties_title_; }
   const std::vector<PropertyRow>& properties() const { return properties_; }
@@ -276,17 +295,24 @@ class Desk {
   /// and fields models over the layer. kNotFound without a current layer.
   Status OpenLayerProperties(PropertiesTab tab);
   /// The tabs Properties shows, in order: Source alone for a source, or for a
-  /// shell without tabs; General for a layer; Symbology, Labels and Fields
-  /// while their models are open over the layer.
+  /// shell without tabs; for a layer General, Display (a layer with opacity
+  /// or features), and for a feature layer Symbology, Labels, Fields,
+  /// Selection and Definition Query.
   std::vector<PropertiesTab> PropertiesTabs() const;
   /// The tab Properties opens at.
   PropertiesTab properties_tab() const { return properties_tab_; }
-  /// Null unless Properties is open on a layer in a shell that hosts the tabs.
+  /// Null unless Properties is open on a layer in a shell that hosts the tabs
+  /// (and, for the last three, the layer has those settings).
   const std::shared_ptr<LayerGeneralModel>& layer_general() const { return general_; }
+  const std::shared_ptr<LayerDisplayModel>& layer_display() const { return display_; }
+  const std::shared_ptr<LayerSelectionModel>& layer_selection() const { return selection_; }
+  /// The Definition Query tab's builder.
+  const std::shared_ptr<QueryBuilderModel>& layer_query() const { return query_; }
   /// True when a tab has unapplied changes.
   bool LayerPropertiesDirty() const;
-  /// Applies each dirty tab: General, then Symbology and Labels, then Fields
-  /// (ask about `LayerFieldsLoss()` first). Stops at the first error.
+  /// Applies each dirty tab: General, Display, then Symbology and Labels,
+  /// then Fields (ask about `LayerFieldsLoss()` first), Selection and
+  /// Definition Query. Stops at the first error.
   Status ApplyLayerProperties();
   /// Every tab back to the layer's current settings.
   Status RevertLayerProperties();
@@ -294,6 +320,52 @@ class Desk {
   void CloseLayerProperties();
   /// Centres the map on `box` at the scale that just shows it; a point keeps the scale.
   void ZoomTo(const GeoRect& box);
+
+  // MARK: Style rules
+  /// Rules are addressed as rows of `layers().Rows()[layer_row].rules`, top-drawn
+  /// first. Each edit goes through the undo stack, dirties the layer and repaints.
+  /// Makes the layer current and the rule the one the rule menu acts on.
+  Status SelectRule(size_t layer_row, size_t rule_row);
+  /// The current rule as a row of the current layer's rules; -1 for none.
+  int CurrentRule() const;
+  /// Adds a rule drawn above the layer's others and makes it current.
+  Status AddRule(size_t layer_row, const std::string& name, const std::string& type);
+  /// Copies a rule directly above itself and makes the copy current.
+  Status DuplicateRule(size_t layer_row, size_t rule_row);
+  Status RenameRule(size_t layer_row, size_t rule_row, const std::string& name);
+  Status SetRuleType(size_t layer_row, size_t rule_row, const std::string& type);
+  Status SetRuleShown(size_t layer_row, size_t rule_row, bool shown);
+  Status MoveRule(size_t layer_row, size_t from, size_t to);
+  Status DeleteRule(size_t layer_row, size_t rule_row);
+  /// Copies a line rule beneath itself as its casing (`StyleRulesModel::AddCasing`)
+  /// and makes the casing current.
+  Status AddRuleCasing(size_t layer_row, size_t rule_row);
+  /// Replaces the layer's style with the style.json at `path`, keeping the
+  /// layer's per-feature overrides; one undoable "Import Style".
+  Status ImportStyle(size_t layer_row, const std::string& path);
+  /// Writes the layer's style to `path` as a style.json (`ExportFeatureStyleJson`).
+  Status ExportStyle(size_t layer_row, const std::string& path) const;
+  /// A query builder over the current rule's filter, shown by the shell. A
+  /// generated rule's geometry guard (`SplitRuleFilter`) is kept out of the
+  /// builder and put back on apply. kNotFound without a current rule.
+  Status OpenRuleFilter();
+  /// Null when the rule filter builder is not open, or its layer has closed.
+  const std::shared_ptr<QueryBuilderModel>& rule_filter() const { return rule_filter_; }
+  /// The rule the filter builder edits; "" when it is not open.
+  const std::string& rule_filter_rule() const { return rule_filter_id_; }
+  /// Writes the builder's expression as the rule's filter. kNotFound when the
+  /// rule was renamed, deleted or its layer closed meanwhile.
+  Status ApplyRuleFilter();
+  void CloseRuleFilter();
+  /// The style pages over the current rule. kNotFound without a current rule.
+  Status OpenRuleStyle();
+  /// Null when the rule style pages are not open, or their layer has closed.
+  const std::shared_ptr<RuleStyleModel>& rule_style() const { return rule_style_; }
+  /// Writes the draft to the rule as one undoable edit. kNotFound when the
+  /// rule was renamed or deleted meanwhile.
+  Status ApplyRuleStyle();
+  Status RevertRuleStyle();
+  void CloseRuleStyle();
 
   // MARK: Feature form and attribute table
   /// The editable feature layer behind `overlay`: a feature overlay's layer,
@@ -323,6 +395,18 @@ class Desk {
   int SelectedTableRow() const;
   /// Opens the form on the table row's feature.
   Status EditTableRow(size_t row);
+  /// Select by Attributes over the current feature layer, shown by the shell.
+  /// kNotFound when the current overlay is not a feature layer.
+  Status OpenSelectByAttributes();
+  /// Null when Select by Attributes is not open, or its overlay has closed.
+  const std::shared_ptr<QueryBuilderModel>& select_query() const { return select_query_; }
+  /// Selects the features the query matches among those the layer shows,
+  /// combined with the current selection as `method` says, and repaints. The
+  /// dialog stays open. `selected` receives the selection's new size.
+  Status ApplySelectByAttributes(SelectionMethod method, size_t* selected = nullptr);
+  void CloseSelectByAttributes();
+  /// Deselects every feature of the current layer and repaints.
+  Status ClearSelection();
   /// The style dialog over the current feature overlay's layer style; in a
   /// shell that hosts the Properties tabs, Properties at Symbology.
   /// kNotFound when the current overlay is not a feature overlay.
@@ -340,23 +424,26 @@ class Desk {
   Status OpenLayerFields();
   /// Null when no Layer Fields dialog is open, or its overlay has closed.
   const std::shared_ptr<LayerFieldsModel>& layer_fields() const { return fields_; }
-  /// What applying the draft would lose, as sentences; "" when nothing. The
-  /// shell asks before applying when it is not empty.
+  /// What applying the draft would lose, and what in the layer's style it
+  /// would break, as sentences; "" when nothing. The shell asks before
+  /// applying when it is not empty.
   std::string LayerFieldsLoss() const;
   /// Changes the layer's fields, dirties its overlay, closes its form and
   /// style dialog (they name the old fields; a style tab of Properties is
   /// reopened instead), reloads its table and repaints.
   Status ApplyLayerFields();
   void CloseLayerFields();
-  /// A fresh New Layer dialog, shown by the shell.
-  void OpenNewLayer();
+  /// A fresh New Layer dialog, shown by the shell. A non-empty `package`
+  /// starts it adding a table to that GeoPackage.
+  void OpenNewLayer(const std::string& package = std::string());
   const std::shared_ptr<NewLayerModel>& new_layer() const { return new_layer_; }
-  /// Writes the dialog's empty layer, opens it as the current overlay and
-  /// closes the dialog. kInvalidArg when the file is open in the stack.
+  /// Creates the dialog's empty layer, opens it as the current overlay and
+  /// closes the dialog: a new file, a table added to a GeoPackage, or an
+  /// untitled layer. kInvalidArg when a new file would replace one open in the stack.
   Status CreateNewLayer();
   void CloseNewLayer();
   /// Changes whenever a feature dialog (form, table, style, fields, new
-  /// layer) is opened, closed or reloaded.
+  /// layer, Properties, Select by Attributes) is opened, closed or reloaded.
   uint64_t FeatureViewsGeneration() const { return feature_views_gen_; }
 
   // MARK: Route elevation profile
@@ -463,6 +550,13 @@ class Desk {
   /// The current source's overlays, top first.
   std::vector<std::shared_ptr<Overlay>> CurrentSourceOverlays() const;
   void RegisterLayerManagerCommands();
+  void RegisterRuleCommands();
+  /// The feature overlay at layer row `layer_row`; kNotFound for another overlay.
+  Status RuleLayer(size_t layer_row, std::shared_ptr<FeatureOverlay>* out) const;
+  /// The layer row of the current overlay; -1 for none.
+  int CurrentLayerRow() const;
+  /// Follows a change to `overlay`'s rules: the rows, an unedited style dialog, the map.
+  void RulesChanged(FeatureOverlay& overlay);
   /// True while Properties holds the style or fields model as its tabs.
   bool PropertiesOwnsStyle() const;
   bool PropertiesOwnsFields() const;
@@ -485,12 +579,24 @@ class Desk {
   std::unique_ptr<StackHook> stack_hook_;
   LayersModel layers_{overlays_};
   SourcesModel sources_{overlays_};
+  StyleRulesModel rules_{undo_, [this](FeatureOverlay& o) { RulesChanged(o); }};
+  /// The current rule, by layer and name.
+  const Overlay* rule_overlay_ = nullptr;
+  std::string rule_id_;
+  std::shared_ptr<QueryBuilderModel> rule_filter_;
+  std::string rule_filter_id_;
+  std::string rule_filter_guard_;  ///< the rule's geometry guard, kept out of the builder
+  std::shared_ptr<RuleStyleModel> rule_style_;
   std::string properties_title_;
   std::vector<PropertyRow> properties_;
   PropertiesTab properties_tab_ = PropertiesTab::kSource;
   /// The layer Properties is open on; null for a source or when closed.
   const Overlay* properties_overlay_ = nullptr;
   std::shared_ptr<LayerGeneralModel> general_;
+  std::shared_ptr<LayerDisplayModel> display_;
+  std::shared_ptr<LayerSelectionModel> selection_;
+  std::shared_ptr<QueryBuilderModel> query_;
+  std::shared_ptr<QueryBuilderModel> select_query_;
   uint64_t layers_generation_ = 0;
   std::shared_ptr<FeatureFormModel> form_;
   std::shared_ptr<AttributeTableModel> table_;

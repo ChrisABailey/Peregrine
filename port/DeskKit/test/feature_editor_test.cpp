@@ -24,6 +24,10 @@ class FeatureEditorTest : public ::testing::Test {
   void SetUp() override {
     fd_.desk().GoTo(fv::GeoPoint{32.80, -79.90}, 50000.0);
     ASSERT_TRUE(fd_.Run({std::string("overlay.new.") + fv::FeatureOverlay::kTypeId}).ok());
+    ASSERT_NE(fd_.desk().new_layer(), nullptr);
+    fd_.desk().new_layer()->SetTarget(fv::desk::NewLayerTarget::kUnsaved);
+    ASSERT_TRUE(fd_.desk().new_layer()->SetGeometry(fv::GeometryType::kGeometry).ok());
+    ASSERT_TRUE(fd_.desk().CreateNewLayer().ok());
     overlay_ = dynamic_cast<fv::FeatureOverlay*>(fd_.desk().overlays().current());
     ASSERT_NE(overlay_, nullptr);
     ASSERT_EQ(fd_.shell().editor_mode, fv::FeatureOverlay::kTypeId);

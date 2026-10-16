@@ -55,6 +55,11 @@ class FakeDeskShell : public DeskShell {
   int layer_fields_shown = 0;
   int new_layer_shown = 0;
   int layer_properties_shown = 0;
+  int select_by_attributes_shown = 0;
+  int add_rule_shown = 0;
+  int rule_rename_shown = 0;
+  int rule_type_shown = 0;
+  int rule_filter_shown = 0;
 
   SaveAnswer AskSave(const std::string& name) override;
   std::vector<std::string> ChooseFilesToOpen(const app::FileTypeDesc&) override;
@@ -86,6 +91,11 @@ class FakeDeskShell : public DeskShell {
   void ShowNewLayer() override { ++new_layer_shown; }
   void ShowLayerProperties() override { ++layer_properties_shown; }
   bool HostsPropertiesTabs() const override { return properties_tabs; }
+  void ShowSelectByAttributes() override { ++select_by_attributes_shown; }
+  void ShowAddRule() override { ++add_rule_shown; }
+  void BeginRuleRename() override { ++rule_rename_shown; }
+  void ShowRuleType() override { ++rule_type_shown; }
+  void ShowRuleFilter() override { ++rule_filter_shown; }
   std::string ChooseDirectory(const std::string&) override { return directory; }
   void ShowNotice(const std::string& text) override { notices.push_back(text); }
 };

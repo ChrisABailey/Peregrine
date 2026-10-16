@@ -118,6 +118,10 @@ struct SymbolPixmap {
   // dividing an IEEE double by 1.0 is the identity — which is what keeps the
   // S-52 goldens (the only pixmaps in the tree before G2) byte-identical.
   double pixel_ratio = 1.0;
+
+  /// An alpha mask (sprite.json `"sdf": true`): a style engine replaces the
+  /// colour with its `icon-color`. Drawn as stored otherwise.
+  bool sdf = false;
 };
 
 // ---------------------------------------------------------------------------

@@ -48,12 +48,14 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "fv_osm_reader.h"
 #include "fv_road_graph.h"
 #include "fv_router.h"
 #include "fvkit/geo.h"
@@ -140,6 +142,17 @@ struct RouteProfile {
   /// The `speed_factor` for an arc whose posted speed is `kph`.
   double SpeedFactor(int kph) const;
 
+  /// `legend_tiers`: (upper bound, word) pairs, ascending, naming a legend row's
+  /// cost factor. A factor takes the word of the first bound it does not exceed;
+  /// the last bound is infinity. An excluded way is always "Never".
+  std::vector<std::pair<double, std::string>> legend_tiers = {
+      {0.75, "Most preferred"}, {1.0, "Preferred"}, {2.0, "Acceptable"},
+      {5.0, "Avoided"},         {std::numeric_limits<double>::infinity(), "Last resort"}};
+
+  /// `legend_baseline`: the raw OSM tags of the way a legend row's cost is
+  /// compared against in words.
+  std::vector<OsmTag> legend_baseline = {{"highway", "residential"}};
+
   // Indexed by RoadClass; kClassExcluded for a class this profile bars.
   double class_weight[static_cast<size_t>(RoadClass::kCount)];
 
@@ -188,12 +201,16 @@ class RouteRules {
   std::vector<std::string> names() const;
   const std::vector<RouteProfile>& profiles() const { return profiles_; }
 
+  /// The file's display name (`"name"`, e.g. "City Rules"); empty when unset.
+  const std::string& name() const { return name_; }
+
   // Where these rules came from — a path, or "<builtin>". Diagnostics only.
   const std::string& origin() const { return origin_; }
 
  private:
   std::vector<RouteProfile> profiles_;
   std::string default_profile_name_;
+  std::string name_;
   std::string origin_;
 };
 
@@ -263,6 +280,10 @@ class RouteRulesFile {
 // avoidances.
 Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::string& name,
                      RouteOptions* options);
+
+/// Points `options` at `profile` and mirrors it onto the RouteOptions fields, as
+/// SelectProfile does once it has found the profile by name.
+void ApplyProfile(std::shared_ptr<const RouteProfile> profile, RouteOptions* options);
 
 }  // namespace routing
 }  // namespace fv

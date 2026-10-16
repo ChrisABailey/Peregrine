@@ -94,6 +94,37 @@ struct MapLibreLayerInfo {
   int priority = 0;       // = index in the style's layer array
 };
 
+/// One synthetic feature a legend row is drawn with, in tile vocabulary:
+/// `layer` is the source layer and `tags` are tile attributes.
+struct MapLibreLegendSpecimen {
+  std::string layer;
+  VectorGeometryType type = VectorGeometryType::kLine;
+  std::vector<std::pair<std::string, std::string>> tags;
+};
+
+/// One row of a style's legend (`metadata["peregrine:legend"]`).
+struct MapLibreLegendEntry {
+  std::string id;
+  std::string label;
+  std::string detail;
+  /// Drawn together, in style order; a signed route is a road plus a route.
+  std::vector<MapLibreLegendSpecimen> specimen;
+  /// The same row in raw OSM tags, for the router's way reader.
+  std::vector<std::pair<std::string, std::string>> osm;
+};
+
+struct MapLibreLegendGroup {
+  std::string title;
+  std::string subtitle;
+  std::vector<MapLibreLegendEntry> entries;
+};
+
+/// True when `filter_json` is a filter in expression syntax, by MapLibre's
+/// own test; false for the legacy syntax and for text that is not JSON.
+bool IsMapLibreExpressionFilter(const std::string& filter_json);
+
+class PngSymbolLibrary;
+
 class MapLibreStyleEngine : public LookupTableStyleEngine {
  public:
   MapLibreStyleEngine();
@@ -129,6 +160,11 @@ class MapLibreStyleEngine : public LookupTableStyleEngine {
   const std::string& sprite_url() const;
   // Sprite ids the sheet actually offers, sorted. Empty when no sheet loaded.
   std::vector<std::string> sprite_ids() const;
+
+  /// A sheet used when the style names no `sprite` of its own (feature
+  /// layers pass BuiltinIconSheet()). Null, the default, means none. The
+  /// library must not be written to while the engine draws.
+  void SetFallbackSprites(std::shared_ptr<PngSymbolLibrary> sheet);
 
   // --- the zoom<->scale relation ------------------------------------------
   // A StyleContext carries a scale and no geography, so the latitude half of
@@ -173,6 +209,17 @@ class MapLibreStyleEngine : public LookupTableStyleEngine {
   // style has no background layer.
   bool background(double scale_denominator, FvColor* out) const;
 
+  // --- the legend ----------------------------------------------------------
+  /// The style's `metadata["peregrine:legend"]` groups. Empty when the style
+  /// has none or it is malformed. A malformed legend does not fail the load:
+  /// the map still draws, and legend_error() says what was wrong.
+  const std::vector<MapLibreLegendGroup>& legend() const;
+  /// Why the legend is empty although the style declares one; "" otherwise.
+  const std::string& legend_error() const;
+  /// Style layers the legend deliberately has no row for, as written
+  /// (`*` at the end matches any suffix).
+  const std::vector<std::string>& legend_unlisted_layers() const;
+
   // --- diagnostics ---------------------------------------------------------
   // `icon-image` / `fill-pattern` values the style asked for that NO SHEET
   // ANSWERED — no sprite loaded, or loaded and missing that name. Kept under
@@ -183,6 +230,8 @@ class MapLibreStyleEngine : public LookupTableStyleEngine {
   // did style something. Together they answer "is this style aimed at this
   // tileset?" without looking at a picture.
   size_t layers_that_drew() const;
+  /// Ids of the layers counted by layers_that_drew(), in style order.
+  std::vector<std::string> layer_ids_that_drew() const;
   // text-field tokens that named a tag the feature did not have. An empty
   // label is skipped rather than drawn blank.
   size_t empty_labels() const;
@@ -219,6 +268,9 @@ class MapLibreStyleEngine : public LookupTableStyleEngine {
   // The loaded sheet, looked up by BARE sprite name. nullptr when no sheet
   // loaded or the sheet has no such sprite.
   const SymbolPixmap* SpriteTile(const std::string& name) const;
+
+  /// The loaded sheet, else the fallback when the style names no sprite.
+  PngSymbolLibrary* Sheet() const;
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

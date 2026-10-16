@@ -22,14 +22,21 @@ namespace detail {
 
 class SqliteDb {
  public:
+  /// Serialized connections: a layer drawn on the render thread is also read
+  /// from the UI thread (hit tests, tool state). Apple's libsqlite3 defaults to
+  /// multi-thread mode, where that corrupts the connection.
+  static constexpr int kThreading = SQLITE_OPEN_FULLMUTEX;
+
   SqliteDb() = default;
   ~SqliteDb() { Close(); }
   SqliteDb(const SqliteDb&) = delete;
   SqliteDb& operator=(const SqliteDb&) = delete;
 
+  /// Opens or creates the database at `path`, read-write.
   Status Open(const std::string& path) {
     Close();
-    if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
+    if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | kThreading, nullptr) !=
+        SQLITE_OK) {
       std::string msg = db_ ? sqlite3_errmsg(db_) : "sqlite3_open failed";
       Close();
       return Status::Error(kIoError, "sqlite open " + path + ": " + msg);
@@ -43,7 +50,7 @@ class SqliteDb {
   // pyramid, someone else's GeoPackage), this is the right door.
   Status OpenReadOnly(const std::string& path) {
     Close();
-    if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READONLY, nullptr) !=
+    if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READONLY | kThreading, nullptr) !=
         SQLITE_OK) {
       std::string msg = db_ ? sqlite3_errmsg(db_) : "sqlite3_open_v2 failed";
       Close();

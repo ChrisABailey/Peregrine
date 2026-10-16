@@ -269,6 +269,49 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) BOOL cameraIsAnimating;
 @end
 
+/// One row of the map key: a style legend entry drawn at the map's scale,
+/// with the active rules' tier for the OSM tags it stands for.
+@interface PPLegendEntry : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+@property(nonatomic, readonly, copy) NSString *identifier;
+/// Two to four words, e.g. "Painted bike lane".
+@property(nonatomic, readonly, copy) NSString *label;
+/// The style's text: how the line is drawn and the OSM tags behind it.
+@property(nonatomic, readonly, copy) NSString *detail;
+/// How the router weighs the row, in a rider's words; empty when the row
+/// names no OSM tags.
+@property(nonatomic, readonly, copy) NSString *routerSentence;
+/// The multipliers behind `factor`, e.g. "secondary 2.5 × painted lane 0.6 = 1.5".
+@property(nonatomic, readonly, copy) NSString *termsLine;
+/// The rules' word for the row ("Preferred", "Never"); empty with no OSM tags.
+@property(nonatomic, readonly, copy) NSString *tierWord;
+/// The tier's position in the rules' `legend_tiers`, cheapest first; -1 for
+/// "Never" and for a row with no OSM tags.
+@property(nonatomic, readonly) NSInteger tierRank;
+/// Cost per metre relative to the profile's own speed; NaN when excluded or
+/// when the row has no OSM tags.
+@property(nonatomic, readonly) double factor;
+/// The zoom from which the map draws the row; negative when it never does.
+@property(nonatomic, readonly) double minZoom;
+/// The map draws the row at the scale the legend was asked for.
+@property(nonatomic, readonly, getter=isShown) BOOL shown;
+/// Every layer that draws the row's swatch drew in the last base map render,
+/// and no earlier row on the map has an identical swatch. Before the first
+/// render, `shown` stands in for the layer test.
+@property(nonatomic, readonly, getter=isOnMap) BOOL onMap;
+/// The specimen drawn by the style, `swatchPixelsPerPoint` pixels per point.
+@property(nonatomic, readonly, nullable) CGImageRef swatch;
+@property(nonatomic, readonly) double swatchPixelsPerPoint;
+@end
+
+/// A titled group of legend rows, in the style's order.
+@interface PPLegendGroup : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+@property(nonatomic, readonly, copy) NSString *title;
+@property(nonatomic, readonly, copy) NSString *subtitle;
+@property(nonatomic, readonly, copy) NSArray<PPLegendEntry *> *entries;
+@end
+
 @interface PPMap : NSObject
 
 /// Opens the bundled data pack: the directory holding `pippin.ini` and
@@ -1027,6 +1070,24 @@ NS_SWIFT_SENDABLE
 /// drops the cached base map; a no-op when the pack has no dark sheet.
 /// Render queue only, like every other call on this class.
 @property(nonatomic) BOOL darkStyle;
+
+/// The light style carries a legend (`peregrine:legend`). A launch-time
+/// constant; the dark sheet copies the light one's legend.
+@property(nonatomic, readonly) BOOL hasLegend;
+
+/// The rule file's `name` ("City Rules"), or empty. The legend's header.
+@property(nonatomic, readonly, copy) NSString *legendRulesName;
+
+/// The active style's legend at `viewport`'s scale, quantised to a quarter
+/// zoom. Each swatch is `swatchSize` points at the viewport's display scale
+/// and the current `symbolZoom`; tiers come from `routing.profile`, and
+/// `appName` is the subject of each router sentence. Swatches are cached per
+/// quarter zoom until the style, the scale's latitude band or the size
+/// changes. Empty when the style has no legend.
+- (NSArray<PPLegendGroup *> *)legendForViewport:(PPViewport *)viewport
+                                     swatchSize:(CGSize)swatchSize
+                                        appName:(NSString *)appName
+    NS_SWIFT_NAME(legend(for:swatchSize:appName:));
 
 @end
 

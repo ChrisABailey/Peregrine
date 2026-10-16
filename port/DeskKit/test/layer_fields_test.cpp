@@ -9,9 +9,12 @@
 
 #include "fv_desk_fake.h"
 #include "fv_desk_layer_fields.h"
+#include "fvkit/app/source_spec.h"
+#include "fvkit/feature/geopackage.h"
 #include "fvkit/feature/geojson.h"
 #include "fvkit/feature/templates.h"
 #include "fvkit/overlay/feature_overlay.h"
+#include "fvkit/raster.h"
 #include "scratch.h"
 
 namespace {
@@ -234,6 +237,49 @@ TEST_F(LayerFieldsTest, RenameFollowsADateRange) {
   EXPECT_EQ(fields().Field(from).range_end, "");
 }
 
+TEST_F(LayerFieldsTest, WarnsWhenAChangeBreaksTheStyle) {
+  OpenPizzaGpkg();
+  ASSERT_TRUE(fd_.Run({"overlay.fields"}).ok());
+
+  // A graduated style follows a renamed field, so renaming it breaks nothing.
+  fv::FeatureStyle graduated;
+  graduated.renderer = fv::FeatureRenderer::kGraduated;
+  graduated.field = "rating";
+  overlay_->SetStyle(graduated);
+  FieldDef r = fields().Field(2);
+  r.name = "stars";
+  ASSERT_TRUE(fields().SetField(2, r).ok());
+  EXPECT_EQ(desk().LayerFieldsLoss(), "");
+
+  // Rules name fields in their expressions, which a rename does not reach.
+  fv::FeatureStyle rules;
+  rules.renderer = fv::FeatureRenderer::kRules;
+  fv::StyleRule top;
+  top.id = "Top rated";
+  top.type = "circle";
+  top.filter = R"([">=", ["get", "rating"], 4])";
+  fv::StyleRule labels;
+  labels.id = "Names";
+  labels.type = "symbol";
+  labels.layout = R"({"text-field": ["get", "name"]})";
+  rules.rules = {top, labels};
+  overlay_->SetStyle(rules);
+  std::string loss = desk().LayerFieldsLoss();
+  EXPECT_NE(loss.find("Style rule \"Top rated\" uses the field \"rating\", which is renamed to \"stars\""),
+            std::string::npos)
+      << loss;
+  EXPECT_EQ(loss.find("Names"), std::string::npos) << loss;
+
+  ASSERT_TRUE(fields().RemoveField(0).ok());  // name
+  loss = desk().LayerFieldsLoss();
+  EXPECT_NE(loss.find("Style rule \"Names\" uses the field \"name\", which is deleted"), std::string::npos)
+      << loss;
+
+  // The warning does not stop the change, and the rules are left as they were.
+  ASSERT_TRUE(desk().ApplyLayerFields().ok());
+  EXPECT_EQ(overlay_->style().rules[0].filter, top.filter);
+}
+
 TEST(LayerFieldsChoices, ParseAndFormat) {
   std::vector<fv::FieldChoice> choices;
   ASSERT_TRUE(fv::desk::ParseChoices("ny = New York\n\n  detroit \nneapolitan=Neapolitan", &choices).ok());
@@ -272,7 +318,8 @@ TEST(NewLayer, TemplatePathAndFormat) {
 TEST(NewLayer, DeskCreatesAndOpensTheLayer) {
   fv::desk::test::Scratch scratch;
   FakeDesk fd{400, 400};
-  ASSERT_TRUE(fd.Run({"overlay.new_layer"}).ok());
+  // Overlay ▸ New ▸ Feature Layer… opens the dialog rather than an empty overlay.
+  ASSERT_TRUE(fd.Run({std::string("overlay.new.") + FeatureOverlay::kTypeId}).ok());
   EXPECT_EQ(fd.shell().new_layer_shown, 1);
   ASSERT_NE(fd.desk().new_layer(), nullptr);
   NewLayerModel& m = *fd.desk().new_layer();
@@ -295,4 +342,129 @@ TEST(NewLayer, DeskCreatesAndOpensTheLayer) {
   EXPECT_EQ(fd.desk().new_layer(), nullptr);
 }
 
+TEST(NewLayer, AddsATableToAnOpenGeoPackage) {
+  fv::desk::test::Scratch scratch;
+  FakeDesk fd{400, 400};
+  const std::string path = scratch.Path("food.gpkg");
+  fd.desk().OpenNewLayer();
+  ASSERT_TRUE(fd.desk().new_layer()->SetTemplate(2).ok());  // restaurants
+  fd.desk().new_layer()->SetPath(path);
+  ASSERT_TRUE(fd.desk().CreateNewLayer().ok());
+  auto* food = dynamic_cast<FeatureOverlay*>(fd.desk().overlays().current());
+  ASSERT_NE(food, nullptr);
+
+  // The source menu's New Layer… starts the dialog on this package.
+  bool listed = false;
+  for (const fv::desk::MenuItem& m : fd.desk().SourceMenu()) listed = listed || m.command_id == "layers.source.new_layer";
+  EXPECT_TRUE(listed);
+  ASSERT_TRUE(fd.Run({"layers.source.new_layer"}).ok());
+  NewLayerModel& m = *fd.desk().new_layer();
+  EXPECT_EQ(m.target(), fv::desk::NewLayerTarget::kPackage);
+  EXPECT_EQ(m.path(), path);
+  EXPECT_EQ(m.SetFormat(FeatureOverlay::kFormatGeoJson).code, fv::kInvalidArg);
+  ASSERT_TRUE(m.SetTemplate(3).ok());  // rivers
+  ASSERT_TRUE(fd.desk().CreateNewLayer().ok());
+
+  auto* rivers = dynamic_cast<FeatureOverlay*>(fd.desk().overlays().current());
+  ASSERT_NE(rivers, nullptr);
+  EXPECT_EQ(rivers->Name(), "Rivers");
+  EXPECT_EQ(rivers->file_spec(), fv::app::JoinSourceSpec(path, "rivers"));
+  EXPECT_EQ(rivers->layer()->Schema().geometry_type, fv::GeometryType::kLineString);
+  // The first layer now names its own table, and both share one source.
+  EXPECT_EQ(food->file_spec(), fv::app::JoinSourceSpec(path, "food"));
+  size_t shared = 0;
+  for (const fv::desk::SourceRow& r : fd.desk().sources().Rows())
+    if (r.path == path) shared = r.layers.size();
+  EXPECT_EQ(shared, 2u);
+
+  // A second layer of the same name gets its own table.
+  fd.desk().OpenNewLayer(path);
+  ASSERT_TRUE(fd.desk().new_layer()->SetTemplate(3).ok());
+  const fv::Status again = fd.desk().CreateNewLayer();
+  ASSERT_TRUE(again.ok()) << again.message;
+  EXPECT_EQ(dynamic_cast<FeatureOverlay*>(fd.desk().overlays().current())->file_spec(),
+            fv::app::JoinSourceSpec(path, "rivers_2"));
+  std::shared_ptr<fv::GeoPackage> package;
+  ASSERT_TRUE(fv::GeoPackage::Open(path, false, &package).ok());
+  std::vector<fv::GeoPackageLayerInfo> tables;
+  ASSERT_TRUE(package->Layers(&tables).ok());
+  EXPECT_EQ(tables.size(), 3u);
+  package.reset();
+
+  // A layer with unsaved edits does not stop a table being added, and its edits stay unsaved.
+  fv::Feature f;
+  f.geometry = fv::Geometry::Point({32.78, -79.94});
+  f.values.resize(food->layer()->Schema().fields.size());
+  f.values[food->layer()->Schema().Find("name")] = std::string("Monza");
+  const fv::Status inserted = food->layer()->Insert(&f);
+  ASSERT_TRUE(inserted.ok()) << inserted.message;
+  const size_t food_count = food->layer()->Count();
+  fd.desk().OpenNewLayer(path);
+  ASSERT_TRUE(fd.desk().new_layer()->SetTemplate(3).ok());
+  const fv::Status third = fd.desk().CreateNewLayer();
+  ASSERT_TRUE(third.ok()) << third.message;
+  EXPECT_EQ(food->layer()->Count(), food_count);
+  auto* gp_food = dynamic_cast<fv::GeoPackageFeatureLayer*>(food->layer().get());
+  ASSERT_NE(gp_food, nullptr);
+  EXPECT_TRUE(gp_food->HasEdits());
+}
+
+TEST(NewLayer, AnUnsavedLayerHasItsSchemaAndNoFile) {
+  FakeDesk fd{400, 400};
+  fd.desk().OpenNewLayer();
+  NewLayerModel& m = *fd.desk().new_layer();
+  ASSERT_TRUE(m.SetTemplate(2).ok());
+  m.SetTarget(fv::desk::NewLayerTarget::kUnsaved);
+  ASSERT_TRUE(m.Validate().ok());  // no path needed
+  ASSERT_TRUE(fd.desk().CreateNewLayer().ok());
+  auto* overlay = dynamic_cast<FeatureOverlay*>(fd.desk().overlays().current());
+  ASSERT_NE(overlay, nullptr);
+  EXPECT_EQ(overlay->Name(), "Restaurants");
+  EXPECT_EQ(overlay->layer()->Schema(), fv::FindFeatureLayerTemplate("restaurants")->schema);
+  EXPECT_TRUE(overlay->file_spec().empty());
+  EXPECT_FALSE(overlay->has_been_saved());
+}
+
 }  // namespace
+
+TEST(NewLayer, AddPointOnATableAddedToAPackage) {
+  fv::desk::test::Scratch scratch;
+  FakeDesk fd{400, 400};
+  fd.desk().GoTo(fv::GeoPoint{32.80, -79.90}, 50000.0);
+  const std::string path = scratch.Path("rivers.gpkg");
+  fd.desk().OpenNewLayer();
+  ASSERT_TRUE(fd.desk().new_layer()->SetTemplate(3).ok());  // rivers
+  fd.desk().new_layer()->SetPath(path);
+  ASSERT_TRUE(fd.desk().CreateNewLayer().ok());
+  fd.desk().OpenNewLayer(path);
+  ASSERT_TRUE(fd.desk().new_layer()->SetTemplate(2).ok());  // restaurants
+  ASSERT_TRUE(fd.desk().CreateNewLayer().ok());
+  auto* food = dynamic_cast<FeatureOverlay*>(fd.desk().overlays().current());
+  ASSERT_NE(food, nullptr);
+  ASSERT_EQ(food->layer()->Schema().geometry_type, fv::GeometryType::kPoint);
+  // As in the Layers panel: the rivers layer is current while the editor starts,
+  // then the restaurants row is picked.
+  auto select = [&](bool want_food) {
+    for (size_t r = 0; r < 2; ++r) {
+      ASSERT_TRUE(fd.desk().SelectLayer(r).ok());
+      if ((fd.desk().overlays().current() == food) == want_food) return;
+    }
+    FAIL() << "no such row";
+  };
+  select(false);
+  fv::PixelBuffer out;
+  ASSERT_TRUE(fd.Render(&out).ok());
+  if (fd.shell().editor_mode != FeatureOverlay::kTypeId)
+    ASSERT_TRUE(fd.Run({std::string("editor.mode.") + FeatureOverlay::kTypeId}).ok());
+  select(true);
+  ASSERT_TRUE(fd.Render(&out).ok());
+  std::string add;
+  for (const std::string& id : fd.desk().commands().IdsWithPrefix("editor.tool."))
+    if (fd.desk().commands().Find(id)->label == "Add Point") add = id;
+  ASSERT_FALSE(add.empty());
+  ASSERT_TRUE(fd.desk().commands().IsEnabled(add));
+  ASSERT_TRUE(fd.Run({add}).ok());
+  EXPECT_TRUE(fd.desk().OverlayPointerDown(200, 200));
+  fd.desk().OverlayPointerUp(200, 200);
+  EXPECT_EQ(food->layer()->Count(), 1u);
+}

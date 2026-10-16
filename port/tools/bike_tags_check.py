@@ -22,7 +22,17 @@ Usage (from the repo root):
 
 Needs `osmium` (osmium-tool) on the PATH; the extract is converted to OSM XML
 in a temporary directory.
+
+With `--legend STYLE`, checks a style's `peregrine:legend` instead: each
+entry's raw `osm` tags are run through the real `process-peregrine.lua` (via
+`legend_way_harness.lua`, needs `lua` on the PATH), and the tile attributes it
+writes are compared with the entry's specimen `tags`. A specimen must carry
+every attribute the Lua writes that the style reads on that layer.
+
+    python3 port/tools/bike_tags_check.py --legend port/Osm/styles/atlanta-streets.json
 """
+
+import json
 
 import argparse
 import collections
@@ -50,6 +60,15 @@ GRAPH_RANK = {"track": 4, "lane": 3, "shared_lane": 1}
 LUA_TO_PROVISION = {"track": "track", "lane": "lane", "share_busway": "lane", "shared_lane": "shared_lane", None: None}
 
 ROUTE_RANK = {"local": 1, "regional": 2, "national": 3}
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROFILE = os.path.join(HERE, "..", "Osm", "process-peregrine.lua")
+HARNESS = os.path.join(HERE, "legend_way_harness.lua")
+
+# The route relation each `peregrine:route_network` pseudo-tag stands for.
+ROUTE_RELATION = {"national": "ncn", "regional": "rcn", "local": "lcn"}
+
+LEGACY_KEY_OPS = {"==", "!=", "<", "<=", ">", ">=", "in", "!in", "has", "!has"}
 
 
 def lua_posted_kph(v):
@@ -179,11 +198,99 @@ def read_extract(pbf, workdir):
     return ways, route_networks
 
 
+def keys_read(value, out):
+    """Adds to `out` the attribute keys a filter or paint value reads."""
+    if isinstance(value, dict):
+        for v in value.values():
+            keys_read(v, out)
+    elif isinstance(value, list):
+        if len(value) >= 2 and isinstance(value[0], str) and isinstance(value[1], str):
+            if value[0] in ("get", "has", "!has") or value[0] in LEGACY_KEY_OPS:
+                if not value[1].startswith("$"):
+                    out.add(value[1])
+        for v in value:
+            keys_read(v, out)
+
+
+def lua_literal(v):
+    """A Python str or dict of strs as a Lua literal."""
+    if isinstance(v, dict):
+        return "{" + ", ".join("[%s]=%s" % (lua_literal(k), lua_literal(x)) for k, x in v.items()) + "}"
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def check_legend(style_path):
+    """Runs each legend entry's OSM tags through the profile; returns the mismatch count."""
+    with open(style_path) as f:
+        style = json.load(f)
+    legend = style.get("metadata", {}).get("peregrine:legend")
+    if legend is None:
+        print(f"{style_path}: no peregrine:legend")
+        return 1
+    read = collections.defaultdict(set)
+    for layer in style["layers"]:
+        if "source-layer" in layer:
+            for part in ("filter", "paint", "layout"):
+                keys_read(layer.get(part), read[layer["source-layer"]])
+
+    entries = [e for g in legend["groups"] for e in g["entries"]]
+    cases = []
+    for e in entries:
+        tags = dict(e.get("osm", {}))
+        network = tags.pop("peregrine:route_network", None)
+        rels = [{"type": "route", "route": "bicycle", "network": ROUTE_RELATION[network]}] if network else []
+        cases.append("{id=%s, tags=%s, relations={%s}}" % (
+            lua_literal(e["id"]), lua_literal(tags), ", ".join(lua_literal(r) for r in rels)))
+
+    with tempfile.TemporaryDirectory() as workdir:
+        cases_path = os.path.join(workdir, "cases.lua")
+        with open(cases_path, "w") as f:
+            f.write("return {\n  " + ",\n  ".join(cases) + "\n}\n")
+        run = subprocess.run(["lua", HARNESS, PROFILE, cases_path],
+                             capture_output=True, text=True)
+    if run.returncode != 0:
+        print(run.stderr)
+        return 1
+
+    written = collections.defaultdict(lambda: collections.defaultdict(dict))
+    for line in run.stdout.splitlines():
+        eid, layer, key, value = line.split("\t")
+        written[eid][layer]
+        if key:
+            written[eid][layer][key] = value
+
+    problems = 0
+    for e in entries:
+        if not e.get("osm"):
+            continue
+        for sp in e["specimen"]:
+            layer, want = sp["layer"], {k: str(v) for k, v in sp.get("tags", {}).items()}
+            if layer not in written[e["id"]]:
+                print(f"{e['id']}: the profile writes nothing to {layer} for {e['osm']}")
+                problems += 1
+                continue
+            got = written[e["id"]][layer]
+            for k, v in want.items():
+                if got.get(k) != v:
+                    print(f"{e['id']}: {layer}.{k} is {got.get(k)!r} from the profile, {v!r} in the specimen")
+                    problems += 1
+            for k in sorted(read[layer] & set(got) - set(want)):
+                print(f"{e['id']}: the profile writes {layer}.{k}={got[k]!r}, which the style reads, and the specimen omits it")
+                problems += 1
+    print(f"{len(entries)} legend entries checked, {problems} mismatches")
+    return 1 if problems else 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("pbf", help="OSM extract (.osm.pbf)")
+    ap.add_argument("pbf", nargs="?", help="OSM extract (.osm.pbf)")
+    ap.add_argument("--legend", metavar="STYLE", help="check a style's legend against the profile")
     ap.add_argument("--show", type=int, default=20, help="ways to print per category")
     args = ap.parse_args(argv)
+    if args.legend:
+        return check_legend(args.legend)
+    if not args.pbf:
+        ap.error("an OSM extract or --legend is required")
 
     with tempfile.TemporaryDirectory() as workdir:
         ways, route_networks = read_extract(args.pbf, workdir)

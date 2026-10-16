@@ -21,6 +21,8 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let geometryPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let nameField = NSTextField(string: "")
     private let formatPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let targetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let chooseButton = NSButton(title: "Choose\u{2026}", target: nil, action: nil)
     private let pathLabel = NSTextField(labelWithString: "")
     private let fieldsLabel = NSTextField(wrappingLabelWithString: "")
     private let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -44,8 +46,13 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
         geometryPopup.selectItem(at: Int(host.NewLayerGeometry()))
         nameField.stringValue = String(host.NewLayerName())
         formatPopup.selectItem(at: Int(host.NewLayerFormat()))
+        let target = host.NewLayerTarget()
+        targetPopup.selectItem(at: Int(target))
+        // Adding to a GeoPackage makes a table; an unsaved layer has no format or file yet.
+        formatPopup.isEnabled = target == 0
+        chooseButton.isEnabled = target != 2
         let path = String(host.NewLayerPath())
-        pathLabel.stringValue = path.isEmpty ? "Not chosen" : path
+        pathLabel.stringValue = target == 2 ? "Chosen at the first Save" : path.isEmpty ? "Not chosen" : path
         pathLabel.textColor = path.isEmpty ? .secondaryLabelColor : .labelColor
         let fields = String(host.NewLayerFieldSummary())
         fieldsLabel.stringValue = fields.isEmpty ? "No fields" : fields
@@ -55,6 +62,9 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
         for i in 0..<host.NewLayerTemplateCount() { templatePopup.addItem(withTitle: String(host.NewLayerTemplateTitle(i))) }
         for k in 0..<host.NewLayerGeometryCount() { geometryPopup.addItem(withTitle: String(host.NewLayerGeometryTitle(k))) }
         formatPopup.addItems(withTitles: ["GeoPackage", "GeoJSON"])
+        targetPopup.addItems(withTitles: ["A new file", "An existing GeoPackage", "Not yet"])
+        targetPopup.target = self
+        targetPopup.action = #selector(targetChanged)
         templatePopup.target = self
         templatePopup.action = #selector(templateChanged)
         geometryPopup.target = self
@@ -63,8 +73,9 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
         formatPopup.action = #selector(formatChanged)
         nameField.delegate = self
         pathLabel.lineBreakMode = .byTruncatingMiddle
-        let choose = NSButton(title: "Choose\u{2026}", target: self, action: #selector(choosePath))
-        let fileRow = NSStackView(views: [pathLabel, choose])
+        chooseButton.target = self
+        chooseButton.action = #selector(choosePath)
+        let fileRow = NSStackView(views: [pathLabel, chooseButton])
         fileRow.orientation = .horizontal
         fieldsLabel.textColor = .secondaryLabelColor
 
@@ -72,6 +83,7 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
             [NSTextField(labelWithString: "Start from"), templatePopup],
             [NSTextField(labelWithString: "Geometry"), geometryPopup],
             [NSTextField(labelWithString: "Name"), nameField],
+            [NSTextField(labelWithString: "Save in"), targetPopup],
             [NSTextField(labelWithString: "Format"), formatPopup],
             [NSTextField(labelWithString: "File"), fileRow],
             [NSTextField(labelWithString: "Fields"), fieldsLabel],
@@ -124,6 +136,8 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func geometryChanged() { report(host.SetNewLayerGeometry(Int32(geometryPopup.indexOfSelectedItem))) }
 
+    @objc private func targetChanged() { report(host.SetNewLayerTarget(Int32(targetPopup.indexOfSelectedItem))) }
+
     @objc private func formatChanged() { report(host.SetNewLayerFormat(Int32(formatPopup.indexOfSelectedItem))) }
 
     func controlTextDidEndEditing(_ obj: Notification) {
@@ -133,6 +147,7 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func choosePath() {
         guard let window else { return }
+        if host.NewLayerTarget() == 1 { return chooseGeoPackage(in: window) }
         let panel = NSSavePanel()
         let geojson = host.NewLayerFormat() == 1
         let ext = geojson ? "geojson" : "gpkg"
@@ -145,6 +160,19 @@ final class NewLayerWindowController: NSWindowController, NSWindowDelegate, NSTe
             panel.directoryURL = url.deletingLastPathComponent()
             panel.nameFieldStringValue = url.lastPathComponent
         }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.host.SetNewLayerPath(std.string(url.path))
+            self.report(std.string(""))
+        }
+    }
+
+    /// Picks the existing GeoPackage a table is added to.
+    private func chooseGeoPackage(in window: NSWindow) {
+        let panel = NSOpenPanel()
+        if let type = UTType(filenameExtension: "gpkg") { panel.allowedContentTypes = [type] }
+        let current = String(host.NewLayerPath())
+        if !current.isEmpty { panel.directoryURL = URL(fileURLWithPath: current).deletingLastPathComponent() }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
             self.host.SetNewLayerPath(std.string(url.path))

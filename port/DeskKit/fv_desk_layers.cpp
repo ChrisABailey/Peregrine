@@ -7,6 +7,7 @@
 #include "fvkit/app/capabilities.h"
 #include "fvkit/app/source_spec.h"
 #include "fvkit/app/type_registry.h"
+#include "fvkit/overlay/feature_overlay.h"
 
 namespace fv {
 namespace desk {
@@ -51,6 +52,7 @@ std::vector<LayerRow> LayersModel::Rows() const {
       r.dirty = p->is_dirty();
       r.source = app::SplitSourceSpec(p->file_spec()).path;
     }
+    if (const auto* f = dynamic_cast<const FeatureOverlay*>(o.get())) r.rules = StyleRulesModel::Rows(*f);
     rows.push_back(std::move(r));
   }
   return rows;

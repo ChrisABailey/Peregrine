@@ -111,6 +111,12 @@ std::vector<std::string> RoutePlanner::profile_names() const {
   return rules_->rules()->names();
 }
 
+std::shared_ptr<const routing::RouteRules> RoutePlanner::rules() const {
+  if (rules_path_.empty()) return routing::RouteRules::Builtin();
+  if (!rules_) rules_.reset(new routing::RouteRulesFile(rules_path_));
+  return rules_->rules();
+}
+
 Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
                                   routing::RouteOptions* out) const {
   out->snap_meters = in.snap_meters;

@@ -59,6 +59,8 @@ struct MapMenuButton: View, Equatable {
     let onExportRide: () -> Void
     /// Opens the tide card; nil hides the item, for a pack with no table.
     let onTides: (() -> Void)?
+    /// Opens the map key; nil hides the item, for a style with no legend.
+    let onMapKey: (() -> Void)?
     let onAbout: () -> Void
     let onReportProblem: () -> Void
 
@@ -82,6 +84,11 @@ struct MapMenuButton: View, Equatable {
             if let onTides {
                 Button(action: onTides) {
                     Label("Tides", systemImage: "water.waves")
+                }
+            }
+            if let onMapKey {
+                Button(action: onMapKey) {
+                    Label("Map Key", systemImage: "list.bullet.rectangle")
                 }
             }
             Button(action: onExportRide) {
@@ -123,6 +130,7 @@ struct MapMenuButton: View, Equatable {
             && a.symbolStepLabels == b.symbolStepLabels
             && a.units == b.units
             && (a.onTides == nil) == (b.onTides == nil)
+            && (a.onMapKey == nil) == (b.onMapKey == nil)
     }
 }
 

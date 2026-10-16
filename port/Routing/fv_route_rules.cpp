@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -118,7 +119,7 @@ bool KnownProfileKey(const std::string& k) {
          k == "beach_prefer_factor" || k == "unlisted_classes" || k == "classes" ||
          k == "class_kph" || k == "bike_lane_factor" || k == "speed_factor" ||
          k == "bike_route_factor" || k == "surface_factor" || k == "signal_seconds" ||
-         k == "crossing_seconds";
+         k == "crossing_seconds" || k == "legend_tiers" || k == "legend_baseline";
 }
 
 Status ParseMode(const Json& v, const std::string& where, TravelMode* out) {
@@ -182,6 +183,34 @@ Status ParseWeight(const Json& v, const std::string& where, const std::string& w
   const double w = v.get<double>();
   if (!(w > 0.0)) return Fail(where, what + ": weight must be greater than zero");
   *out = w;
+  return Status::Ok();
+}
+
+/// `legend_tiers`: [[bound, "word"], ...] with ascending positive bounds, the
+/// last of which is null (no upper bound).
+Status ParseLegendTiers(const Json& v, const std::string& where,
+                        std::vector<std::pair<double, std::string>>* out) {
+  const char* kShape = "'legend_tiers' must be a list of [bound, \"word\"] pairs ending in [null, \"word\"]";
+  if (!v.is_array() || v.empty()) return Fail(where, kShape);
+  std::vector<std::pair<double, std::string>> tiers;
+  for (size_t i = 0; i < v.size(); ++i) {
+    const Json& t = v[i];
+    if (!t.is_array() || t.size() != 2 || !t[1].is_string() || t[1].get<std::string>().empty())
+      return Fail(where, kShape);
+    const bool last = i + 1 == v.size();
+    double bound = std::numeric_limits<double>::infinity();
+    if (last) {
+      if (!t[0].is_null()) return Fail(where, kShape);
+    } else {
+      if (!t[0].is_number()) return Fail(where, kShape);
+      bound = t[0].get<double>();
+      const double floor = tiers.empty() ? 0.0 : tiers.back().first;
+      if (!(bound > floor))
+        return Fail(where, "'legend_tiers' bounds must be positive and ascending");
+    }
+    tiers.emplace_back(bound, t[1].get<std::string>());
+  }
+  *out = std::move(tiers);
   return Status::Ok();
 }
 
@@ -279,6 +308,22 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
       if (!it.value().is_number() || !(it.value().get<double>() > 0.0))
         return Fail(where, "'class_kph." + it.key() + "' must be a speed greater than zero");
       p.class_kph[static_cast<size_t>(klass)] = it.value().get<double>();
+    }
+  }
+
+  if (obj.contains("legend_tiers")) {
+    const Status s = ParseLegendTiers(obj["legend_tiers"], where, &p.legend_tiers);
+    if (!s.ok()) return s;
+  }
+  if (obj.contains("legend_baseline")) {
+    const Json& o = obj["legend_baseline"];
+    if (!o.is_object() || o.empty())
+      return Fail(where, "'legend_baseline' must be a non-empty object of OSM tags");
+    p.legend_baseline.clear();
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      if (!it.value().is_string())
+        return Fail(where, "'legend_baseline." + it.key() + "' must be a string");
+      p.legend_baseline.push_back(OsmTag{it.key(), it.value().get<std::string>()});
     }
   }
 
@@ -435,7 +480,8 @@ Status RouteRules::Parse(const std::string& text, const std::string& origin,
   }
   if (!root.is_object()) return Fail(origin, "root is not an object");
   for (auto it = root.begin(); it != root.end(); ++it) {
-    if (it.key() != "version" && it.key() != "default_profile" && it.key() != "profiles")
+    if (it.key() != "version" && it.key() != "name" && it.key() != "default_profile" &&
+        it.key() != "profiles")
       return Fail(origin, "unknown key '" + it.key() + "'");
   }
   if (!root.contains("version") || !root["version"].is_number_integer())
@@ -486,6 +532,11 @@ Status RouteRules::Parse(const std::string& text, const std::string& origin,
   }
 
   if (rules->profiles_.empty()) return Fail(origin, "'profiles' is empty");
+
+  if (root.contains("name")) {
+    if (!root["name"].is_string()) return Fail(origin, "'name' must be a string");
+    rules->name_ = root["name"].get<std::string>();
+  }
 
   rules->default_profile_name_ = rules->profiles_.front().name;
   if (root.contains("default_profile")) {
@@ -633,7 +684,13 @@ Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::
                                         rules->origin());
   // Aliasing constructor: the profile keeps the whole rule set alive, so a
   // reload cannot free the profile a route is running on.
-  options->profile = std::shared_ptr<const RouteProfile>(rules, p);
+  ApplyProfile(std::shared_ptr<const RouteProfile>(rules, p), options);
+  return Status::Ok();
+}
+
+void ApplyProfile(std::shared_ptr<const RouteProfile> profile, RouteOptions* options) {
+  const RouteProfile* p = profile.get();
+  options->profile = std::move(profile);
   options->driving = p->mode == TravelMode::kMotorVehicle;
   options->cycle_only = p->mode == TravelMode::kBicycle;
   options->metric = p->metric;
@@ -644,7 +701,6 @@ Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::
   options->golf_path_penalty = p->golf_path_penalty;
   options->beach_penalty = p->beach_penalty;
   options->beach_prefer_factor = p->beach_prefer_factor;
-  return Status::Ok();
 }
 
 }  // namespace routing

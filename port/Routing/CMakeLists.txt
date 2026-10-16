@@ -19,6 +19,7 @@ add_library(fv_routing STATIC
   fv_road_graph.cpp
   fv_road_graph_beach.cpp
   fv_road_network.cpp
+  fv_route_legend.cpp
   fv_route_rules.cpp
   fv_router.cpp
 )
@@ -48,6 +49,7 @@ if(FVW_BUILD_TESTS)
     test/osm_reader_test.cpp
     test/road_graph_test.cpp
     test/road_snap_test.cpp
+    test/route_legend_test.cpp
     test/route_rules_test.cpp
     test/router_test.cpp
   )
@@ -59,11 +61,13 @@ if(FVW_BUILD_TESTS)
   # itself -- the adapter needs nothing from fvkit but headers (see the inline
   # ProjectOntoSegment), which is what keeps fvgraph from linking the map
   # engine. The dependency runs one way: fvkit does not link the router.
-  target_link_libraries(fv_routing_test PRIVATE fv_routing fv_zlib fv_fvkit
+  target_link_libraries(fv_routing_test PRIVATE fv_routing fv_zlib fv_fvkit fv_json
                         GTest::gtest_main)
   target_compile_definitions(fv_routing_test PRIVATE
     FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}"
-    FV_CITY_ROUTE_RULES_FILE="${FV_CITY_ROUTE_RULES_FILE}")
+    FV_CITY_ROUTE_RULES_FILE="${FV_CITY_ROUTE_RULES_FILE}"
+    FV_ATLANTA_STYLE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../Osm/styles/atlanta-streets.json"
+    FV_KIAWAH_STYLE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../Osm/styles/kiawah-trails.json")
   gtest_discover_tests(fv_routing_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()
