@@ -89,6 +89,16 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) double headingDegrees;
 @end
 
+/// One point of the route's elevation profile.
+NS_SWIFT_SENDABLE
+@interface PPElevationSample : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// Distance from the route's start, metres.
+@property(nonatomic, readonly) double alongMeters;
+/// Ground elevation, metres.
+@property(nonatomic, readonly) double elevationMeters;
+@end
+
 /// The route, photographed. Every field is meaningful when `isCalculated` is
 /// NO — that is the state the status line exists for.
 NS_SWIFT_SENDABLE
@@ -109,6 +119,9 @@ NS_SWIFT_SENDABLE
 
 /// The route's own beach setting.
 @property(nonatomic, readonly) PPBeachUse beachUse;
+
+/// The route's own "Avoid hills" setting.
+@property(nonatomic, readonly) BOOL avoidHills;
 
 /// The beach stretches the planned route rides, in travel order, each with
 /// the tide's verdict for `departTime`.
@@ -145,6 +158,16 @@ NS_SWIFT_SENDABLE
 
 @property(nonatomic, readonly) double lengthMeters;
 @property(nonatomic, readonly) NSTimeInterval seconds;
+
+/// The pack's road graph carries elevation and the route followed roads all
+/// the way. NO on a flat pack, where the sheet shows no profile at all.
+@property(nonatomic, readonly) BOOL hasElevation;
+/// Metres climbed and descended in the direction of travel.
+@property(nonatomic, readonly) double climbMeters;
+@property(nonatomic, readonly) double descentMeters;
+/// Elevation at every junction along the route, start to end. Empty when
+/// `hasElevation` is NO.
+@property(nonatomic, readonly, copy) NSArray<PPElevationSample *> *elevationProfile;
 
 /// The planner's own sentence, or empty. Shown by the sheet: the overlay's
 /// on-canvas status line is off, because route.py draws it at (10, 20), which

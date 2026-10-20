@@ -320,9 +320,6 @@ TEST_F(RuleStyleTest, AConstantStartsFromTheEngineDefaultAndTextTakesAnOffset) {
   ASSERT_TRUE(desk().AddRule(Row(), "Names", "symbol").ok());
   ASSERT_TRUE(desk().OpenRuleStyle().ok());
   auto& m = *desk().rule_style();
-  // No icon properties: a feature layer has no sprite sheet to name.
-  for (const RuleProperty& p : m.properties()) EXPECT_EQ(p.key.rfind("icon-", 0), std::string::npos) << p.key;
-
   const size_t halo = K("text-halo-width");
   ASSERT_TRUE(m.SetMode(halo, RuleValueMode::kDefault).ok());
   ASSERT_TRUE(m.SetMode(halo, RuleValueMode::kConstant).ok());
@@ -346,6 +343,90 @@ TEST_F(RuleStyleTest, AConstantStartsFromTheEngineDefaultAndTextTakesAnOffset) {
   EXPECT_EQ(layout["text-offset"], json::parse("[0,-1.2]"));
   EXPECT_EQ(layout["text-anchor"], "bottom");
   EXPECT_EQ(fv::desk::ReadRuleValue(Prop("symbol", "text-offset"), "[0,-1.2]").constant, "0 -1.2");
+}
+
+TEST_F(RuleStyleTest, AnIconSizeAndColourSurviveSaveAndReopen) {
+  ASSERT_TRUE(desk().AddRule(Row(), "Marks", "symbol").ok());
+  ASSERT_TRUE(desk().OpenRuleStyle().ok());
+  auto& m = *desk().rule_style();
+  const size_t icon = K("icon-image");
+  EXPECT_EQ(m.properties()[icon].page, "Icon");
+  ASSERT_TRUE(m.properties()[icon].icons);
+  EXPECT_EQ(m.properties()[icon].choices, fv::desk::RuleIconNames());
+  EXPECT_EQ(m.value(icon).mode, RuleValueMode::kDefault);
+
+  RulePropertyValue v;
+  v.mode = RuleValueMode::kConstant;
+  v.constant = "no-such-icon";
+  EXPECT_EQ(m.SetValue(icon, v).code, fv::kInvalidArg);
+  v.constant = "restaurant";
+  ASSERT_TRUE(m.SetValue(icon, v).ok());
+  v.constant = "1.5";
+  ASSERT_TRUE(m.SetValue(K("icon-size"), v).ok());
+  v.constant = "#c81e1e";
+  ASSERT_TRUE(m.SetValue(K("icon-color"), v).ok());
+  ASSERT_TRUE(desk().ApplyRuleStyle().ok());
+  ASSERT_TRUE(fd_.Run({"file.save"}).ok());
+  ASSERT_TRUE(fd_.shell().errors.empty()) << fd_.shell().errors[0].message;
+
+  auto reopened = std::make_shared<FeatureOverlay>();
+  ASSERT_TRUE(reopened->FileOpen(path_).ok());
+  std::shared_ptr<fv::desk::RuleStyleModel> read;
+  ASSERT_TRUE(fv::desk::RuleStyleModel::Open(reopened, "Marks", &read).ok());
+  const auto at = [&read](const std::string& key) {
+    for (size_t k = 0; k < read->properties().size(); ++k)
+      if (read->properties()[k].key == key) return read->value(k);
+    ADD_FAILURE() << key;
+    return RulePropertyValue();
+  };
+  EXPECT_EQ(at("icon-image").mode, RuleValueMode::kConstant);
+  EXPECT_EQ(at("icon-image").constant, "restaurant");
+  EXPECT_EQ(at("icon-size").constant, "1.5");
+  EXPECT_EQ(at("icon-color").constant, "#c81e1e");
+  EXPECT_EQ(at("icon-opacity").mode, RuleValueMode::kDefault);
+}
+
+TEST_F(RuleStyleTest, ACircleTurnedSymbolDrawsTheMatchingIcon) {
+  ASSERT_TRUE(desk().AddRule(Row(), "Dots", "circle").ok());
+  ASSERT_TRUE(desk().SetRuleType(Row(), 0, "symbol").ok());
+  json paint = json::parse(Rule("Dots").paint);
+  json layout = json::parse(Rule("Dots").layout);
+  EXPECT_EQ(layout["icon-image"], "circle");
+  EXPECT_EQ(paint["icon-color"], "#dc3c28");  // the new circle rule's fill
+  EXPECT_DOUBLE_EQ(layout["icon-size"].get<double>(), 0.64);  // radius 4.5: 9 px of the 14 px icon
+  EXPECT_EQ(layout.count("text-field"), 0u);
+
+  // A square circle becomes the square icon.
+  ASSERT_TRUE(desk().SetRuleType(Row(), 0, "circle").ok());
+  ASSERT_TRUE(desk().OpenRuleStyle().ok());
+  RulePropertyValue v;
+  v.mode = RuleValueMode::kConstant;
+  v.constant = "square";
+  ASSERT_TRUE(desk().rule_style()->SetValue(K("fv-circle-shape"), v).ok());
+  v.constant = "6";
+  ASSERT_TRUE(desk().rule_style()->SetValue(K("circle-radius"), v).ok());
+  ASSERT_TRUE(desk().ApplyRuleStyle().ok());
+  ASSERT_TRUE(desk().SetRuleType(Row(), 0, "symbol").ok());
+  layout = json::parse(Rule("Dots").layout);
+  EXPECT_EQ(layout["icon-image"], "square");
+  EXPECT_DOUBLE_EQ(layout["icon-size"].get<double>(), 1.0);
+  EXPECT_EQ(desk().undo().UndoLabel(), "Change Rule Type");
+}
+
+TEST(RuleIcon, APreviewIsTintedAndFitted) {
+  const std::vector<std::string>& names = fv::desk::RuleIconNames();
+  ASSERT_GT(names.size(), 200u);
+  EXPECT_TRUE(std::is_sorted(names.begin(), names.end()));
+  fv::PixelBuffer buf;
+  ASSERT_TRUE(fv::desk::RenderRuleIcon("circle", 24, 0xc81e1eff, &buf).ok());
+  ASSERT_EQ(buf.Width(), 24);
+  ASSERT_EQ(buf.Height(), 24);
+  const unsigned char* centre = buf.Row(12) + 4 * 12;
+  EXPECT_EQ(centre[0], 0xc8);
+  EXPECT_EQ(centre[1], 0x1e);
+  EXPECT_EQ(centre[3], 0xff);
+  EXPECT_EQ(buf.Row(0)[3], 0);  // the corner is outside the circle
+  EXPECT_EQ(fv::desk::RenderRuleIcon("no-such-icon", 24, 0, &buf).code, fv::kNotFound);
 }
 
 TEST_F(RuleStyleTest, PagesFollowAnUneditedRuleAndCloseWhenItGoes) {

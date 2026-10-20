@@ -123,6 +123,7 @@ final class CommandToolbarItem: NSToolbarItem {
             "leg_type": "arrow.triangle.swap",
             "follow_roads": "car",
             "follow_roads_bicycle": "bicycle",
+            "avoid_hills": "mountain.2",
             "straight_legs": "line.diagonal",
             "labels": "textformat",
             "select": "cursorarrow",

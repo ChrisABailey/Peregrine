@@ -5,6 +5,7 @@
 #include "fv_desk_style_rules.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <nlohmann/json.hpp>
 
@@ -46,6 +47,26 @@ void DefaultStyle(const std::string& type, const std::string& label_field, std::
   }
   *paint = p.dump();
   *layout = l.dump();
+}
+
+/// Turns a circle rule into a symbol rule drawing the matching Maki shape in
+/// the circle's colour and opacity at about the circle's size, with no label.
+void CircleToIcon(StyleRule* rule) {
+  const json old = json::parse(rule->paint, nullptr, /*allow_exceptions=*/false);
+  const auto member = [&old](const char* key) { return old.is_object() && old.contains(key) ? old[key] : json(); };
+  const bool square = member("fv-circle-shape") == "square";
+  // The engine's default radius stands in for one that varies.
+  const json radius = member("circle-radius");
+  const double r = radius.is_number() ? radius.get<double>() : 5.0;
+  // At icon-size 1 the Maki circle is 14 px across and the square 12 px.
+  const double size = std::round(2 * r / (square ? 12.0 : 14.0) * 100) / 100;
+  json paint = {{"icon-color", member("circle-color").is_null() ? json("#000000") : member("circle-color")}};
+  if (!member("circle-opacity").is_null()) paint["icon-opacity"] = member("circle-opacity");
+  const json layout = {{"icon-image", square ? "square" : "circle"}, {"icon-size", size}};
+  rule->paint = paint.dump();
+  rule->layout = layout.dump();
+  rule->type = "symbol";
+  rule->facet.clear();
 }
 
 bool IsRuleType(const std::string& type) {
@@ -246,6 +267,10 @@ Status StyleRulesModel::SetType(const std::shared_ptr<FeatureOverlay>& overlay, 
     if (const char* from = ColorKey(rule.type)) {
       const json old = json::parse(rule.paint, nullptr, /*allow_exceptions=*/false);
       if (old.is_object() && old.contains(from)) color = old[from];
+    }
+    if (rule.type == "circle" && type == "symbol") {
+      CircleToIcon(&rule);
+      return Status::Ok();
     }
     DefaultStyle(type, style.label.field, &rule.paint, &rule.layout);
     if (!color.is_null()) {

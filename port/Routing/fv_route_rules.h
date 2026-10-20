@@ -134,6 +134,30 @@ struct RouteProfile {
   /// RoadCrossing: half on arriving at it, half on leaving it.
   double crossing_seconds[4] = {0.0, 0.0, 0.0, 0.0};
 
+  /// `hills`: how climb and descent on an arc with elevation change its
+  /// seconds, in both the cost and the reported clock. All zero (no effect)
+  /// unless the file says otherwise; a graph without elevation is unaffected.
+  struct Hills {
+    /// Seconds added per metre climbed.
+    double climb_s_per_m = 0.0;
+    /// Seconds saved per metre descended while the arc's descent grade is at
+    /// most `steep_grade`.
+    double descent_s_per_m = 0.0;
+    /// Descent grade (rise over run, 0.12 = 12%) above which a descent costs
+    /// time instead of saving it.
+    double steep_grade = 0.12;
+    /// Seconds added per metre descended above `steep_grade`.
+    double steep_descent_s_per_m = 0.0;
+    /// The fastest a descent credit can make an arc, km/h. Required when
+    /// `descent_s_per_m` is set; keeps every arc's seconds positive.
+    double max_kph = 0.0;
+
+    bool any() const {
+      return climb_s_per_m != 0.0 || descent_s_per_m != 0.0 || steep_descent_s_per_m != 0.0;
+    }
+  };
+  Hills hills;
+
   /// `speed_factor`: (max_kph, factor) pairs, ascending. An arc with a posted
   /// speed takes the factor of the first band whose max_kph it does not
   /// exceed, or the last band's. Empty means no speed factor.

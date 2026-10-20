@@ -629,7 +629,7 @@ TEST_F(DeskHostDrawn, AMapOptionChangeRedrawsTheBaseMap) {
   ASSERT_EQ(h->Execute("map.options"), "");
   ASSERT_EQ(h->TakeOptionsRequest(), fv::desk::kOptionsMap);
   const int kind = fv::desk::kOptionsMap;
-  ASSERT_EQ(h->OptionsPageCount(kind), 4);
+  ASSERT_EQ(h->OptionsPageCount(kind), 5);
   EXPECT_EQ(std::string(h->OptionsPageTitle(kind, 0)), "Elevation");
   ASSERT_EQ(h->SetOptionValue(kind, 0, "elevation_bands_ft", "5000, 2500"), "");
   EXPECT_EQ(std::string(h->OptionsFieldAt(kind, 0, 0).value), "2500,5000");
@@ -1175,8 +1175,27 @@ TEST(DeskHost, RuleStylePagesFlattenForAShell) {
   EXPECT_EQ(fv::desk::DeskHost::RuleColorRGBA("nope", 7), 7u);
   EXPECT_EQ(fv::desk::DeskHost::RuleColorText(0x1e5ac8ffu), "#1e5ac8");
   EXPECT_EQ(fv::desk::DeskHost::RuleColorText(0x1e5ac880u), "rgba(30, 90, 200, 0.502)");
+  EXPECT_FALSE(h->RuleStylePropertyIcons(width));
   h->CloseRuleStyle();
   EXPECT_FALSE(h->RuleStyleOpen());
+
+  // A symbol rule's icon property offers the builtin icons, with previews.
+  ASSERT_EQ(h->AddRule(row, "Marks", "symbol"), "");
+  EXPECT_EQ(h->Execute("layers.rule.edit_style"), "");
+  ASSERT_TRUE(h->RuleStyleOpen());
+  ASSERT_EQ(h->RuleStylePropertyKey(0), "icon-image");
+  EXPECT_TRUE(h->RuleStylePropertyIcons(0));
+  EXPECT_EQ(h->RuleStylePropertyChoiceCount(0), h->RuleIconCount());
+  EXPECT_EQ(h->RuleIconName(-1), "");
+  std::vector<uint8_t> icon(16 * 16 * 4);
+  EXPECT_TRUE(h->CopyRuleIcon(h->RuleIconName(0), 16, 0x000000ffu, icon.data(), icon.size()));
+  EXPECT_FALSE(h->CopyRuleIcon(h->RuleIconName(0), 17, 0x000000ffu, icon.data(), icon.size()));
+  EXPECT_EQ(h->SetRuleStyleMode(0, 1), "");
+  EXPECT_EQ(h->RuleStyleConstant(0), "circle");
+  EXPECT_EQ(h->SetRuleStyleConstant(0, "restaurant"), "");
+  EXPECT_EQ(h->ApplyRuleStyle(), "");
+  EXPECT_EQ(h->RuleStyleConstant(0), "restaurant");
+  h->CloseRuleStyle();
   h->WaitForRender();
 }
 

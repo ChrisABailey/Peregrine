@@ -28,6 +28,9 @@ endif()
 add_library(fv_fvkit STATIC
   formats/dted.cpp
   formats/dted_shaded_source.cpp
+  formats/lidar_shaded_source.cpp
+  formats/elevation_stack.cpp
+  formats/geotiff_dem.cpp
   formats/geotiff_enum.cpp
   formats/geotiff_source.cpp
   formats/cadrg_enum.cpp
@@ -133,6 +136,8 @@ target_link_libraries(fv_fvkit PRIVATE fv_json)
 # so it is parsed by the modern vendored expat and never by hand — same rule
 # as §2e's gate on network-facing input.
 target_link_libraries(fv_fvkit PRIVATE expat)
+# libtiff 4 for formats/geotiff_dem.cpp; no fvkit header names a TIFF type.
+target_link_libraries(fv_fvkit PRIVATE fv_libtiff)
 target_link_libraries(fv_fvkit
   PUBLIC fv_dted fv_dted_shaded fv_imagelib_geotiff fv_geotiff_frame
          fv_cadrg fv_cadrg_frame
@@ -171,6 +176,7 @@ if(FVW_BUILD_TESTS)
     test/dted_adapter_test.cpp
     test/dted_shaded_adapter_test.cpp
     test/geotiff_adapter_test.cpp
+    test/geotiff_dem_test.cpp
     test/cadrg_adapter_test.cpp
     test/tiros_adapter_test.cpp
     test/catalog_test.cpp
@@ -235,7 +241,7 @@ if(FVW_BUILD_TESTS)
     test/settings_test.cpp
   )
   # fv_png: golden-PNG side channel in canvas_test (ported libpng)
-  target_link_libraries(fv_fvkit_test PRIVATE fv_fvkit fv_png fv_json GTest::gtest_main)
+  target_link_libraries(fv_fvkit_test PRIVATE fv_fvkit fv_png fv_json fv_libtiff GTest::gtest_main)
   # The shipped data-family starter files, read at RUN time by the test that
   # checks they parse. Same pattern as FV_ROUTE_RULES_FILE in port/Routing.
   target_compile_definitions(fv_fvkit_test PRIVATE

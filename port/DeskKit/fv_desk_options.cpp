@@ -180,6 +180,11 @@ OptionsModel::OptionsModel(const MapGroups& groups,
       if (src.group_id == g.id)
         if (auto page = OptionsPage::ForMapGroup(g.title, src, settings))
           pages_.push_back(std::move(page));
+  // App-wide pages follow the map groups.
+  for (const MapOptionsSource& src : sources)
+    if (!src.title.empty() && groups.Find(src.group_id) == nullptr)
+      if (auto page = OptionsPage::ForMapGroup(src.title, src, settings))
+        pages_.push_back(std::move(page));
 }
 
 OptionsPage* OptionsModel::Page(const app::TypeId& id) {

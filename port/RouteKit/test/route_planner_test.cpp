@@ -13,6 +13,7 @@
 // because a user drops a waypoint in the marsh far more often than they route
 // two connected roads.
 
+#include "fv_route_edit.h"
 #include "fv_route_overlay.h"
 #include "fv_route_planner.h"
 
@@ -503,3 +504,126 @@ TEST(RoutePlanner, TheTideGateOnTheKiawahTable) {
 }
 
 }  // namespace
+
+// Kiawah's graph carries no elevation: the plan has no climb and no profile,
+// which is what keeps the sheet from drawing a flat line.
+TEST(RoutePlanner, FlatPackHasNoProfile) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  const RoutePlan plan = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  ASSERT_TRUE(plan.found) << plan.status;
+  EXPECT_FALSE(plan.has_elevation);
+  EXPECT_EQ(plan.climb_m, 0.0);
+  EXPECT_TRUE(plan.elevation.empty());
+}
+
+// Paces Mill on the Chattahoochee up to Buckhead over atlanta.fvroad, which
+// fvgraph builds with --dem.
+TEST(RoutePlanner, AtlantaProfileClimbsFromTheRiver) {
+  const std::filesystem::path p =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(p)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  RoutePlanner planner(p.string(), FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  const RoutePlan plan = planner.Plan({{33.8712, -84.4545}, {33.8480, -84.3732}}, opts);
+  ASSERT_TRUE(plan.found) << plan.status;
+  ASSERT_TRUE(plan.has_elevation);
+  ASSERT_GE(plan.elevation.size(), 2u);
+  const double rise = plan.elevation.back().elev_m - plan.elevation.front().elev_m;
+  // Measured on the lidar graph: 17.3 km, up 367 m, down 319 m.
+  EXPECT_GT(plan.climb_m, 280.0);
+  EXPECT_LT(plan.climb_m, 450.0);
+  EXPECT_GT(rise, 30.0);
+  EXPECT_NEAR(plan.climb_m - plan.descent_m, rise, 0.5);
+  EXPECT_NEAR(plan.elevation.back().along_m, plan.length_m, 1e-3);
+}
+
+TEST(RoutePlanner, AvoidHillsSetsTheHillPenalty) {
+  RoutePlanner planner("", "");
+  RoutePlanOptions in;
+  in.profile = "bicycle";
+  fv::routing::RouteOptions out;
+  ASSERT_TRUE(planner.BuildOptions(in, &out).ok());
+  EXPECT_DOUBLE_EQ(out.hill_penalty, 1.0);
+  in.avoid_hills = true;
+  ASSERT_TRUE(planner.BuildOptions(in, &out).ok());
+  EXPECT_DOUBLE_EQ(out.hill_penalty, fv::kDefaultAvoidHillsPenalty);
+  in.avoid_hills_penalty = 7.0;
+  ASSERT_TRUE(planner.BuildOptions(in, &out).ok());
+  EXPECT_DOUBLE_EQ(out.hill_penalty, 7.0);
+  in.avoid_hills = false;
+  ASSERT_TRUE(planner.BuildOptions(in, &out).ok());
+  EXPECT_DOUBLE_EQ(out.hill_penalty, 1.0);
+}
+
+// The same Paces Mill -> Buckhead ride with the route document's "avoid hills"
+// set: the overlay passes it to the planner and the route climbs less.
+TEST(RoutePlanner, AtlantaAvoidHillsClimbsLess) {
+  const std::filesystem::path p =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(p)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  RoutePlanner planner(p.string(), FV_ROUTE_RULES_FILE);
+  fv::RouteOverlay overlay("Route");
+  overlay.SetPlanner(&planner);
+  overlay.SetProfile("bicycle");
+  overlay.SetWaypoints({{"A", {33.8712, -84.4545}}, {"B", {33.8480, -84.3732}}});
+  ASSERT_TRUE(overlay.FollowRoads(RoutePlanOptions{}));
+  const double neutral = overlay.plan().climb_m;
+  overlay.SetAvoidHills(true);
+  ASSERT_TRUE(overlay.FollowRoads(RoutePlanOptions{}));
+  // Measured: 234 m neutral (17.35 km), 204 m avoiding (16.51 km).
+  EXPECT_LT(overlay.plan().climb_m, neutral - 15.0);
+
+  // A query that says otherwise wins over the document.
+  RoutePlanOptions neutral_query;
+  neutral_query.avoid_hills = false;
+  ASSERT_TRUE(overlay.FollowRoads(neutral_query));
+  EXPECT_NEAR(overlay.plan().climb_m, neutral, 1e-6);
+}
+
+TEST(RoutePlanner, AtlantaToggleAvoidHillsReplansTheSameWay) {
+  const std::filesystem::path p =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(p)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  RoutePlanner planner(p.string(), FV_ROUTE_RULES_FILE);
+  fv::RouteOverlay overlay("Route");
+  overlay.SetPlanner(&planner);
+  EXPECT_TRUE(overlay.MayHaveElevation());  // not loaded yet
+  overlay.SetWaypoints({{"A", {33.8712, -84.4545}}, {"B", {33.8480, -84.3732}}});
+  ASSERT_TRUE(overlay.edit().FollowRoadsByBicycle());
+  EXPECT_TRUE(overlay.MayHaveElevation());
+  const double neutral = overlay.plan().climb_m;
+  EXPECT_NE(overlay.plan().status.find(", up "), std::string::npos) << overlay.plan().status;
+  EXPECT_EQ(overlay.plan().status.find("avoiding hills"), std::string::npos);
+
+  overlay.edit().ToggleAvoidHills();
+  EXPECT_TRUE(overlay.avoid_hills());
+  EXPECT_TRUE(overlay.plan().is_bicycle);
+  EXPECT_LT(overlay.plan().climb_m, neutral - 15.0);
+  EXPECT_NE(overlay.plan().status.find("(avoiding hills)"), std::string::npos)
+      << overlay.plan().status;
+
+  // Penalty 1 is the neutral cost.
+  overlay.SetAvoidHillsPenalty(1.0);
+  ASSERT_TRUE(overlay.edit().FollowRoadsByBicycle());
+  EXPECT_NEAR(overlay.plan().climb_m, neutral, 1e-6);
+
+  overlay.edit().ToggleAvoidHills();
+  EXPECT_FALSE(overlay.avoid_hills());
+  EXPECT_NEAR(overlay.plan().climb_m, neutral, 1e-6);
+}
+
+TEST(RoutePlanner, AFlatGraphOffersNoAvoidHills) {
+  const std::string path = KiawahGraph();
+  if (path.empty()) GTEST_SKIP() << "no kiawah.fvroad in TestData";
+  RoutePlanner planner(path);
+  fv::RouteOverlay overlay("Route");
+  EXPECT_FALSE(overlay.MayHaveElevation());  // no planner
+  overlay.SetPlanner(&planner);
+  ASSERT_TRUE(planner.EnsureGraph().ok());
+  if (planner.graph()->has_elevation()) GTEST_SKIP() << "kiawah.fvroad was built with --dem";
+  EXPECT_FALSE(overlay.MayHaveElevation());
+}

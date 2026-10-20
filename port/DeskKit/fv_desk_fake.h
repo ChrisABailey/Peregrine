@@ -49,6 +49,7 @@ class FakeDeskShell : public DeskShell {
   int data_sources_shown = 0;
   int route_profile_shown = 0;
   int layers_shown = 0;
+  int find_shown = 0;
   int feature_form_shown = 0;
   int attribute_table_shown = 0;
   int layer_style_shown = 0;
@@ -84,6 +85,7 @@ class FakeDeskShell : public DeskShell {
   void ShowDataSources() override { ++data_sources_shown; }
   void ShowRouteProfile() override { ++route_profile_shown; }
   void ShowLayers() override { ++layers_shown; }
+  void ShowFind() override { ++find_shown; }
   void ShowFeatureForm() override { ++feature_form_shown; }
   void ShowAttributeTable() override { ++attribute_table_shown; }
   void ShowLayerStyle() override { ++layer_style_shown; }

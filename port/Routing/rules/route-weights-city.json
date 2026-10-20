@@ -76,6 +76,9 @@
       // crossing waits for.
       "signal_seconds": 20.0,
       "crossing_seconds": { "secondary": 15.0, "primary": 45.0, "trunk": 90.0 },
+      // About the extra time ~150 W takes to lift 90 kg one metre; braked above 12%.
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 40.0 },
       "golf_cartpath_penalty": "exclude",
       "golf_path_penalty": 10.0,
 
@@ -108,6 +111,9 @@
       // No signal wait: mapped sidewalks put a signalled crosswalk on each
       // corner, so a per-junction wait would count one light several times.
       "crossing_seconds": { "secondary": 10.0, "primary": 30.0, "trunk": 60.0 },
+      // Naismith up (an hour per 600 m), Langmuir down; slow on steep descents.
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 7.0 },
       "golf_cartpath_penalty": "exclude"
     },
 

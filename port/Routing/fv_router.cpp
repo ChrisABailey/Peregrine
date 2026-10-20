@@ -46,19 +46,48 @@ double WalkSeconds(const RoadArc& arc) {
   return static_cast<double>(arc.length_m) / kWalkSpeedMps;
 }
 
-// How long this arc takes under the profile the query asked for. With a rule
-// file loaded (O5c) the speed comes from the profile; without one these are
-// the three speeds O5b compiled in.
-double ProfileSeconds(const RoadArc& arc, const RouteOptions& options) {
+/// `flat` seconds for `arc` adjusted by the profile's hills, travelling with
+/// the arc's stored direction or, when `reversed`, against it. A descent
+/// credit never takes the arc faster than `hills.max_kph`, or than its flat
+/// time if that is already faster.
+double HillSeconds(const RoadArc& arc, const RouteProfile::Hills& h, double flat,
+                   bool reversed) {
+  const double climb = reversed ? arc.descent_m() : arc.climb_m();
+  const double descent = reversed ? arc.climb_m() : arc.descent_m();
+  if (climb == 0.0 && descent == 0.0) return flat;
+  const double length = static_cast<double>(arc.length_m);
+  double secs = flat + climb * h.climb_s_per_m;
+  // The arc's mean descent grade decides: a mixed arc is judged as a whole.
+  if (length > 0.0 && descent / length > h.steep_grade)
+    secs += descent * h.steep_descent_s_per_m;
+  else
+    secs -= descent * h.descent_s_per_m;
+  if (h.max_kph > 0.0) secs = std::max(secs, std::min(flat, length / (h.max_kph / 3.6)));
+  return std::max(secs, 0.0);
+}
+
+/// How long this arc takes under the profile the query asked for, travelling
+/// against its stored direction when `reversed`. With a rule file loaded (O5c) the
+/// speed and hills come from the profile; without one these are the three
+/// flat speeds O5b compiled in, and elevation is ignored.
+double ProfileSeconds(const RoadArc& arc, const RouteOptions& options, bool reversed) {
   // You do not walk a ferry (O5e). Every other class travels at whatever
   // speed the profile says its mode goes, because the traveller is what moves;
   // on a crossing the BOAT is, so the arc's own speed — which the builder
   // derived from the way's `duration` — is the clock for every profile alike.
   if (arc.is_ferry()) return arc.travel_seconds();
-  if (options.profile != nullptr)
-    return options.profile->Seconds(static_cast<double>(arc.length_m), arc.speed_kph, arc.klass);
+  if (options.profile != nullptr) {
+    const RouteProfile& p = *options.profile;
+    const double flat = p.Seconds(static_cast<double>(arc.length_m), arc.speed_kph, arc.klass);
+    return p.hills.any() ? HillSeconds(arc, p.hills, flat, reversed) : flat;
+  }
   if (options.cycle_only) return BikeSeconds(arc);
   return options.driving ? arc.travel_seconds() : WalkSeconds(arc);
+}
+
+/// The reported clock for `arc` in its stored direction.
+double ProfileSeconds(const RoadArc& arc, const RouteOptions& options) {
+  return ProfileSeconds(arc, options, false);
 }
 
 // --- the search state space (O5) -------------------------------------------
@@ -318,7 +347,15 @@ double ArcCost(const RoadArc& arc, const RouteOptions& options) {
                     p.surface_factor[static_cast<size_t>(arc.surface)];
     if (arc.speed_posted() && arc.bike != BikeProvision::kTrack)
       street *= p.SpeedFactor(arc.speed_kph);
-    return base * p.weight(arc.klass) * street * gate;
+    // The avoid-hills excess stays out of the class weights: inside them a
+    // climb on a favoured class is discounted, and the search detours onto
+    // cycleways that climb more.
+    double avoid_hills = 0.0;
+    if (p.metric == RouteMetric::kTime && options.hill_penalty > 1.0 && p.hills.any() &&
+        !arc.is_ferry()) {
+      avoid_hills = (options.hill_penalty - 1.0) * arc.climb_m() * p.hills.climb_s_per_m;
+    }
+    return (base * p.weight(arc.klass) * street + avoid_hills) * gate;
   }
   if (options.cycle_only) {
     // Bike time, scaled by how pleasant the class is to ride. The scaling is
@@ -884,6 +921,10 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
   out->legs.clear();
   out->length_m = 0.0;
   out->seconds = 0.0;
+  out->has_elevation = graph_.has_elevation();
+  out->climb_m = 0.0;
+  out->descent_m = 0.0;
+  out->profile.clear();
   if (geom_at_step != nullptr) geom_at_step->clear();
   if (steps.empty()) return;
 
@@ -900,6 +941,13 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
   for (size_t i = 0; i < steps.size(); ++i) {
     const Step& step = steps[i];
     const RoadArc& arc = graph_.arc(step.arc);
+    double elev_source = 0.0, elev_target = 0.0;
+    if (out->has_elevation) {
+      elev_source = graph_.node_elevation_m(graph_.ArcSource(step.arc));
+      elev_target = graph_.node_elevation_m(arc.target);
+      if (i == 0)
+        out->profile.push_back({0.0, elev_source + step.t0 * (elev_target - elev_source)});
+    }
     // Read before this step pushes anything: the previous step's end point is
     // this one's start, and on the first step the next push is index 0.
     const uint32_t step_begin =
@@ -933,9 +981,16 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
     // total in this file is built from.
     const double f = step.fraction();
     const double len = f * static_cast<double>(arc.length_m);
-    const double secs = f * ProfileSeconds(arc, options);
+    // A step walked against the stored order climbs what the arc descends.
+    const double secs = f * ProfileSeconds(arc, options, !step.stored_order());
     out->length_m += len;
     out->seconds += secs;
+    if (out->has_elevation) {
+      out->climb_m += f * (step.stored_order() ? arc.climb_m() : arc.descent_m());
+      out->descent_m += f * (step.stored_order() ? arc.descent_m() : arc.climb_m());
+      out->profile.push_back(
+          {out->length_m, elev_source + step.t1 * (elev_target - elev_source)});
+    }
 
     if (out->legs.empty() || arc.name != leg_name || arc.klass != leg_class) {
       RouteLeg leg;

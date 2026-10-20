@@ -13,12 +13,14 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "fvkit/feature/style.h"
 #include "fvkit/geo.h"
+#include "fvkit/raster.h"
 
 namespace fv {
 class FeatureOverlay;
@@ -60,7 +62,17 @@ struct RuleProperty {
   std::vector<RuleValueMode> modes;
   /// The constant a value starts from when it has none: the engine's default.
   std::string initial;
+  /// The choices are builtin icon names (`RuleIconNames`); a shell shows
+  /// them as a grid of `RenderRuleIcon` previews.
+  bool icons = false;
 };
+
+/// The icons a symbol rule's `icon-image` offers: the builtin Maki sheet's names, sorted.
+const std::vector<std::string>& RuleIconNames();
+/// Icon `name` scaled to fit a `size` x `size` square, centred, as premultiplied
+/// RGBA8 on transparent. A single-colour (SDF) icon is drawn in `rgba`
+/// (0xRRGGBBAA); any other as stored. kNotFound for a name the sheet lacks.
+Status RenderRuleIcon(const std::string& name, int size, uint32_t rgba, PixelBuffer* out);
 
 /// The properties a rule of `type` shows, in page order; empty for an unknown type.
 const std::vector<RuleProperty>& RuleProperties(const std::string& type);

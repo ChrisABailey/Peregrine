@@ -9,7 +9,7 @@
 done 2026-10-12 in fvkit, DeskKit and the mac app (LM-D5, LM-D6 taken in that session, for
 Chris to confirm); the Linux pages are still to build. Style rules (§5, LM5–LM8) added
 2026-10-13, LM-D7–LM-D10 decided by Chris; LM5 (fvkit rule model) and LM6 (DeskKit rule list model) done 2026-10-13 (LM-D11 taken, for Chris to confirm). LM7 and LM8 done 2026-10-13 (LM-D12 taken, for Chris to confirm). Symbol icons (§5, LM9a–LM9b) added
-2026-10-13: the icon set decided by Chris (LM-D13); LM-D14–LM-D17 proposed with it. LM9a (fvkit icons) done 2026-10-14.
+2026-10-13: the icon set decided by Chris (LM-D13); LM-D14–LM-D17 proposed with it. LM9a (fvkit icons) done 2026-10-14; LM9b done 2026-10-19.
 
 ## Goal
 
@@ -175,7 +175,7 @@ Rule edits go through the overlay's undo and dirty the file.
 | LM-D14 | Where the icon set lives | **Proposed 2026-10-13, for Chris to confirm:** one generated sprite sheet compiled into fvkit |
 | LM-D15 | Which engines use the builtin sheet | **Proposed 2026-10-13, for Chris to confirm:** feature layers only, as a fallback when the style names no sprite |
 | LM-D16 | Icon colour | **Proposed 2026-10-13, for Chris to confirm:** the set is SDF; `icon-color` tints it |
-| LM-D17 | Change Type circle → symbol | **Proposed 2026-10-13, for Chris to confirm:** the rule starts at the matching Maki shape, colour and size |
+| LM-D17 | Change Type circle → symbol | **Proposed 2026-10-13, for Chris to confirm:** the rule starts at the matching Maki shape, colour and size; implemented in LM9b |
 
 ## 7. Sessions
 
@@ -190,7 +190,7 @@ Rule edits go through the overlay's undo and dirty the file.
 | LM7 | Mac style pages per type, the filter through `QueryBuilderPanel`, "varies by" field or zoom, the Expression box | a roads layer built by hand as casing, line and label rules with a filtered motorway rule, checked on screen |
 | LM8 (done 2026-10-13) | Categorise into rules, Regenerate…, the legend (LM-D10), Import Style… and Export Style… | an exported style.json loads in MapLibre and in a second layer unchanged |
 | LM9a (done 2026-10-14) | fvkit icons: `port/tools/` sheet generator, the compiled sheet, the builtin-sheet fallback for feature layers (LM-D15), SDF tint by `icon-color`, `icon-opacity` | a Restaurants layer with a `restaurant` icon rule in red draws red pixels at each point; an OSM render golden is unchanged |
-| LM9b | DeskKit Icon page properties and the icon list with previews; Change Type circle → symbol (LM-D17); mac icon picker in the rule style window | FakeDesk sets an icon, size and colour on a symbol rule, saves, reopens and reads them back; checked on screen on the mac |
+| LM9b (done 2026-10-19) | DeskKit Icon page properties and the icon list with previews; Change Type circle → symbol (LM-D17); mac icon picker in the rule style window | FakeDesk sets an icon, size and colour on a symbol rule, saves, reopens and reads them back; checked on screen on the mac |
 | LM10+ | Joins and Relates, Time, HTML Popup; web-service sources | each as scheduled |
 
 The mac shell follows each session: `LayersWindow.swift` gains the Sources view and the

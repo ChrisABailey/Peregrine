@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+
 #include "fv_desk_fake.h"
 #include "fv_desk_user_settings.h"
 #include "fvkit/formats/dted_shaded.h"
@@ -45,7 +47,7 @@ TEST(MapOptions, MapOptionsLeadsWithTheElevationPage) {
   ASSERT_TRUE(fake.desk().Execute("map.options").ok());
   ASSERT_NE(fake.shell().map_options_shown, nullptr);
   const auto& pages = fake.shell().map_options_shown->pages();
-  ASSERT_EQ(pages.size(), 4u);
+  ASSERT_EQ(pages.size(), 5u);
   EXPECT_EQ(pages[0]->id(), "elevation");
   EXPECT_EQ(pages[0]->title(), "Elevation");
   ASSERT_EQ(pages[0]->sections().size(), 1u);
@@ -108,3 +110,28 @@ TEST(MapOptions, ARegisteredSourceReplacesTheBuiltinForItsGroup) {
 }
 
 }  // namespace
+
+TEST(MapOptions, TheDataPageComesLastAndPointsGeoTransAtItsDirectory) {
+  const char* was = std::getenv("MSPCCS_DATA");
+  const std::string saved = was != nullptr ? was : "";
+  fv::desk::FakeDesk fake;
+  auto model = fake.desk().MapOptions();
+  ASSERT_FALSE(model->pages().empty());
+  fv::desk::OptionsPage* data = model->pages().back().get();
+  EXPECT_EQ(data->id(), "data");
+  EXPECT_EQ(data->title(), "Data");
+  ASSERT_TRUE(data->Set("geotrans.data_dir", fv::app::PropertyValue::Path("/opt/peregrine/geotrans")).ok());
+  ASSERT_TRUE(fake.desk().ApplyMapOptions(*model).ok());
+  EXPECT_EQ(fake.settings().GetString("geotrans.data_dir"), "/opt/peregrine/geotrans");
+  ASSERT_NE(std::getenv("MSPCCS_DATA"), nullptr);
+  EXPECT_STREQ(std::getenv("MSPCCS_DATA"), "/opt/peregrine/geotrans");
+  // Empty leaves the environment alone.
+  fv::desk::SetGeoTransDataDir("");
+  EXPECT_STREQ(std::getenv("MSPCCS_DATA"), "/opt/peregrine/geotrans");
+#ifdef _WIN32
+  _putenv_s("MSPCCS_DATA", saved.c_str());
+#else
+  if (saved.empty()) unsetenv("MSPCCS_DATA");
+  else setenv("MSPCCS_DATA", saved.c_str(), 1);
+#endif
+}

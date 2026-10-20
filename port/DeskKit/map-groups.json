@@ -3,7 +3,7 @@
   "groups": [
     { "id": "raster",    "title": "Raster",        "formats": ["cadrg", "geotiff", "tiros", "gpkg"], "ladder": "series",
       "shortcut": "Primary+R" },
-    { "id": "elevation", "title": "Elevation",     "formats": ["dted-shaded", "dted"],              "ladder": "uniform",
+    { "id": "elevation", "title": "Elevation",     "formats": ["dted-shaded", "dted", "lidar-shaded"], "ladder": "uniform",
       "scales": [
         { "format": "dted-shaded", "series": "DTED0", "scale": 2000000 },
         { "format": "dted-shaded", "series": "DTED1", "scale": 500000 },

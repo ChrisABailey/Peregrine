@@ -75,6 +75,8 @@ const char* const kBuiltinRules = R"JSON({
         "beach": 0.65, "beach_access": 1.5
       },
       "class_kph": { "beach": 10.0, "beach_access": 4.0 },
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 40.0 },
       "beach_penalty": "exclude",
       "beach_prefer_factor": 0.5
     },
@@ -88,6 +90,8 @@ const char* const kBuiltinRules = R"JSON({
       "unlisted_classes": 1.0,
       "classes": {},
       "class_kph": { "beach": 5.0, "beach_access": 3.0 },
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 7.0 },
       "beach_penalty": "exclude",
       "beach_prefer_factor": 0.5
     },
@@ -119,7 +123,8 @@ bool KnownProfileKey(const std::string& k) {
          k == "beach_prefer_factor" || k == "unlisted_classes" || k == "classes" ||
          k == "class_kph" || k == "bike_lane_factor" || k == "speed_factor" ||
          k == "bike_route_factor" || k == "surface_factor" || k == "signal_seconds" ||
-         k == "crossing_seconds" || k == "legend_tiers" || k == "legend_baseline";
+         k == "crossing_seconds" || k == "legend_tiers" || k == "legend_baseline" ||
+         k == "hills";
 }
 
 Status ParseMode(const Json& v, const std::string& where, TravelMode* out) {
@@ -393,6 +398,28 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
         return Fail(where, "'crossing_seconds." + it.key() + "' must be zero or more seconds");
       p.crossing_seconds[static_cast<size_t>(level)] = it.value().get<double>();
     }
+  }
+
+  // Each key overrides the base's value on its own, like a class weight.
+  if (obj.contains("hills")) {
+    const Json& o = obj["hills"];
+    if (!o.is_object()) return Fail(where, "'hills' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      double* field = nullptr;
+      if (it.key() == "climb_s_per_m") field = &p.hills.climb_s_per_m;
+      else if (it.key() == "descent_s_per_m") field = &p.hills.descent_s_per_m;
+      else if (it.key() == "steep_grade") field = &p.hills.steep_grade;
+      else if (it.key() == "steep_descent_s_per_m") field = &p.hills.steep_descent_s_per_m;
+      else if (it.key() == "max_kph") field = &p.hills.max_kph;
+      else return Fail(where, "unknown key 'hills." + it.key() + "'");
+      if (!it.value().is_number() || !(it.value().get<double>() >= 0.0))
+        return Fail(where, "'hills." + it.key() + "' must be a number, zero or more");
+      *field = it.value().get<double>();
+    }
+    if (!(p.hills.steep_grade > 0.0))
+      return Fail(where, "'hills.steep_grade' must be greater than zero");
+    if (p.hills.descent_s_per_m > 0.0 && !(p.hills.max_kph > 0.0))
+      return Fail(where, "'hills.descent_s_per_m' needs 'hills.max_kph' greater than zero");
   }
 
   // Replaces the base's bands whole: bands only make sense as a set.

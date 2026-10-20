@@ -64,6 +64,7 @@ struct RouteSnapshot {
   std::vector<fv::RouteWaypoint> waypoints;
   std::string profile;
   fv::RouteBeach beach = fv::RouteBeach::kNever;
+  bool avoid_hills = false;
 
   // Road geometry, as against straight legs between the waypoints. False both
   // when nothing has been planned and when the plan came back with nothing
@@ -78,6 +79,12 @@ struct RouteSnapshot {
   bool is_bicycle = false;
   double length_m = 0.0;
   double seconds = 0.0;
+
+  /// The plan's climb, descent and elevation profile; see `fv::RoutePlan`.
+  bool has_elevation = false;
+  double climb_m = 0.0;
+  double descent_m = 0.0;
+  std::vector<fv::routing::ElevationPoint> elevation;
 
   // The planner's own sentence, or empty when nothing has been planned. Shown
   // by the sheet rather than drawn on the map; see `RouteStore`'s constructor
@@ -177,12 +184,13 @@ class RouteStore {
   // produces. Plans, then writes.
   //
   // `profile` names a rule-file profile ("foot", "bicycle"); empty keeps the
-  // document's own, as does an empty `beach`. Fewer than two waypoints is not
+  // document's own, as does an empty `beach` or `avoid_hills`. Fewer than two waypoints is not
   // an error — it is a half-built route — and comes back as a snapshot whose
   // `status` says so.
   RouteSnapshot SetWaypoints(std::vector<fv::RouteWaypoint> waypoints,
                              const std::string& profile,
-                             std::optional<fv::RouteBeach> beach = std::nullopt);
+                             std::optional<fv::RouteBeach> beach = std::nullopt,
+                             std::optional<bool> avoid_hills = std::nullopt);
 
   /// Gates beach stretches on `table` for every later plan. A null table
   /// keeps the beach and judges it unknown, as does a departure outside the
@@ -197,6 +205,13 @@ class RouteStore {
 
   /// Whether the loaded graph has any beach arc. Loads the graph.
   bool BeachAvailable() const;
+
+  /// Whether the loaded graph carries elevation. Loads the graph.
+  bool ElevationAvailable() const;
+
+  /// The hill penalty "Avoid hills" plans with (`[routing]
+  /// avoid_hills_penalty`). Does not replan.
+  void set_avoid_hills_penalty(double v) { avoid_hills_penalty_ = v; }
 
   // Replans what is already there, without touching the document. For a rule
   // file or a graph that has changed under a route the user has not edited.
@@ -428,6 +443,7 @@ class RouteStore {
   std::optional<fv::nav::BeachTideLimits> tide_foot_limits_;
   std::function<double()> now_;
   double depart_s_ = 0.0;
+  double avoid_hills_penalty_ = fv::kDefaultAvoidHillsPenalty;
 
   // Built on demand by `EnsureRoadNetwork` and rebuilt if the graph under it
   // is ever replaced. The network holds its own reference to the graph, so it

@@ -9,11 +9,12 @@ Pippin uses these four sources:
 |---|---|---|---|
 | Tide | NOAA CO-OPS high/low predictions, fetched at build time | No, it ships in the pack | Tide card; the beach verdict in the route sheet; the route planner's tide gate |
 | Sunrise/sunset | Computed on the phone (NOAA solar method) | No | Tide card: a sun line, and nights shaded on the chart |
-| Wind | National Weather Service, `api.weather.gov` | Yes, on demand, cached for an hour | Tide card; the route sheet's beach line |
+| Wind | National Weather Service, `api.weather.gov` | Yes, on demand, cached for an hour | Tide card; the route sheet's beach lines; arrows along the route's beach stretches |
 | Beach geometry | OSM `natural=coastline`, turned into arcs by `fvgraph build --beach` | No | The router: the "Use beach" choice |
 
 ![The tide card](docs/sun-tide-card.png)
 ![Wind in the route sheet](docs/wx-route-sheet.png)
+![Wind arrows on the beach stretch, opaque and sized by the Symbol Size setting (Large shown): orange against the rider, green with, grey under 4 mph](docs/wd2-beach-arrows.png)
 
 ## The pieces
 
@@ -131,7 +132,7 @@ and inside `exit_margin_s`.
 | `[beach] faces_deg` | 167 | The direction the beach faces out to sea, in degrees true. Decides which side is the sea |
 | `[wind] lat`, `lon` | 32.6062, -80.0645 | The forecast point on the beach. Leave them out to turn the wind off |
 | `[wind] onshore_warn_mps` | 7 | A sustained onshore component at or above this warns that the water may run higher than predicted |
-| `[wind] headwind_warn_mps` | 5 | A headwind at or above this along a beach stretch is named in the route sheet |
+| `[wind] along_warn_mps` | 1.8 | A headwind or tailwind component above this along a beach stretch is named in the route sheet (about 4 mph). Packs that set only the older `headwind_warn_mps` use it instead |
 
 All heights are in metres above the table's datum, and all speeds are in m/s. The app converts
 to feet and mph for display when the rider has chosen miles.
@@ -285,6 +286,8 @@ English-only, as is the rest of the app.
 ## Known limits
 
 - The wind is shown and warned about but does not change the tide verdict or the ETA.
+- Each beach stretch takes one heading, start to end, for its head/tail component. A strongly
+  curving beach would understate it on the bends.
 - Darkness does not affect the beach verdict. The card shades nights but the route sheet
   does not mention them.
 - The planner's tide gate can return a beach-free replan that failed without saying why, and

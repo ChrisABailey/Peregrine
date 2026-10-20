@@ -18,6 +18,7 @@ add_library(fv_routing STATIC
   fv_osm_reader.cpp
   fv_road_graph.cpp
   fv_road_graph_beach.cpp
+  fv_road_graph_elevation.cpp
   fv_road_network.cpp
   fv_route_legend.cpp
   fv_route_rules.cpp
@@ -40,17 +41,21 @@ set(FV_CITY_ROUTE_RULES_FILE "${CMAKE_CURRENT_SOURCE_DIR}/rules/route-weights-ci
 # A host tool like fvrender and fvpack: it BUILDS the .fvroad a phone reads.
 if(NOT FVW_IOS)
   add_executable(fvgraph tools/fvgraph.cpp)
-  target_link_libraries(fvgraph PRIVATE fv_routing)
+  # fv_fvkit for the DTED reader behind `build --dem`; fv_routing itself
+  # takes elevation through the ElevationSampler seam and links no DEM.
+  target_link_libraries(fvgraph PRIVATE fv_routing fv_fvkit)
   target_compile_definitions(fvgraph PRIVATE FV_ROUTE_RULES_FILE="${FV_ROUTE_RULES_FILE}")
 endif()
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_routing_test
     test/osm_reader_test.cpp
+    test/road_graph_elevation_test.cpp
     test/road_graph_test.cpp
     test/road_snap_test.cpp
     test/route_legend_test.cpp
     test/route_rules_test.cpp
+    test/router_elevation_test.cpp
     test/router_test.cpp
   )
   # fv_zlib: osm_reader_test encodes its own .osm.pbf fixture, so it needs the

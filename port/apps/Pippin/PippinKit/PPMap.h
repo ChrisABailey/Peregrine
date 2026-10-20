@@ -635,6 +635,21 @@ NS_SWIFT_SENDABLE
                       beachUse:(PPBeachUse)beachUse
     NS_SWIFT_NAME(setRoute(waypoints:profile:beachUse:));
 
+/// As above, also setting whether the route avoids hills, which raises the
+/// cost of climbing by `[routing] avoid_hills_penalty` (default 4).
+- (PPRoute *)setRouteWaypoints:(NSArray<PPWaypoint *> *)waypoints
+                       profile:(NSString *)profile
+                      beachUse:(PPBeachUse)beachUse
+                    avoidHills:(BOOL)avoidHills
+    NS_SWIFT_NAME(setRoute(waypoints:profile:beachUse:avoidHills:));
+
+/// Wind chevrons along the current route's beach stretches; an empty array
+/// removes them. A replan removes them too, so call again with each new
+/// route. Call it on the render queue.
+- (void)setBeachWind:(NSArray<PPBeachWindMark *> *)marks
+              warnAt:(double)alongWarnMetersPerSecond
+    NS_SWIFT_NAME(setBeachWind(_:warnAt:));
+
 /// The departure time the tide is judged for, epoch seconds; NaN (the
 /// default) means the system clock. For debugging at a chosen tide.
 @property(nonatomic) NSTimeInterval routeDepartureOverride;
@@ -642,6 +657,10 @@ NS_SWIFT_SENDABLE
 /// The road graph has a beach to ride, so the sheet offers "Use beach:".
 /// Loads the graph on first call; call it on the render queue.
 @property(nonatomic, readonly) BOOL beachAvailable;
+
+/// The road graph carries elevation, so the sheet offers "Avoid hills".
+/// Loads the graph on first call; call it on the render queue.
+@property(nonatomic, readonly) BOOL elevationAvailable;
 
 /// No route, and no document on disk either. Clear Route in the sheet.
 - (PPRoute *)clearRoute;
@@ -1044,7 +1063,8 @@ NS_SWIFT_SENDABLE
 /// renderer multiplies again by `symbol_scale_`, so setting both would give
 /// point symbols the square of what lines and text got.
 ///
-/// The overlays do not follow it. The route, points and ownship draw through
+/// The overlays do not follow it, except the route's beach wind arrows. The
+/// route, points and ownship draw through
 /// `GeoDraw`, which has its own `SetSymbolScale`; when they should grow with
 /// the map, that is where it goes and this is the number to hand it.
 ///

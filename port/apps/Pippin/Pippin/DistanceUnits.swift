@@ -45,6 +45,44 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
         }
     }
 
+    /// A height or a climb in whole metres or feet; heights stay in the small
+    /// unit whatever their size.
+    func height(_ meters: Double) -> String {
+        switch self {
+        case .kilometres: return String(format: "%.0f m", meters)
+        case .miles: return String(format: "%.0f ft", meters / Self.metersPerFoot)
+        }
+    }
+
+    /// A route's climb and descent, "↑ 120 m ↓ 85 m".
+    func climbSummary(climb: Double, descent: Double) -> String {
+        "↑ \(height(climb)) ↓ \(height(descent))"
+    }
+
+    /// The planner status tail without the core's metric ", up N m, down N m";
+    /// the sheet shows the climb in the rider's units on its own line.
+    static func withoutMetricClimb(_ tail: String) -> String {
+        tail.replacingOccurrences(of: #", up -?\d+ m, down -?\d+ m"#, with: "",
+                                  options: .regularExpression)
+    }
+
+    /// `meters` in the unit `distance(_:)` uses for long distances, as a bare
+    /// number: what a chart axis plots.
+    func longUnits(_ meters: Double) -> Double {
+        switch self {
+        case .kilometres: return meters / 1000.0
+        case .miles: return meters / Self.metersPerFoot / Self.feetPerMile
+        }
+    }
+
+    /// `meters` in the unit `height(_:)` uses, as a bare number.
+    func heightUnits(_ meters: Double) -> Double {
+        switch self {
+        case .kilometres: return meters
+        case .miles: return meters / Self.metersPerFoot
+        }
+    }
+
     /// Whole units per hour, which is all the precision a bicycle has.
     func speed(_ metersPerSecond: Double) -> String {
         switch self {

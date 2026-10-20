@@ -200,6 +200,7 @@ struct MapScreen: View {
             currentLocation: model.currentLocation,
             profileNames: model.routeProfileNames,
             beachAvailable: model.beachAvailable,
+            elevationAvailable: model.elevationAvailable,
             tide: model.tide,
             search: model.search(for:),
             initialSearchText: model.lastSearchText,
@@ -213,7 +214,7 @@ struct MapScreen: View {
             },
             onSubmit: {
                 model.setRoute(waypoints: draft.waypoints(), profile: draft.profile,
-                               beachUse: draft.beachUse)
+                               beachUse: draft.beachUse, avoidHills: draft.avoidHills)
                 sheetShown = false
             },
             // Walk/Cycle replans the live route's waypoints on the spot, not
@@ -230,6 +231,12 @@ struct MapScreen: View {
                 guard let route = model.route, route.exists else { return }
                 model.setRoute(waypoints: route.waypoints, profile: route.profile,
                                beachUse: beachUse)
+            },
+            onHillsChange: { avoidHills in
+                RouteDraft.lastAvoidHills = avoidHills
+                guard let route = model.route, route.exists else { return }
+                model.setRoute(waypoints: route.waypoints, profile: route.profile,
+                               beachUse: route.beachUse, avoidHills: avoidHills)
             },
             onClear: {
                 // The sheet stays up and returns to the search box on an
@@ -1140,6 +1147,68 @@ struct CompassButton: View {
         .tint(isActive ? .accentColor : .primary)
         .accessibilityLabel(label)
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+}
+
+/// The wind now at the pack's beach: an arrow pointing where the wind blows,
+/// turned with the chart, and the speed. Hidden when the pack has no `[wind]`,
+/// the forecast was fetched 6 h ago or more, or it does not cover now. Not
+/// placed on the map: turn alerts cover it and riders feel the wind.
+struct WindBadge: View {
+    /// Where north is on screen, degrees clockwise from up.
+    let northAngleDegrees: Double
+    /// Opens the tide card; nil when the pack has no tides.
+    let onTap: (() -> Void)?
+
+    @ObservedObject private var feed = WindFeed.shared
+    @ObservedObject private var display = DisplayUnits.shared
+
+    var body: some View {
+        // The forecast is hourly; a minute is fine-grained enough to roll over.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            if let sample = currentSample(at: context.date) {
+                badge(sample)
+            }
+        }
+    }
+
+    private func currentSample(at date: Date) -> PPWindSample? {
+        guard feed.settings != nil,
+              WindText.badgeShown(fetchedAt: feed.fetchedAt?.timeIntervalSince1970,
+                                  now: date.timeIntervalSince1970) else { return nil }
+        return feed.forecast?.sample(at: TideClock.override ?? date.timeIntervalSince1970)
+    }
+
+    @ViewBuilder
+    private func badge(_ sample: PPWindSample) -> some View {
+        let text = WindText.badge(speed: sample.speedMetersPerSecond, units: display.units)
+        let face = HStack(spacing: 4) {
+            if text != "Calm" {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 13, weight: .bold))
+                    .rotationEffect(.degrees(northAngleDegrees + sample.fromDegrees + 180))
+                    .animation(.linear(duration: 0.15), value: northAngleDegrees)
+            }
+            Text(text)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(WindText.badgeLabel(speed: sample.speedMetersPerSecond,
+                                                fromDegrees: sample.fromDegrees,
+                                                units: display.units))
+        if let onTap {
+            Button(action: onTap) { face }
+                .buttonStyle(.circleControl)
+                .accessibilityHint("Opens the tides card.")
+        } else {
+            face
+        }
     }
 }
 

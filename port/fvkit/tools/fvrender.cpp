@@ -83,7 +83,8 @@ int main(int argc, char** argv) {
   if (!s.ok()) return Fail(s, "catalog");
 
   struct { const char* subdir; const char* format; } sources[] = {
-      {"rpf", "cadrg"}, {"geotiff", "geotiff"}, {"tiros3", "tiros"},
+      {"rpf", "cadrg"},         {"geotiff", "geotiff"}, {"tiros3", "tiros"},
+      {"dted", "dted-shaded"},  {"lidar", "lidar-shaded"},
   };
   int total = 0;
   for (const auto& src : sources) {

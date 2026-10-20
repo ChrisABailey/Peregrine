@@ -106,14 +106,16 @@ TEST_F(RegistryTest, BuiltinsRegisterIdempotently) {
   fv::RegisterBuiltinFormats();
   fv::RegisterBuiltinFormats();  // idempotent, no duplicate error
   auto keys = fv::RegisteredFormatKeys();
-  ASSERT_EQ(keys.size(), 7u);
+  ASSERT_EQ(keys.size(), 9u);
   EXPECT_EQ(keys[0], "cadrg");    // map order: sorted
   EXPECT_EQ(keys[1], "dted");
   EXPECT_EQ(keys[2], "dted-shaded");
   EXPECT_EQ(keys[3], "geotiff");
   EXPECT_EQ(keys[4], "gpkg");
-  EXPECT_EQ(keys[5], "tiros");
-  EXPECT_EQ(keys[6], "vpf");
+  EXPECT_EQ(keys[5], "lidar");
+  EXPECT_EQ(keys[6], "lidar-shaded");
+  EXPECT_EQ(keys[7], "tiros");
+  EXPECT_EQ(keys[8], "vpf");
 
   const fv::FormatFactories* dted = fv::FindFormat("dted");
   ASSERT_NE(dted, nullptr);

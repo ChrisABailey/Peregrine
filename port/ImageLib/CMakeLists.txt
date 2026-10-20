@@ -5,7 +5,7 @@
 
 # ImageLib codec sub-libraries, compiled in place from fvw_core/ImageLib/*.
 # These are 2010-era vendored forks (zlib 1.2.5, libpng, IJG jpeg 8/12-bit,
-# libtiff 3.9.4, giflib); kept as-is rather than swapped for system libs so
+# giflib); kept as-is rather than swapped for system libs so
 # decode output matches the Windows build byte-for-byte.
 #
 # This directory covers ONLY the codecs (Phase 2a). The ImageLib core
@@ -65,37 +65,18 @@ target_link_libraries(fv_jpeg12 PUBLIC fv_compat)
 set_target_properties(fv_jpeg12 PROPERTIES CXX_STANDARD 14)
 target_compile_options(fv_jpeg12 PRIVATE -w)
 
-# --- libtiff (with POSIX glue replacing tif_win32.c) ---
-file(GLOB TIFF_SRC ${IL}/tiff/*.c)
-list(FILTER TIFF_SRC EXCLUDE REGEX "tif_win32\\.c$")
-# tif_jpeg.c needs a plain-C libjpeg. The Windows tiff.vcxproj points at
-# GDAL's bundled libjpeg (not FalconView's C++ jpeg fork) — mirror that.
-file(GLOB GDAL_JPEG_SRC ${CMAKE_SOURCE_DIR}/third_party/gdal_1.9.1/frmts/jpeg/libjpeg/*.c)
-list(FILTER GDAL_JPEG_SRC EXCLUDE REGEX "jmemmac|jmemdos|jmemname")
-add_library(fv_gdal_jpeg STATIC ${GDAL_JPEG_SRC})
-target_include_directories(fv_gdal_jpeg PUBLIC
-  ${CMAKE_SOURCE_DIR}/third_party/gdal_1.9.1/frmts/jpeg/libjpeg)
-target_compile_options(fv_gdal_jpeg PRIVATE -w)
-
-add_library(fv_tiff STATIC ${TIFF_SRC} fv_tif_posix.c)
-target_include_directories(fv_tiff PUBLIC ${IL}/tiff)
-target_include_directories(fv_tiff PRIVATE
-  ${CMAKE_SOURCE_DIR}/third_party/gdal_1.9.1/frmts/jpeg/libjpeg)
-# tif_config.h spells 64-bit types as MSVC's (unsigned) __int64 keyword
-target_compile_definitions(fv_tiff PRIVATE "__int64=long long")
-target_link_libraries(fv_tiff PUBLIC fv_z fv_gdal_jpeg PRIVATE fv_log)
-target_compile_options(fv_tiff PRIVATE -w)
+# --- libtiff: MODERNISED ---
+# The vendored 3.9.4 fork at ${IL}/tiff is no longer built for the port; port
+# code links fv_libtiff (libtiff 4.7, port/third_party/CMakeLists.txt).
+# ${IL}/tiff stays on disk untouched for the Windows product build.
 
 if(FVW_BUILD_TESTS)
-  # Two binaries: FalconView's C++ jpeg and GDAL's C jpeg (used by tiff)
-  # both export unmangled jpeg symbols, as they may — on Windows they live
-  # in different DLLs and never meet in one link.
   add_executable(fv_imagelib_codecs_test test/codecs_test.cpp)
   target_link_libraries(fv_imagelib_codecs_test
     PRIVATE fv_png fv_jpeg fv_jpeg12 GTest::gtest_main)
   gtest_discover_tests(fv_imagelib_codecs_test)
 
   add_executable(fv_tiff_test test/tiff_test.cpp)
-  target_link_libraries(fv_tiff_test PRIVATE fv_tiff GTest::gtest_main)
+  target_link_libraries(fv_tiff_test PRIVATE fv_libtiff GTest::gtest_main)
   gtest_discover_tests(fv_tiff_test)
 endif()

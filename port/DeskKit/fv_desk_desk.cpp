@@ -25,6 +25,8 @@
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/feature/points_layer.h"
 #include "fvkit/formats/dted.h"
+#include "fvkit/formats/elevation_stack.h"
+#include "fvkit/formats/geotiff_dem.h"
 #include "fvkit/log.h"
 #include "fvkit/overlay/contour_overlay.h"
 #include "fvkit/overlay/feature_overlay.h"
@@ -165,7 +167,7 @@ class Desk::StackHook : public StackObserver {
     if (!desk_.BindOverlay(o)) {
       const app::OverlayTypeDesc* d = desk_.types_.Find(o.type_id());
       const std::string what = d != nullptr ? d->display_name : o.Name();
-      desk_.Report(Status::Error(kNotFound, what + " needs DTED elevation data; the catalog has none."));
+      desk_.Report(Status::Error(kNotFound, what + " needs elevation data (DTED or lidar); the catalog has none."));
     }
     Changed();
   }
@@ -193,6 +195,7 @@ class Desk::StackHook : public StackObserver {
 Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
     : shell_(shell), settings_(settings), groups_(std::move(groups)), menus_(commands_) {
   tap_ = std::make_unique<ShellTap>(*this);
+  search_ = std::make_unique<DeskSearch>();
   overlays_.SetTypeRegistry(&types_);
   session_ = std::make_unique<app::OverlaySession>(types_, overlays_, *tap_, settings_);
   editors_ = std::make_unique<app::EditorManager>(types_, overlays_, *tap_);
@@ -341,6 +344,7 @@ void Desk::RegisterStaticCommands() {
       "zoom_in");
   add("map.zoom_out", "Zoom Out", "Primary+-", [this] { view_->Step(-1); }, nullptr, nullptr,
       "zoom_out");
+  add("map.goto", "Go To / Find…", "Primary+F", [this] { shell_.ShowFind(); });
   add("map.recenter", "Recenter on Data", "", [this] { Recenter(); },
       [this] { return CurrentGroup() != nullptr; }, nullptr, "recenter");
   add("map.pan.north", "North", "Up", [this] { PanScreens(0, -0.5); });
@@ -1108,20 +1112,39 @@ void Desk::CatalogChanged() {
   RebuildMenus();
 }
 
+namespace {
+
+/// Lidar DEMs stacked over the DTED tree; either may be absent.
+std::unique_ptr<IElevationSource> OpenElevation(const std::string& dted_dir,
+                                                const std::vector<std::string>& lidar_dirs) {
+  std::unique_ptr<IElevationSource> dted;
+  if (!dted_dir.empty()) dted = std::make_unique<DtedElevationSource>(dted_dir);
+  if (lidar_dirs.empty()) return dted;
+  auto lidar = std::make_shared<GeoTiffDemSource>(lidar_dirs);
+  if (lidar->FileCount() == 0) return dted;
+  return std::make_unique<ElevationStack>(
+      std::vector<std::shared_ptr<IElevationSource>>{lidar, std::move(dted)});
+}
+
+}  // namespace
+
 void Desk::ResolveElevation() {
   ++elevation_gen_;
   elevation_.reset();
   pointer_elevation_.reset();
   std::vector<DataSourceRow> rows;
+  std::string dted_dir;
+  std::vector<std::string> lidar_dirs;
   if (catalog_ && catalog_->DataSources(&rows).ok()) {
     for (const DataSourceRow& r : rows) {
       std::error_code ec;
-      if (r.format != "dted" || !std::filesystem::is_directory(r.path, ec)) continue;
-      elevation_ = std::make_shared<DtedElevationSource>(r.path);
-      pointer_elevation_ = std::make_unique<DtedElevationSource>(r.path);
-      break;
+      if (!std::filesystem::is_directory(r.path, ec)) continue;
+      if (r.format == "dted" && dted_dir.empty()) dted_dir = r.path;
+      if (r.format == "lidar" && r.frames > 0) lidar_dirs.push_back(r.path);
     }
   }
+  elevation_ = OpenElevation(dted_dir, lidar_dirs);
+  pointer_elevation_ = OpenElevation(dted_dir, lidar_dirs);
   for (const std::shared_ptr<Overlay>& o : overlays_.Overlays()) BindOverlay(*o);
 }
 
@@ -1129,6 +1152,8 @@ bool Desk::BindOverlay(Overlay& overlay) {
   if (auto* r = dynamic_cast<RouteOverlay*>(&overlay)) {
     r->SetManager(&overlays_);
     r->SetPlanner(planner_.get());
+    r->SetAvoidHillsPenalty(
+        settings_.GetDouble("routing.avoid_hills_penalty", kDefaultAvoidHillsPenalty));
     // A new route is priced with the configured profile; an opened one keeps its own.
     if (r->waypoints().empty() && r->profile().empty() && !r->is_dirty()) {
       const std::string profile = settings_.GetString("routing.profile", "");
@@ -1579,6 +1604,10 @@ void Desk::ResolveRoutePlanner() {
   const std::string graph = settings_.GetString("routing.graph", "");
   const std::string rules = settings_.GetString("routing.rules", "");
   const std::string paths = graph + '\n' + rules;
+  const double penalty =
+      settings_.GetDouble("routing.avoid_hills_penalty", kDefaultAvoidHillsPenalty);
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
+    if (auto* r = dynamic_cast<RouteOverlay*>(o.get())) r->SetAvoidHillsPenalty(penalty);
   if (planner_paths_ && *planner_paths_ == paths) return;
   planner_paths_ = paths;
   // The planner loads its graph lazily, on the first Follow Roads.
@@ -1696,6 +1725,36 @@ void Desk::GoTo(const GeoPoint& center, double scale_denom) {
   view_->SetViewport(v.WithCamera(center, scale_denom, v.Rotation()));
   // Panning alone keeps the product; a jump chooses it again.
   ApplyGroupToView();
+}
+
+std::vector<DeskSearchRow> Desk::Search(const std::string& text, bool map_view_only) {
+  ResolveRoutePlanner();
+  const view::Viewport& v = view_->View();
+  DeskSearchInput in;
+  in.text = text;
+  in.overlays = &overlays_;
+  in.planner = planner_.get();
+  in.catalog = catalog_;
+  if (view_->HasProduct()) in.product = view_->Product();
+  in.near = v.Center();
+  if (v.HasSurface()) in.view = v.Projection().VmapBounds();
+  in.map_view_only = map_view_only;
+  in.enc_dir = CurrentVectorMapConfig().enc_dir;
+  return search_->Search(in);
+}
+
+void Desk::GoToSearchRow(const DeskSearchRow& row) {
+  constexpr double kNearestFrameDenom = 2500.0;
+  const view::Viewport& v = view_->View();
+  const double fit = SearchFitScale(row.bounds, v.WidthPt(), v.HeightPt(), v.MmPerPoint(),
+                                    kNearestFrameDenom);
+  if (fit > 0.0) {
+    const GeoPoint mid{0.5 * (row.bounds.ll.lat + row.bounds.ur.lat),
+                       0.5 * (row.bounds.ll.lon + row.bounds.ur.lon)};
+    GoTo(mid, fit);
+  } else {
+    GoTo(row.position, v.ScaleDenom());
+  }
 }
 
 std::vector<view::LadderProduct> Desk::ProductsAt(const GeoPoint& p) const {

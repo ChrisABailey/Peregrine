@@ -436,6 +436,7 @@ final class RuleStyleWindowController: NSWindowController, NSWindowDelegate, NST
 
     /// The editor for one constant of property `k`, committing through `commit`.
     private func valueEditor(_ k: Int32, _ value: String, commit: @escaping (String) -> std.string) -> NSView {
+        if host.RuleStylePropertyIcons(k) { return iconEditor(value, commit: commit) }
         switch Kind(rawValue: host.RuleStylePropertyKind(k)) ?? .text {
         case .color:
             let well = NSColorWell(style: .minimal)
@@ -482,6 +483,26 @@ final class RuleStyleWindowController: NSWindowController, NSWindowDelegate, NST
             bind(field, commit: commit)
             return field
         }
+    }
+
+    /// A button showing the chosen icon and its name; it opens the icon grid.
+    private func iconEditor(_ value: String, commit: @escaping (String) -> std.string) -> NSView {
+        let button = NSButton(title: value.isEmpty ? "Choose Icon" : value, target: nil, action: nil)
+        button.image = IconPickerController.image(host, value, points: 16)
+        button.imagePosition = .imageLeading
+        button.toolTip = "Choose an icon"
+        ControlAction.attach(to: button) { [weak self] control in
+            guard let self else { return }
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.contentViewController = IconPickerController(host: self.host, selected: value) {
+                [weak self, weak popover] name in
+                popover?.close()
+                self?.finish(commit(name))
+            }
+            popover.show(relativeTo: control.bounds, of: control, preferredEdge: .maxY)
+        }
+        return button
     }
 
     private func numberField(_ value: Double) -> NSTextField {
@@ -562,6 +583,109 @@ final class RuleStyleWindowController: NSWindowController, NSWindowDelegate, NST
         let byte = { (v: CGFloat) in UInt32(max(0, min(255, (v * 255).rounded()))) }
         return byte(c.redComponent) << 24 | byte(c.greenComponent) << 16 | byte(c.blueComponent) << 8 |
             byte(c.alphaComponent)
+    }
+}
+
+// MARK: Icon picker
+
+/// A searchable grid of the builtin icons; choosing one calls `onChoose` with its name.
+@MainActor
+final class IconPickerController: NSViewController, NSSearchFieldDelegate {
+    private static let columns = 10
+    private static let cell: CGFloat = 32
+
+    private let host: fv.desk.DeskHost
+    private let selected: String
+    private let onChoose: (String) -> Void
+    private let names: [String]
+    private let search = NSSearchField()
+    private let grid = NSStackView()
+
+    init(host: fv.desk.DeskHost, selected: String, onChoose: @escaping (String) -> Void) {
+        self.host = host
+        self.selected = selected
+        self.onChoose = onChoose
+        names = (0..<host.RuleIconCount()).map { String(host.RuleIconName($0)) }
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func loadView() {
+        search.placeholderString = "Search icons"
+        search.delegate = self
+        grid.orientation = .vertical
+        grid.alignment = .leading
+        grid.spacing = 2
+        let scroll = NSScrollView()
+        scroll.documentView = FlippedStackHost(stack: grid)
+        scroll.documentView?.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView?.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        let width = CGFloat(Self.columns) * (Self.cell + 2) + 20
+        scroll.widthAnchor.constraint(equalToConstant: width).isActive = true
+        scroll.heightAnchor.constraint(equalToConstant: 300).isActive = true
+        let column = NSStackView(views: [search, scroll])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        search.widthAnchor.constraint(equalTo: scroll.widthAnchor).isActive = true
+        view = column
+        fill("")
+    }
+
+    func controlTextDidChange(_ obj: Notification) { fill(search.stringValue) }
+
+    /// Lays out the icons whose names contain `filter`, `columns` to a row.
+    private func fill(_ filter: String) {
+        for v in grid.arrangedSubviews { v.removeFromSuperview() }
+        let shown = filter.isEmpty ? names : names.filter { $0.localizedCaseInsensitiveContains(filter) }
+        var row: [NSView] = []
+        for name in shown {
+            let button = NSButton(image: Self.image(host, name, points: 20) ?? NSImage(), target: nil, action: nil)
+            button.bezelStyle = .smallSquare
+            button.setButtonType(.pushOnPushOff)
+            button.state = name == selected ? .on : .off
+            button.toolTip = name
+            button.widthAnchor.constraint(equalToConstant: Self.cell).isActive = true
+            button.heightAnchor.constraint(equalToConstant: Self.cell).isActive = true
+            ControlAction.attach(to: button) { [weak self] _ in self?.onChoose(name) }
+            row.append(button)
+            if row.count == Self.columns { grid.addArrangedSubview(Self.line(row)); row = [] }
+        }
+        if !row.isEmpty { grid.addArrangedSubview(Self.line(row)) }
+        if shown.isEmpty { grid.addArrangedSubview(NSTextField(labelWithString: "No icon matches.")) }
+    }
+
+    private static func line(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        return stack
+    }
+
+    /// Icon `name` as a template image `points` square, so it follows the label colour.
+    static func image(_ host: fv.desk.DeskHost, _ name: String, points: CGFloat) -> NSImage? {
+        guard !name.isEmpty else { return nil }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let size = Int((points * scale).rounded())
+        var bytes = Data(count: size * size * 4)
+        let copied = bytes.withUnsafeMutableBytes { buf in
+            host.CopyRuleIcon(std.string(name), Int32(size), 0x0000_00ff,
+                              buf.baseAddress!.assumingMemoryBound(to: UInt8.self), buf.count)
+        }
+        guard copied, let provider = CGDataProvider(data: bytes as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let cg = CGImage(width: size, height: size, bitsPerComponent: 8, bitsPerPixel: 32,
+                               bytesPerRow: size * 4, space: space,
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: true,
+                               intent: .defaultIntent) else { return nil }
+        let image = NSImage(cgImage: cg, size: NSSize(width: points, height: points))
+        image.isTemplate = true
+        return image
     }
 }
 

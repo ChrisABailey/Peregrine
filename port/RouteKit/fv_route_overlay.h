@@ -83,6 +83,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -135,6 +136,13 @@ class RouteOverlay : public Overlay,
   // The casing under the beach stretches: darker than the chart's pale sand
   // fill, so the stretch still stands out where it crosses the beach.
   static const FvColor kBeachCasingColor;
+  // The beach wind arrows, opaque: against the rider, with the rider, and
+  // under the threshold.
+  static const FvColor kHeadwindColor;
+  static const FvColor kTailwindColor;
+  static const FvColor kCalmWindColor;
+  /// Length of a beach wind arrow, tail to tip, in points at wind scale 1.
+  static constexpr double kWindArrowLength = 14.0;
 
   app::Persistence* AsPersistence() override { return this; }
   app::HitTest* AsHitTest() override { return this; }
@@ -195,6 +203,19 @@ class RouteOverlay : public Overlay,
   void SetBeach(RouteBeach beach);
   RouteBeach beach() const { return doc_.beach(); }
 
+  /// Whether the route avoids climbing. A document field, so it dirties.
+  void SetAvoidHills(bool avoid);
+  bool avoid_hills() const { return doc_.avoid_hills(); }
+
+  /// The climb multiplier an "Avoid hills" plan uses (`[routing]
+  /// avoid_hills_penalty`). A shell setting, not a document field.
+  void SetAvoidHillsPenalty(double penalty) { avoid_hills_penalty_ = penalty; }
+  double avoid_hills_penalty() const { return avoid_hills_penalty_; }
+
+  /// True when the planner's graph carries elevation, or is not loaded yet
+  /// and so may. False without a planner.
+  bool MayHaveElevation() const;
+
   // The selected waypoint's LABEL, or empty. Selection is NOT a document
   // change: selecting does not dirty the overlay.
   const std::string& selected() const { return selected_; }
@@ -237,6 +258,11 @@ class RouteOverlay : public Overlay,
   void SetSymbolDpiScale(double s) { dpi_scale_ = s > 0.0 ? s : 1.0; }
   double symbol_dpi_scale() const { return dpi_scale_; }
 
+  /// The user's symbol size, applied to the beach wind arrows on top of the
+  /// device scale: their length, spacing and clearance from the line.
+  void SetWindArrowScale(double s) { wind_scale_ = s > 0.0 ? s : 1.0; }
+  double wind_arrow_scale() const { return wind_scale_; }
+
   // Waypoint names. On by default, unlike PointOverlay: a route has a handful
   // of waypoints and their ORDER is the document, so an unlabelled diamond is
   // a marker whose meaning has been thrown away.
@@ -268,6 +294,40 @@ class RouteOverlay : public Overlay,
   // route is, so it neither saves nor dirties.
   void SetLegKind(LineKind kind) { leg_kind_ = kind; }
   LineKind leg_kind() const { return leg_kind_; }
+
+  // --- beach wind ----------------------------------------------------------
+
+  /// The wind on one beach stretch of the plan.
+  struct BeachWindMark {
+    /// Index into `plan().beach`.
+    size_t stretch = 0;
+    /// The direction the wind blows towards, degrees true.
+    double toward_deg = 0.0;
+    /// Component along the direction of travel, m/s; positive is a tailwind.
+    double along_mps = 0.0;
+    /// The direction the beach faces out to sea, degrees true. Arrows sit
+    /// on the landward side of the line; NaN centres them on it.
+    double seaward_deg = std::numeric_limits<double>::quiet_NaN();
+  };
+
+  /// Arrows along the plan's beach stretches, pointing where the wind
+  /// blows: headwind or tailwind colour when |along_mps| exceeds `warn_mps`,
+  /// grey otherwise. Not a document field. Cleared whenever the
+  /// plan is replaced, since the marks index its stretches.
+  void SetBeachWind(std::vector<BeachWindMark> marks, double warn_mps);
+  const std::vector<BeachWindMark>& beach_wind() const { return wind_marks_; }
+
+  enum class WindClass { kCalm, kHead, kTail };
+  /// One wind arrow as the last `OnDraw` placed it: its centre in surface
+  /// pixels and the unit vector, in surface pixels, the wind blows along.
+  struct DrawnChevron {
+    double x = 0.0;
+    double y = 0.0;
+    double dx = 0.0;
+    double dy = 0.0;
+    WindClass kind = WindClass::kCalm;
+  };
+  const std::vector<DrawnChevron>& drawn_wind() const { return drawn_wind_; }
 
   // --- Properties ----------------------------------------------------------
 
@@ -366,6 +426,7 @@ class RouteOverlay : public Overlay,
 
   RouteDoc doc_;
   const RoutePlanner* planner_ = nullptr;
+  double avoid_hills_penalty_ = kDefaultAvoidHillsPenalty;
 
   RoutePlan plan_;
   bool has_plan_ = false;
@@ -381,10 +442,18 @@ class RouteOverlay : public Overlay,
   FvColor beach_casing_color_ = kBeachCasingColor;
   bool draw_markers_ = true;
   double dpi_scale_ = 1.0;
+  double wind_scale_ = 1.0;
   LineKind leg_kind_ = LineKind::kGreatCircle;
 
   OverlayManager* manager_ = nullptr;
   std::unique_ptr<RouteEditSession> edit_;
+
+  std::vector<BeachWindMark> wind_marks_;
+  double wind_warn_mps_ = 0.0;
+  std::vector<DrawnChevron> drawn_wind_;
+  /// The wind arrows along each marked stretch of `line`, the plan's legs joined.
+  Status DrawBeachWind(const MapProjection& proj, ICanvas& canvas,
+                       const std::vector<GeoPoint>& line);
 
   // The projection the last OnDraw ran with, and whether there has been one.
   // Set beside `drawn_` below, and for the same reason: the picture and the

@@ -146,6 +146,7 @@ Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
   if (in.avoid_tolls) out->toll_penalty = routing::kAvoidExcluded;
   if (in.avoid_ferries) out->ferry_penalty = routing::kAvoidExcluded;
   out->beach = in.beach;
+  out->hill_penalty = in.avoid_hills.value_or(false) ? in.avoid_hills_penalty : 1.0;
   return Status::Ok();
 }
 
@@ -295,6 +296,10 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
     plan.length_m = through.length_m;
     plan.seconds = through.seconds;
     plan.u_turn_stops = through.u_turn_stops;
+    plan.has_elevation = through.has_elevation;
+    plan.climb_m = through.climb_m;
+    plan.descent_m = through.descent_m;
+    plan.elevation = through.profile;
     // The turn list is measured along `through.geometry`, and `legs` joined
     // end to end is that same line: the cuts are indices into it, and the
     // duplicate vertices a joiner drops are zero-length segments that no
@@ -302,8 +307,14 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
     plan.maneuvers = ManeuversOf(through);
     plan.beach = BeachStretchesOf(through);
     std::string turned;
+    if (through.has_elevation) {
+      char hills[96];
+      std::snprintf(hills, sizeof(hills), ", up %.0f m, down %.0f m%s", through.climb_m,
+                    through.descent_m, in.avoid_hills.value_or(false) ? " (avoiding hills)" : "");
+      turned = hills;
+    }
     if (!through.u_turn_stops.empty()) {
-      turned = " (turned round at " +
+      turned += " (turned round at " +
                std::to_string(through.u_turn_stops.size()) +
                " stop(s) with no other way out)";
     }

@@ -133,7 +133,8 @@ const std::vector<ScanFormat>& DefaultScanFormats() {
   static const std::vector<ScanFormat> table = {
       {"cadrg", "rpf"},        {"tiros", "tiros3"},     {"dted", "dted"},
       {"dted-shaded", "dted"}, {"geotiff", "geotiff"},  {"gpkg", ""},
-      {"enc", "enc"},          {"osm", "OSM"},
+      {"enc", "enc"},          {"osm", "OSM"},          {"lidar", "lidar"},
+      {"lidar-shaded", "lidar"},
   };
   return table;
 }

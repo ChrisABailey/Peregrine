@@ -175,11 +175,13 @@ streets):
 osmium extract -b -84.61,33.67,-84.25,33.97 testdata/OSM/us-south-260728.osm.pbf -o testdata/OSM/atlanta.osm.pbf --overwrite
 ```
 
-The road graph, honouring access and with no `--beach`. Needs a mac `cmake --build build` for
-`fvgraph`:
+The road graph, honouring access and with no `--beach`, with bare-earth elevation from the USGS
+3DEP 1/3" GeoTIFF in `testdata/lidar` (`--dem`). Given `testdata/dted` instead, it uses the DTED
+level 2 cells, a surface model with buildings filtered out by `GroundSampler`. Needs a mac
+`cmake --build build` for `fvgraph`:
 
 ```sh
-build/port/Routing/fvgraph build -o testdata/OSM/atlanta.fvroad testdata/OSM/atlanta.osm.pbf
+build/port/Routing/fvgraph build -o testdata/OSM/atlanta.fvroad --dem testdata/lidar testdata/OSM/atlanta.osm.pbf
 ```
 
 A route to check it, the box centre to Piedmont Park:
@@ -205,7 +207,7 @@ Use `./tilemaker` from that checkout. The copy in `/usr/local/bin` fails at load
 `Symbol not found: __ZN5boost15program_options3argE` after a Homebrew boost upgrade; rebuild it
 or ignore it.
 
-Expect `atlanta.osm.pbf` ~31 MB, `atlanta.fvroad` ~29 MB, `atlanta.mbtiles` ~23 MB (424 tiles,
+Expect `atlanta.osm.pbf` ~31 MB, `atlanta.fvroad` ~38 MB, `atlanta.mbtiles` ~23 MB (424 tiles,
 z0–z14). Then stage:
 
 ```sh

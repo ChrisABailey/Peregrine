@@ -30,6 +30,10 @@ Image.MAX_IMAGE_PIXELS = None
 
 # Whole files copied unchanged, relative to the testdata root.
 COPY = [
+    # GeoTrans datum, ellipsoid and geoid tables (U.S. Government works):
+    # Peregrine's geotrans.data_dir, for MGRS in Go To / Find.
+    "geotrans",
+
     # DTED level 1: the pinned cell (w082/n31), Kiawah Island (w081/n32), and
     # two North Georgia / Appalachian relief cells in the upper-case W084
     # directory the case-insensitivity tests look for.

@@ -77,14 +77,14 @@
                        longitude:(double)longitude
                beachFacesDegrees:(double)faces
       onshoreWarnMetersPerSecond:(double)onshoreWarn
-     headwindWarnMetersPerSecond:(double)headwindWarn {
+        alongWarnMetersPerSecond:(double)alongWarn {
   self = [super init];
   if (self != nil) {
     _latitude = latitude;
     _longitude = longitude;
     _beachFacesDegrees = faces;
     _onshoreWarnMetersPerSecond = onshoreWarn;
-    _headwindWarnMetersPerSecond = headwindWarn;
+    _alongWarnMetersPerSecond = alongWarn;
   }
   return self;
 }
@@ -92,6 +92,24 @@
 - (double)seawardForHeading:(double)headingDegrees {
   if (std::isnan(_beachFacesDegrees) || std::isnan(headingDegrees)) return NAN;
   return fv::nav::SeawardOf(headingDegrees, _beachFacesDegrees);
+}
+
+@end
+
+@implementation PPBeachWindMark
+
+- (instancetype)initWithStretch:(NSInteger)stretch
+                  towardDegrees:(double)towardDegrees
+           alongMetersPerSecond:(double)along
+                 seawardDegrees:(double)seaward {
+  self = [super init];
+  if (self != nil) {
+    _stretch = stretch;
+    _towardDegrees = towardDegrees;
+    _alongMetersPerSecond = along;
+    _seawardDegrees = seaward;
+  }
+  return self;
 }
 
 @end

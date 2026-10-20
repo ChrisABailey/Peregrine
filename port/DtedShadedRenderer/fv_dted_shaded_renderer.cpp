@@ -8,6 +8,7 @@
 
 #include "fv_dted_shaded_renderer.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "DtedReader.h"
@@ -229,9 +230,10 @@ void DtedShadedRenderer::SetExaggeration(float factor) {
   impl_->exaggeration = factor;
 }
 
-Status DtedShadedRenderer::Render(PixelBuffer* out) {
-  if (out == nullptr) return Status::Error(kInvalidArg, "out is null");
-  if (!impl_->open) return Status::Error(kInvalidArg, "no cell open");
+/// Pushes the display, band and lighting parameters into the reader and
+/// builds its colour table. Time shading takes the sun at (`clat`, `clon`).
+/// Returns the exaggeration in effect.
+float DtedShadedRenderer::Configure(double clat, double clon) {
   CDtedReader& r = impl_->reader;
 
   // --- apply parameters (mirrors DTEDRenderer::display's setup block) ---
@@ -277,9 +279,6 @@ Status DtedShadedRenderer::Render(PixelBuffer* out) {
       r.set_exaggeration_factor(impl_->exaggeration);
       break;
     case kTimeShading: {
-      const GeoRect b = ImageBounds();
-      const double clat = (b.ll.lat + b.ur.lat) / 2;
-      const double clon = (b.ll.lon + b.ur.lon) / 2;
       SolarPosition sun = SolarAzimuthElevation(impl_->ts_year, impl_->ts_month,
                                                 impl_->ts_day, impl_->ts_hours,
                                                 clat, clon);
@@ -297,6 +296,16 @@ Status DtedShadedRenderer::Render(PixelBuffer* out) {
   }
 
   r.setup_color_table();
+  if (impl_->light_mode == kTimeShading) return 3.0f;
+  return impl_->exaggeration;
+}
+
+Status DtedShadedRenderer::Render(PixelBuffer* out) {
+  if (out == nullptr) return Status::Error(kInvalidArg, "out is null");
+  if (!impl_->open) return Status::Error(kInvalidArg, "no cell open");
+  CDtedReader& r = impl_->reader;
+  const GeoRect b = ImageBounds();
+  Configure((b.ll.lat + b.ur.lat) / 2, (b.ll.lon + b.ur.lon) / 2);
   unsigned char color_table[DTED_READER_NUM_COLORS][3];
   r.get_color_table(color_table);
 
@@ -321,6 +330,84 @@ Status DtedShadedRenderer::Render(PixelBuffer* out) {
       dst[4 * ox + 1] = color_table[ci][1];
       dst[4 * ox + 2] = color_table[ci][2];
       dst[4 * ox + 3] = 255;
+    }
+  }
+  return Status::Ok();
+}
+
+Status DtedShadedRenderer::ShadeGrid(const float* meters, int width, int height,
+                                     double m_lat_per_post, double m_lon_per_post,
+                                     const GeoPoint& center, PixelBuffer* out) {
+  if (out == nullptr || meters == nullptr)
+    return Status::Error(kInvalidArg, "null argument");
+  if (width <= 0 || height <= 0) return Status::Error(kInvalidArg, "empty grid");
+  CDtedReader& r = impl_->reader;
+  // Elevation and slope modes build different colour tables; shade as relief.
+  const DtedDisplayMode mode = impl_->display_mode;
+  const bool mono = (mode & 1) != 0;
+  impl_->display_mode = mono ? kDtedRenderedMono : kDtedRenderedColor;
+  const float exaggeration = Configure(center.lat, center.lon);
+  impl_->display_mode = mode;
+  unsigned char color_table[DTED_READER_NUM_COLORS][3];
+  r.get_color_table(color_table);
+  double lx, ly, lz;
+  r.get_light_direction(lx, ly, lz);
+
+  std::vector<double> breaks_m;
+  if (impl_->elev_bands_set && !impl_->elev_bands.empty()) {
+    for (int ft : impl_->elev_bands) breaks_m.push_back(ft * 0.3048);
+  } else {
+    for (int ft : kDefaultElevationBandsFeet) breaks_m.push_back(ft * 0.3048);
+  }
+  if (breaks_m.size() > 5) breaks_m.resize(5);
+  constexpr int kNumShades = 32;  // CDtedReader::m_NumShades
+  constexpr int kMaxColor = 191;  // CDtedReader::m_max_color in colour mode
+
+  // CDtedReader::calc_dot_prod takes its spacings as float.
+  const double yb = static_cast<float>(m_lat_per_post);
+  const double xr = static_cast<float>(m_lon_per_post);
+  const size_t stride = static_cast<size_t>(width) + 1;
+
+  *out = PixelBuffer(width, height);
+  for (int y = 0; y < height; ++y) {
+    const float* north = meters + static_cast<size_t>(y) * stride;
+    const float* south = north + stride;
+    unsigned char* dst = out->Row(y);
+    for (int x = 0; x < width; ++x, dst += 4) {
+      const float up = north[x];
+      if (!std::isfinite(up)) continue;  // void: transparent
+      float left = south[x], right = south[x + 1];
+      // A void neighbour is taken as level with the post.
+      if (!std::isfinite(left)) left = up;
+      if (!std::isfinite(right)) right = left;
+
+      unsigned char ci;
+      if (up == 0.0f) {
+        ci = 214;  // get_subimage_2's sea-level colour
+      } else {
+        const double vb_z = exaggeration * (up - left);
+        const double vr_z = exaggeration * (right - left);
+        double nx = yb * vr_z, ny = vb_z * xr, nz = -yb * xr;
+        const double mag = std::sqrt(nx * nx + ny * ny + nz * nz);
+        nx /= mag;
+        ny /= mag;
+        nz /= mag;
+        const double dot = std::max(-1.0, std::min(1.0, nx * lx + ny * ly + nz * lz));
+        if (mono) {
+          ci = dot <= 0.0 ? 0 : static_cast<unsigned char>(int((DTED_READER_SHADES + 1) * dot + 0.5));
+        } else if (dot <= 0.0) {
+          ci = DTED_READER_SHADES + 1;
+        } else {
+          int band = 0;
+          while (band < static_cast<int>(breaks_m.size()) && !(up < breaks_m[band])) ++band;
+          ci = static_cast<unsigned char>(
+              std::min(kMaxColor, kNumShades * band + int(kNumShades * dot)));
+        }
+      }
+      dst[0] = color_table[ci][0];
+      dst[1] = color_table[ci][1];
+      dst[2] = color_table[ci][2];
+      dst[3] = 255;
     }
   }
   return Status::Ok();

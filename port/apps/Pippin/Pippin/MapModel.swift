@@ -154,6 +154,8 @@ final class MapModel: ObservableObject {
                 arrivedRide = false
                 ridingDidChange()
             }
+            if route?.beachStretches.isEmpty == false { WindFeed.shared.refresh() }
+            updateBeachWind()
         }
     }
     /// A plan is in flight; bound to the sheet's spinner.
@@ -229,6 +231,9 @@ final class MapModel: ObservableObject {
         label: "org.peregrine.Pippin.render", qos: .userInitiated)
 
     private var memoryWarning: NSObjectProtocol?
+    private var windWatch: AnyCancellable?
+    /// The overlay holds wind chevrons, so an empty update must still be sent.
+    private var hasBeachWind = false
     private var link: CADisplayLink?
     private var needsRender = false
     private var renderInFlight = false
@@ -313,6 +318,11 @@ final class MapModel: ObservableObject {
             renderer = Renderer(map: map)
             alerts.amplitude = map.alertAmplitude
             WindFeed.shared.configure(map.wind)
+            // `$forecast` fires before the property changes, so the new value
+            // is passed through rather than read back.
+            windWatch = WindFeed.shared.$forecast.dropFirst().sink { [weak self] forecast in
+                self?.updateBeachWind(forecast)
+            }
             courseUp = renderer?.initialCourseUp ?? true
             // Centred on the pack with its zoom limits applied; no surface
             // until the view reports one.
@@ -863,6 +873,33 @@ final class MapModel: ObservableObject {
 
     // MARK: - Route
 
+    /// Sends the overlay a wind chevron mark for each of the route's beach
+    /// stretches, from the forecast hour the rider reaches it; the same
+    /// sample the route sheet names.
+    private func updateBeachWind() { updateBeachWind(WindFeed.shared.forecast) }
+
+    private func updateBeachWind(_ forecast: PPWindForecast?) {
+        let settings = WindFeed.shared.settings
+        var marks: [PPBeachWindMark] = []
+        if let route, route.isCalculated, let settings, let forecast {
+            for (index, stretch) in route.beachStretches.enumerated()
+            where stretch.headingDegrees.isFinite {
+                guard let sample = forecast.sample(at: stretch.enterTime) else { continue }
+                marks.append(PPBeachWindMark(
+                    stretch: index,
+                    towardDegrees: sample.fromDegrees + 180,
+                    alongMetersPerSecond: sample.tailwind(heading: stretch.headingDegrees),
+                    seawardDegrees: settings.seaward(heading: stretch.headingDegrees)))
+            }
+        }
+        guard !marks.isEmpty || hasBeachWind else { return }
+        hasBeachWind = !marks.isEmpty
+        let warnAt = settings?.alongWarnMetersPerSecond ?? 0
+        onRenderQueue({ $0.setBeachWind(marks, warnAt: warnAt) }) { model, _ in
+            model.setContentDirty()
+        }
+    }
+
     /// Reads `Documents/current.fvrte` and replans it. Called once from the
     /// screen's `onAppear`. Runs on the render queue because the plan is not
     /// stored in the document.
@@ -895,6 +932,15 @@ final class MapModel: ObservableObject {
         publishRoute(planning: true,
                      { $0.setRoute(waypoints: waypoints, profile: profile,
                                    beachUse: beachUse) },
+                     then: { $0.offerWaypointHint() })
+    }
+
+    /// As above, also setting whether the route avoids hills.
+    func setRoute(waypoints: [PPWaypoint], profile: String, beachUse: PPBeachUse,
+                  avoidHills: Bool) {
+        publishRoute(planning: true,
+                     { $0.setRoute(waypoints: waypoints, profile: profile,
+                                   beachUse: beachUse, avoidHills: avoidHills) },
                      then: { $0.offerWaypointHint() })
     }
 
@@ -1214,7 +1260,7 @@ final class MapModel: ObservableObject {
         // a pack that covers it is installed. Say so rather than centring on
         // nothing.
         if let bounds = renderer?.homeBounds, !Self.contains(bounds, coordinate) {
-            post("\(name) saved, but it is outside the Kiawah map.")
+            post("\(name) saved, but it is outside this map.")
             return
         }
 
@@ -1354,6 +1400,8 @@ final class MapModel: ObservableObject {
 
     /// The road graph has a beach, so the route sheet offers "Use beach:".
     var beachAvailable: Bool { renderer?.beachAvailable ?? false }
+    /// The road graph has elevation, so the route sheet offers "Avoid hills".
+    var elevationAvailable: Bool { renderer?.elevationAvailable ?? false }
     var routeDefaultProfile: String { renderer?.routeDefaultProfile ?? "bicycle" }
 
     // MARK: - Symbol size
@@ -2168,6 +2216,8 @@ private final class Renderer: @unchecked Sendable {
     let routeProfileNames: [String]
     /// The graph has beach arcs. Fixed for the pack.
     let beachAvailable: Bool
+    /// The graph carries elevation. Fixed for the pack.
+    let elevationAvailable: Bool
     let routeDefaultProfile: String
     let pointHitTolerance: Double
     /// The ownship symbol's reach in points; the render gate's margin.
@@ -2214,6 +2264,7 @@ private final class Renderer: @unchecked Sendable {
         hasDarkStyle = map.hasDarkStyle
         routeProfileNames = map.routeProfileNames
         beachAvailable = map.beachAvailable
+        elevationAvailable = map.elevationAvailable
         if let depart = TideClock.override { map.routeDepartureOverride = depart }
         routeDefaultProfile = map.routeDefaultProfile
         pointHitTolerance = map.pointHitTolerance
@@ -2360,8 +2411,18 @@ private final class Renderer: @unchecked Sendable {
         map.setRoute(waypoints: waypoints, profile: profile, beachUse: beachUse)
     }
 
+    func setRoute(waypoints: [PPWaypoint], profile: String, beachUse: PPBeachUse,
+                  avoidHills: Bool) -> PPRoute {
+        map.setRoute(waypoints: waypoints, profile: profile, beachUse: beachUse,
+                     avoidHills: avoidHills)
+    }
+
     func clearRoute() -> PPRoute {
         map.clearRoute()
+    }
+
+    func setBeachWind(_ marks: [PPBeachWindMark], warnAt: Double) {
+        map.setBeachWind(marks, warnAt: warnAt)
     }
 
     // MARK: Waypoint drag (render queue only)

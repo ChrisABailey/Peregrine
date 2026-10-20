@@ -39,6 +39,24 @@ std::string Lower(std::string s) {
   return s;
 }
 
+/// True when an SRS row describes WGS-84 longitude/latitude in degrees: EPSG:4326, OGC:CRS84,
+/// or a geographic WKT definition with the WGS-84 datum, Greenwich meridian and degree units.
+/// GDAL writes CRS84 as a custom row (organization NONE) that only the WKT identifies.
+bool IsWgs84Degrees(const std::string& org, int64_t org_id, const std::string& definition) {
+  if ((org == "epsg" && org_id == kWgs84) || (org == "ogc" && org_id == 84)) return true;
+  std::string wkt;
+  for (char c : definition)
+    if (!std::isspace(static_cast<unsigned char>(c)))
+      wkt += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  const auto has = [&wkt](const char* s) { return wkt.find(s) != std::string::npos; };
+  const bool wkt1 = wkt.rfind("GEOGCS[", 0) == 0 && has("DATUM[\"WGS_1984\"");
+  const bool wkt2 = (wkt.rfind("GEOGCRS[", 0) == 0 || wkt.rfind("GEODCRS[", 0) == 0) &&
+                    has("DATUM[\"WORLDGEODETICSYSTEM1984\"");
+  // A TOWGS84 shift, another prime meridian or non-degree units would need a conversion.
+  return (wkt1 || wkt2) && !has("TOWGS84") && has("PRIMEM[\"GREENWICH\",0") &&
+         has("UNIT[\"DEGREE\"") && !has("PROJCS[") && !has("PROJCRS[");
+}
+
 /// An SQL identifier in double quotes.
 std::string Quote(const std::string& name) {
   std::string out = "\"";
@@ -966,7 +984,7 @@ Status GeoPackageFeatureLayer::Load() {
 
   SqliteStmt st;
   Status s = st.Prepare(db, "SELECT c.identifier, g.column_name, g.geometry_type_name, g.srs_id, "
-                            "g.z, g.m, s.organization, s.organization_coordsys_id "
+                            "g.z, g.m, s.organization, s.organization_coordsys_id, s.definition "
                             "FROM gpkg_contents c JOIN gpkg_geometry_columns g "
                             "ON g.table_name = c.table_name "
                             "LEFT JOIN gpkg_spatial_ref_sys s ON s.srs_id = g.srs_id "
@@ -988,8 +1006,9 @@ Status GeoPackageFeatureLayer::Load() {
   m_ = static_cast<int>(st.ColInt64(5));
   const std::string org = Lower(st.ColText(6));
   const int64_t org_id = st.ColInt64(7);
-  // Undefined geographic is read as WGS-84 degrees; anything else needs a conversion (FO-D9).
-  const bool wgs84 = (org == "epsg" && org_id == kWgs84) || srs_id_ == kUndefinedGeographic;
+  // Undefined geographic is read as WGS-84 degrees; anything else needs a conversion.
+  const bool wgs84 =
+      IsWgs84Degrees(org, org_id, st.ColText(8)) || srs_id_ == kUndefinedGeographic;
   if (!wgs84)
     return Status::Error(kUnsupported, "GeoPackage: \"" + table_ + "\" uses SRS " +
                                            st.ColText(6) + ":" + std::to_string(org_id) +

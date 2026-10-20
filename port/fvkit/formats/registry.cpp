@@ -13,6 +13,8 @@
 #include "fvkit/formats/dted.h"
 #include "fvkit/formats/dted_shaded.h"
 #include "fvkit/formats/geotiff.h"
+#include "fvkit/formats/geotiff_dem.h"
+#include "fvkit/formats/lidar_shaded.h"
 #include "fvkit/formats/tiros.h"
 #include "fvkit/formats/vpf.h"
 #include "fvkit/store/tile_pack.h"
@@ -104,6 +106,23 @@ void RegisterBuiltinFormats() {
     shaded.make_raster_source = [] {
       return std::make_shared<DtedShadedRasterSource>();
     };
+    RegisterFormat(shaded);
+  }
+  if (FindFormat("lidar") == nullptr) {
+    FormatFactories lidar;
+    lidar.format_key = "lidar";
+    lidar.make_enumerator = [] { return std::make_shared<GeoTiffDemEnumerator>(); };
+    lidar.make_elevation_source = [](const std::string& dir) {
+      return std::make_shared<GeoTiffDemSource>(dir);
+    };
+    RegisterFormat(lidar);
+  }
+  if (FindFormat("lidar-shaded") == nullptr) {
+    FormatFactories shaded;
+    shaded.format_key = "lidar-shaded";
+    // Same DEM files as "lidar"; this format draws them as shaded relief.
+    shaded.make_enumerator = [] { return std::make_shared<GeoTiffDemEnumerator>(); };
+    shaded.make_raster_source = [] { return std::make_shared<LidarShadedRasterSource>(); };
     RegisterFormat(shaded);
   }
   if (FindFormat("vpf") == nullptr) {

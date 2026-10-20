@@ -3,6 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
+import Charts
 import PippinKit
 import SwiftUI
 
@@ -47,6 +48,7 @@ final class RouteDraft: ObservableObject {
     @Published var stops: [RouteStop] = [RouteStop(), RouteStop()]
     @Published var profile: String = "bicycle"
     @Published var beachUse: PPBeachUse = RouteDraft.lastBeachUse
+    @Published var avoidHills: Bool = RouteDraft.lastAvoidHills
 
     /// The "Use beach:" setting a new route starts with: the last one chosen.
     static var lastBeachUse: PPBeachUse {
@@ -56,6 +58,13 @@ final class RouteDraft: ObservableObject {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: beachUseKey) }
     }
     private static let beachUseKey = "routeBeachUse"
+
+    /// The "Avoid hills" setting a new route starts with: the last one chosen.
+    static var lastAvoidHills: Bool {
+        get { UserDefaults.standard.bool(forKey: avoidHillsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: avoidHillsKey) }
+    }
+    private static let avoidHillsKey = "routeAvoidHills"
 
     /// Every stop has a position and there are at least two. Enables OK.
     var isRoutable: Bool {
@@ -106,6 +115,7 @@ final class RouteDraft: ObservableObject {
         guard let route, route.waypoints.count > 0 else {
             stops = [RouteStop(), RouteStop()]
             beachUse = Self.lastBeachUse
+            avoidHills = Self.lastAvoidHills
             phase = .search
             return
         }
@@ -113,6 +123,7 @@ final class RouteDraft: ObservableObject {
         if stops.count == 1 { stops.append(RouteStop()) }
         if !route.profile.isEmpty { profile = route.profile }
         beachUse = route.beachUse
+        avoidHills = route.avoidHills
         phase = .stops
     }
 
@@ -150,6 +161,8 @@ struct RouteSheet: View {
     let profileNames: [String]
     /// The pack's graph has a beach; without one "Use beach:" is not shown.
     let beachAvailable: Bool
+    /// The pack's graph has elevation; without it "Avoid hills" is not shown.
+    let elevationAvailable: Bool
     /// The pack's tide table, or nil.
     let tide: PPTide?
 
@@ -173,6 +186,8 @@ struct RouteSheet: View {
     let onProfileChange: (String) -> Void
     /// The beach control changed; handled like `onProfileChange`.
     let onBeachChange: (PPBeachUse) -> Void
+    /// The "Avoid hills" toggle changed; handled like `onProfileChange`.
+    let onHillsChange: (Bool) -> Void
     let onClear: () -> Void
     let onCancel: () -> Void
 
@@ -259,8 +274,16 @@ struct RouteSheet: View {
                 } footer: {
                     // A footer rather than its own section so it is above the
                     // fold at the medium detent.
-                    if let line = statusLine {
-                        Text(line)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let line = statusLine {
+                            Text(line)
+                        }
+                        if let route, Self.showsProfile(route) {
+                            Text(display.units.climbSummary(climb: route.climbMeters,
+                                                            descent: route.descentMeters))
+                            ElevationProfileChart(samples: route.elevationProfile,
+                                                  units: display.units)
+                        }
                     }
                 }
 
@@ -293,6 +316,14 @@ struct RouteSheet: View {
                             guard draft.phase == .stops else { return }
                             onBeachChange(beachUse)
                         }
+                    }
+
+                    if elevationAvailable {
+                        Toggle("Avoid hills", isOn: $draft.avoidHills)
+                            .onChange(of: draft.avoidHills) { _, avoidHills in
+                                guard draft.phase == .stops else { return }
+                                onHillsChange(avoidHills)
+                            }
                     }
                 } footer: {
                     if beachAvailable { beachFooter }
@@ -422,30 +453,24 @@ struct RouteSheet: View {
     }
 
     /// The wind on the route's beach stretches at the time each is reached:
-    /// the worst headwind if it is worth naming, else the best tailwind, and
-    /// the onshore warning when any stretch meets it. Empty without a
-    /// forecast for them.
+    /// the strongest headwind and tailwind worth naming, and the onshore
+    /// warning when any stretch meets it. Empty without a forecast for them.
     private func windLines(_ stretches: [PPBeachStretch], units: DistanceUnits) -> [String] {
         guard let settings = windFeed.settings, let forecast = windFeed.forecast else { return [] }
-        var head: (sample: PPWindSample, tailwind: Double)?
-        var tail: (sample: PPWindSample, tailwind: Double)?
+        var winds: [WindText.BeachWind] = []
         var onshore = -Double.infinity
         for stretch in stretches where stretch.headingDegrees.isFinite {
             guard let sample = forecast.sample(at: stretch.enterTime) else { continue }
-            let tailwind = sample.tailwind(heading: stretch.headingDegrees)
-            if tailwind < (head?.tailwind ?? .infinity) { head = (sample, tailwind) }
-            if tailwind > (tail?.tailwind ?? -.infinity) { tail = (sample, tailwind) }
+            winds.append(WindText.BeachWind(
+                heading: stretch.headingDegrees,
+                along: sample.tailwind(heading: stretch.headingDegrees),
+                speed: sample.speedMetersPerSecond, gust: sample.gustMetersPerSecond,
+                fromDegrees: sample.fromDegrees))
             let seaward = settings.seaward(heading: stretch.headingDegrees)
             if seaward.isFinite { onshore = max(onshore, sample.onshore(seaward: seaward)) }
         }
-        let warnAt = settings.headwindWarnMetersPerSecond
-        let ride = (head.map { -$0.tailwind >= warnAt } ?? false) ? head : tail
-        var lines: [String] = []
-        if let ride, let line = WindText.beachRide(
-            speed: ride.sample.speedMetersPerSecond, gust: ride.sample.gustMetersPerSecond,
-            tailwind: ride.tailwind, warnAt: warnAt, units: units) {
-            lines.append(line)
-        }
+        var lines = WindText.beachRide(winds, warnAt: settings.alongWarnMetersPerSecond,
+                                       units: units)
         if let warning = WindText.onshore(onshore, warnAt: settings.onshoreWarnMetersPerSecond) {
             lines.append(warning)
         }
@@ -512,7 +537,8 @@ struct RouteSheet: View {
     /// The planner's status line in the rider's units. The core's line
     /// ("bicycle: 11.1 km, 45 min" plus any warnings) is metric and shared
     /// with every shell, so the head is rebuilt here from the route's own
-    /// numbers and only the tail after " min" is kept. A line with no " min"
+    /// numbers and only the tail after " min" is kept, less its metric climb,
+    /// which the footer shows in the rider's units. A line with no " min"
     /// is not a plan and is passed through untouched.
     private static func statusText(_ route: PPRoute,
                                    units: DistanceUnits) -> String {
@@ -525,7 +551,13 @@ struct RouteSheet: View {
         if route.beachMeters > 0 {
             head += ", " + TideText.beachShare(route.beachMeters, units: units)
         }
-        return head + text[minutes.upperBound...]
+        return head + DistanceUnits.withoutMetricClimb(String(text[minutes.upperBound...]))
+    }
+
+    /// The climb and the profile are shown for a road-following route on a
+    /// graph with elevation; a flat pack shows nothing rather than a flat line.
+    private static func showsProfile(_ route: PPRoute) -> Bool {
+        route.isCalculated && route.hasElevation && route.elevationProfile.count >= 2
     }
 
     /// The status line's name for a profile: "Walking" and "Cycling" for the
@@ -544,6 +576,42 @@ struct RouteSheet: View {
         let known = [(profile: "foot", title: "Walk"), (profile: "bicycle", title: "Cycle")]
         let offered = known.filter { names.isEmpty || names.contains($0.profile) }
         return offered.isEmpty ? known : offered
+    }
+}
+
+// MARK: - Elevation profile
+
+/// The route's elevation against distance, in the rider's units. The y range
+/// is at least `minimumSpanMeters` so a gentle route does not fill the chart
+/// like a mountain.
+struct ElevationProfileChart: View {
+    let samples: [PPElevationSample]
+    let units: DistanceUnits
+
+    private static let minimumSpanMeters = 30.0
+
+    var body: some View {
+        let low = samples.map(\.elevationMeters).min() ?? 0
+        let high = samples.map(\.elevationMeters).max() ?? 0
+        let pad = max(0, Self.minimumSpanMeters - (high - low)) / 2
+        let floor = units.heightUnits(low - pad)
+        let ceiling = units.heightUnits(high + pad)
+        Chart(samples.indices, id: \.self) { i in
+            let s = samples[i]
+            AreaMark(x: .value("Distance", units.longUnits(s.alongMeters)),
+                     yStart: .value("Floor", floor),
+                     yEnd: .value("Elevation", units.heightUnits(s.elevationMeters)))
+                .foregroundStyle(Color.accentColor.opacity(0.2))
+            LineMark(x: .value("Distance", units.longUnits(s.alongMeters)),
+                     y: .value("Elevation", units.heightUnits(s.elevationMeters)))
+                .foregroundStyle(Color.accentColor)
+        }
+        .chartXScale(domain: 0...max(units.longUnits(samples.last?.alongMeters ?? 0), 0.01))
+        .chartYScale(domain: floor...ceiling)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
+        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
+        .frame(height: 72)
+        .accessibilityLabel("Elevation profile")
     }
 }
 

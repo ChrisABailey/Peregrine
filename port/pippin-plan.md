@@ -2492,7 +2492,7 @@ Still open: the ride on the phone (Chris).
   step with the wrong sign of slope. EL2 fixes it first, and the plain-Dijkstra reference
   (`bidirectional = false`) is the test that proves it.
 
-#### EL1 — elevation in the graph (M, mac)
+#### EL1 — elevation in the graph (M, mac) — **BUILT 2026-10-19** (75265e78)
 
 - A D6-style seam on the builder: `RoadGraphBuildOptions::elevation =
   std::function<bool(double lat, double lon, float* metres)>`. `fvgraph build --dem <dir>` wires
@@ -2513,7 +2513,11 @@ Still open: the ride on the phone (Chris).
   Atlanta cut over the Atlanta cells (dt2 once Chris has them, dt1 until then) has climbs
   plausible for its streets, spot-checked against two known hills.
 
-#### EL2 — elevation in the cost (M, mac)
+**As built (2026-10-19), departures from the above.** `fv::routing::AddElevation(ElevationSampler, ElevationOptions, RoadGraph*, ElevationStats*)` in `port/Routing/fv_road_graph_elevation.cpp` is a post-pass over a built graph, not `RoadGraphBuildOptions::elevation`; the sampler is the same `std::function<bool(lat, lon, float*)>`, `fv_routing` links no DEM, `fvgraph` links `fv_fvkit`. Each undirected edge is sampled once along its shape at `sample_step_m` (fvgraph: the DEM's north-south post spacing clamped 10-30 m), hysteresis 3 m, then the residual to the far node is counted so climb minus descent equals the node difference exactly; the twin gets the swapped pair. New arc flag `kArcStructure` (bit 14) for `bridge=*`/`tunnel=*` other than `no`; structure and ferry arcs interpolate between end nodes, and a node touching only those, or a DEM void, takes the 1/length-weighted mean of its neighbours (Gauss-Seidel). `layer` was not used. Format is version 4, not 3 (CR took v3): flags bit 0 = elevation, per arc `uint16 climb_dm, descent_dm`, per node `int32 elev_dm` (not int16: avoids the +-3276 m limit; about 1.2 MB on Atlanta); v1-v3 load without elevation. API: `RoadArc::climb_dm/descent_dm`, `climb_m()/descent_m()/structure()`, `RoadGraph::has_elevation()`, `node_elevation_m()`. `fvgraph build --dem DIR [--dem-open N] [--dem-close N]` prints a stats block; `info` prints elevation range, km climbed one way, steepest arc over 50 m.
+**Finding: the Atlanta DTED2 cells are a surface model** (SRTM-derived: towers add 60-100 m at Peachtree Center; the 14th St / Connector interchange has a ~120 m radar-shadow pit). Raw sampling gave 520 km one-way climb and a 194% arc. `GroundSampler(raw, box, lat_step, lon_step, open_window=11, close_window=5)` resamples to a post grid over the graph box, morphological opening (removes bumps narrower than ~330 m) then closing (fills pits narrower than ~150 m), bilinear read-back; a plane is exact; over 1e8 posts it falls back to raw. A 7x7 median only halved the error; opening 15/21 did not help downtown and cost 25-50 km of real climb. Residual: ~10 m of tower bulk downtown (steepest downtown arc 18%), and ridges/ravines narrower than the windows are trimmed. A bare-earth DTM (USGS 3DEP 1/3 arc-second) would be the real fix; open for Chris.
+Measured: Atlanta 310,173 nodes from the DEM, 748 interpolated, 0 no data, 3,486 bridge/tunnel/ferry edges, 469,250 samples with 0 missing, 189 km climbed one way, 217-467 m, steepest 28% (Chattahoochee bluffs: Northside Dr, Paces, Johnson Ferry; may include canopy), build 1.5 s. Kiawah (--beach): -3..11 m, 0.9 km climbed, steepest 8.5% (boardwalks over dunes). `testdata/OSM/atlanta.fvroad` regenerated with `--dem` (38 MB, was 33.7); BUILDING.md's Atlanta recipe passes `--dem testdata/dted`. The Atlanta pack is not restaged; no app or bridge change; the cost ignores elevation until EL2. Tests: `port/Routing/test/road_graph_elevation_test.cpp`, 8 `RoadGraphElevation.*` (plane exact, flat noise rejected, bridge over a valley with mid-span node and tunnel, missing DEM data, v4 round trip and truncation, GroundSampler tower/pit/plane, KiawahIsFlat, AtlantaDowntownIsNotItsTowers), all pass. LX: additive; PeregrineGtk must load v4 graphs (same library), no other change.
+
+#### EL2 — elevation in the cost (M, mac) — **BUILT 2026-10-19** (a8858b6c)
 
 - The direction fix first (landed with CR5: the reverse search prices the twin arc, so only the climb/descent swap remains): `ArcCost(arc, options, reversed)`, the reverse frontier passes `true`
   and the climb/descent pair swaps; `Materialize` uses the traversal direction. Test: on a hilly
@@ -2535,20 +2539,29 @@ Still open: the ride on the phone (Chris).
   zero or below would break Dijkstra.
 - A graph with no elevation behaves exactly as today: every pinned route unchanged.
 
-#### EL3 — the route's profile (S–M, mac then sim)
+**As built (2026-10-19), departures from the above.** No `reversed` argument on `ArcCost`: the reverse frontier already prices the twin arc (CR5). The bug was in `Materialize`, which clocked reverse-search steps with the arc's own climb/descent; it now calls `ProfileSeconds(arc, options, reversed, climb_weight)` with `!step.stored_order()`. With that reverted `BidirectionalMatchesDijkstraOnHills` fails 93 of 100 pairs. `RouteProfile::Hills` (rule-file `hills` object, sub-keys overlay on `extends`; unknown key, negative value, `steep_grade` 0, or `descent_s_per_m` without `max_kph` > 0 is a parse error); bicycle and foot profiles in the builtins and both rule files get 6.0/2.0/0.12/2.0 with `max_kph` 40 (bike) and 7 (foot); car has none. `RouteOptions::hill_penalty` 1.0, not seeded from the profile (EL4). Steep is judged on the arc's mean descent grade; seconds never below min(flat, length/`max_kph`). Profile-less queries ignore elevation; distance-metric profiles ignore it in the cost, not the clock.
+Measured (atlanta.fvroad, city rules, Chattahoochee -> Buckhead): bicycle 78.5 min / 15.07 km (flat 61.9 / 14.31), reverse 68.1 (61.5); foot 128.3 up, 122.3 down (flat 115.6/118.1). Tests: `port/Routing/test/router_elevation_test.cpp`, 8 `RouterElevation.*`. No app or bridge change.
+
+#### EL3 — the route's profile (S–M, mac then sim) — **BUILT 2026-10-19** (b15a1cd1)
 
 - `RoutePlan` gains `climb_m`, `descent_m` and an elevation series (distance along, elevation)
   from the node elevations.
 - The route sheet shows "↑ 120 m ↓ 85 m" and a small Swift Charts profile under the summary when
   the graph has elevation. On a flat pack it shows nothing, not a flat line.
 
-#### EL4 — "Avoid hills" (S, sim)
+**As built (2026-10-19).** `routing::ElevationPoint {along_m, elev_m}`; `Route::has_elevation/climb_m/descent_m/profile` are filled in `Router::Materialize`: climb and descent from the arcs' sampled `climb_dm`/`descent_dm` in the travel direction (a partial step counts its fraction), the profile from the start plus one point per step end, node elevations interpolated by t along the arc. It is coarser than `climb_m` (an intra-arc hill shows only at its end nodes); climb - descent equals its end-to-end change. `RoutePlan` copies the fields from the through route only. `RouteSnapshot`, `PPElevationSample` and `PPRoute.hasElevation/climbMeters/descentMeters/elevationProfile` carry them; `RouteSheet` shows "↑ 86 ft ↓ 100 ft" (`DistanceUnits.height`, `climbSummary`) and `ElevationProfileChart` (Swift Charts, 72 pt, y span at least 30 m) in the Stops footer only when calculated with at least 2 samples.
+Measured: Atlanta Paces Mill -> Buckhead bicycle 17.3 km, up 234 m, down 176 m, 243 -> 301 m. Tests: 5 `RouterElevation.*`, 2 `RoutePlanner.*`, height/climb/axis checks in `guidance_format_test.swift`. Sim: shipped Kiawah pack shows nothing; a temporary `--dem` Kiawah graph in the sim bundle shows both (`docs/el3-route-profile.png`). Atlanta pack restage is EL5. Not done: pyfvw bindings.
+
+#### EL4 — "Avoid hills" (S, sim) — **BUILT 2026-10-19** (c07ff5c7)
 
 - `options.hills: "avoid"` in `.fvrte` (BR3's object; absent is neutral) sets `hill_penalty` from
   `[routing] avoid_hills_penalty`. A toggle under "Use the beach", shown only when the graph has
   elevation.
 
-#### EL5 — the Atlanta pack (M, data + sim)
+**As built (2026-10-19).** RouteDoc `options.hills: "avoid"` (`kRouteHillsAvoid`, `avoid_hills()`/`set_avoid_hills`), written only when set, after `beach`; absent or unknown reads neutral. `RouteOverlay::SetAvoidHills`; `RoutePlanOptions::avoid_hills` (optional, unset = the document's) and `avoid_hills_penalty` (default 4.0) feed `RouteOptions::hill_penalty`. Router fix, a departure from EL2: the penalty was multiplied into the climb seconds inside the class weight, so a climb on a favoured class (cycleway 0.5) stayed cheap and avoid-hills climbed more (24.0 km / 267 m at penalty 4 vs 17.35 km / 234 m neutral). `ArcCost` now keeps the physics inside the class weight and adds `(hill_penalty - 1) * climb_m * climb_s_per_m` outside it (gated, time-metric profiles only, not ferries; < 1 reads as 1); neutral cost is unchanged, so the EL2 pins hold. `fvgraph route --hill-penalty X`; `[routing] avoid_hills_penalty` in `peregrine.ini.sample`, read in PPMap init. Pippin: `RouteStore::SetWaypoints(..., beach, avoid_hills)`, `ElevationAvailable()`, `PPRoute.avoidHills`, `PPMap.elevationAvailable`, `setRoute(...avoidHills:)`; RouteSheet "Avoid hills" Toggle under "Use beach", only when elevation is available, replans on change, remembered in UserDefaults `routeAvoidHills`.
+Measured: atlanta.fvroad Paces Mill -> Buckhead, default rules bicycle neutral 17.35 km / 104.3 min / 234 m up, avoid 16.51 km / 98.1 min / 204 m; city rules 17.23 km / 226 m -> 11.23 km / 62.9 min / 142 m (penalties 2..8 nearly the same, so 4); Downtown default bicycle 48 -> 24 m. Tests: 1 `RouterElevation.*`, 2 `RouteDoc.*`, 2 `RoutePlanner.*`, 2 `RouteStore.*`; full ctest 2799/2806, the same 7 Boardwalk 29 failures. Sim: shipped flat Kiawah pack shows no toggle; a temporary `--dem --beach` Kiawah graph shows it and writes `"hills": "avoid"` to current.fvrte (`docs/el4-avoid-hills.png`); the Kiawah route does not change. Not done: pyfvw and route.py do not expose `hills`.
+
+#### EL5 — the Atlanta pack (M, data + sim) — **BUILT 2026-10-19**
 
 Atlanta is where Pippin goes next, so this is the second region as well as the test of EL2's
 numbers.
@@ -2592,8 +2605,23 @@ installs beside the "Bike Kiawah" store build — verified with `-showBuildSetti
 targets. README gained "Another region" under "The data pack"; `BUILDING.md` has the Atlanta recipe
 under Step 2, "Another region". Still open: both apps claim the
 `pippin://` URL scheme, so share-from-Maps is ambiguous with both installed;
-`MapModel.swift:1134` still says "outside the Kiawah map"; the app has not been built or run on
-the Atlanta pack. Chris cleared the Atlanta box for the public Peregrine repo 2026-10-04.
+the app had not yet been built or run on
+the Atlanta pack (see below). Chris cleared the Atlanta box for the public Peregrine repo 2026-10-04.
+
+**Elevation half BUILT 2026-10-19.** `atlanta.fvroad` is the EL1 `--dem` graph (38 MB); the pack
+restaged with `--region atlanta --release` (61 MB, 17 files) and ran in the simulator as
+`PP_BUNDLE_ID=org.peregrine.Pippin.Atlanta`. No beach row, no tide card, hills toggle and
+elevation profile present. Paces Mill (33.8712,-84.4545) -> Buckhead (33.8480,-84.3732), bicycle,
+city rules: neutral 10.7 mi / 92 min / up 742 ft down 551 ft by a southern loop; "Avoid hills"
+7.0 mi / 63 min / up 468 ft down 279 ft straight across, matching `fvgraph route --hill-penalty 4`
+(11.23 km / 142 m). Here the flatter line is also the shorter one: the city rules' class weights
+send the neutral route 6 km round to quieter streets. A simulated ride along the avoid-hills
+route at a steady 3 m/s (`simctl location start --speed=3`, 190 points from `fvgraph --geojson`)
+held the guidance ETA at 1:58 PM from start to 5:17 elapsed, 0.6 mi covered. Images:
+`docs/el5-atlanta-avoid-hills-map.png`, `-sheet.png`, `docs/el5-atlanta-ride.png`. The
+off-pack point message no longer names Kiawah. Data/ restaged to Kiawah afterwards. Still open:
+both apps claim `pippin://`; the Atlanta `pippin.ini` keeps the Kiawah-specific comment above
+`[routing] graph`; not ridden for real.
 
 #### RG1 — more than one region in one app (optional; needs Chris)
 
@@ -3462,6 +3490,107 @@ lengths by LG2 tier. It answers "why did it go this way" without opening the leg
 - **Stale text:** the Atlanta Streets `peregrine:bike-tiers` note and the `style-readme.md`
   paragraph still say the tiles carry no `maxspeed`. CR6 added it, and `road-moderate*` already
   filters on it.
+
+### WD — wind on the beach (planned 2026-10-18, release 1.4)
+
+Chris, 2026-10-18: a rider on the beach going into or with a wind should be told about it once
+the component of the wind along the direction of travel is greater than 4 mph. Ideally, show
+the wind direction on the map. Decisions taken the same day: the threshold applies to
+headwinds and tailwinds alike; arrows go along the route's beach stretches plus a badge, not
+across the whole map; GPS mode gets a banner on entering a beach stretch.
+
+**What 1.3 already has.** `WindFeed` fetches the NWS gridpoint forecast for the fixed `[wind]`
+point. `RouteSheet.windLines` takes each beach stretch's `headingDegrees` and the forecast hour
+at `enterTime`, computes `TailwindComponent` (fvkit/nav/wind.h), and names the worst headwind if
+it is ≥ `headwind_warn_mps` (5 m/s ≈ 11 mph), else the best tailwind. One line only; nothing on
+the map; nothing while riding. WD changes the threshold and adds three surfaces. There is no new
+data source, and the rider's position is still never sent.
+
+**WD1 — threshold and wording (mac, tests).** — **BUILT 2026-10-18**
+- `pippin.ini [wind]`: replace `headwind_warn_mps = 5` with `along_warn_mps = 1.8` (4.03 mph;
+  the setting stays in m/s like the other `[wind]` keys).
+  `loadWindSettings` still reads `headwind_warn_mps` when `along_warn_mps` is missing, so
+  existing packs keep working.
+- The comparison is `abs(component) > along_warn_mps`, strictly greater, as asked.
+- `WindText.beachRide` takes every stretch's `BeachWind` and names the strongest headwind and
+  the strongest tailwind over the threshold, headwind first: "Headwind heading east, 9 mph (NE
+  wind 15 mph, gusts 22)." / "Tailwind heading west, 8 mph (NE wind 15 mph)." The number is the
+  along-track component; the wind itself follows in brackets unless it rounds to the component
+  ("Headwind heading east, 15 mph, gusts 22."). The direction word is `cardinal(heading)`.
+- Tests: `wind_text_test.swift`, the three 1.3 `beachRide` checks replaced by 10 (threshold edge
+  4.0/4.1 mph, both directions and their order, strongest of one sign, crosswind silent, dropped
+  stretch, component equal to the wind, km/h). The setting is renamed `alongWarnMetersPerSecond`
+  on `PPWindSettings`.
+
+**WD2 — chevrons on the route (core + bridge).** — **BUILT 2026-10-18**
+- `fv::RouteOverlay::SetBeachWind(marks, warn_mps)`, additive. A `BeachWindMark` names a stretch
+  by its index in `plan().beach` and carries the blowing-towards bearing, the along-track
+  component (m/s, + tailwind) and the beach's seaward bearing. Marks are cleared by
+  `FollowRoads`/`ClearRoads`, since they index the plan. Peregrine/GTK never calls it.
+- `OnDraw` walks each marked stretch in surface pixels and stamps a filled chevron every 40 pt
+  (7 × 6 pt, white 0.75 pt outline), clear of the line and casing on the landward side. The
+  direction comes from projecting a point 10 m along the bearing, so it follows chart rotation.
+  Colours are overlay constants: headwind #d6480f, tailwind #0c966e, calm grey at alpha 150. They
+  are not style-sheet colours and have no dark variant; the white outline carries them on both.
+  No zoom gate: a stretch too short on screen for a 40 pt step gets one chevron or none.
+  `drawn_wind()` reports what the last frame placed, for tests.
+- Bridge: `PPBeachWindMark` (PPWind.h) and `-[PPMap setBeachWind:warnAt:]`, which bumps the
+  overlay epoch. `MapModel.updateBeachWind` builds marks from `route.beachStretches` and the
+  forecast hour at each `enterTime` (the sample the sheet uses). It runs on every route change
+  and on each new forecast (`WindFeed.$forecast`); a route with beach stretches also asks
+  `WindFeed` to refresh.
+- Tests: `route_beach_ride_test.cpp` +3 (`BeachWind.ChevronsLieAlongTheBeachOnTheLandwardSide`,
+  `TheThresholdIsStrictAndBothWays`, `AReplanDropsTheMarks`). Full ctest 2755/2762; the 7
+  failures are the known Boardwalk 29 data set (RoutePlanner/RouteStore), unchanged.
+- Simulator (iPhone 17 Pro, `-PPDepartAt` 2026-10-19 08:00, cached NWS forecast N 18 mph):
+  orange chevrons along the 5.6 mi beach stretch, north of the line, pointing SSW; the sheet
+  reads "Headwind heading east, 10 mph (N wind 18 mph, gusts 26)." Screenshot
+  `apps/Pippin/docs/wd2-beach-chevrons.png` (superseded; current is
+  `apps/Pippin/docs/wd2-beach-arrows.png`).
+- Gotcha: `Data/pippin.ini` is a staged copy (`stage_data.py`); WD1's key change did not reach
+  the app until it was copied, so the first sim run drew grey (old 5 m/s threshold).
+- Chevrons replaced by arrows 2026-10-18 (89130f20), Chris's choice from mock-ups: 14 pt tail to
+  tip (`RouteOverlay::kWindArrowLength`), 2 pt line, open V head, 5 pt barbs at 24 degrees, mitred,
+  butt ends, no white outline. Drawn as one filled polygon (`WindArrowOutline`) so the 45% colour
+  (alpha 115, RGB unchanged) composites once, with no darker overlap at the head. Clearance uses
+  half the length (7 pt). `DrawnChevron`/`drawn_wind()` names kept. Chris accepted that the orange
+  reads brownish on the light map and faint on the dark one, and the narrow V nearly solid.
+- Known approximation: `headingDegrees` is net start-to-end, fine for Kiawah's straight beach.
+
+**WD3 — the wind badge (app).** — **BUILT then WITHDRAWN 2026-10-18**
+- Withdrawn by Chris after seeing it: riders can feel the wind, and upcoming-turn guidance covers
+  the badge. Left in code: the unplaced `WindBadge` view and the `WindText` badge helpers with
+  their tests. Removed: the placement and the extra `WindFeed.refresh()` calls (pack load,
+  scene-active), so the freshness and network bullets below no longer apply. Chevrons stay.
+- Freshness is measured from `WindFeed.fetchedAt` (fetch time, or cache mtime for a cached
+  forecast; now `private(set)`), not NWS `updateTime`; strict `< 6 h`. `WindFeed.refresh()` now
+  also runs at pack load and on scene-active, still gated hourly, at the fixed pack point only.
+- Tests: `wind_text_test.swift` +13 checks, all passed. Simulator (iPhone 17 Pro, cached NWS
+  forecast N 21 mph gusts 28): badge in the compass slot north-up reading "21 mph", arrow SSW;
+  tap opened the Tides card; in GPS mode the badge sits under the compass, clear of the ride
+  bar. Screenshot `apps/Pippin/docs/wd3-wind-badge.png`.
+- A small capsule under the compass position: an arrow pointing where the wind blows plus
+  "9 mph", from the forecast hour that is now. It shows whenever the pack has `[wind]` and a
+  forecast less than 6 h old, with or without a route. Tap opens the Tides card (which already
+  has the wind lines).
+- When the compass is hidden (not GPS mode, chart north-up), the badge takes the compass slot.
+- Accessibility label: "Wind from the south-west, 9 miles per hour."
+
+**WD4 — GPS mode: entering a beach stretch.**
+- When the matched route position passes a stretch's `startMeters`, and the component at the
+  current hour exceeds the threshold, show `noticeBanner` for ~6 s: "Headwind 9 mph for the
+  next 1.8 mi." / "Tailwind 8 mph on the beach." Once per stretch per ride; no sound (turn
+  alerts own the tone).
+- Uses the current forecast hour, not the `enterTime` estimate, since the rider is there now.
+- Tests: the trigger rule is in `WindText`/a small policy struct, tested on the mac with a
+  synthetic route position sequence.
+
+**Order:** WD1 → WD2 → (WD3 withdrawn) → WD4. Each is a commit with tests green on macOS; WD2 and WD4 are
+checked on the simulator with `kiawah_demo_2x.gpx` and a cached forecast file.
+
+**Docs:** TIDES_AND_WEATHER.md — the settings table (`along_warn_mps`), the "Wind" row's
+"Shown in" column (map arrows, ride banner), a screenshot of the arrows, and the Known
+limits line about net heading.
 
 ### Open for Chris
 

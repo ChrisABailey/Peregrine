@@ -84,7 +84,20 @@ class DtedShadedRenderer {
   // Renders the whole open cell into a top-down RGBA8 PixelBuffer.
   Status Render(PixelBuffer* out);
 
+  /// Shades a grid of elevation posts with this renderer's lighting and
+  /// bands, as Render shades a cell; no cell needs to be open. `meters` holds
+  /// (width+1) x (height+1) posts, row 0 north; pixel (x, y) is lit from
+  /// posts (x, y), (x, y+1) and (x+1, y+1), as CDtedReader lights a pixel
+  /// from the posts below and below-right. Spacings are metres between posts.
+  /// The rendered and elevation/slope modes all shade as rendered colour,
+  /// mono modes as rendered mono; contour lines are not drawn. A void (NaN)
+  /// post is a transparent pixel.
+  Status ShadeGrid(const float* meters, int width, int height, double m_lat_per_post,
+                   double m_lon_per_post, const GeoPoint& center, PixelBuffer* out);
+
  private:
+  float Configure(double clat, double clon);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

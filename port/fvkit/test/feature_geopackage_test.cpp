@@ -729,6 +729,50 @@ TEST_F(FeatureGeoPackage, ReadsAForeignFile) {
   EXPECT_EQ(gp->OpenLayer("curves", &other).code, fv::kUnsupported);
 }
 
+// GDAL (Geofabrik's free extracts) labels lon/lat data with a custom NONE:100000 "CRS84" row.
+TEST_F(FeatureGeoPackage, ReadsWgs84DeclaredOnlyByWkt) {
+  {
+    auto gp = Create();
+    ASSERT_NE(gp, nullptr);
+  }
+  {
+    fv::detail::SqliteDb db;
+    ASSERT_TRUE(db.Open(path_).ok());
+    std::vector<uint8_t> blob;
+    ASSERT_TRUE(fv::WriteGpkgGeometry(Geometry::Point({33.75, -84.39}), 100000, &blob).ok());
+    const fv::Status s = db.Exec(
+        "INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 (CRS84)',100000,'NONE',100000,"
+        " 'GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],"
+        "PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],"
+        "AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]',NULL);"
+        "INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 / Paris',100001,'NONE',100001,"
+        " 'GEOGCS[\"x\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],"
+        "PRIMEM[\"Paris\",2.33722917],UNIT[\"degree\",0.0174532925199433]]',NULL);"
+        "CREATE TABLE roads(fid INTEGER PRIMARY KEY AUTOINCREMENT, geom POINT, name TEXT);"
+        "INSERT INTO gpkg_contents(table_name, data_type, srs_id) VALUES('roads','features',100000);"
+        "INSERT INTO gpkg_geometry_columns VALUES('roads','geom','POINT',100000,0,0);"
+        "CREATE TABLE paris(fid INTEGER PRIMARY KEY AUTOINCREMENT, geom POINT);"
+        "INSERT INTO gpkg_contents(table_name, data_type, srs_id) VALUES('paris','features',100001);"
+        "INSERT INTO gpkg_geometry_columns VALUES('paris','geom','POINT',100001,0,0);");
+    ASSERT_TRUE(s.ok()) << s.message;
+    fv::detail::SqliteStmt ins;
+    ASSERT_TRUE(ins.Prepare(db, "INSERT INTO roads(geom, name) VALUES(?, 'Peachtree')").ok());
+    ins.BindBlob(1, blob.data(), blob.size());
+    ins.Step();
+  }
+  auto gp = Open(false);
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> roads;
+  const fv::Status s = gp->OpenLayer("roads", &roads);
+  ASSERT_TRUE(s.ok()) << s.message;
+  std::vector<Feature> hits;
+  ASSERT_TRUE(roads->Query(GeoRect{{33, -85}, {34, -84}}, &hits).ok());
+  EXPECT_EQ(hits.size(), 1u);
+
+  std::shared_ptr<GeoPackageFeatureLayer> paris;
+  EXPECT_EQ(gp->OpenLayer("paris", &paris).code, fv::kUnsupported);
+}
+
 TEST_F(FeatureGeoPackage, OpenRefusesNonGeoPackages) {
   {
     fv::detail::SqliteDb db;

@@ -46,8 +46,12 @@ const char kMagic[8] = {'F', 'V', 'R', 'O', 'A', 'D', '0', '1'};
 // signed bike route network (bits 7-8), surface (bits 9-10), signal at the
 // target (bit 11), unsignalled crossing at the target (bits 12-13) and at the
 // source (bits 14-15), the rest reserved. Older files read it as zero, and so
-// do the bits a v3 file written before they existed.
-constexpr uint32_t kFormatVersion = 3;
+// do the bits a v3 file written before they existed. 4 gives the header flags
+// word meaning: with kHasElevation set, a trailing section follows the
+// restrictions — per arc `uint16 climb_dm, descent_dm`, then per node
+// `int32 elev_dm`.
+constexpr uint32_t kFormatVersion = 4;
+constexpr uint32_t kHasElevation = 1u << 0;
 
 struct ClassInfo {
   const char* tag;
@@ -509,6 +513,10 @@ WayVerdict ReadWay(const OsmWay& w, const RoadGraphBuildOptions& opts, KeptWay* 
   }
   const std::string* bicycle = w.Find("bicycle");
   if (bicycle != nullptr && *bicycle == "designated") access_flags |= kArcBicycleDesignated;
+  const std::string* bridge = w.Find("bridge");
+  const std::string* tunnel = w.Find("tunnel");
+  if ((bridge != nullptr && *bridge != "no") || (tunnel != nullptr && *tunnel != "no"))
+    access_flags |= kArcStructure;
 
   if (opts.cycle_only) {
     if (!IsCycleable(klass) || (access_flags & kArcNoBicycle) != 0) return WayVerdict::kNotRoad;
@@ -1492,7 +1500,7 @@ Status RoadGraph::Save(const std::string& path) const {
   std::string buf;
   buf.append(kMagic, sizeof(kMagic));
   PutU32(&buf, kFormatVersion);
-  PutU32(&buf, 0);  // flags, reserved
+  PutU32(&buf, has_elevation() ? kHasElevation : 0);
   PutU32(&buf, static_cast<uint32_t>(nodes_.size()));
   PutU32(&buf, static_cast<uint32_t>(arcs_.size()));
   PutU32(&buf, static_cast<uint32_t>(geometry_.size() / 2));
@@ -1538,6 +1546,10 @@ Status RoadGraph::Save(const std::string& path) const {
     PutU32(&buf, r.to_arc);
     PutU32(&buf, static_cast<uint32_t>(r.kind));
   }
+  if (has_elevation()) {
+    for (const RoadArc& a : arcs_) PutU32(&buf, a.climb_dm | (static_cast<uint32_t>(a.descent_dm) << 16));
+    for (int32_t e : node_elev_dm_) PutI32(&buf, e);
+  }
 
   std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
   if (!out) return Status::Error(kIoError, "cannot write " + path);
@@ -1566,7 +1578,7 @@ Status RoadGraph::Load(const std::string& path, RoadGraph* out) {
   if (version < 1 || version > kFormatVersion) {
     return Status::Error(kUnsupported, path + ": unsupported fvroad version");
   }
-  c.U32();  // flags
+  const uint32_t file_flags = c.U32();  // reserved, and written as 0, before v4
   const uint32_t node_count = c.U32();
   const uint32_t arc_count = c.U32();
   const uint32_t geom_count = c.U32();
@@ -1635,6 +1647,19 @@ Status RoadGraph::Load(const std::string& path, RoadGraph* out) {
     r.from_arc = c.U32();
     r.to_arc = c.U32();
     r.kind = c.U32() == 1 ? TurnRestrictionKind::kOnly : TurnRestrictionKind::kNo;
+  }
+  if (file_flags & kHasElevation) {
+    if (static_cast<uint64_t>(arc_count) * 4 + static_cast<uint64_t>(node_count) * 4 >
+        c.remaining()) {
+      return Status::Error(kIoError, path + ": truncated elevation");
+    }
+    for (RoadArc& a : g.arcs_) {
+      const uint32_t v = c.U32();
+      a.climb_dm = static_cast<uint16_t>(v & 0xFFFF);
+      a.descent_dm = static_cast<uint16_t>(v >> 16);
+    }
+    g.node_elev_dm_.resize(node_count);
+    for (int32_t& e : g.node_elev_dm_) e = c.I32();
   }
   if (!c.ok()) return Status::Error(kIoError, path + ": truncated graph");
 

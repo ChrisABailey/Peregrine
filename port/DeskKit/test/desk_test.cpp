@@ -10,6 +10,8 @@
 #include <map>
 #include <set>
 
+#include "dem_fixture.h"
+#include "fv_desk_catalog_build.h"
 #include "fv_desk_fake.h"
 #include "fv_map_enums.h"
 #include "fvkit/app/capabilities.h"
@@ -564,6 +566,101 @@ TEST(DeskData, ElevationOverlaysDrawFromTheCatalogsDted) {
   int banded = 0;
   for (int n : mask->last_draw().band_pixels) banded += n;
   EXPECT_GT(banded, 0);
+  fv::ClearFormatRegistryForTest();
+}
+
+TEST(DeskData, ContoursDrawFromALidarFolderOverNoDted) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root + "/lidar");
+  fv::test_dem::DemSpec dem;  // 0.0001 deg posts, rising 0.5 m per post to the east
+  dem.width = dem.height = 200;
+  dem.scale = {0.0001, 0.0001, 0.0};
+  dem.tiepoint = {0, 0, 0, -80.01, 32.61, 0};
+  dem.value = [](int c, int) { return 10.0 + 0.5 * c; };
+  fv::test_dem::WriteDem(root + "/lidar/slope.tif", dem);
+
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  const std::string catalog_path = dir.Path("catalog.sqlite");
+  {
+    fv::desk::CatalogBuild build(catalog_path, fv::desk::PlanScan(root));
+    build.Wait();
+    bool lidar = false;
+    for (const auto& r : build.Results())
+      lidar = lidar || (r.format == "lidar" && std::filesystem::path(r.path).filename() == "lidar");
+    EXPECT_TRUE(lidar) << build.Summary();
+  }
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(catalog_path).ok());
+
+  FakeDesk fd(256, 256);
+  auto& mv = fd.desk().map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.6, -80.0}, 20000, 0));
+  const std::string contour_id = fv::ContourOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + contour_id}).ok());
+  fd.desk().SetCatalog(cat);
+  ASSERT_NE(fd.desk().elevation_source(), nullptr);
+  double feet = 0;
+  ASSERT_TRUE(fd.desk().ElevationFeetAt(GeoPoint{32.6, -80.0}, &feet));
+  // Post c = 99.5 at lon -80.0: 59.75 m.
+  EXPECT_NEAR(feet, 59.75 / 0.3048, 0.5);
+
+  fv::PixelBuffer buf;
+  const fv::Status drawn = fd.Render(&buf);
+  ASSERT_TRUE(drawn.ok()) << drawn.message;
+  auto contour = std::dynamic_pointer_cast<fv::ContourOverlay>(
+      fd.desk().overlays().FirstOfType(contour_id));
+  ASSERT_TRUE(contour);
+  EXPECT_FALSE(contour->last_draw().no_source);
+  EXPECT_GT(contour->last_draw().lines_drawn, 0);
+  fv::ClearFormatRegistryForTest();
+}
+
+TEST(DeskData, ElevationMapsReachLidarAndItsOverlaysUseIt) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root + "/lidar");
+  fv::test_dem::DemSpec dem;  // 0.0001 deg posts over rolling ground
+  dem.width = dem.height = 200;
+  dem.scale = {0.0001, 0.0001, 0.0};
+  dem.tiepoint = {0, 0, 0, -80.01, 32.61, 0};
+  dem.value = [](int c, int r) { return 40.0 + 15 * std::sin(c * 0.1) + 10 * std::cos(r * 0.07); };
+  fv::test_dem::WriteDem(root + "/lidar/hills.tif", dem);
+
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  const std::string catalog_path = dir.Path("catalog.sqlite");
+  {
+    fv::desk::CatalogBuild build(catalog_path, fv::desk::PlanScan(root));
+    build.Wait();
+  }
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(catalog_path).ok());
+
+  FakeDesk fd(256, 256);
+  fd.desk().SetCatalog(cat);
+  ASSERT_TRUE(fd.desk().SelectGroup("elevation").ok());
+  fd.desk().GoTo(GeoPoint{32.6, -80.0}, 20000);
+  ASSERT_TRUE(fd.desk().map_view().HasProduct());
+  EXPECT_EQ(fd.desk().map_view().Product().format, "lidar-shaded");
+
+  const std::string contour_id = fv::ContourOverlay::kTypeId;
+  const std::string mask_id = fv::TAMaskOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + contour_id}).ok());
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + mask_id}).ok());
+  fv::PixelBuffer buf;
+  const fv::Status drawn = fd.Render(&buf);
+  ASSERT_TRUE(drawn.ok()) << drawn.message;
+  EXPECT_EQ(buf.Row(10)[4 * 10 + 3], 255) << "no shaded relief under the overlays";
+  auto contour = std::dynamic_pointer_cast<fv::ContourOverlay>(
+      fd.desk().overlays().FirstOfType(contour_id));
+  auto mask = std::dynamic_pointer_cast<fv::TAMaskOverlay>(
+      fd.desk().overlays().FirstOfType(mask_id));
+  ASSERT_TRUE(contour && mask);
+  EXPECT_FALSE(contour->last_draw().no_source);
+  EXPECT_GT(contour->last_draw().lines_drawn, 0);
+  EXPECT_FALSE(mask->last_draw().no_source);
   fv::ClearFormatRegistryForTest();
 }
 

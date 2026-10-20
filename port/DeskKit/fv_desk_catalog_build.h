@@ -38,8 +38,9 @@ struct ScanFormat {
 };
 
 /// The auto-detect table: cadrg/rpf, tiros/tiros3, dted/dted, dted-shaded/dted,
-/// geotiff/geotiff, gpkg, enc/enc, osm/OSM. DTED appears twice on purpose:
-/// once as elevation, once as the shaded-relief raster.
+/// geotiff/geotiff, gpkg, enc/enc, osm/OSM, lidar/lidar, lidar-shaded/lidar.
+/// DTED and lidar each appear twice on purpose: once as elevation, once as
+/// the shaded-relief raster.
 const std::vector<ScanFormat>& DefaultScanFormats();
 
 /// Directories under `root` holding a VPF database header table (`dht`), at

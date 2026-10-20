@@ -19,8 +19,46 @@ const char RouteOverlay::kExtension[] = "fvrte";
 const FvColor RouteOverlay::kRoadColor{40, 90, 210, 255};
 const FvColor RouteOverlay::kCasingColor{255, 255, 255, 255};
 const FvColor RouteOverlay::kBeachCasingColor{200, 155, 70, 255};
+// The wind arrows are drawn opaque.
+const FvColor RouteOverlay::kHeadwindColor{214, 72, 15, 255};
+const FvColor RouteOverlay::kTailwindColor{12, 150, 110, 255};
+const FvColor RouteOverlay::kCalmWindColor{120, 128, 136, 255};
 
 namespace {
+
+// The beach wind arrow, in points: a shaft with an open V head.
+constexpr double kWindArrowLineWidth = 2.0;
+constexpr double kWindArrowHead = 5.0;        // length of each barb
+constexpr double kWindArrowHeadAngle = 24.0;  // between a barb and the shaft, degrees
+
+/// The outline of the wind arrow as one polygon, in pixels at `scale`:
+/// (along, across) pairs, the tip at +half the length on the along axis.
+/// The barbs meet in a mitred point, butt ends elsewhere.
+std::vector<std::pair<double, double>> WindArrowOutline(double scale) {
+  const double half_len = 0.5 * RouteOverlay::kWindArrowLength * scale;
+  const double h = 0.5 * kWindArrowLineWidth * scale;
+  const double barb = kWindArrowHead * scale;
+  const double a = kWindArrowHeadAngle * 3.14159265358979323846 / 180.0;
+  const double sa = std::sin(a), ca = std::cos(a);
+  // The barbs' centre lines meet behind the mitre so the point lands on the tip.
+  const double tip = half_len - h / sa;
+  // Where a barb's inner edge meets the shaft's edge, measured along the barb.
+  const double join = std::min(barb, h * (1.0 + ca) / sa);
+  const double join_along = tip - h * sa - join * ca;
+  auto barb_end = [&](double sign, double offset) {
+    return std::pair<double, double>{tip - barb * ca + offset * sa,
+                                     sign * (barb * sa + offset * ca)};
+  };
+  return {{half_len, 0.0},
+          barb_end(1.0, h),
+          barb_end(1.0, -h),
+          {join_along, h},
+          {-half_len, h},
+          {-half_len, -h},
+          {join_along, -h},
+          barb_end(-1.0, -h),
+          barb_end(-1.0, h)};
+}
 
 // The diamond, in nominal symbol pixels. route.py stamps `fv.diamond` at
 // scale 1.6 over a 9-pixel builtin, so this is 14.4 px across and its half is
@@ -118,6 +156,29 @@ std::vector<BeachPiece> SplitAtBeach(const std::vector<GeoPoint>& leg, uint32_t 
   return out;
 }
 
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+
+/// The unit vector in surface pixels pointing along `bearing_deg` (true) at
+/// `p`, from a point 10 m away on a local flat earth. Follows the chart's
+/// rotation and projection. False when either point will not project.
+bool SurfaceDirection(const MapProjection& proj, const GeoPoint& p, double bearing_deg,
+                      double* dx, double* dy) {
+  constexpr double kEarthRadiusM = 6371008.8;
+  constexpr double kStepM = 10.0;
+  const double b = bearing_deg * kDegToRad;
+  const double coslat = std::max(std::cos(p.lat * kDegToRad), 1e-6);
+  const GeoPoint q{p.lat + kStepM * std::cos(b) / kEarthRadiusM / kDegToRad,
+                   p.lon + kStepM * std::sin(b) / (kEarthRadiusM * coslat) / kDegToRad};
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!proj.GeoToSurface(p, &x0, &y0).ok() || !proj.GeoToSurface(q, &x1, &y1).ok())
+    return false;
+  const double len = std::hypot(x1 - x0, y1 - y0);
+  if (!(len > 0.0)) return false;
+  *dx = (x1 - x0) / len;
+  *dy = (y1 - y0) / len;
+  return true;
+}
+
 }  // namespace
 
 RouteOverlay::RouteOverlay(std::string name) : Overlay(std::move(name)) {
@@ -162,6 +223,17 @@ void RouteOverlay::SetBeach(RouteBeach beach) {
   set_dirty(true);
 }
 
+void RouteOverlay::SetAvoidHills(bool avoid) {
+  doc_.set_avoid_hills(avoid);
+  set_dirty(true);
+}
+
+bool RouteOverlay::MayHaveElevation() const {
+  if (planner_ == nullptr) return false;
+  const std::shared_ptr<const routing::RoadGraph> g = planner_->graph();
+  return g == nullptr || g->has_elevation();
+}
+
 void RouteOverlay::SetSelected(std::string label) {
   selected_ = std::move(label);
 }
@@ -171,6 +243,7 @@ void RouteOverlay::SetSelected(std::string label) {
 // ---------------------------------------------------------------------------
 
 bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
+  wind_marks_.clear();
   if (planner_ == nullptr) {
     plan_ = RoutePlan{};
     plan_.status = "no road graph configured";
@@ -185,6 +258,7 @@ bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
   if (options.beach == routing::BeachUse::kProfileDefault) {
     options.beach = ToBeachUse(doc_.beach());
   }
+  if (!options.avoid_hills.has_value()) options.avoid_hills = doc_.avoid_hills();
 
   std::vector<GeoPoint> stops;
   stops.reserve(doc_.waypoints().size());
@@ -200,6 +274,12 @@ bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
 void RouteOverlay::ClearRoads() {
   plan_ = RoutePlan{};
   has_plan_ = false;
+  wind_marks_.clear();
+}
+
+void RouteOverlay::SetBeachWind(std::vector<BeachWindMark> marks, double warn_mps) {
+  wind_marks_ = std::move(marks);
+  wind_warn_mps_ = warn_mps;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +311,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   have_proj_ = true;
 
   drawn_.clear();
+  drawn_wind_.clear();
   drawn_.reserve(doc_.waypoints().size());
   const std::vector<RouteWaypoint>& wps = doc_.waypoints();
   for (size_t i = 0; i < wps.size(); ++i) {
@@ -271,6 +352,14 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
       }
       if (!leg.empty()) offset += static_cast<uint32_t>(leg.size() - 1);
     }
+    if (!wind_marks_.empty()) {
+      // The stretches index the legs joined with the shared joint dropped.
+      std::vector<GeoPoint> line;
+      for (const std::vector<GeoPoint>& leg : plan_.legs)
+        line.insert(line.end(), leg.begin() + (line.empty() || leg.empty() ? 0 : 1), leg.end());
+      s = DrawBeachWind(proj, canvas, line);
+      if (!s.ok()) return s;
+    }
   } else if (doc_.waypoints().size() >= 2) {
     // An UNCALCULATED route: the overlay's own colour, no casing, and GREAT
     // CIRCLE legs because that is what the route IS — a leg is flown, not
@@ -305,6 +394,85 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     ts.color = road_color_;
     s = canvas.DrawTextString(plan_.status, 10, 20, ts);
     if (!s.ok()) return s;
+  }
+  return Status::Ok();
+}
+
+Status RouteOverlay::DrawBeachWind(const MapProjection& proj, ICanvas& canvas,
+                                   const std::vector<GeoPoint>& line) {
+  const double unit = dpi_scale_ * wind_scale_;
+  const double spacing = 40.0 * unit;
+  const std::vector<std::pair<double, double>> shape = WindArrowOutline(unit);
+  const double half_extent = 0.5 * kWindArrowLength * unit;
+  const PixelSize size = canvas.Size();
+
+  for (const BeachWindMark& m : wind_marks_) {
+    if (m.stretch >= plan_.beach.size() || !std::isfinite(m.toward_deg)) continue;
+    const RouteBeachStretch& b = plan_.beach[m.stretch];
+    const size_t first = b.geometry_begin;
+    const size_t last = std::min<size_t>(b.geometry_end, line.empty() ? 0 : line.size() - 1);
+    if (first >= last) continue;
+
+    struct Point { double x, y; };
+    std::vector<Point> px;
+    px.reserve(last - first + 1);
+    bool projected = true;
+    for (size_t k = first; k <= last && projected; ++k) {
+      double x = 0, y = 0;
+      projected = proj.GeoToSurface(line[k], &x, &y).ok();
+      px.push_back(Point{x, y});
+    }
+    const GeoPoint& mid = line[(first + last) / 2];
+    double wx = 0, wy = 0;
+    if (!projected || !SurfaceDirection(proj, mid, m.toward_deg, &wx, &wy)) continue;
+    double lx = 0, ly = 0;
+    const bool sided = std::isfinite(m.seaward_deg) &&
+                       SurfaceDirection(proj, mid, m.seaward_deg + 180.0, &lx, &ly);
+
+    WindClass kind = WindClass::kCalm;
+    if (m.along_mps < -wind_warn_mps_) kind = WindClass::kHead;
+    if (m.along_mps > wind_warn_mps_) kind = WindClass::kTail;
+    Brush fill;
+    fill.color = kind == WindClass::kHead   ? kHeadwindColor
+                 : kind == WindClass::kTail ? kTailwindColor
+                                            : kCalmWindColor;
+    // Clear of the line and its casing, so the route stays readable.
+    const double clearance = 0.5 * road_width_ + casing_width_ + half_extent + 3.0 * unit;
+
+    double next = 0.5 * spacing;  // distance along the stretch of the next arrow
+    double walked = 0.0;
+    for (size_t j = 0; j + 1 < px.size(); ++j) {
+      const double ex = px[j + 1].x - px[j].x;
+      const double ey = px[j + 1].y - px[j].y;
+      const double len = std::hypot(ex, ey);
+      if (!(len > 0.0)) continue;
+      const double ux = ex / len, uy = ey / len;
+      double side = 0.0;
+      if (sided) side = (-uy * lx + ux * ly) >= 0.0 ? 1.0 : -1.0;
+      for (; next <= walked + len; next += spacing) {
+        const double t = next - walked;
+        const double cx = px[j].x + ux * t + side * -uy * clearance;
+        const double cy = px[j].y + uy * t + side * ux * clearance;
+        if (cx < -spacing || cy < -spacing || cx > size.width + spacing ||
+            cy > size.height + spacing)
+          continue;
+        drawn_wind_.push_back(DrawnChevron{cx, cy, wx, wy, kind});
+        const double nx = -wy, ny = wx;
+        std::vector<PixelPoint> ring;
+        ring.reserve(shape.size());
+        for (const auto& [along, across] : shape) {
+          ring.push_back(PixelPoint{
+              static_cast<int>(std::lround(cx + wx * along + nx * across)),
+              static_cast<int>(std::lround(cy + wy * along + ny * across))});
+        }
+        // One filled outline rather than three strokes, so a translucent
+        // colour is laid down once and the head does not darken where the
+        // strokes would overlap.
+        Status s = canvas.DrawPolyPolygon({ring}, &fill, nullptr);
+        if (!s.ok()) return s;
+      }
+      walked += len;
+    }
   }
   return Status::Ok();
 }

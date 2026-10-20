@@ -19,6 +19,7 @@ namespace fv {
 const char kRouteFormat[] = "peregrine-route";
 const char kRouteTypeId[] = "fv.route";
 const char kRouteExtension[] = "fvrte";
+const char kRouteHillsAvoid[] = "avoid";
 
 const char* RouteBeachKey(RouteBeach v) {
   switch (v) {
@@ -208,6 +209,7 @@ void RouteDoc::Reset() {
   color_ = FvColor{220, 30, 30, 255};
   profile_.clear();
   beach_ = RouteBeach::kNever;
+  avoid_hills_ = false;
   waypoints_.clear();
 }
 
@@ -235,11 +237,18 @@ std::string RouteDoc::ToJson() const {
   s += "  \"profile\": ";
   AppendJsonString(profile_, &s);
   s += ",\n";
-  if (beach_ != RouteBeach::kNever) {
+  if (beach_ != RouteBeach::kNever || avoid_hills_) {
     s += "  \"options\": {\n";
-    s += "    \"beach\": ";
-    AppendJsonString(RouteBeachKey(beach_), &s);
-    s += "\n";
+    if (beach_ != RouteBeach::kNever) {
+      s += "    \"beach\": ";
+      AppendJsonString(RouteBeachKey(beach_), &s);
+      s += avoid_hills_ ? ",\n" : "\n";
+    }
+    if (avoid_hills_) {
+      s += "    \"hills\": ";
+      AppendJsonString(kRouteHillsAvoid, &s);
+      s += "\n";
+    }
     s += "  },\n";
   }
   if (waypoints_.empty()) {
@@ -349,6 +358,7 @@ Status RouteDoc::Parse(const std::string& text, const std::string& origin) {
   // resets rather than keeping the current value. An unknown spelling also
   // reads as never: the safe reading of a value this build cannot interpret.
   RouteBeach beach = RouteBeach::kNever;
+  bool avoid_hills = false;
   const auto opts = doc.find("options");
   if (opts != doc.end() && opts->is_object()) {
     const auto b = opts->find("beach");
@@ -360,6 +370,8 @@ Status RouteDoc::Parse(const std::string& text, const std::string& origin) {
         beach = RouteBeach::kWheneverPossible;
       }
     }
+    const auto h = opts->find("hills");
+    avoid_hills = h != opts->end() && h->is_string() && h->get<std::string>() == kRouteHillsAvoid;
   }
 
   waypoints_ = std::move(waypoints);
@@ -367,6 +379,7 @@ Status RouteDoc::Parse(const std::string& text, const std::string& origin) {
   name_ = std::move(name);
   profile_ = std::move(profile);
   beach_ = beach;
+  avoid_hills_ = avoid_hills;
   return Status::Ok();
 }
 

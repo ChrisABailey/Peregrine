@@ -43,6 +43,9 @@ class UserSettings;
 struct MapOptionsSource {
   std::string group_id;  ///< the map group, or the overlay type for an overlay page
   std::string prefix;  ///< "dted."
+  /// The page title when `group_id` is not a map group (an app-wide page such
+  /// as "Data"); empty for a map group's page, which takes the group's title.
+  std::string title;
   std::function<std::unique_ptr<app::Properties>()> make;
   /// Pushes the values into process-wide state. Called on Apply (from the UI
   /// thread) and, for a map group, when settings load.

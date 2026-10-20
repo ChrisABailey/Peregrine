@@ -53,13 +53,22 @@ MapOptionsSource EncMapOptions();
 /// OpenStreetMap: `osm.style`.
 MapOptionsSource OsmMapOptions();
 
+/// The app-wide "Data" page: `geotrans.data_dir`, the GeoTrans datum and
+/// ellipsoid tables (ellips.dat, 3_param.dat, 7_param.dat, egm96.grd).
+MapOptionsSource DataOptions();
+
+/// Points GeoTrans at `dir` by setting `MSPCCS_DATA`; empty leaves the
+/// environment as it is. GeoTrans reads its tables once per process, so a
+/// change after the first coordinate conversion takes effect on the next launch.
+void SetGeoTransDataDir(const std::string& dir);
+
 /// The Route page's Routing section: `routing.graph`, `routing.rules` and
 /// `routing.profile`, which the shell's one planner reads rather than each
 /// route. `changed` runs after the new values are in the settings.
 MapOptionsSource RoutingOptions(std::function<void()> changed);
 
-/// Every built-in source, in no particular order (pages follow the map
-/// group table).
+/// Every built-in source, in no particular order (map-group pages follow the
+/// map group table; app-wide pages come after them).
 std::vector<MapOptionsSource> BuiltinMapOptions();
 
 }  // namespace desk

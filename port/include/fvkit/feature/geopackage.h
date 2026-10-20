@@ -79,8 +79,9 @@ class GeoPackage : public std::enable_shared_from_this<GeoPackage> {
 
   /// The feature tables, in `gpkg_contents` order.
   Status Layers(std::vector<GeoPackageLayerInfo>* out) const;
-  /// kNotFound for a table that is not a feature table; kUnsupported for an
-  /// SRS other than EPSG:4326 or undefined geographic (FO-D9), or a curve type.
+  /// kNotFound for a table that is not a feature table; kUnsupported for a
+  /// curve type or an SRS that is not WGS-84 degrees (EPSG:4326, OGC:CRS84, an
+  /// equivalent WKT definition) or undefined geographic.
   Status OpenLayer(const std::string& table, std::shared_ptr<GeoPackageFeatureLayer>* out);
   /// Adds an empty feature table with its index and metadata, inside the edit
   /// transaction. kInvalidArg for an invalid schema, a reserved or taken table

@@ -109,6 +109,14 @@ struct RoutePlan {
   double length_m = 0.0;
   double seconds = 0.0;
 
+  /// The through route's climb, descent and elevation profile
+  /// (`routing::Route`'s fields). Zero and empty on a graph without
+  /// elevation and on the per-pair fallback.
+  bool has_elevation = false;
+  double climb_m = 0.0;
+  double descent_m = 0.0;
+  std::vector<routing::ElevationPoint> elevation;
+
   // How many legs came back straight because the pair would not route. 0 for a
   // through route by construction.
   int straight_legs = 0;
@@ -167,6 +175,10 @@ struct RoutePlan {
 };
 
 // How a plan is asked for. Everything here has a default that routes.
+/// The climb-cost multiplier "Avoid hills" applies when `[routing]
+/// avoid_hills_penalty` is unset.
+constexpr double kDefaultAvoidHillsPenalty = 4.0;
+
 struct RoutePlanOptions {
   // Metres a stop may be from the nearest road before it is out of coverage.
   // route.py's own default, and much wider than the router's 500: a waypoint
@@ -191,6 +203,13 @@ struct RoutePlanOptions {
   /// `beach_penalty` in force, which excludes the beach unless the rule file
   /// says otherwise.
   routing::BeachUse beach = routing::BeachUse::kProfileDefault;
+
+  /// The "Avoid hills" choice; unset leaves the route document's own.
+  std::optional<bool> avoid_hills;
+
+  /// `RouteOptions::hill_penalty` when hills are avoided (`[routing]
+  /// avoid_hills_penalty`); 1.0 otherwise.
+  double avoid_hills_penalty = kDefaultAvoidHillsPenalty;
 
   /// Drops the beach when the tide would cover it on the way.
   BeachTideGate tide;

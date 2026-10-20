@@ -35,6 +35,7 @@
 #include "fv_desk_profile.h"
 #include "fv_desk_query.h"
 #include "fv_desk_rule_style.h"
+#include "fv_desk_search.h"
 #include "fv_desk_workspace.h"
 #include "fv_view_map_view.h"
 #include "fvkit/app/editor.h"
@@ -80,6 +81,9 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the layers panel. It reads `Desk::layers()` and
   /// changes the stack through `Desk::SetLayerVisible` and its siblings.
   virtual void ShowLayers() {}
+  /// Show (or bring forward) the Find dialog (Map ▸ Go To / Find…); it runs
+  /// `Desk::Search` and moves with `Desk::GoToSearchRow`.
+  virtual void ShowFind() {}
   /// Show (or bring forward) the feature form over `Desk::feature_form()`;
   /// the shell applies it through `Desk::ApplyFeatureForm`.
   virtual void ShowFeatureForm() {}
@@ -226,6 +230,18 @@ class Desk {
   /// there afresh, as a group change does (the series ladder settles on the
   /// series nearest that scale).
   void GoTo(const GeoPoint& center, double scale_denom);
+
+  // MARK: Find
+
+  /// The Find dialog's query (`DeskSearch`): a coordinate, else the overlays,
+  /// the routing graph and the vector base map on screen. `map_view_only`
+  /// confines the base map to the view.
+  std::vector<DeskSearchRow> Search(const std::string& text, bool map_view_only);
+  /// What the last `Search` could not reach, for the status line.
+  const DeskSearchNotes& search_notes() const { return search_->notes(); }
+  /// Centres `row`; one with extent is fitted to the view, never closer than
+  /// 1:2,500.
+  void GoToSearchRow(const DeskSearchRow& row);
 
   // MARK: Editing input
   /// True while an overlay editor is active (Tools ▸ Route and the like).
@@ -536,7 +552,7 @@ class Desk {
   void ResolveElevation();
   /// Connects an overlay joining the stack to this window: the elevation
   /// source for Contour Lines and the TA Mask, the stack and road graph for a
-  /// route. False when it needs DTED and the catalog has none.
+  /// route. False when it needs elevation data and the catalog has none.
   bool BindOverlay(Overlay& overlay);
   /// Reopens the route planner when the routing settings changed and hands
   /// it to every open route.
@@ -631,6 +647,7 @@ class Desk {
   app::HintText map_hint_;
   std::string tool_tip_;
   std::unique_ptr<RoutePlanner> planner_;
+  std::unique_ptr<DeskSearch> search_;
   std::optional<std::string> planner_paths_;
   uint64_t elevation_gen_ = 0;  ///< bumped whenever `pointer_elevation_` is reopened
   bool profile_open_ = false;

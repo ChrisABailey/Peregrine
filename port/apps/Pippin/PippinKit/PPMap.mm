@@ -20,6 +20,7 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <optional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -761,6 +762,8 @@ NSString* NSStr(const std::string& s) {
   _routeDepartureOverride = NAN;
   [self loadTides];
   [self loadWindSettings];
+  _routeStore->set_avoid_hills_penalty(
+      _settings.GetDouble("routing.avoid_hills_penalty", fv::kDefaultAvoidHillsPenalty));
   return self;
 }
 
@@ -815,7 +818,10 @@ NSString* NSStr(const std::string& s) {
                       longitude:lon
               beachFacesDegrees:_settings.GetDouble("beach.faces_deg", nan)
      onshoreWarnMetersPerSecond:_settings.GetDouble("wind.onshore_warn_mps", 7.0)
-    headwindWarnMetersPerSecond:_settings.GetDouble("wind.headwind_warn_mps", 5.0)];
+       alongWarnMetersPerSecond:_settings.GetDouble(
+                                    "wind.along_warn_mps",
+                                    // Packs from 1.3 name only the headwind threshold.
+                                    _settings.GetDouble("wind.headwind_warn_mps", 1.8))];
 }
 
 - (nullable PPWindSettings*)wind {
@@ -1049,6 +1055,8 @@ NSString* NSStr(const std::string& s) {
   if (z == _symbolZoom) return;
   _symbolZoom = z;
   [self invalidateBaseLayer];
+  _routeStore->overlay()->SetWindArrowScale(z);
+  [self overlayContentChanged];
 }
 
 - (BOOL)hasDarkStyle {
@@ -2156,12 +2164,32 @@ static double PPEpochNow() {
 - (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
                       profile:(NSString*)profile
                      beachUse:(PPBeachUse)beachUse {
+  return [self setRouteWaypoints:waypoints profile:profile beachUse:beachUse hills:std::nullopt];
+}
+
+- (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
+                      profile:(NSString*)profile
+                     beachUse:(PPBeachUse)beachUse
+                   avoidHills:(BOOL)avoidHills {
+  return [self setRouteWaypoints:waypoints
+                         profile:profile
+                        beachUse:beachUse
+                           hills:std::optional<bool>(avoidHills == YES)];
+}
+
+/// The two beach-and-hills setters' shared body; an empty `avoidHills` keeps
+/// the document's own.
+- (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
+                      profile:(NSString*)profile
+                     beachUse:(PPBeachUse)beachUse
+                        hills:(std::optional<bool>)avoidHills {
   [self overlayContentChanged];
   fv::RouteBeach beach = fv::RouteBeach::kNever;
   if (beachUse == PPBeachUseToSaveTime) beach = fv::RouteBeach::kToSaveTime;
   if (beachUse == PPBeachUseWheneverPossible) beach = fv::RouteBeach::kWheneverPossible;
   const pippin::RouteSnapshot snapshot = _routeStore->SetWaypoints(
-      PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "", beach);
+      PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "", beach,
+      avoidHills);
   return [self routeFromSnapshot:snapshot];
 }
 
@@ -2179,8 +2207,25 @@ static double PPEpochNow() {
   }
 }
 
+- (void)setBeachWind:(NSArray<PPBeachWindMark*>*)marks
+              warnAt:(double)alongWarnMetersPerSecond {
+  [self overlayContentChanged];
+  std::vector<fv::RouteOverlay::BeachWindMark> out;
+  out.reserve(marks.count);
+  for (PPBeachWindMark* m in marks) {
+    if (m.stretch < 0) continue;
+    out.push_back({static_cast<size_t>(m.stretch), m.towardDegrees,
+                   m.alongMetersPerSecond, m.seawardDegrees});
+  }
+  _routeStore->overlay()->SetBeachWind(std::move(out), alongWarnMetersPerSecond);
+}
+
 - (BOOL)beachAvailable {
   return _routeStore->BeachAvailable() ? YES : NO;
+}
+
+- (BOOL)elevationAvailable {
+  return _routeStore->ElevationAvailable() ? YES : NO;
 }
 
 - (PPRoute*)clearRoute {

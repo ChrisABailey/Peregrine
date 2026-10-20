@@ -63,6 +63,7 @@ struct HostTick {
   bool profile_changed = false;    ///< the route profile was re-sampled; lay it out again
   bool layers_requested = false;   ///< show the layers panel; see TakeLayersRequest
   bool layers_changed = false;     ///< the layer rows changed; reload the panel
+  bool find_requested = false;     ///< show the Find dialog; see TakeFindRequest
   bool form_requested = false;     ///< show the feature form; see TakeFeatureFormRequest
   bool table_requested = false;    ///< show the attribute table; see TakeAttributeTableRequest
   bool style_requested = false;    ///< show the style dialog; see TakeLayerStyleRequest
@@ -296,6 +297,34 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// Removes all coverage and rescans every listed directory as a background job.
   std::string GenerateCoverage();
 
+  // MARK: Find
+
+  /// True once after the core asked to show the Find dialog (Map ▸ Go To / Find…).
+  bool TakeFindRequest();
+  /// Runs the search (`Desk::Search`) and keeps its rows; returns their count.
+  /// A coordinate is the only row when the text parses as one.
+  int Search(const std::string& text, bool map_view_only);
+  /// Rows of the last `Search`, grouped Location, Overlays, Roads, Map.
+  /// Out-of-range rows read as empty.
+  int SearchRowCount() const;
+  /// `SearchGroup` as an int: 0 Location, 1 Overlays, 2 Roads, 3 Map.
+  int SearchRowGroup(int row) const;
+  /// The group's heading ("Overlays").
+  std::string SearchRowGroupTitle(int row) const;
+  std::string SearchRowTitle(int row) const;
+  /// The provider's description, e.g. "transportation_name · residential".
+  std::string SearchRowDetail(int row) const;
+  /// The overlay's name or the base map's series.
+  std::string SearchRowSource(int row) const;
+  /// Metres from the view centre at the time of the search.
+  double SearchRowDistance(int row) const;
+  double SearchRowLatitude(int row) const;
+  double SearchRowLongitude(int row) const;
+  /// One line for under the list: the count, and what could not be searched.
+  std::string SearchStatus() const;
+  /// Moves the map to a row of the last search (`Desk::GoToSearchRow`).
+  void GoToSearchRow(int row);
+
   // MARK: Layers panel
 
   /// True once after the core asked to show the layers panel (Overlay ▸ Layers…).
@@ -404,6 +433,15 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   double RuleStylePropertyMax(int k) const;
   int RuleStylePropertyChoiceCount(int k) const;
   std::string RuleStylePropertyChoice(int k, int i) const;
+  /// True when property `k`'s choices are builtin icons, shown as `CopyRuleIcon` previews.
+  bool RuleStylePropertyIcons(int k) const;
+  /// The builtin icons, sorted by name; the same list an icon property's choices hold.
+  int RuleIconCount() const;
+  std::string RuleIconName(int i) const;
+  /// Copies icon `name` fitted to a `size` x `size` square, premultiplied
+  /// RGBA8 on transparent, rows of `size * 4` bytes; a single-colour icon is
+  /// drawn in `rgba` (0xRRGGBBAA). False for an unknown name or when it does not fit.
+  bool CopyRuleIcon(const std::string& name, int size, uint32_t rgba, uint8_t* out, size_t capacity) const;
   /// The modes property `k` offers, each a `fv::desk::RuleValueMode`: 0 default,
   /// 1 constant, 2 by field value, 3 by numeric class, 4 by zoom, 5 expression.
   int RuleStyleModeCount(int k) const;

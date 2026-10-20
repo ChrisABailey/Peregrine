@@ -16,6 +16,7 @@
 
 #include "fvkit/overlay/feature_overlay.h"
 #include "fvkit/style/expression.h"
+#include "fvkit/symbol/builtin_icons.h"
 
 namespace fv {
 namespace desk {
@@ -280,9 +281,16 @@ const std::vector<RuleProperty>& RuleProperties(const std::string& type) {
         Number("circle-stroke-width", false, "Circle", "Stroke width", 0, 32, "0"),
         Fixed("fv-circle-shape", false, "Circle", "Shape", K::kChoice, {"circle", "square"}, kDiscreteModes, "circle"),
     };
-    // Icons are left off: a feature layer has no sprite sheet for `icon-image` to name.
-    // A style that sets them keeps them, unedited.
+    // Only the icon properties the engine draws; anchor, offset and overlap are not read.
+    RuleProperty icon = Fixed("icon-image", true, "Icon", "Icon", K::kChoice, RuleIconNames(), kDiscreteModes,
+                              "circle");
+    icon.icons = true;
     pages["symbol"] = {
+        icon,
+        Number("icon-size", true, "Icon", "Size", 0, 10, "1"),
+        Color("icon-color", "Icon", "Colour", "#000000"),
+        Number("icon-opacity", false, "Icon", "Opacity", 0, 1, "1"),
+        Number("icon-rotate", true, "Icon", "Rotation", 0, 360, "0"),
         Fixed("text-field", true, "Text", "Label field", K::kField, {}, kConstantModes, ""),
         Number("text-size", true, "Text", "Size", 1, 96, "16"),
         Color("text-color", "Text", "Colour", "#000000"),
@@ -300,6 +308,60 @@ const std::vector<RuleProperty>& RuleProperties(const std::string& type) {
   static const std::vector<RuleProperty> kNone;
   const auto it = kPages.find(type);
   return it == kPages.end() ? kNone : it->second;
+}
+
+const std::vector<std::string>& RuleIconNames() {
+  static const std::vector<std::string> kNames = [] {
+    std::vector<std::string> names = BuiltinIconSheet()->ids();
+    std::sort(names.begin(), names.end());
+    return names;
+  }();
+  return kNames;
+}
+
+Status RenderRuleIcon(const std::string& name, int size, uint32_t rgba, PixelBuffer* out) {
+  if (size <= 0) return Bad("the preview size must be positive");
+  const SymbolPixmap* pixmap = BuiltinIconSheet()->Pixmap(name);
+  if (pixmap == nullptr || pixmap->tile.Empty()) return Status::Error(kNotFound, "no icon \"" + name + "\"");
+  const PixelBuffer& tile = pixmap->tile;
+  const int tw = tile.Width(), th = tile.Height();
+  const double scale = static_cast<double>(size) / std::max(tw, th);
+  const double ox = (size - tw * scale) / 2, oy = (size - th * scale) / 2;
+  const double tint_a = (rgba & 0xff) / 255.0;
+  // Premultiplied tile sample at (x, y), clamped to the tile; the tint replaces an SDF icon's colour.
+  auto texel = [&](int x, int y, double px[4]) {
+    if (x < 0 || y < 0 || x >= tw || y >= th) {
+      px[0] = px[1] = px[2] = px[3] = 0;
+      return;
+    }
+    const unsigned char* p = tile.Row(y) + 4 * x;
+    const double a = p[3] / 255.0 * (pixmap->sdf ? tint_a : 1.0);
+    for (int c = 0; c < 3; ++c) {
+      const double v = pixmap->sdf ? ((rgba >> (24 - 8 * c)) & 0xff) / 255.0 : p[c] / 255.0;
+      px[c] = v * a;
+    }
+    px[3] = a;
+  };
+  *out = PixelBuffer(size, size);
+  for (int y = 0; y < size; ++y) {
+    unsigned char* row = out->Row(y);
+    for (int x = 0; x < size; ++x) {
+      // Bilinear from the pixel centre back into tile space.
+      const double sx = (x + 0.5 - ox) / scale - 0.5, sy = (y + 0.5 - oy) / scale - 0.5;
+      const int x0 = static_cast<int>(std::floor(sx)), y0 = static_cast<int>(std::floor(sy));
+      const double fx = sx - x0, fy = sy - y0;
+      double a[4], b[4], c[4], d[4];
+      texel(x0, y0, a);
+      texel(x0 + 1, y0, b);
+      texel(x0, y0 + 1, c);
+      texel(x0 + 1, y0 + 1, d);
+      for (int ch = 0; ch < 4; ++ch) {
+        const double v = (a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy;
+        row[4 * x + ch] = static_cast<unsigned char>(std::lround(std::clamp(v, 0.0, 1.0) * 255));
+      }
+    }
+  }
+  return Status::Ok();
 }
 
 RulePropertyValue ReadRuleValue(const RuleProperty& property, const std::string& json_text) {

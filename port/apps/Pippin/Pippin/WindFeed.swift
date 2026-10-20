@@ -25,7 +25,9 @@ final class WindFeed: ObservableObject {
     private static let freshFor: TimeInterval = 3600
     private static let log = Logger(subsystem: "org.peregrine.Pippin", category: "wind")
 
-    private var fetchedAt: Date?
+    /// When the held forecast was fetched; for a cached one, when the cache
+    /// was written. Nil with no forecast.
+    private(set) var fetchedAt: Date?
     private var fetching = false
 
     private init() {}

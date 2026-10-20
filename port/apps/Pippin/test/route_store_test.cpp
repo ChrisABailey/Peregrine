@@ -352,6 +352,48 @@ TEST(RouteStore, ARouteSurvivesARelaunchWITHItsBeach) {
 
 // Without a table the beach is kept and judged unknown; with one, high water
 // takes it off the route and the snapshot says why.
+// Kiawah's shipped graph is flat, so the sheet offers no "Avoid hills".
+TEST(RouteStore, AFlatGraphOffersNoHillsSetting) {
+  SKIP_WITHOUT_GRAPH();
+  RouteStore store(graph, RulesFile(), "");
+  EXPECT_FALSE(store.ElevationAvailable());
+}
+
+// Paces Mill -> Buckhead over the --dem Atlanta graph: "Avoid hills" climbs
+// less, is saved in the document and survives a relaunch.
+TEST(RouteStore, AvoidHillsSurvivesARelaunchAndClimbsLess) {
+  const std::filesystem::path atlanta =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(atlanta)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  TempDocument doc("relaunch_hills");
+  const std::vector<RouteWaypoint> ride = {
+      RouteWaypoint{"Start", fv::GeoPoint{33.8712, -84.4545}},
+      RouteWaypoint{"End", fv::GeoPoint{33.8480, -84.3732}}};
+
+  double climb = 0.0;
+  {
+    RouteStore store(atlanta.string(), RulesFile(), doc.path());
+    EXPECT_TRUE(store.ElevationAvailable());
+    const RouteSnapshot neutral = store.SetWaypoints(ride, "bicycle");
+    ASSERT_TRUE(neutral.complete) << neutral.status;
+    EXPECT_FALSE(neutral.avoid_hills);
+    const RouteSnapshot avoid = store.SetWaypoints(ride, "", std::nullopt, true);
+    ASSERT_TRUE(avoid.complete) << avoid.status;
+    EXPECT_TRUE(avoid.avoid_hills);
+    EXPECT_LT(avoid.climb_m, neutral.climb_m - 15.0);
+    climb = avoid.climb_m;
+    // The pack's penalty applies from the next plan; 1.0 is neutral.
+    store.set_avoid_hills_penalty(1.0);
+    EXPECT_NEAR(store.Replan().climb_m, neutral.climb_m, 1e-6);
+  }
+
+  RouteStore relaunched(atlanta.string(), RulesFile(), doc.path());
+  ASSERT_TRUE(relaunched.LoadAtLaunch().ok());
+  const RouteSnapshot snap = relaunched.Snapshot();
+  EXPECT_TRUE(snap.avoid_hills);
+  EXPECT_NEAR(snap.climb_m, climb, 1e-6);
+}
+
 TEST(RouteStore, TheTideGatesTheBeachAndNoTableKeepsIt) {
   SKIP_WITHOUT_GRAPH();
   const std::vector<RouteWaypoint> boardwalks = {

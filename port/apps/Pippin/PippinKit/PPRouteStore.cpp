@@ -54,6 +54,7 @@ void RouteStore::PlanNow() {
   options.tide.depart_s = depart_s_;
   options.tide.limits = tide_limits_;
   options.tide.foot_limits = tide_foot_limits_;
+  options.avoid_hills_penalty = avoid_hills_penalty_;
   overlay_->FollowRoads(options);
   last_plan_ms_ =
       std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -111,13 +112,17 @@ fv::Status RouteStore::LoadAtLaunch() {
 
 RouteSnapshot RouteStore::SetWaypoints(std::vector<fv::RouteWaypoint> waypoints,
                                        const std::string& profile,
-                                       std::optional<fv::RouteBeach> beach) {
+                                       std::optional<fv::RouteBeach> beach,
+                                       std::optional<bool> avoid_hills) {
   // The profile FIRST: `SetWaypoints` drops the plan, and planning has to see
   // the profile this route is now priced with.
   if (!profile.empty() && profile != overlay_->profile()) {
     overlay_->SetProfile(profile);
   }
   if (beach.has_value() && *beach != overlay_->beach()) overlay_->SetBeach(*beach);
+  if (avoid_hills.has_value() && *avoid_hills != overlay_->avoid_hills()) {
+    overlay_->SetAvoidHills(*avoid_hills);
+  }
   overlay_->SetWaypoints(std::move(waypoints));
   PlanNow();
   Persist();
@@ -142,6 +147,12 @@ bool RouteStore::BeachAvailable() const {
   return false;
 }
 
+bool RouteStore::ElevationAvailable() const {
+  if (!planner_->EnsureGraph().ok()) return false;
+  const std::shared_ptr<const fv::routing::RoadGraph> graph = planner_->graph();
+  return graph != nullptr && graph->has_elevation();
+}
+
 RouteSnapshot RouteStore::Replan() {
   PlanNow();
   return Snapshot();
@@ -160,6 +171,7 @@ RouteSnapshot RouteStore::Snapshot() const {
   out.exists = !out.waypoints.empty();
   out.profile = overlay_->profile();
   out.beach = overlay_->beach();
+  out.avoid_hills = overlay_->avoid_hills();
 
   const fv::RoutePlan& plan = overlay_->plan();
   out.calculated = overlay_->has_plan();
@@ -182,6 +194,10 @@ RouteSnapshot RouteStore::Snapshot() const {
     }
     out.beach_dropped = plan.beach_dropped;
     out.beach_dropped_verdict = plan.beach_dropped_verdict;
+    out.has_elevation = plan.has_elevation;
+    out.climb_m = plan.climb_m;
+    out.descent_m = plan.descent_m;
+    out.elevation = plan.elevation;
   }
   return out;
 }

@@ -624,9 +624,12 @@ TEST(FeatureStyleRules, AnExportedStyleIsPlainMapLibreAndReadsBackWithoutOverrid
     const nlohmann::json doc = nlohmann::json::parse(json);
     int moved = 0;
     for (const nlohmann::json& l : doc["layers"]) {
-      for (const char* section : {"paint", "layout"})
-        for (const auto& p : l.value(section, nlohmann::json::object()).items())
+      for (const char* section : {"paint", "layout"}) {
+        // Named, not inline: items() would outlive a temporary from value() before C++23.
+        const nlohmann::json props = l.value(section, nlohmann::json::object());
+        for (const auto& p : props.items())
           EXPECT_NE(p.key().rfind("fv-", 0), 0u) << l["id"] << " " << p.key();
+      }
       moved += l.value("metadata", nlohmann::json::object()).contains("fv:paint");
     }
     EXPECT_GT(moved, 0);

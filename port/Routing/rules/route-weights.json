@@ -81,6 +81,16 @@
 // tags of the street the legend compares each row with ("ride up to 33%
 // further to use this"). Both default to the values written out below.
 //
+// "hills" changes an arc's seconds by the climb and descent the graph carries
+// for it (fvgraph build --dem), in the cost and the reported time alike:
+// { "climb_s_per_m": s, "descent_s_per_m": s, "steep_grade": g,
+//   "steep_descent_s_per_m": s, "max_kph": k }. Climbing adds climb_s_per_m per
+// metre; descending saves descent_s_per_m per metre while the arc's descent
+// grade is at most steep_grade (0.12 = 12%), and above it costs
+// steep_descent_s_per_m instead. A descent never takes an arc faster than
+// max_kph, which descent_s_per_m requires. Each key defaults to 0 (steep_grade
+// to 0.12); a graph without elevation is unaffected.
+//
 // "name" is what a legend's header calls this file.
 
 {
@@ -176,6 +186,8 @@
       },
       // Firm sand is slower than pavement; dry sand is pushing the bike.
       "class_kph": { "beach": 10.0, "beach_access": 4.0 },
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 40.0 },
       "beach_penalty": "exclude",
       "beach_prefer_factor": 0.5,
       // Cart paths are for carts. A golfers' footpath is used only for a real
@@ -213,6 +225,8 @@
       },
       // Firm sand walks at pavement pace; dry sand is slower going.
       "class_kph": { "beach": 5.0, "beach_access": 3.0 },
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 7.0 },
       "beach_penalty": "exclude",
       "beach_prefer_factor": 0.5,
       // Cart paths are for carts, not walkers.

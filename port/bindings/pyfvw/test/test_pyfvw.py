@@ -2636,7 +2636,9 @@ def test_contour_draws_real_terrain_and_smoothing_only_changes_the_ink():
     proj = pyfvw.engine.MapProjection()
     proj.set_surface_size(400, 400)
     proj.set_center(pyfvw.geo.GeoPoint(34.75, -83.75))
-    proj.set_scale(50000)
+    # 1:25k keeps DTED2 posts (W084/n34.dt2) above Chaikin's 4 px floor; at
+    # 1:50k they are ~2 px apart and smoothing correctly does nothing.
+    proj.set_scale(25000)
     cv = pyfvw.canvas.CpuCanvas(400, 400)
 
     o = pyfvw.overlay.ContourOverlay()

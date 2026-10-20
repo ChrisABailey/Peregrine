@@ -3,9 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// TIFF round-trip tests, in their own binary because fv_tiff links GDAL's
-// C libjpeg whose unmangled symbols collide with FalconView's C++ jpeg
-// (separate DLLs on Windows).
+// Round-trip tests for the port's libtiff (fv_libtiff, libtiff 4.7).
 
 #include <gtest/gtest.h>
 
@@ -58,14 +56,14 @@ TEST(Codecs, TiffWriteReadRoundTrip) {
       ASSERT_GE(TIFFWriteScanline(tif, &rgb[y * W * 3], y, 0), 0);
     TIFFClose(tif);
   }
-  {  // read back (exercises fv_tif_posix.c glue incl. mmap path)
+  {  // read back
     TIFF* tif = TIFFOpen(path.c_str(), "r");
     ASSERT_NE(tif, nullptr);
-    uint32 w = 0, h = 0;
+    uint32_t w = 0, h = 0;
     TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
-    ASSERT_EQ(w, (uint32)W);
-    ASSERT_EQ(h, (uint32)H);
+    ASSERT_EQ(w, (uint32_t)W);
+    ASSERT_EQ(h, (uint32_t)H);
     std::vector<unsigned char> out(W * H * 3);
     for (int y = 0; y < H; ++y)
       ASSERT_GE(TIFFReadScanline(tif, &out[y * W * 3], y, 0), 0);
@@ -74,8 +72,8 @@ TEST(Codecs, TiffWriteReadRoundTrip) {
   }
 }
 
-TEST(Codecs, TiffVersionIsVendored394) {
-  EXPECT_NE(std::string(TIFFGetVersion()).find("3.9.4"), std::string::npos);
+TEST(Codecs, TiffVersionIsModern) {
+  EXPECT_NE(std::string(TIFFGetVersion()).find("Version 4."), std::string::npos);
 }
 
 }  // namespace

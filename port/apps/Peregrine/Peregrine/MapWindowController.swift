@@ -28,6 +28,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     private var dataSourcesWindow: DataSourcesWindowController?
     private var profileWindow: ProfileWindowController?
     private var layersWindow: LayersWindowController?
+    private var findWindow: FindWindowController?
     private var featureFormWindow: FeatureFormWindowController?
     private var attributeTableWindow: AttributeTableWindowController?
     private var layerStyleWindow: LayerStyleWindowController?
@@ -187,6 +188,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         if t.profile_changed { profileWindow?.reload() }
         if t.layers_requested && host.TakeLayersRequest() { showLayers() }
         if t.layers_changed { layersWindow?.reload() }
+        if t.find_requested && host.TakeFindRequest() { showFind() }
         if t.form_requested && host.TakeFeatureFormRequest() { showFeatureForm() }
         if t.table_requested && host.TakeAttributeTableRequest() { showAttributeTable() }
         if t.style_requested && host.TakeLayerStyleRequest() { showLayerStyle() }
@@ -262,6 +264,24 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     }
 
     /// Brings up the layers panel, reusing it when it is showing.
+    private func showFind() {
+        if let existing = findWindow {
+            existing.showWindow(nil)
+            existing.focusField()
+            return
+        }
+        let controller = FindWindowController(host: host)
+        controller.onClose = { [weak self] in self?.findWindow = nil }
+        findWindow = controller
+        if let panel = controller.window, let main = window {
+            // Under the map window's top-left corner, inside the screen.
+            let frame = main.frame
+            panel.setFrameTopLeftPoint(NSPoint(x: frame.minX + 40, y: frame.maxY - 60))
+        }
+        controller.showWindow(nil)
+        controller.focusField()
+    }
+
     private func showLayers() {
         if let existing = layersWindow {
             existing.reload()

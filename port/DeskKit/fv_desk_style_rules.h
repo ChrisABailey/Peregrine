@@ -66,7 +66,9 @@ class StyleRulesModel {
   Status Duplicate(const std::shared_ptr<FeatureOverlay>& overlay, size_t row, std::string* copy_id = nullptr);
   Status Rename(const std::shared_ptr<FeatureOverlay>& overlay, size_t row, const std::string& id);
   /// Gives the rule the default paint and layout of `type`, keeping its
-  /// colour, filter, scale range, visibility and legend title.
+  /// colour, filter, scale range, visibility and legend title. A circle rule
+  /// turned symbol draws the matching icon (`circle` or `square`) in its
+  /// colour at about its size instead, unlabelled.
   Status SetType(const std::shared_ptr<FeatureOverlay>& overlay, size_t row, const std::string& type);
   /// kInvalidArg, and no change, for an expression the engine cannot evaluate.
   Status SetFilter(const std::shared_ptr<FeatureOverlay>& overlay, size_t row, const std::string& filter);

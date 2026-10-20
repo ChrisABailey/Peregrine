@@ -45,6 +45,7 @@ add_library(fv_deskkit STATIC
   fv_desk_overlay_manifest.cpp
   fv_desk_point_editor.cpp
   fv_desk_profile.cpp
+  fv_desk_search.cpp
   fv_desk_user_settings.cpp
   fv_desk_vector_map.cpp
   fv_desk_workspace.cpp
@@ -52,7 +53,7 @@ add_library(fv_deskkit STATIC
 target_include_directories(fv_deskkit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE ${FV_DESK_GEN_DIR})
 target_link_libraries(fv_deskkit PUBLIC fv_viewkit fv_fvkit fv_routekit
-  PRIVATE fv_vpf fv_geosym fv_enc fv_osm fv_json fv_png)
+  PRIVATE fv_vpf fv_geosym fv_enc fv_osm fv_json fv_png fv_geo_tool)
 target_compile_features(fv_deskkit PUBLIC cxx_std_17)
 
 if(FVW_BUILD_TESTS)
@@ -78,15 +79,21 @@ if(FVW_BUILD_TESTS)
     test/options_test.cpp
     test/overlay_manifest_test.cpp
     test/profile_test.cpp
+    test/search_test.cpp
     test/user_settings_test.cpp
     test/vector_map_test.cpp
     test/workspace_test.cpp
   )
-  target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm fv_json GTest::gtest_main)
+  target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm fv_json fv_libtiff GTest::gtest_main)
+  # dem_fixture.h: the libtiff DEM writer shared with the fvkit tests.
+  target_include_directories(fv_deskkit_test PRIVATE ${CMAKE_SOURCE_DIR}/port/fvkit/test)
   target_compile_definitions(fv_deskkit_test PRIVATE
     FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson"
     FV_MAP_GROUPS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/map-groups.json"
     FV_OSM_STYLE_JSON="${CMAKE_SOURCE_DIR}/port/Osm/styles/peregrine-osm.json")
   gtest_discover_tests(fv_deskkit_test
-    PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
+    PROPERTIES
+    ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata"
+    # GeoTrans data, for MGRS in the Find dialog's location parser.
+    ENVIRONMENT_MODIFICATION "MSPCCS_DATA=set:${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib")
 endif()

@@ -73,6 +73,7 @@ class HostShell : public DeskShell {
   bool sources_requested = false;
   bool profile_requested = false;
   bool layers_requested = false;
+  bool find_requested = false;
   bool form_requested = false;
   bool table_requested = false;
   bool style_requested = false;
@@ -161,6 +162,7 @@ class HostShell : public DeskShell {
   void ShowDataSources() override { sources_requested = true; }
   void ShowRouteProfile() override { profile_requested = true; }
   void ShowLayers() override { layers_requested = true; }
+  void ShowFind() override { find_requested = true; }
   void ShowFeatureForm() override { form_requested = true; }
   void ShowAttributeTable() override { table_requested = true; }
   void ShowLayerStyle() override { style_requested = true; }
@@ -299,6 +301,8 @@ struct DeskHost::Impl {
   uint64_t base_seq = 0;  // bumped when the base key changes
   uint64_t catalog_epoch = 0;
   int stack_depth = 0;    // nesting of StackEdit
+  std::vector<DeskSearchRow> search_rows;  // the last Find search
+  std::string search_status;
   std::vector<LayerRow> layer_rows;  // the panel's snapshot of `Desk::layers()`
   std::vector<SourceRow> source_rows;  // `Desk::sources()` at the same time
   uint64_t layers_gen = UINT64_MAX;  // the generation `layer_rows` was taken at
@@ -1816,6 +1820,82 @@ std::string DeskHost::CreateNewLayer() {
 
 void DeskHost::CloseNewLayer() { impl_->desk->CloseNewLayer(); }
 
+// MARK: Find
+
+bool DeskHost::TakeFindRequest() {
+  const bool asked = impl_->shell.find_requested;
+  impl_->shell.find_requested = false;
+  return asked;
+}
+
+int DeskHost::Search(const std::string& text, bool map_view_only) {
+  Impl& m = *impl_;
+  {
+    // Providers read overlay data the worker may be drawing.
+    Impl::StackEdit edit(m);
+    m.search_rows = m.desk->Search(text, map_view_only);
+  }
+  m.search_status = SearchStatusLine(m.search_rows, m.desk->search_notes(), text, map_view_only);
+  return static_cast<int>(m.search_rows.size());
+}
+
+int DeskHost::SearchRowCount() const { return static_cast<int>(impl_->search_rows.size()); }
+
+namespace {
+const DeskSearchRow* SearchRowAt(const std::vector<DeskSearchRow>& rows, int row) {
+  return row >= 0 && row < static_cast<int>(rows.size()) ? &rows[static_cast<size_t>(row)] : nullptr;
+}
+}  // namespace
+
+int DeskHost::SearchRowGroup(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? static_cast<int>(r->group) : -1;
+}
+
+std::string DeskHost::SearchRowGroupTitle(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? SearchGroupTitle(r->group) : std::string();
+}
+
+std::string DeskHost::SearchRowTitle(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? r->title : std::string();
+}
+
+std::string DeskHost::SearchRowDetail(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? r->detail : std::string();
+}
+
+std::string DeskHost::SearchRowSource(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? r->source : std::string();
+}
+
+double DeskHost::SearchRowDistance(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? r->distance_m : 0.0;
+}
+
+double DeskHost::SearchRowLatitude(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? r->position.lat : 0.0;
+}
+
+double DeskHost::SearchRowLongitude(int row) const {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  return r ? r->position.lon : 0.0;
+}
+
+std::string DeskHost::SearchStatus() const { return impl_->search_status; }
+
+void DeskHost::GoToSearchRow(int row) {
+  const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
+  if (r == nullptr) return;
+  const DeskSearchRow copy = *r;
+  impl_->desk->GoToSearchRow(copy);
+}
+
 // MARK: Layers panel
 
 bool DeskHost::TakeLayersRequest() {
@@ -2203,6 +2283,29 @@ std::string DeskHost::RuleStylePropertyChoice(int k, int i) const {
   const RuleProperty* p = RuleProp(*impl_->desk, k);
   if (!p || i < 0 || i >= static_cast<int>(p->choices.size())) return std::string();
   return p->choices[static_cast<size_t>(i)];
+}
+
+bool DeskHost::RuleStylePropertyIcons(int k) const {
+  const RuleProperty* p = RuleProp(*impl_->desk, k);
+  return p && p->icons;
+}
+
+int DeskHost::RuleIconCount() const { return static_cast<int>(fv::desk::RuleIconNames().size()); }
+
+std::string DeskHost::RuleIconName(int i) const {
+  const std::vector<std::string>& names = fv::desk::RuleIconNames();
+  if (i < 0 || i >= static_cast<int>(names.size())) return std::string();
+  return names[static_cast<size_t>(i)];
+}
+
+bool DeskHost::CopyRuleIcon(const std::string& name, int size, uint32_t rgba, uint8_t* out, size_t capacity) const {
+  if (out == nullptr) return false;
+  PixelBuffer buf;
+  if (!fv::desk::RenderRuleIcon(name, size, rgba, &buf).ok()) return false;
+  const size_t row = static_cast<size_t>(buf.Width()) * 4;
+  if (capacity < row * buf.Height()) return false;
+  for (int y = 0; y < buf.Height(); ++y) std::memcpy(out + row * y, buf.Row(y), row);
+  return true;
 }
 
 int DeskHost::RuleStyleModeCount(int k) const {
@@ -2927,6 +3030,7 @@ HostTick DeskHost::Tick() {
   if (m.shell.sources_requested) t.sources_requested = true;
   if (m.shell.profile_requested) t.profile_requested = true;
   if (m.shell.layers_requested) t.layers_requested = true;
+  if (m.shell.find_requested) t.find_requested = true;
   if (m.RefreshLayers()) t.layers_changed = true;
   if (m.shell.form_requested) t.form_requested = true;
   if (m.shell.table_requested) t.table_requested = true;
