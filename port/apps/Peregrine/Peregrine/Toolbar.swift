@@ -141,6 +141,8 @@ final class CommandToolbarItem: NSToolbarItem {
             "layer_style": "paintpalette",
             "style_feature": "paintbrush",
             "layer_fields": "list.bullet.rectangle",
+            "export_selection": "square.and.arrow.up",
+            "layers": "sidebar.right",
         ]
         guard let name = symbols[icon] else { return nil }
         return NSImage(systemSymbolName: name, accessibilityDescription: label)

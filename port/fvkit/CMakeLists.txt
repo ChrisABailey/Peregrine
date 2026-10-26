@@ -69,11 +69,13 @@ add_library(fv_fvkit STATIC
   nav/trip.cpp
   nav/maneuver.cpp
   nav/guidance.cpp
+  nav/course_deviation.cpp
   nav/tide.cpp
   nav/sun.cpp
   nav/wind.cpp
   nav/beach.cpp
   overlay/manager.cpp
+  draw_interrupt.cpp
   overlay/contour_overlay.cpp
   overlay/grid_overlay.cpp
   overlay/grid_spacing.cpp
@@ -214,6 +216,7 @@ if(FVW_BUILD_TESTS)
     nav/test/nav_trip_test.cpp
     nav/test/nav_maneuver_test.cpp
     nav/test/nav_guidance_test.cpp
+    nav/test/nav_course_deviation_test.cpp
     nav/test/nav_tide_test.cpp
     nav/test/nav_sun_test.cpp
     nav/test/nav_wind_test.cpp

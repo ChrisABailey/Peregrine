@@ -31,13 +31,34 @@ namespace fv {
 
 class OverlayManager;
 
+/// Where `FeatureOverlay::ExportSelection` writes the selected features.
+struct FeatureExport {
+  enum class Mode {
+    kNewFile,   ///< a new GeoPackage at `path`, replacing any file there
+    kNewTable,  ///< a new table in the existing GeoPackage at `path`
+    kAppend,    ///< appended to `table` of the existing GeoPackage at `path`
+  };
+  Mode mode = Mode::kNewFile;
+  std::string path;
+  std::string table;  ///< kAppend only
+};
+
+/// True when features of schema `from` append to a table of schema `to`
+/// unchanged: the same geometry type, and the same fields by name
+/// (case-insensitively) and type, in any order.
+bool SchemasMatchForAppend(const FeatureSchema& from, const FeatureSchema& to);
+
+/// True while an overlay holds the GeoPackage at `path` open.
+bool PackageIsOpen(const std::string& path);
+
 class FeatureOverlay : public Overlay,
                        public app::Persistence,
                        public app::SearchProvider,
                        public app::EditTarget,
                        public app::HitTest,
                        public app::EditHint,
-                       public app::SnapTo {
+                       public app::SnapTo,
+                       public app::ItemInfo {
  public:
   explicit FeatureOverlay(std::string name = "Features");
   ~FeatureOverlay() override;
@@ -55,6 +76,7 @@ class FeatureOverlay : public Overlay,
   app::SnapTo* AsSnapTo() override { return this; }
   app::HitTest* AsHitTest() override { return this; }
   app::EditHint* AsEditHint() override { return this; }
+  app::ItemInfo* AsItemInfo() override { return this; }
   bool SupportsOpacity() const override { return true; }
 
   /// Draws the features whose envelope meets the view at `opacity()`, then,
@@ -86,6 +108,9 @@ class FeatureOverlay : public Overlay,
   /// hint is its map tip and the layer's name.
   void HitTestPoint(const MapProjection& proj, PixelPoint p, double tolerance_px,
                     std::vector<app::HitItem>& out) override;
+  /// The topmost feature's attributes, as the form shows them.
+  std::optional<app::ItemInfoSheet> InfoAt(const MapProjection& proj, PixelPoint p,
+                                           double tolerance_px) override;
   std::string EditHintAt(PixelPoint p) override { return edit_->HintAt(p); }
 
   /// The stack, for mouse capture and snapping to other overlays; null is legal.
@@ -109,6 +134,14 @@ class FeatureOverlay : public Overlay,
   /// from `spec`. kInvalidArg for a layer of a file of several saved over
   /// that file under its plain path, which would replace the other layers.
   Status FileSaveAs(const std::string& spec, int format_index) override;
+  /// The identifiers of the other tables of the GeoPackage at `spec` that a
+  /// format-0 save to its plain path would replace, when it holds two or more.
+  /// Empty for a spec naming a table, one table, a missing file, GeoJSON, and
+  /// this layer's own file opened by its plain path (that save commits it alone).
+  std::vector<std::string> SaveAsWouldReplace(const std::string& spec, int format_index) override;
+  /// Writes every feature and the style as a new table of the GeoPackage at
+  /// `path` (named as `AddFeatureLayerToPackage` names one) and reopens it.
+  Status FileSaveAsAddedLayer(const std::string& path, std::string* spec) override;
   bool SupportsRevert() const override { return true; }
   /// Discards the package's pending edits, every layer's, and reopens `spec`.
   Status Revert(const std::string& spec) override;
@@ -158,6 +191,18 @@ class FeatureOverlay : public Overlay,
   /// Duplicates and zeros are dropped; the last id is `selected()`.
   void SetSelection(std::vector<int64_t> ids);
   bool IsSelected(int64_t id) const;
+
+  /// The tables of the GeoPackage at `path` the selection can be appended to
+  /// (`SchemasMatchForAppend`), leaving out this layer's own table.
+  Status AppendTargets(const std::string& path, std::vector<GeoPackageLayerInfo>* out) const;
+  /// Writes the selected features with the layer's schema and style as `to`
+  /// says; an append keeps the target table's style and gives the features
+  /// new ids. A file an overlay holds open is written through its shared
+  /// connection, so its layers keep their unsaved edits. `spec` receives the
+  /// table written (`path|layername=table`). kInvalidArg for an empty
+  /// selection, a new file over a file held open, and an append to a table
+  /// with unsaved edits or another schema.
+  Status ExportSelection(const FeatureExport& to, std::string* spec);
 
   /// What a search result, a form title and a table row call `f`: the label
   /// field's text, else the first field named "name", else the first text
@@ -212,13 +257,17 @@ class FeatureOverlay : public Overlay,
   void Search(const app::SearchQuery& q, const std::atomic<bool>& cancel,
               std::vector<app::SearchResult>& out) override;
 
-  /// Features drawn by the last `OnDraw`.
+  /// Features in the scene the last `OnDraw` drew from: those in view, or
+  /// after a pan those in a margin around it as well.
   size_t features_drawn() const { return features_drawn_; }
 
  private:
   Status Load(const std::string& spec);
   /// Replaces the style with the one read from `spec`'s `style_json`, or the default.
   void UseStoredStyle(const std::string& spec, const std::string& style_json);
+  /// The style JSON a save stores: the style and the layer's settings. The
+  /// display name goes in only when `keep_name` and it differs from the layer's.
+  Status StyleDocument(bool keep_name, std::string* json) const;
   Status DrawFeatures(const MapProjection& proj, ICanvas& canvas);
   Status DrawLayer(const MapProjection& proj, ICanvas& canvas);
 
@@ -228,6 +277,11 @@ class FeatureOverlay : public Overlay,
   std::unique_ptr<VectorRenderer> renderer_;
   std::string engine_json_;  ///< what `engine_` was loaded from
   std::string engine_font_;
+  std::vector<bool> source_fields_;  ///< the fields `source_` turns into attributes
+  uint64_t scene_revision_ = 0;      ///< the layer revision the renderer's scene was built from
+  double scene_scale_ = 0.0;         ///< the scale of the last draw
+  uint64_t definition_generation_ = 0;
+  uint64_t scene_definition_generation_ = 0;
   std::shared_ptr<GeoPackage> package_;  ///< set when `layer_` lives in a GeoPackage
   std::string spec_layer_;               ///< the table the open spec named; empty for a whole file
   FeatureStyle style_;

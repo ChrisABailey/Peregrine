@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <map>
 
 namespace fv {
 
@@ -18,6 +19,31 @@ bool IsBicycleRequest(const std::string& profile, bool cycle_only) {
                  [](unsigned char c) { return static_cast<char>(::tolower(c)); });
   return lower.find("bike") != std::string::npos ||
          lower.find("cycle") != std::string::npos;
+}
+
+std::string RoadDropped(const RoutePlan& before, const RoutePlan& after, double min_drop_m) {
+  if (before.roads.empty() || after.roads.empty()) return std::string();
+  std::map<std::string, double> now;
+  for (const routing::RouteLeg& leg : after.roads) now[leg.name] += leg.length_m;
+  std::vector<std::pair<std::string, double>> was;  // travel order, for the tie rule
+  for (const routing::RouteLeg& leg : before.roads) {
+    if (leg.name.empty()) continue;
+    auto it = std::find_if(was.begin(), was.end(),
+                           [&](const auto& w) { return w.first == leg.name; });
+    if (it == was.end()) was.emplace_back(leg.name, leg.length_m);
+    else it->second += leg.length_m;
+  }
+  std::string best;
+  double best_drop = 0.0;
+  for (const auto& [name, meters] : was) {
+    const auto it = now.find(name);
+    const double kept = it == now.end() ? 0.0 : it->second;
+    const double drop = meters - kept;
+    if (drop < min_drop_m || kept > 0.5 * meters || drop <= best_drop) continue;
+    best = name;
+    best_drop = drop;
+  }
+  return best;
 }
 
 routing::BeachUse ToBeachUse(RouteBeach v) {
@@ -138,6 +164,14 @@ Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
     // options, so the query's own avoidances have to be applied AFTER it.
     Status s = routing::SelectProfile(rules, in.profile, out);
     if (!s.ok()) return s;
+    if (!in.overrides.empty()) {
+      auto adjusted = std::make_shared<routing::RouteProfile>();
+      s = routing::ApplyOverrides(*out->profile, in.overrides, adjusted.get());
+      if (!s.ok()) return s;
+      routing::ApplyProfile(std::move(adjusted), out);
+    }
+  } else if (!in.overrides.empty()) {
+    return Status::Error(kInvalidArg, "profile overrides need a profile");
   }
 
   // O5e: the penalties are the only profile-backed settings the router reads
@@ -257,8 +291,8 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
   routing::RouteOptions options;
   s = BuildOptions(in, &options);
   if (!s.ok()) {
-    // A profile the rule file does not define. Reported once and NOT retried
-    // per pair: every pair would fail identically.
+    // A profile the rule file does not define, or a bad override. Reported
+    // once and NOT retried per pair: every pair would fail identically.
     plan.status = s.message;
     plan.error = s;
     return plan;
@@ -305,6 +339,7 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
     // duplicate vertices a joiner drops are zero-length segments that no
     // cumulative distance counted in the first place.
     plan.maneuvers = ManeuversOf(through);
+    plan.roads = through.legs;
     plan.beach = BeachStretchesOf(through);
     std::string turned;
     if (through.has_elevation) {

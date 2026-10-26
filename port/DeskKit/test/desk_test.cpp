@@ -856,8 +856,9 @@ TEST_F(DeskTest, TheToolbarShowsOnlyCommandsWithIcons) {
   ASSERT_TRUE(desk.types().Register(std::move(d)).ok());
   desk.Refresh();
   EXPECT_EQ(Ids(desk.menus().Toolbar()),
-            (std::vector<std::string>{"editor.mode.fv.points", "editor.mode.fv.features",
-                                      "editor.mode.fv.route", "editor.mode.test.sketch"}));
+            (std::vector<std::string>{"overlay.layers_panel", "editor.mode.fv.points",
+                                      "editor.mode.fv.features", "editor.mode.fv.route",
+                                      "editor.mode.test.sketch"}));
 
   // While editing, the tools with icons follow; "Locked" and "More ▸ Inner"
   // have none and stay in the Sketch menu.

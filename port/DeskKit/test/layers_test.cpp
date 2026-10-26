@@ -156,4 +156,17 @@ TEST_F(LayersTest, LayersCommandAsksTheShell) {
   EXPECT_EQ(fd_.shell().layers_shown, 1);
 }
 
+TEST_F(LayersTest, TheToolbarToggleFollowsWhatTheShellReports) {
+  const auto& bar = fd_.desk().menus().Toolbar();
+  ASSERT_FALSE(bar.empty());
+  EXPECT_EQ(bar.front().command_id, "overlay.layers_panel");
+  EXPECT_FALSE(fd_.desk().commands().IsChecked("overlay.layers_panel"));
+  ASSERT_TRUE(fd_.Run({"overlay.layers_panel"}).ok());
+  EXPECT_EQ(fd_.shell().layers_shown, 1);
+  fd_.desk().SetLayersShown(true);
+  EXPECT_TRUE(fd_.desk().commands().IsChecked("overlay.layers_panel"));
+  ASSERT_TRUE(fd_.Run({"overlay.layers_panel"}).ok());
+  EXPECT_EQ(fd_.shell().layers_hidden, 1);
+}
+
 }  // namespace

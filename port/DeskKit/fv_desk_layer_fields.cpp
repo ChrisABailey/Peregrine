@@ -259,17 +259,7 @@ const std::vector<GeometryType>& NewLayerGeometries() {
   return kTypes;
 }
 
-std::string GeometryTitle(GeometryType type) {
-  switch (type) {
-    case GeometryType::kPoint: return "Point";
-    case GeometryType::kLineString: return "Line";
-    case GeometryType::kPolygon: return "Area";
-    case GeometryType::kMultiPoint: return "Multipoint";
-    case GeometryType::kMultiLineString: return "Multiline";
-    case GeometryType::kMultiPolygon: return "Multi-area";
-    default: return "Any geometry";
-  }
-}
+std::string GeometryTitle(GeometryType type) { return GeometryTypeTitle(type); }
 
 NewLayerModel::NewLayerModel() { SetTemplate(0); }
 

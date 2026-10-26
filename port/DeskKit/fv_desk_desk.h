@@ -15,6 +15,7 @@
 /// Single-threaded: call from the UI thread.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,6 +39,7 @@
 #include "fv_desk_search.h"
 #include "fv_desk_workspace.h"
 #include "fv_view_map_view.h"
+#include "fvkit/app/capabilities.h"
 #include "fvkit/app/editor.h"
 #include "fvkit/app/pick.h"
 #include "fvkit/app/session.h"
@@ -81,6 +83,9 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the layers panel. It reads `Desk::layers()` and
   /// changes the stack through `Desk::SetLayerVisible` and its siblings.
   virtual void ShowLayers() {}
+  /// Hide the layers panel (the toolbar toggle). The shell reports the
+  /// panel's state with `Desk::SetLayersShown`.
+  virtual void HideLayers() {}
   /// Show (or bring forward) the Find dialog (Map ▸ Go To / Find…); it runs
   /// `Desk::Search` and moves with `Desk::GoToSearchRow`.
   virtual void ShowFind() {}
@@ -113,6 +118,8 @@ class DeskShell : public app::AppShell {
   virtual void ShowAddRule() {}
   /// Start editing the current rule's name in place; commit through `Desk::RenameRule`.
   virtual void BeginRuleRename() {}
+  /// Show (or bring forward) the Get Info window over `Desk::item_info()`, read-only.
+  virtual void ShowItemInfo() {}
   /// Ask for the current rule's new type (`RuleTypes()`), then call `Desk::SetRuleType`.
   virtual void ShowRuleType() {}
   /// Show (or bring forward) the rule filter builder over `Desk::rule_filter()`;
@@ -257,6 +264,17 @@ class Desk {
   bool OverlayPointerDown(double x_pt, double y_pt, bool shift, int clicks);
   bool OverlayPointerDrag(double x_pt, double y_pt);
   bool OverlayPointerUp(double x_pt, double y_pt);
+  /// The map's right-click menu at `x_pt, y_pt` (points from the top-left):
+  /// a section per overlay under the point, top first, holding the overlay's
+  /// own items, then Get Info… and, for an item with an editor, its Edit item.
+  /// Get Info items name their item when the menu has more than one. No
+  /// children when nothing is there.
+  app::MenuNode MapContextMenu(double x_pt, double y_pt);
+  /// The sheet the last Get Info showed.
+  const app::ItemInfoSheet& item_info() const { return item_info_; }
+  /// Makes `overlay` current in its editor, raised to the top of the stack,
+  /// then runs `select` (may be null). kUnsupported when its type has no editor.
+  Status EditItem(const std::shared_ptr<Overlay>& overlay, const std::function<void()>& select);
   /// Hit-tests the overlay stack under the cursor, in points; a change of
   /// hover sets the status bar feedback to the hit's hint (or clears it).
   void OverlayHover(double x_pt, double y_pt);
@@ -429,6 +447,12 @@ class Desk {
   Status OpenLayerStyle();
   /// The style dialog over the selected feature's own symbol.
   Status StyleSelectedFeature();
+  /// Export Selection: writes the current feature layer's selected features
+  /// to a GeoPackage. A list offers a new file (save panel), an existing one
+  /// (open panel) and each GeoPackage already open; an existing file then
+  /// offers a new layer or an append to each table of the same schema. The
+  /// table written does not open; the status bar names it.
+  Status ExportSelection();
   /// Null when no style dialog is open, or its overlay has closed.
   const std::shared_ptr<LayerStyleModel>& layer_style() const { return style_; }
   /// Writes the draft style to its overlay, dirties it and repaints.
@@ -468,6 +492,10 @@ class Desk {
   /// of two or more waypoints (also reported through the shell).
   Status OpenRouteProfile();
   void CloseRouteProfile();
+  /// The shell reports whether the layers panel is showing; it is the
+  /// checked state of the `overlay.layers_panel` toggle.
+  void SetLayersShown(bool shown) { layers_shown_ = shown; }
+  bool layers_shown() const { return layers_shown_; }
   bool RouteProfileOpen() const { return profile_open_; }
   /// Re-samples when the route's path, the elevation data or the profile
   /// settings (`analysis.units`, `analysis.profile_samples`) changed; true
@@ -507,9 +535,21 @@ class Desk {
   void SettingsLoaded();
   /// Changes whenever map options change what a base map looks like.
   uint64_t MapStyleGeneration() const { return map_style_gen_; }
-  /// Where applied options persist. Null (the default) keeps them in memory.
-  void SetUserSettings(UserSettings* user) { user_settings_ = user; }
+  /// Where applied options and the recent overlays persist. Null (the
+  /// default) keeps them in memory. Setting a store reads its recent list.
+  void SetUserSettings(UserSettings* user);
   UserSettings* user_settings() const { return user_settings_; }
+
+  // MARK: Recent overlays
+  /// A file overlay opened earlier: its type and file path, without a layer.
+  struct RecentOverlay {
+    app::TypeId type;
+    std::string path;
+    bool operator==(const RecentOverlay& o) const { return type == o.type && path == o.path; }
+  };
+  /// The File ▸ Recent Overlay list, most recent first, at most `kMaxRecentOverlays`.
+  static constexpr size_t kMaxRecentOverlays = 5;
+  const std::vector<RecentOverlay>& recent_overlays() const { return recent_; }
 
   // MARK: Status
   StatusBar CurrentStatus() const;
@@ -535,6 +575,13 @@ class Desk {
   void RegisterProjectionCommands();
   void RegisterOverlayTypeCommands();
   void RegisterInstanceCommands();
+  /// One `file.recent.<n>` command per recent overlay.
+  void RegisterRecentCommands();
+  /// Moves `o`'s file to the top of the recent list and stores the list.
+  void NoteRecent(Overlay& o);
+  /// Opens recent entry `i`; an entry that fails to open leaves the list.
+  void OpenRecent(size_t i);
+  void StoreRecent();
   /// Recomputes the feedback text and tool tip from the three hover hints.
   void ComposeHoverHint();
   /// Asks the edited overlay what a press at `e` would do.
@@ -603,6 +650,7 @@ class Desk {
   std::string rule_filter_id_;
   std::string rule_filter_guard_;  ///< the rule's geometry guard, kept out of the builder
   std::shared_ptr<RuleStyleModel> rule_style_;
+  app::ItemInfoSheet item_info_;
   std::string properties_title_;
   std::vector<PropertyRow> properties_;
   PropertiesTab properties_tab_ = PropertiesTab::kSource;
@@ -631,6 +679,7 @@ class Desk {
   std::optional<MenuSpec> editor_menu_;
   std::vector<std::string> warnings_;
   UserSettings* user_settings_ = nullptr;
+  std::vector<RecentOverlay> recent_;
   std::vector<MapOptionsSource> map_options_;
   /// Overlay-page sections the Desk acts on, keyed by type id.
   std::vector<MapOptionsSource> overlay_options_;
@@ -651,6 +700,7 @@ class Desk {
   std::optional<std::string> planner_paths_;
   uint64_t elevation_gen_ = 0;  ///< bumped whenever `pointer_elevation_` is reopened
   bool profile_open_ = false;
+  bool layers_shown_ = false;
   std::weak_ptr<Overlay> profile_route_;
   std::string profile_key_;  ///< what the chart was last sampled from
   std::string profile_title_;

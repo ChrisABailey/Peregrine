@@ -20,11 +20,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -170,6 +172,76 @@ TEST(RouteStore, ADocumentThatWillNotParseIsReportedAndTheAppStillComesUp) {
   const RouteSnapshot snap = store.Snapshot();
   EXPECT_FALSE(snap.exists);
   EXPECT_TRUE(snap.waypoints.empty());
+}
+
+// ---------------------------------------------------------------------------
+// A route shared from another device
+// ---------------------------------------------------------------------------
+
+std::string FileBytes(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+TEST(RouteStore, ASharedRouteArrivesWithItsStopsAndOptionsAndIsSaved) {
+  SKIP_WITHOUT_GRAPH();
+  TempDocument sent("share_sent");
+  TempDocument kept("share_kept");
+  {
+    RouteStore sender(graph, RulesFile(), sent.path());
+    sender.SetWaypoints(TheUsualPair(), "foot", fv::RouteBeach::kToSaveTime);
+  }
+  const std::string sent_bytes = FileBytes(sent.path());
+
+  // The receiving device already has a route of its own, which is replaced.
+  RouteStore receiver(graph, RulesFile(), kept.path());
+  receiver.SetWaypoints({RouteWaypoint{"Start", kBeachClub},
+                         RouteWaypoint{"End", kRuddyTurnstone}},
+                        "bicycle");
+  ASSERT_TRUE(receiver.Import(sent.path()).ok());
+
+  const RouteSnapshot snap = receiver.Snapshot();
+  ASSERT_EQ(2u, snap.waypoints.size());
+  EXPECT_DOUBLE_EQ(kRuddyTurnstone.lat, snap.waypoints[0].position.lat);
+  EXPECT_DOUBLE_EQ(kBeachClub.lon, snap.waypoints[1].position.lon);
+  EXPECT_EQ("foot", snap.profile);
+  // Planned here, on this device's graph: a live route, not a drawn line.
+  EXPECT_TRUE(snap.calculated);
+  // The shared file is only read; the import is the receiver's current route.
+  EXPECT_EQ(sent_bytes, FileBytes(sent.path()));
+  RouteStore relaunched(graph, RulesFile(), kept.path());
+  ASSERT_TRUE(relaunched.LoadAtLaunch().ok());
+  EXPECT_EQ("foot", relaunched.Snapshot().profile);
+  EXPECT_EQ(fv::RouteBeach::kToSaveTime, relaunched.overlay()->beach());
+}
+
+TEST(RouteStore, ASharedFileThatWillNotParseLeavesTheRouteAlone) {
+  TempDocument kept("share_bad_kept");
+  TempDocument sent("share_bad_sent");
+  {
+    std::ofstream out(sent.path());
+    out << "{ this is not a route";
+  }
+  RouteStore store("/nonexistent/kiawah.fvroad", RulesFile(), kept.path());
+  store.SetWaypoints(TheUsualPair(), "bicycle");
+  const std::string before = FileBytes(kept.path());
+
+  const fv::Status s = store.Import(sent.path());
+  EXPECT_FALSE(s.ok());
+  EXPECT_FALSE(s.message.empty());
+  EXPECT_EQ(2u, store.Snapshot().waypoints.size());
+  EXPECT_EQ(before, FileBytes(kept.path()));
+}
+
+TEST(RouteStore, ASharedRouteWithNoStopsIsRefused) {
+  TempDocument kept("share_empty_kept");
+  TempDocument sent("share_empty_sent");
+  ASSERT_TRUE(fv::RouteDoc().Write(sent.path()).ok());
+  RouteStore store("/nonexistent/kiawah.fvroad", RulesFile(), kept.path());
+  store.SetWaypoints(TheUsualPair(), "bicycle");
+
+  EXPECT_FALSE(store.Import(sent.path()).ok());
+  EXPECT_EQ(2u, store.Snapshot().waypoints.size());
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +537,89 @@ TEST(RouteStore, TheProfileRoundTripsAndDecidesHowTheLineIsDrawn) {
   // time: the document's own profile is the default for a replan (P5's rule).
   EXPECT_FALSE(snap.is_bicycle);
   EXPECT_TRUE(snap.calculated);
+}
+
+TEST(RouteStore, KeyAdjustmentsReachThePlanForTheirProfileOnly) {
+  SKIP_WITHOUT_GRAPH();
+  TempDocument doc("adjusted");
+  RouteStore store(graph, RulesFile(), doc.path());
+  ASSERT_TRUE(store.SetWaypoints(TheUsualPair(), "bicycle").calculated);
+
+  // Every road type at Never leaves the ride nothing to follow.
+  const int never = static_cast<int>(
+      fv::routing::LegendStops(fv::routing::CostTermKind::kClass).size()) - 1;
+  fv::routing::LegendStopChoices all_never;
+  for (int k = 0; k <= static_cast<int>(fv::routing::RoadClass::kBeach); ++k) {
+    all_never[std::string("classes.") +
+              fv::routing::RoadClassName(static_cast<fv::routing::RoadClass>(k))] = never;
+  }
+  store.set_adjustments({{"bicycle", all_never}});
+  EXPECT_FALSE(store.OverridesFor("bicycle").empty());
+  EXPECT_TRUE(store.OverridesFor("foot").empty());
+  const RouteSnapshot barred = store.Replan();
+  EXPECT_FALSE(barred.complete);
+  EXPECT_GT(barred.straight_legs, 0);
+  EXPECT_TRUE(store.SetWaypoints(TheUsualPair(), "foot").calculated);
+
+  store.set_adjustments({});
+  EXPECT_TRUE(store.SetWaypoints(TheUsualPair(), "bicycle").calculated);
+}
+
+// The rider makes the route's busiest road a last resort: the line moves, the
+// old one is kept as a ghost, and an unchanged re-plan keeps none.
+TEST(RouteStore, AReplanForNewPreferencesKeepsThePreviousLine) {
+  SKIP_WITHOUT_GRAPH();
+  RouteStore store(graph, RulesFile(), "");
+  const RouteSnapshot first = store.SetWaypoints(TheUsualPair(), "bicycle");
+  ASSERT_TRUE(first.complete);
+
+  RouteStore::ReplanChange same;
+  store.ReplanShowingPrevious(&same);
+  EXPECT_FALSE(same.line_changed);
+  EXPECT_TRUE(same.road_dropped.empty());
+  EXPECT_TRUE(store.overlay()->ghost().empty());
+
+  std::map<std::string, double> by_class;
+  for (const fv::routing::RouteLeg& leg : store.overlay()->plan().roads)
+    by_class[leg.klass] += leg.length_m;
+  const auto busiest = std::max_element(
+      by_class.begin(), by_class.end(),
+      [](const auto& a, const auto& b) { return a.second < b.second; });
+  ASSERT_NE(busiest, by_class.end());
+  store.set_adjustments({{"bicycle", {{"classes." + busiest->first, 4}}}});
+
+  RouteStore::ReplanChange change;
+  const RouteSnapshot after = store.ReplanShowingPrevious(&change);
+  ASSERT_TRUE(after.calculated);
+  EXPECT_TRUE(change.line_changed) << busiest->first;
+  EXPECT_DOUBLE_EQ(first.length_m, change.before_m);
+  EXPECT_DOUBLE_EQ(after.length_m, change.after_m);
+  EXPECT_FALSE(store.overlay()->ghost().empty());
+  store.ClearGhost();
+  EXPECT_TRUE(store.overlay()->ghost().empty());
+}
+
+TEST(RouteStore, AReplanWithoutARouteDoesNothing) {
+  RouteStore store("", RulesFile(), "");
+  RouteStore::ReplanChange change;
+  change.line_changed = true;
+  store.ReplanShowingPrevious(&change);
+  EXPECT_FALSE(change.line_changed);
+  EXPECT_EQ(0.0, change.before_m);
+}
+
+TEST(RouteStore, AShippedStopAndABadMapGiveNoOverrides) {
+  RouteStore store("", RulesFile(), "");
+  store.set_adjustments({{"bicycle", {{"classes.residential", 99}}},
+                         {"foot", {{"bike_lane_factor.lane", 3}}}});
+  EXPECT_TRUE(store.OverridesFor("bicycle").empty());
+  EXPECT_TRUE(store.OverridesFor("unknown").empty());
+  EXPECT_TRUE(store.OverridesFor("").empty());
+  // Kiawah's painted lane ships at 1.0, "No difference", so stop 3 is no override.
+  EXPECT_TRUE(store.OverridesFor("foot").empty());
+  store.set_adjustments({{"foot", {{"bike_lane_factor.lane", 0}}}});
+  EXPECT_EQ(store.OverridesFor("foot"),
+            (fv::routing::ProfileOverrides{{"bike_lane_factor.lane", 0.45}}));
 }
 
 TEST(RouteStore, AWalkAndARideOverTheSamePairCostDifferentTime) {
@@ -1145,6 +1300,83 @@ TEST(RouteStoreDrag, TheSnapToleranceReachesTheEditor) {
   EXPECT_DOUBLE_EQ(0.0, store.overlay()->edit().snap_tolerance_px());
   store.SetDragSnapTolerancePx(36.0);
   EXPECT_DOUBLE_EQ(36.0, store.overlay()->edit().snap_tolerance_px());
+}
+
+// ---------------------------------------------------------------------------
+// Straight legs (no road graph)
+// ---------------------------------------------------------------------------
+
+// Charleston harbour: Fort Sumter, then north up the channel, then east.
+const GeoPoint kSumter{32.7523, -79.8747};
+const GeoPoint kNorth{32.8023, -79.8747};
+const GeoPoint kNorthEast{32.8023, -79.8247};
+
+TEST(RouteStoreStraight, LegsCarryRhumbCourseAndDistance) {
+  TempDocument doc("straight_legs");
+  RouteStore store("/nonexistent/none.fvroad", RulesFile(), doc.path());
+  store.SetStraightLegs(true);
+  const RouteSnapshot snap = store.SetWaypoints(
+      {RouteWaypoint{"Start", kSumter}, RouteWaypoint{"Via 1", kNorth},
+       RouteWaypoint{"End", kNorthEast}},
+      "");
+  EXPECT_TRUE(snap.straight);
+  EXPECT_TRUE(snap.status.empty()) << snap.status;
+  ASSERT_EQ(snap.legs.size(), 2u);
+  EXPECT_TRUE(snap.legs[0].ok);
+  EXPECT_NEAR(snap.legs[0].course_deg, 0.0, 0.01);
+  EXPECT_NEAR(snap.legs[0].distance_m, 5545.0, 15.0);  // 0.05 deg of latitude
+  // Due east on a rhumb line, not the great circle's 89.98 deg.
+  EXPECT_NEAR(snap.legs[1].course_deg, 90.0, 1e-6);
+  EXPECT_NEAR(snap.legs[1].distance_m, 4682.0, 15.0);  // 0.05 deg x cos(32.8)
+  EXPECT_NEAR(snap.length_m, snap.legs[0].distance_m + snap.legs[1].distance_m, 1e-6);
+  EXPECT_EQ(store.overlay()->leg_kind(), fv::LineKind::kRhumb);
+  EXPECT_TRUE(store.RouteManeuvers().empty());
+
+  const RouteSnapshot cleared = store.Clear();
+  EXPECT_TRUE(cleared.legs.empty());
+  EXPECT_EQ(cleared.length_m, 0.0);
+  EXPECT_TRUE(store.RoutePath().empty());
+}
+
+TEST(RouteStoreStraight, PathRunsThroughEveryWaypoint) {
+  RouteStore store("/nonexistent/none.fvroad", RulesFile(), std::string());
+  store.SetStraightLegs(true);
+  EXPECT_TRUE(store.RoutePath().empty());
+  store.SetWaypoints({RouteWaypoint{"Start", kSumter}}, "");
+  EXPECT_TRUE(store.RoutePath().empty()) << "one stop has no line";
+  store.SetWaypoints({RouteWaypoint{"Start", kSumter}, RouteWaypoint{"Via 1", kNorth},
+                      RouteWaypoint{"End", kNorthEast}},
+                     "");
+  const std::vector<GeoPoint> path = store.RoutePath();
+  ASSERT_GT(path.size(), 3u) << "densified between the stops";
+  EXPECT_EQ(path.front().lat, kSumter.lat);
+  EXPECT_EQ(path.back().lon, kNorthEast.lon);
+  bool hit_via = false;
+  for (const GeoPoint& p : path) hit_via |= (p.lat == kNorth.lat && p.lon == kNorth.lon);
+  EXPECT_TRUE(hit_via);
+}
+
+TEST(RouteStoreStraight, RelaunchKeepsTheLegs) {
+  TempDocument doc("straight_relaunch");
+  {
+    RouteStore store("/nonexistent/none.fvroad", RulesFile(), doc.path());
+    store.SetStraightLegs(true);
+    store.SetWaypoints({RouteWaypoint{"Start", kSumter}, RouteWaypoint{"End", kNorth}}, "");
+  }
+  RouteStore again("/nonexistent/none.fvroad", RulesFile(), doc.path());
+  again.SetStraightLegs(true);
+  ASSERT_TRUE(again.LoadAtLaunch().ok());
+  const RouteSnapshot snap = again.Snapshot();
+  ASSERT_EQ(snap.legs.size(), 1u);
+  EXPECT_NEAR(snap.legs[0].distance_m, 5545.0, 15.0);
+  EXPECT_FALSE(again.RoutePath().empty());
+}
+
+TEST(RouteStoreStraight, NoBeachOrHillsWithoutAGraph) {
+  RouteStore store("/nonexistent/none.fvroad", RulesFile(), std::string());
+  store.SetStraightLegs(true);
+  EXPECT_FALSE(store.BeachAvailable());
+  EXPECT_FALSE(store.ElevationAvailable());
 }
 
 }  // namespace

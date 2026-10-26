@@ -633,6 +633,60 @@ TEST(FeatureOverlay, ADefinitionQueryLimitsDrawingSearchAndHits) {
   EXPECT_EQ(SearchTitles(overlay).size(), 3u);
 }
 
+// A redraw of the same view reuses the styled scene, unless the features or
+// the definition query changed since it was built.
+TEST(FeatureOverlay, ARedrawShowsEditsAndQueryChanges) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  const fv::MapProjection proj = Harbour();
+  const fv::PixelPoint cooper = SurfaceAt(proj, {32.85, -79.93});
+  auto draw = [&](fv::CpuCanvas* canvas) {
+    canvas->Clear({255, 255, 255, 255});
+    ASSERT_TRUE(overlay.OnDraw(proj, *canvas).ok());
+  };
+  fv::CpuCanvas canvas(400, 400);
+  draw(&canvas);
+  EXPECT_NE(Px(canvas, static_cast<int>(cooper.x), static_cast<int>(cooper.y))[0], 255);
+  draw(&canvas);
+  EXPECT_NE(Px(canvas, static_cast<int>(cooper.x), static_cast<int>(cooper.y))[0], 255);
+
+  ASSERT_TRUE(overlay.layer()->Delete(1).ok());
+  draw(&canvas);
+  EXPECT_EQ(Px(canvas, static_cast<int>(cooper.x), static_cast<int>(cooper.y))[0], 255);
+  const int two = Inked(canvas);
+  EXPECT_GT(two, 0);
+
+  ASSERT_TRUE(overlay.SetDefinitionQuery(R"([">", ["get", "depth"], 1000])").ok());
+  draw(&canvas);
+  EXPECT_EQ(Inked(canvas), 0);
+  ASSERT_TRUE(overlay.SetDefinitionQuery("").ok());
+  draw(&canvas);
+  EXPECT_EQ(Inked(canvas), two);
+}
+
+// A GeoPackage layer reads only the columns the style and the definition
+// query name; a query on a field the style never draws still filters.
+TEST(FeatureOverlay, AQueryOnAnUnstyledFieldFiltersAGeoPackage) {
+  const std::string gpkg = Temp("rivers.gpkg");
+  fs::remove(gpkg);
+  {
+    FeatureOverlay overlay;
+    ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+    ASSERT_TRUE(overlay.FileSaveAs(gpkg, FeatureOverlay::kFormatGeoPackage).ok());
+  }
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(gpkg).ok());
+  fv::CpuCanvas canvas(400, 400);
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(overlay.OnDraw(Harbour(), canvas).ok());
+  EXPECT_EQ(overlay.features_drawn(), 3u);
+  ASSERT_TRUE(overlay.SetDefinitionQuery(R"([">", ["get", "depth"], 7])").ok());
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(overlay.OnDraw(Harbour(), canvas).ok());
+  EXPECT_EQ(overlay.features_drawn(), 2u);
+  fs::remove(gpkg);
+}
+
 TEST(FeatureOverlay, TheDefinitionQuerySurvivesSaveAndReopenWithEveryFeature) {
   FeatureOverlay overlay;
   ASSERT_TRUE(overlay.FileOpen(kRivers).ok());

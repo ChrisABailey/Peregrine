@@ -11,12 +11,14 @@ import Foundation
 enum WindText {
     static let metresPerSecondToMph = 2.236_936
     static let metresPerSecondToKmh = 3.6
+    static let metresPerSecondToKnots = 3600.0 / 1852.0
 
-    /// A speed rounded to a whole unit: "12 mph" or "19 km/h".
+    /// A speed rounded to a whole unit: "12 mph", "19 km/h" or "10 kn".
     static func speed(_ mps: Double, units: DistanceUnits) -> String {
         switch units {
         case .miles: return "\(Int((mps * metresPerSecondToMph).rounded())) mph"
         case .kilometres: return "\(Int((mps * metresPerSecondToKmh).rounded())) km/h"
+        case .nauticalMiles: return "\(Int((mps * metresPerSecondToKnots).rounded())) kn"
         }
     }
 
@@ -144,6 +146,7 @@ enum WindText {
         switch units {
         case .miles: unit = number == "1" ? "mile per hour" : "miles per hour"
         case .kilometres: unit = number == "1" ? "kilometre per hour" : "kilometres per hour"
+        case .nauticalMiles: unit = number == "1" ? "knot" : "knots"
         }
         return "Wind from the \(spokenCompass(fromDegrees)), \(number) \(unit)."
     }

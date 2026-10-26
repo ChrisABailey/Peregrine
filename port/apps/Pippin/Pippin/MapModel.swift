@@ -28,6 +28,7 @@ final class LiveMapState: ObservableObject {
     @Published fileprivate(set) var ownship: PPOwnship?
     @Published fileprivate(set) var trip: PPTrip?
     @Published fileprivate(set) var guidance: PPGuidance?
+    @Published fileprivate(set) var courseDeviation: PPCourseDeviation?
 }
 
 /// View model for the map screen: the camera, the last rendered frame, and
@@ -124,6 +125,13 @@ final class MapModel: ObservableObject {
             live.guidance = newValue
             updateRideActivity(newValue, trip: trip)
         }
+    }
+
+    /// The course deviation indicator for a straight-leg route, or nil outside
+    /// GPS mode, with no such route, or past its last point.
+    private(set) var courseDeviation: PPCourseDeviation? {
+        get { live.courseDeviation }
+        set { live.courseDeviation = newValue }
     }
 
     /// What the guidance says, out loud and in the hand (GD4). Not published:
@@ -304,6 +312,7 @@ final class MapModel: ObservableObject {
     private var rideRecoveryChecked = false
 
     init() {
+        var launchNotice: String?
         guard let pack = Bundle.main.url(forResource: "Data", withExtension: nil) else {
             renderer = nil
             failure = "The data pack is missing from the app bundle."
@@ -311,6 +320,7 @@ final class MapModel: ObservableObject {
         }
         do {
             let map = try PPMap(dataPack: pack)
+            launchNotice = Self.openInstalledCharts(on: map)
             // Document locations are a Foundation question, answered here.
             // When and in what order to write is the C++ store's business.
             map.setRouteDocumentURL(Self.routeDocumentURL())
@@ -337,6 +347,11 @@ final class MapModel: ObservableObject {
         setSymbolStep(UserDefaults.standard.integer(forKey: Self.symbolStepKey),
                       persist: false)
         startDisplayLink()
+        if let launchNotice { post(launchNotice) }
+        if renderer?.drawsCharts == true {
+            attachChartDownloader()
+            checkChartUpdatesIfDue()
+        }
         rideActivity.endStale()
         // The cached base map is the only large allocation not currently
         // needed; dropping it costs one render.
@@ -681,7 +696,7 @@ final class MapModel: ObservableObject {
     private func post(_ notice: MapNotice) {
         self.notice = notice
         noticeTask?.cancel()
-        let seconds = notice.opensSettings ? 8.0 : 4.0
+        let seconds = notice.opensSettings ? 16.0 : 8.0
         noticeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
@@ -689,7 +704,7 @@ final class MapModel: ObservableObject {
         }
     }
 
-    private func post(_ text: String) { post(MapNotice(text: text)) }
+    func post(_ text: String) { post(MapNotice(text: text)) }
 
     /// The notice for a missing ownship. Denied/restricted is the only
     /// actionable state, so only that one opens Settings.
@@ -919,6 +934,25 @@ final class MapModel: ObservableObject {
         }
     }
 
+    /// Makes a shared `.fvrte` the current route. `done` is told whether it
+    /// took; a refused file posts its reason.
+    func importRoute(from url: URL, done: @escaping @MainActor (Bool) -> Void) {
+        guard renderer != nil else { done(false); return }
+        isPlanning = true
+        onRenderQueue({ $0.importRoute(from: url) }) { model, result in
+            model.isPlanning = false
+            switch result {
+            case .success(let route):
+                model.route = route
+                model.setContentDirty()
+                done(true)
+            case .failure(let error):
+                model.post(error.localizedDescription)
+                done(false)
+            }
+        }
+    }
+
     /// Replaces the waypoints, replans, and writes the document. `isPlanning`
     /// covers the round trip.
     func setRoute(waypoints: [PPWaypoint], profile: String) {
@@ -1039,6 +1073,87 @@ final class MapModel: ObservableObject {
         publishRoute { $0.cancelRouteWaypointDrag() }
     }
 
+    // MARK: - Dragging a pin
+
+    /// The id of the pin the finger has hold of, or nil.
+    @Published private(set) var draggingPoint: Int64?
+
+    /// Latest pin drag position waiting for the render queue; coalesced like
+    /// `pendingDragPoint`.
+    private var pendingPointDrag: CGPoint?
+    private var pointDragHopInFlight = false
+
+    /// Hit-tests and grabs the pin under `screenPoint` in one hop, and
+    /// reports on the main thread whether one was found. Hidden pins are not
+    /// grabbed.
+    func grabPoint(at screenPoint: CGPoint,
+                   then handle: @escaping (Bool) -> Void) {
+        guard renderer != nil, pointsVisible, let vp = viewport else {
+            handle(false)
+            return
+        }
+        let flat = vp.flatPoint(forScreen: screenPoint)
+        onRenderQueue({ renderer -> Int64? in
+            guard let hit = renderer.point(near: flat, in: vp),
+                  renderer.beginPointDrag(hit.pointId, at: flat, in: vp)
+            else { return nil }
+            return hit.pointId
+        }) { model, grabbed in
+            model.draggingPoint = grabbed
+            if grabbed != nil { model.setContentDirty() }
+            handle(grabbed != nil)
+        }
+    }
+
+    /// Records the finger's position. Cheap to call at touch rate.
+    func dragPoint(to screenPoint: CGPoint) {
+        guard draggingPoint != nil else { return }
+        pendingPointDrag = screenPoint
+        pumpPointDrag()
+    }
+
+    private func pumpPointDrag() {
+        guard !pointDragHopInFlight, let point = pendingPointDrag,
+              renderer != nil, let vp = viewport else { return }
+        pendingPointDrag = nil
+        pointDragHopInFlight = true
+        let flat = vp.flatPoint(forScreen: point)
+        onRenderQueue({ $0.dragPoint(to: flat, in: vp) }) { model, _ in
+            model.pointDragHopInFlight = false
+            model.setContentDirty()
+            model.pumpPointDrag()
+        }
+    }
+
+    /// Ends the drag at the release position, writes the document, and
+    /// re-reads the set. The selection is left as it was before the grab.
+    func dropPoint(at screenPoint: CGPoint) {
+        guard draggingPoint != nil else { return }
+        draggingPoint = nil
+        pendingPointDrag = nil
+        guard let vp = viewport else {
+            cancelPointDrag()
+            return
+        }
+        let flat = vp.flatPoint(forScreen: screenPoint)
+        let keep = selectedPoint?.pointId ?? 0
+        mutatePoints {
+            _ = $0.endPointDrag(at: flat, in: vp)
+            return keep
+        }
+    }
+
+    /// Cancels the drag; the pin returns to where it was and nothing is
+    /// written.
+    func cancelPointDrag() {
+        guard draggingPoint != nil else { return }
+        draggingPoint = nil
+        pendingPointDrag = nil
+        onRenderQueue({ $0.cancelPointDrag() }) { model, _ in
+            model.setContentDirty()
+        }
+    }
+
     // MARK: - Points
 
     /// Reads the user's point set, seeding it from the pack on first launch.
@@ -1060,8 +1175,9 @@ final class MapModel: ObservableObject {
                 model.post(error.localizedDescription)
             } else if loaded.seeded && !loaded.snapshot.isEmpty {
                 model.post("\(loaded.snapshot.count) pins came with the map — "
-                           + "tap one, or hold the Pins button to add "
-                           + "your own.")
+                           + "tap to edit or long press and drag to move. "
+                           + "Hold on the map or hold the Pins button to add "
+                           + "a new pin.")
             }
             model.setContentDirty()
         }
@@ -1095,6 +1211,45 @@ final class MapModel: ObservableObject {
         }
         let flat = vp.flatPoint(forScreen: tap)
         onRenderQueue({ $0.point(near: flat, in: vp) }) { _, hit in handle(hit) }
+    }
+
+    /// The coordinate a tap places: a pin under the finger gives its own
+    /// position and name, anywhere else the ground under the tap. Nil
+    /// coordinate before the first layout and above a tilted view's horizon.
+    func tapTarget(at tap: CGPoint,
+                   then handle: @escaping (PPGeoPoint?, String?) -> Void) {
+        guard let vp = viewport else { return handle(nil, nil) }
+        let flat = vp.flatPoint(forScreen: tap)
+        guard flat.x.isFinite, flat.y.isFinite else { return handle(nil, nil) }
+        let ground = vp.geo(at: flat)
+        point(under: tap) { hit in
+            if let hit {
+                handle(hit.coordinate, hit.name.isEmpty ? nil : hit.name)
+            } else {
+                handle(ground, nil)
+            }
+        }
+    }
+
+    /// Names the base map feature under a press on the render queue, and
+    /// reports it with the press's coordinate. Nil feature when nothing named
+    /// was drawn there; nil coordinate only before the first layout.
+    func chartFeature(under press: CGPoint,
+                      then handle: @escaping (PPGeoPoint?, PPChartFeature?) -> Void) {
+        guard renderer != nil, let vp = viewport else {
+            handle(nil, nil)
+            return
+        }
+        let flat = vp.flatPoint(forScreen: press)
+        // NaN above the horizon of a tilted view: no ground there.
+        guard flat.x.isFinite, flat.y.isFinite else {
+            handle(nil, nil)
+            return
+        }
+        let coordinate = vp.geo(at: flat)
+        onRenderQueue({ $0.chartFeature(near: flat, in: vp) }) { _, feature in
+            handle(coordinate, feature)
+        }
     }
 
     /// Highlights a point (or nothing) and opens/closes the sheet on it.
@@ -1178,8 +1333,9 @@ final class MapModel: ObservableObject {
 
     // MARK: - Shared places
 
-    /// The palette icon a shared place wears: the teardrop pin.
-    private static let sharedPlaceSymbol = "marker"
+    /// The palette icon a shared place wears: the teardrop pin. A point
+    /// started from a long press on the map wears it too.
+    static let sharedPlaceSymbol = "marker"
 
     /// Adds a place shared in from another app as a point and reports the id
     /// it ended up on (0 on refusal). The point gets a yellow pin badge, the
@@ -1309,7 +1465,7 @@ final class MapModel: ObservableObject {
         arrivedRide = false
         let started = Date()
         guard let url = RideLibrary.newRideURL(at: started) else {
-            post("Cannot make a file for the ride.")
+            post("Cannot make a file for the \(AppFlavor.current.trackNoun).")
             return
         }
         let name = RideLibrary.titleFormatter.string(from: started)
@@ -1325,8 +1481,8 @@ final class MapModel: ObservableObject {
                 RideLibrary.clearRecordingMarker()
                 model.post("Could not start recording: \(error.localizedDescription)")
             } else {
-                model.post("Recording this ride. It continues with the "
-                           + "phone locked.")
+                model.post("Recording this \(AppFlavor.current.trackNoun). It continues with the "
+                           + "screen locked.")
             }
         }
     }
@@ -1348,7 +1504,7 @@ final class MapModel: ObservableObject {
             model.refreshRides()
             model.post(count == 0
                        ? "Nothing was recorded — no fixes arrived."
-                       : "Ride saved, \(count) points. Hold the record "
+                       : "\(AppFlavor.current.trackTitle) saved, \(count) points. Hold the record "
                          + "button to share it.")
         }
     }
@@ -1370,8 +1526,8 @@ final class MapModel: ObservableObject {
         rideRecoveryChecked = true
         guard let started = RideLibrary.recoverInterruptedRide() else { return }
         let when = RideLibrary.titleFormatter.string(from: started)
-        post("The ride started \(when) was cut short when the app closed. "
-             + "It is kept in Saved Rides.")
+        post("The \(AppFlavor.current.trackNoun) started \(when) was cut short when the app closed. "
+             + "It is kept in Saved \(AppFlavor.current.trackTitle)s.")
     }
 
     /// Re-reads `Documents/trips/`. Called when a ride ends or the sheet opens.
@@ -1397,6 +1553,9 @@ final class MapModel: ObservableObject {
     }
 
     var routeProfileNames: [String] { renderer?.routeProfileNames ?? [] }
+
+    /// The pack joins stops with rhumb lines and plans no roads.
+    var routeLegsAreStraight: Bool { renderer?.routeLegsAreStraight ?? false }
 
     /// The road graph has a beach, so the route sheet offers "Use beach:".
     var beachAvailable: Bool { renderer?.beachAvailable ?? false }
@@ -1440,6 +1599,261 @@ final class MapModel: ObservableObject {
         }
     }
 
+    // MARK: - Charts
+
+    /// Progress in [0, 1] while a chart zip installs; nil otherwise.
+    @Published private(set) var chartImportProgress: Double?
+
+    /// The pack draws ENC charts, so an imported chart set can replace them.
+    var importsCharts: Bool { renderer?.drawsCharts ?? false }
+
+    /// `Library/Application Support/Charts`, created if absent and excluded
+    /// from backup, since the charts can be downloaded again.
+    nonisolated static func chartStoreURL() -> URL? {
+        guard var url = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Charts", isDirectory: true) else { return nil }
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+        return url
+    }
+
+    /// Opens the installed chart set in place of the pack's own charts.
+    /// Returns a notice when a set is installed but will not open, or opens
+    /// with cells whose updates did not all apply.
+    private static func openInstalledCharts(on map: PPMap) -> String? {
+        guard map.drawsCharts, let storeURL = chartStoreURL() else { return nil }
+        let store = PPChartStore(directoryURL: storeURL)
+        guard let set = store.currentSetURL else { return nil }
+        do {
+            try map.openCharts(at: set)
+            store.removeStaleSets()
+            return outdatedChartsText(map.outdatedChartCellCount)
+        } catch {
+            return "Imported charts did not open: \(error.localizedDescription)"
+        }
+    }
+
+    /// The region downloading and its fraction (nil until the size is known);
+    /// nil when no download runs.
+    @Published private(set) var chartDownload: (region: ChartRegion, fraction: Double?)?
+
+    /// Regions a failed download can resume.
+    @Published private(set) var resumableChartRegions: Set<String> = []
+
+    /// An imported chart set is installed, so there is something to check.
+    @Published private(set) var hasInstalledCharts = false
+
+    /// The region the last check found changes for; Download Charts marks its row.
+    @Published private(set) var chartUpdateRegion: String?
+
+    /// A chart update check is running.
+    @Published private(set) var checkingChartUpdates = false
+
+    private static let chartCheckDateKey = "chartUpdateCheckDate"
+    /// A launch checks NOAA's catalog again once the last check is this old.
+    private static let chartCheckInterval: TimeInterval = 7 * 24 * 3600
+
+    /// Compares the installed set with NOAA's catalog and posts the result.
+    func checkForChartUpdates() { runChartUpdateCheck(userInitiated: true) }
+
+    private func checkChartUpdatesIfDue() {
+        if let storeURL = Self.chartStoreURL() {
+            hasInstalledCharts = PPChartStore(directoryURL: storeURL).currentSetURL != nil
+        }
+        let last = UserDefaults.standard.object(forKey: Self.chartCheckDateKey) as? Date
+        if let last, Date().timeIntervalSince(last) < Self.chartCheckInterval { return }
+        runChartUpdateCheck(userInitiated: false)
+    }
+
+    private func runChartUpdateCheck(userInitiated: Bool) {
+        guard hasInstalledCharts, !checkingChartUpdates,
+              let storeURL = Self.chartStoreURL() else { return }
+        checkingChartUpdates = true
+        let store = PPChartStore(directoryURL: storeURL)
+        Task { [weak self] in
+            let result: Result<PPChartUpdateCheck, Error>
+            do {
+                let catalog = try await ChartCatalog.fetch(allowsExpensive: userInitiated)
+                // The catalog is about 10 MB of XML; parse it off the main thread.
+                result = await Task.detached(priority: .utility) {
+                    Result { try store.checkForUpdates(catalogAt: catalog) }
+                }.value
+            } catch {
+                result = .failure(error)
+            }
+            self?.finishChartUpdateCheck(result, userInitiated: userInitiated)
+        }
+    }
+
+    private func finishChartUpdateCheck(_ result: Result<PPChartUpdateCheck, Error>,
+                                        userInitiated: Bool) {
+        checkingChartUpdates = false
+        switch result {
+        case .failure(let error):
+            if userInitiated { post(ChartUpdateText.failed(error.localizedDescription)) }
+        case .success(let check):
+            UserDefaults.standard.set(Date(), forKey: Self.chartCheckDateKey)
+            chartUpdateRegion = check.upToDate ? nil : check.regionID
+            // A launch check speaks only when there is something to install.
+            guard userInitiated || chartUpdateRegion != nil else { return }
+            post(ChartUpdateText.result(regionID: check.regionID,
+                                        editions: check.editionCells.count,
+                                        updated: check.updatedCells.count,
+                                        withdrawn: check.cancelledCells.count,
+                                        added: check.addedCells.count))
+        }
+    }
+
+    /// Starts downloading `region` from NOAA; the zip is imported when it arrives.
+    func downloadCharts(_ region: ChartRegion) {
+        guard importsCharts, chartDownload == nil, chartImportProgress == nil else { return }
+        chartDownload = (region, nil)
+        resumableChartRegions.remove(region.id)
+        ChartDownloader.shared.start(region)
+    }
+
+    /// Stops the running download and discards what it fetched.
+    func cancelChartDownload() {
+        ChartDownloader.shared.cancel()
+        chartDownload = nil
+    }
+
+    private func attachChartDownloader() {
+        let downloader = ChartDownloader.shared
+        resumableChartRegions = downloader.resumableRegionIDs()
+        downloader.onProgress = { [weak self] region, fraction in
+            guard let self, self.chartImportProgress == nil else { return }
+            // A late progress callback must not bring back a cancelled download.
+            if self.chartDownload == nil, !downloader.isDownloading { return }
+            self.chartDownload = (region, fraction)
+        }
+        downloader.onFinished = { [weak self] region, zip in
+            self?.chartDownloadFinished(region, zip: zip)
+        }
+        downloader.onFailed = { [weak self] region, reason, resumable in
+            guard let self else { return }
+            self.chartDownload = nil
+            if resumable { self.resumableChartRegions.insert(region.id) }
+            self.post(ChartDownloadText.failed(region, reason: reason, resumable: resumable))
+        }
+        Task { [weak self] in
+            if let (region, zip) = await downloader.attach() {
+                self?.chartDownloadFinished(region, zip: zip)
+            }
+        }
+    }
+
+    private func chartDownloadFinished(_ region: ChartRegion, zip: URL) {
+        chartDownload = nil
+        importCharts(from: zip, removingAfter: true)
+    }
+
+    /// Installs a chart zip and draws it. The unpack runs off the main
+    /// thread; the map swaps sets on the render queue. `removingAfter`
+    /// deletes the zip once the import ends, for a downloaded one.
+    func importCharts(from url: URL, removingAfter: Bool = false) {
+        guard importsCharts, chartImportProgress == nil,
+              let storeURL = Self.chartStoreURL() else {
+            if removingAfter { try? FileManager.default.removeItem(at: url) }
+            return
+        }
+        chartImportProgress = 0
+        let store = PPChartStore(directoryURL: storeURL)
+        store.catalogDirectoryURL = renderer?.chartCatalogURL
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                if removingAfter { try? FileManager.default.removeItem(at: url) }
+            }
+            var shownPercent = -1
+            let result = Result {
+                try store.importZip(at: url) { fraction in
+                    let percent = Int(fraction * 100)
+                    if percent != shownPercent {
+                        shownPercent = percent
+                        // Ignored once the import has finished: a late update
+                        // would otherwise leave the banner up.
+                        Task { @MainActor in
+                            guard let self, self.chartImportProgress != nil else { return }
+                            self.chartImportProgress = fraction
+                        }
+                    }
+                    return true
+                }
+            }
+            await self?.finishChartImport(result, store: store)
+        }
+    }
+
+    private func finishChartImport(_ result: Result<PPChartSet, Error>, store: PPChartStore) {
+        let set: PPChartSet
+        switch result {
+        case .failure(let error):
+            chartImportProgress = nil
+            post("Charts not imported: \(error.localizedDescription)")
+            return
+        case .success(let installed):
+            set = installed
+        }
+        dropUnderlay()
+        onRenderQueue({ renderer -> Result<PPGeoBounds, Error> in
+            Result {
+                let bounds = try renderer.openCharts(at: set.directoryURL)
+                store.removeStaleSets()
+                return bounds
+            }
+        }) { model, opened in
+            model.chartImportProgress = nil
+            switch opened {
+            case .failure(let error):
+                model.post("Charts installed but not opened: \(error.localizedDescription)")
+            case .success(let bounds):
+                model.adoptChartBounds(bounds)
+                model.hasInstalledCharts = true
+                model.chartUpdateRegion = nil
+                model.post(Self.chartsInstalledText(set))
+                model.setContentDirty()
+            }
+        }
+    }
+
+    /// Makes `bounds` the box the camera stays in. A view outside it moves to
+    /// the new charts' home view; one inside keeps its camera.
+    private func adoptChartBounds(_ bounds: PPGeoBounds) {
+        renderer?.homeBounds = bounds
+        guard let current = viewport else { return }
+        let next = current.withCenterBounds(bounds)
+        viewport = (current.hasSurface && !Self.contains(bounds, current.center))
+            ? next.atHomeView() : next
+    }
+
+    /// "Installed 687 chart cells with 200 updates applied." with withdrawn,
+    /// unreadable and out-of-date cells counted.
+    private static func chartsInstalledText(_ set: PPChartSet) -> String {
+        var text = "Installed \(set.cellCount) chart cells"
+        text += set.updatesApplied > 0 ? " with \(set.updatesApplied) updates applied." : "."
+        let withdrawn = set.cancelledCells.count
+        if withdrawn > 0 { text += " \(withdrawn) withdrawn by NOAA are left out." }
+        let bad = set.unreadableCells.count
+        if bad > 0 { text += " \(bad) could not be read and are left out." }
+        if set.updatesFailed > 0 {
+            text += " \(set.updatesFailed) updates could not be applied;"
+            text += " \(set.outdatedCells.count) cells are not fully up to date."
+        }
+        return text
+    }
+
+    /// "3 chart cells are not fully up to date.", or nil when none is behind.
+    private static func outdatedChartsText(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count == 1 ? "1 chart cell is not fully up to date."
+            : "\(count) chart cells are not fully up to date."
+    }
+
     /// Switches the base map between the pack's light and dark style sheets.
     /// Packs without `osm.style_dark` keep the light sheet.
     func setDarkMap(_ dark: Bool) {
@@ -1448,6 +1862,139 @@ final class MapModel: ObservableObject {
         onRenderQueue({ $0.setDarkStyle(dark) }) { model, _ in
             model.setContentDirty()
         }
+    }
+
+    /// The mariner's chart settings, persisted; applied only on chart packs.
+    @Published private(set) var chartSettings = ChartSettings.load(from: .standard)
+
+    /// Sets, persists and draws the chart settings.
+    func setChartSettings(_ settings: ChartSettings) {
+        guard settings != chartSettings else { return }
+        chartSettings = settings
+        settings.save(to: .standard)
+        dropUnderlay()
+        onRenderQueue({ $0.setChartSettings(settings) }) { model, _ in
+            model.setContentDirty()
+        }
+    }
+
+    /// The ENC features drawn under a tap, topmost first, reported on the
+    /// main actor; empty when the pack draws no charts or nothing is there.
+    func chartFeatures(under tap: CGPoint,
+                       then handle: @escaping ([PPChartFeatureInfo]) -> Void) {
+        guard let renderer, renderer.drawsCharts, let vp = viewport else {
+            handle([])
+            return
+        }
+        let flat = vp.flatPoint(forScreen: tap)
+        guard flat.x.isFinite, flat.y.isFinite else {
+            handle([])
+            return
+        }
+        onRenderQueue({ $0.chartFeatures(near: flat, in: vp) }) { _, features in
+            handle(features)
+        }
+    }
+
+    /// The route is drawn coloured by grade on packs with elevation.
+    @Published private(set) var routeSlopeColors =
+        UserDefaults.standard.bool(forKey: MapModel.routeSlopeColorsKey)
+    static let routeSlopeColorsKey = "routeSlopeColors"
+
+    /// Sets and persists the route's slope colouring, and redraws.
+    func setRouteSlopeColors(_ on: Bool) {
+        guard on != routeSlopeColors else { return }
+        routeSlopeColors = on
+        UserDefaults.standard.set(on, forKey: Self.routeSlopeColorsKey)
+        onRenderQueue({ $0.setRouteSlopeColors(on) }) { model, _ in
+            model.setContentDirty()
+        }
+    }
+
+    /// The rider's map-key slider positions: profile → setting id → stop
+    /// index. Only stops off the shipped default are kept. Saved in
+    /// UserDefaults under `routeAdjustmentsKey`.
+    @Published private(set) var routeAdjustments = MapModel.savedRouteAdjustments()
+    nonisolated static let routeAdjustmentsKey = "routeAdjustments"
+
+    /// The adjustments saved by an earlier launch, or none.
+    nonisolated static func savedRouteAdjustments() -> [String: [String: Int]] {
+        UserDefaults.standard.dictionary(forKey: routeAdjustmentsKey)
+            as? [String: [String: Int]] ?? [:]
+    }
+
+    /// How long the previous line stays drawn after a re-plan, seconds.
+    static let routeGhostSeconds = 4.0
+
+    /// The adjustments when the map key appeared; nil while it is not up.
+    private var adjustmentsAtKeyOpen: [String: [String: Int]]?
+    private var ghostTask: Task<Void, Never>?
+
+    /// The number of settings adjusted on `profile`.
+    func adjustedSettingCount(profile: String) -> Int {
+        routeAdjustments[profile]?.count ?? 0
+    }
+
+    /// Called when the map key appears.
+    func mapKeyOpened() {
+        if adjustmentsAtKeyOpen == nil { adjustmentsAtKeyOpen = routeAdjustments }
+    }
+
+    /// Called when the map key goes away. Re-plans a calculated route whose
+    /// profile's adjustments changed while it was up, and posts the result.
+    func mapKeyClosed() {
+        guard let before = adjustmentsAtKeyOpen else { return }
+        adjustmentsAtKeyOpen = nil
+        guard renderer != nil, let route, route.isCalculated else { return }
+        let profile = route.profile.isEmpty ? routeDefaultProfile : route.profile
+        guard before[profile] != routeAdjustments[profile] else { return }
+        isPlanning = true
+        onRenderQueue({ $0.replanForAdjustments() }) { model, replan in
+            model.isPlanning = false
+            model.route = replan.route
+            model.setContentDirty()
+            model.post(ReplanNotice.text(
+                previousMeters: replan.previousLengthMeters,
+                meters: replan.route.lengthMeters,
+                avoidedRoad: replan.avoidedRoad,
+                lineChanged: replan.lineChanged,
+                units: DisplayUnits.shared.units))
+            if replan.lineChanged { model.scheduleGhostClear() }
+        }
+    }
+
+    private func scheduleGhostClear() {
+        ghostTask?.cancel()
+        ghostTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.routeGhostSeconds))
+            guard !Task.isCancelled, let self else { return }
+            self.onRenderQueue({ $0.clearRouteGhost() }) { model, _ in
+                model.setContentDirty()
+            }
+        }
+    }
+
+    /// Moves `setting` on `profile` to `stop`. A nil stop, or the shipped
+    /// default stop, drops the adjustment. Applies to the next plan and the
+    /// next legend; a route on screen is re-planned when the key closes.
+    func setRouteAdjustment(profile: String, setting: String, stop: Int?, defaultStop: Int) {
+        var choices = routeAdjustments[profile] ?? [:]
+        if let stop, stop != defaultStop { choices[setting] = stop } else { choices[setting] = nil }
+        routeAdjustments[profile] = choices.isEmpty ? nil : choices
+        pushRouteAdjustments()
+    }
+
+    /// Drops every adjustment on `profile`.
+    func resetRouteAdjustments(profile: String) {
+        guard routeAdjustments[profile] != nil else { return }
+        routeAdjustments[profile] = nil
+        pushRouteAdjustments()
+    }
+
+    private func pushRouteAdjustments() {
+        let snapshot = routeAdjustments
+        UserDefaults.standard.set(snapshot, forKey: Self.routeAdjustmentsKey)
+        onRenderQueue({ $0.setRouteAdjustments(snapshot) }) { _, _ in }
     }
 
     // MARK: - Crosshair pick
@@ -2037,6 +2584,7 @@ final class MapModel: ObservableObject {
                     self.ownship = step.ownship
                     self.trip = step.trip
                     self.guidance = step.guidance
+                    self.courseDeviation = step.courseDeviation
                     self.deliver(step.guidanceEvents)
                     self.applyCamera(hasUpdate: step.hasCameraUpdate,
                                      center: step.cameraCenter,
@@ -2106,6 +2654,7 @@ final class MapModel: ObservableObject {
                     self.ownship = frame.ownship
                     self.trip = frame.trip
                     self.guidance = frame.guidance
+                    self.courseDeviation = frame.courseDeviation
                     // After the banner, so the sound and the words a rider
                     // looks up to read describe the same corner.
                     self.deliver(frame.guidanceEvents)
@@ -2163,7 +2712,7 @@ final class MapModel: ObservableObject {
 
     /// `Documents/current.fvrte`. Nil only if Foundation cannot name the
     /// directory, in which case the route is simply not persisted.
-    private static func routeDocumentURL() -> URL? {
+    static func routeDocumentURL() -> URL? {
         DocumentFolder.documents?.appendingPathComponent("current.fvrte")
     }
 
@@ -2214,6 +2763,8 @@ private final class Renderer: @unchecked Sendable {
     /// The pack names a dark style sheet. Fixed for the pack.
     let hasDarkStyle: Bool
     let routeProfileNames: [String]
+    /// The pack joins stops with rhumb lines. Fixed for the pack.
+    let routeLegsAreStraight: Bool
     /// The graph has beach arcs. Fixed for the pack.
     let beachAvailable: Bool
     /// The graph carries elevation. Fixed for the pack.
@@ -2224,8 +2775,9 @@ private final class Renderer: @unchecked Sendable {
     let ownshipSymbolRadius: Double
     /// The pack's `movingmap.course_up`.
     let initialCourseUp: Bool
-    /// The pack's extent; shared places outside it are saved but not shown.
-    let homeBounds: PPGeoBounds
+    /// The map's extent; shared places outside it are saved but not shown.
+    /// Main thread; replaced when an imported chart set opens.
+    var homeBounds: PPGeoBounds
     /// Base-cache guard band, from `display.base_cache_band_margin`.
     let bandMargin: Double
     /// `display.band_refresh_fraction`: how close to the band's edge a
@@ -2254,18 +2806,29 @@ private final class Renderer: @unchecked Sendable {
     /// The style has a legend, and the rule file's name for its header.
     let hasLegend: Bool
     let legendRulesName: String
+    /// The pack draws ENC charts. Fixed for the pack.
+    let drawsCharts: Bool
+    /// The pack's S-57 catalogue, for chart imports; nil without charts.
+    let chartCatalogURL: URL?
 
     init(map: PPMap) {
         self.map = map
+        drawsCharts = map.drawsCharts
+        chartCatalogURL = map.chartCatalogURL
         // The rule file lives in a read-only bundle, so its profiles are
         // constants too.
         styleName = map.styleName
         hasLabelFont = map.hasLabelFont
         hasDarkStyle = map.hasDarkStyle
         routeProfileNames = map.routeProfileNames
+        routeLegsAreStraight = map.routeLegsAreStraight
         beachAvailable = map.beachAvailable
         elevationAvailable = map.elevationAvailable
         if let depart = TideClock.override { map.routeDepartureOverride = depart }
+        map.routeSlopeColors = UserDefaults.standard.bool(forKey: MapModel.routeSlopeColorsKey)
+        map.routeAdjustments = MapModel.savedRouteAdjustments()
+            .mapValues { $0.mapValues { NSNumber(value: $0) } }
+        if drawsCharts { Self.apply(ChartSettings.load(from: .standard), to: map) }
         routeDefaultProfile = map.routeDefaultProfile
         pointHitTolerance = map.pointHitTolerance
         ownshipSymbolRadius = map.ownshipSymbolRadiusInPoints
@@ -2304,6 +2867,44 @@ private final class Renderer: @unchecked Sendable {
         map.darkStyle = dark
     }
 
+    /// Render queue only. See `PPMap`'s chart settings.
+    func setChartSettings(_ settings: ChartSettings) {
+        Self.apply(settings, to: map)
+    }
+
+    private static func apply(_ settings: ChartSettings, to map: PPMap) {
+        map.chartSafetyContour = settings.safetyContour
+        map.chartSafetyDepth = settings.safetyDepth
+        map.chartCategory = PPChartCategory(rawValue: settings.category.rawValue) ?? .all
+        map.chartPalette = PPChartPalette(rawValue: settings.palette.rawValue) ?? .automatic
+        map.chartDepthsInFeet = settings.depthUnit == .feet
+    }
+
+    /// Render queue only. See `PPMap.chartFeaturesNear:inViewport:tolerance:`.
+    func chartFeatures(near tap: CGPoint, in viewport: PPViewport) -> [PPChartFeatureInfo] {
+        map.chartFeatures(near: tap, in: viewport, tolerance: map.chartFeatureHitTolerance)
+    }
+
+    /// Render queue only. See `PPMap.routeSlopeColors`.
+    func setRouteSlopeColors(_ on: Bool) {
+        map.routeSlopeColors = on
+    }
+
+    /// Render queue only. See `PPMap.replanForAdjustments`.
+    func replanForAdjustments() -> PPRouteReplan {
+        map.replanForAdjustments()
+    }
+
+    /// Render queue only. See `PPMap.clearRouteGhost`.
+    func clearRouteGhost() {
+        map.clearRouteGhost()
+    }
+
+    /// Render queue only. See `PPMap.routeAdjustments`.
+    func setRouteAdjustments(_ adjustments: [String: [String: Int]]) {
+        map.routeAdjustments = adjustments.mapValues { $0.mapValues { NSNumber(value: $0) } }
+    }
+
     /// Render queue only. See `PPMap.legendForViewport:swatchSize:appName:`.
     func legend(at viewport: PPViewport, swatchSize: CGSize) -> [PPLegendGroup] {
         map.legend(for: viewport, swatchSize: swatchSize, appName: AppName.display)
@@ -2317,6 +2918,13 @@ private final class Renderer: @unchecked Sendable {
     /// Render queue only. Drops the cached base map.
     func invalidateBaseLayer() {
         map.invalidateBaseLayer()
+    }
+
+    /// Render queue only. See `PPMap.openChartsAtURL:error:`. Returns the
+    /// new set's extent, for `homeBounds` on the main thread.
+    func openCharts(at url: URL) throws -> PPGeoBounds {
+        try map.openCharts(at: url)
+        return map.homeBounds
     }
 
     /// Render queue only. See `PPMap.renderUnderlayForViewport:`.
@@ -2402,6 +3010,10 @@ private final class Renderer: @unchecked Sendable {
         Result { try map.loadSavedRoute() }
     }
 
+    func importRoute(from url: URL) -> Result<PPRoute, Error> {
+        Result { try map.importRoute(from: url) }
+    }
+
     func setRoute(waypoints: [PPWaypoint], profile: String) -> PPRoute {
         map.setRoute(waypoints: waypoints, profile: profile)
     }
@@ -2476,6 +3088,12 @@ private final class Renderer: @unchecked Sendable {
         map.point(near: tap, in: viewport, tolerance: map.pointHitTolerance)
     }
 
+    /// Names the base map feature under a press with the pack's tolerance.
+    func chartFeature(near press: CGPoint, in viewport: PPViewport) -> PPChartFeature? {
+        map.chartFeature(near: press, in: viewport,
+                         tolerance: map.chartFeatureHitTolerance)
+    }
+
     /// Render queue only.
     func startRecording(to url: URL, name: String) -> Result<Void, Error> {
         Result { try map.startRecording(to: url, name: name) }
@@ -2483,6 +3101,23 @@ private final class Renderer: @unchecked Sendable {
 
     func stopRecording() { map.stopRecording() }
     func recordedPointCount() -> Int { Int(map.recordedPointCount) }
+
+    func beginPointDrag(_ id: Int64, at screenPoint: CGPoint,
+                        in viewport: PPViewport) -> Bool {
+        map.beginPointDrag(id, at: screenPoint, in: viewport)
+    }
+
+    @discardableResult
+    func dragPoint(to screenPoint: CGPoint, in viewport: PPViewport) -> Bool {
+        map.dragPoint(to: screenPoint, in: viewport)
+    }
+
+    @discardableResult
+    func endPointDrag(at screenPoint: CGPoint, in viewport: PPViewport) -> Bool {
+        map.endPointDrag(at: screenPoint, in: viewport)
+    }
+
+    func cancelPointDrag() { map.cancelPointDrag() }
 
     func add(_ point: PPMapPoint) -> PPMapPoint { map.add(point) }
     func update(_ point: PPMapPoint) -> Bool { map.update(point) }
@@ -2522,7 +3157,7 @@ struct MapHints {
               !UserDefaults.standard.bool(forKey: Self.addedPointKey)
         else { return nil }
         addShownThisLaunch = true
-        return "Hold the Pins button to add a pin"
+        return "Hold the Pins button or long press on the map to add a pin"
     }
 
     /// The drag-a-stop hint, or nil when it is not due.

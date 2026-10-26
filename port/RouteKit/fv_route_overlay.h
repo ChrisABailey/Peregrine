@@ -120,7 +120,8 @@ class RouteOverlay : public Overlay,
                      public app::EditTarget,
                      public app::EditHint,
                      public app::SearchProvider,
-                     public app::Properties {
+                     public app::Properties,
+                     public app::ItemInfo {
  public:
   explicit RouteOverlay(std::string name = "Route");
   ~RouteOverlay() override;
@@ -136,6 +137,8 @@ class RouteOverlay : public Overlay,
   // The casing under the beach stretches: darker than the chart's pale sand
   // fill, so the stretch still stands out where it crosses the beach.
   static const FvColor kBeachCasingColor;
+  // The previous line after a re-plan: translucent grey, no casing.
+  static const FvColor kGhostColor;
   // The beach wind arrows, opaque: against the rider, with the rider, and
   // under the threshold.
   static const FvColor kHeadwindColor;
@@ -144,6 +147,36 @@ class RouteOverlay : public Overlay,
   /// Length of a beach wind arrow, tail to tip, in points at wind scale 1.
   static constexpr double kWindArrowLength = 14.0;
 
+  /// Slope colours. `SlopeColor` returns its `flat` argument on level ground; a climb is yellow up
+  /// to `kSlopeEasyPercent` and blends to red at `kSlopeSteepPercent`; a
+  /// descent blends from light to dark green at `kSlopeSteepDescentPercent`.
+  static const FvColor kClimbEasyColor;
+  static const FvColor kClimbSteepColor;
+  static const FvColor kDescentGentleColor;
+  static const FvColor kDescentSteepColor;
+  /// Grades within this many percent of level count as flat.
+  static constexpr double kSlopeFlatPercent = 1.5;
+  static constexpr double kSlopeEasyPercent = 3.0;
+  static constexpr double kSlopeSteepPercent = 8.0;
+  static constexpr double kSlopeSteepDescentPercent = 6.0;
+  /// The shortest distance a slope colour's grade is measured over, metres.
+  /// Shorter arcs take the grade of the window centred on them, so a 5 m arc
+  /// with a 0.3 m step in the elevation model is not drawn as a wall.
+  static constexpr double kSlopeWindowM = 50.0;
+  /// The slope halo each side of the line, in points: `kSlopeHaloPt` in the
+  /// slope colour, then `kSlopeFringePt` of it tinted halfway to the casing.
+  static constexpr double kSlopeHaloPt = 2.0;
+  static constexpr double kSlopeFringePt = 1.0;
+
+  /// The line colour for a grade in percent (positive is uphill), with
+  /// `flat` for level ground.
+  static FvColor SlopeColor(double grade_percent, FvColor flat);
+  /// The grade, percent, of each segment between consecutive points of
+  /// `profile`, measured over the segment or over `window_m` centred on it,
+  /// whichever is longer, and kept within the route. One entry per segment.
+  static std::vector<double> SegmentGrades(const std::vector<routing::ElevationPoint>& profile,
+                                           double window_m = kSlopeWindowM);
+
   app::Persistence* AsPersistence() override { return this; }
   app::HitTest* AsHitTest() override { return this; }
   app::SnapTo* AsSnapTo() override { return this; }
@@ -151,7 +184,12 @@ class RouteOverlay : public Overlay,
   app::SearchProvider* AsSearch() override { return this; }
   app::Properties* AsProperties() override { return this; }
   app::EditHint* AsEditHint() override { return this; }
+  app::ItemInfo* AsItemInfo() override { return this; }
   std::string EditHintAt(PixelPoint p) override;
+  /// The route's name, length and legs when `p` is on a waypoint or the line;
+  /// Edit Route… selects the waypoint hit, if any.
+  std::optional<app::ItemInfoSheet> InfoAt(const MapProjection& proj, PixelPoint p,
+                                           double tolerance_px) override;
 
   // --- the editor ----------------------------------------------------------
 
@@ -210,6 +248,20 @@ class RouteOverlay : public Overlay,
   /// The climb multiplier an "Avoid hills" plan uses (`[routing]
   /// avoid_hills_penalty`). A shell setting, not a document field.
   void SetAvoidHillsPenalty(double penalty) { avoid_hills_penalty_ = penalty; }
+
+  /// Draws a calculated route with a halo coloured by grade (`SlopeColor`)
+  /// in place of its casing when its plan has elevation; the line itself
+  /// keeps its colour and style, and flat ground keeps the casing. Not a
+  /// document field: the `slope_colors` property.
+  void SetSlopeColors(bool on) { slope_colors_ = on; }
+  bool slope_colors() const { return slope_colors_; }
+
+  /// A previous plan's legs, drawn in `kGhostColor` under the route so a
+  /// re-plan can be compared with the line it replaced. Not a document field;
+  /// `ClearRoads` (and so any waypoint edit) drops it.
+  void SetGhost(std::vector<std::vector<GeoPoint>> legs) { ghost_ = std::move(legs); }
+  void ClearGhost() { ghost_.clear(); }
+  const std::vector<std::vector<GeoPoint>>& ghost() const { return ghost_; }
   double avoid_hills_penalty() const { return avoid_hills_penalty_; }
 
   /// True when the planner's graph carries elevation, or is not loaded yet
@@ -332,7 +384,7 @@ class RouteOverlay : public Overlay,
   // --- Properties ----------------------------------------------------------
 
   /// The drawing options, the `[route]` settings section: a calculated route's
-  /// line colour, width and style, its casing and beach casing, and whether
+  /// line colour, width and style, its casing and beach casing, slope colours, and whether
   /// waypoint names and the status line are drawn. Not document fields: they
   /// neither save nor dirty.
   const std::vector<app::PropertySpec>& Describe() const override;
@@ -440,6 +492,8 @@ class RouteOverlay : public Overlay,
   FvColor casing_color_ = kCasingColor;
   int casing_width_ = 4;      // extra pixels beyond the line; 0 draws none
   FvColor beach_casing_color_ = kBeachCasingColor;
+  bool slope_colors_ = false;
+  std::vector<std::vector<GeoPoint>> ghost_;
   bool draw_markers_ = true;
   double dpi_scale_ = 1.0;
   double wind_scale_ = 1.0;
@@ -451,6 +505,8 @@ class RouteOverlay : public Overlay,
   std::vector<BeachWindMark> wind_marks_;
   double wind_warn_mps_ = 0.0;
   std::vector<DrawnChevron> drawn_wind_;
+  /// The casing pass of a slope-coloured route: halo and fringe by grade.
+  Status DrawSlopeHalo(GeoDraw& draw);
   /// The wind arrows along each marked stretch of `line`, the plan's legs joined.
   Status DrawBeachWind(const MapProjection& proj, ICanvas& canvas,
                        const std::vector<GeoPoint>& line);

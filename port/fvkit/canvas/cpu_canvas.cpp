@@ -324,13 +324,21 @@ Status CpuCanvas::DrawEllipse(const PixelRect& bbox, const Brush* fill,
   double cx = bbox.x + (bbox.width - 1) / 2.0;
   double cy = bbox.y + (bbox.height - 1) / 2.0;
   double rx = (bbox.width - 1) / 2.0, ry = (bbox.height - 1) / 2.0;
+  struct UnitCircle {
+    double cos[kSegs], sin[kSegs];
+    UnitCircle() {
+      for (int i = 0; i < kSegs; ++i) {
+        double t = 2.0 * M_PI * i / kSegs;
+        cos[i] = std::cos(t);
+        sin[i] = std::sin(t);
+      }
+    }
+  };
+  static const UnitCircle unit;
   std::vector<PixelPoint> ring;
   ring.reserve(kSegs);
-  for (int i = 0; i < kSegs; ++i) {
-    double t = 2.0 * M_PI * i / kSegs;
-    ring.push_back({(int)std::lround(cx + rx * std::cos(t)),
-                    (int)std::lround(cy + ry * std::sin(t))});
-  }
+  for (int i = 0; i < kSegs; ++i)
+    ring.push_back({(int)std::lround(cx + rx * unit.cos[i]), (int)std::lround(cy + ry * unit.sin[i])});
   return DrawPolyPolygon({ring}, fill, outline);
 }
 

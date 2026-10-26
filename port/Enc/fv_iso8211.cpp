@@ -373,8 +373,9 @@ Status Reader::DecodeField(const FieldDefinition& def, const uint8_t* p,
                            size_t n, Field* out) const {
   out->def_ = &def;
   out->rows_.clear();
-  // A field's data ends with FT; drop it so subfield scanning sees only data.
-  while (n > 0 && p[n - 1] == kFieldTerminator) --n;
+  // Drop the one FT that ends the field. Binary data before it may itself end
+  // in 0x1e (record id 7680 is 00 1e), so only the last byte is removed.
+  if (n > 0 && p[n - 1] == kFieldTerminator) --n;
 
   size_t at = 0;
   do {

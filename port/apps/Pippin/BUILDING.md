@@ -111,8 +111,10 @@ The product is one archive — `build-ios[-sim]/port/apps/Pippin/libpippin_core.
 beside it with the arguments that are not in the archive.
 
 **Only needed when the C++ changed**, and needed *whenever* it changed: the script phase
-compares the archive against every `.cpp` and `.h` under `port/`, so a stale core is an error
-and not a mystery. A mac `cmake --build build` does **not** touch these.
+asks ninja (`ninja -n pippin_core`) whether the archive is up to date, so a stale core is an
+error and not a mystery, while Mac-only modules such as DeskKit and test sources do not trip it.
+Without ninja it falls back to comparing the archive against the `.cpp` and `.h` files under
+`port/`, skipping `port/apps` and `test/` directories. A mac `cmake --build build` does **not** touch these.
 
 Optional, and still the fastest way to test the core on the phone's SDK without the app:
 
@@ -162,11 +164,51 @@ python3 port/apps/Pippin/stage_data.py --regen-points
 
 Keep a copy of the hand-edited `.fvpoints` somewhere outside `Data/`. Nothing else does.
 
+### Fresh OSM data: `build_region.py`
+
+The map tiles and road graph for a region are built from a Geofabrik extract (the US South
+`.osm.pbf`) by one script, before staging. It does not stage; run `stage_data.py` afterwards.
+
+```sh
+python3 port/tools/build_region.py kiawah us-south-261021.osm.pbf
+```
+
+```sh
+python3 port/tools/build_region.py atlanta us-south-261021.osm.pbf
+```
+
+It runs three steps and writes `<region>.osm.pbf`, `<region>.fvroad` and `<region>.mbtiles`
+into `testdata/OSM/`, copying any existing one to `.bak` first:
+
+1. **extract** — `osmium extract` of the region's box. Kiawah uses `--strategy=complete_ways`,
+   so roads crossing the box edge are kept whole.
+2. **graph** — builds `fvgraph`, then `fvgraph build` (Kiawah with `--beach`, Atlanta with
+   `--dem testdata/lidar`), then `fvgraph info`. It stops if the graph has no barred or private
+   arcs, which means access tags were dropped. Kiawah being gated, many components with the
+   largest around three-quarters of the nodes is normal.
+3. **tiles** — `./tilemaker` from `~/Documents/Source/tilemaker` with the profile tracked in
+   `port/Osm/`. Kiawah tiles from the full extract with `--store /tmp/tilemaker-store` (an SSD
+   with tens of GB free, or a 4 GB pbf exhausts RAM); Atlanta tiles from its own cut.
+
+A bare file name is looked for in the current directory, `~/Downloads` and `testdata/OSM/`.
+Options:
+
+| Option | Effect |
+|---|---|
+| `--only extract\|graph\|tiles` | run just that step; repeat for several |
+| `-o DIR` | write somewhere other than `testdata/OSM/` (`stage_data.py` reads only that) |
+| `--store DIR` | tilemaker's on-disk store (default `/tmp/tilemaker-store`) |
+| `-n` | print the commands without running them |
+
+`landcover/` has only `ne_10m_urban_areas`, so the `ice_shelf` and `glacier` layers silently
+produce nothing. Neither matters in either region.
+
 ### Another region: Atlanta
 
 The pack is one region at a time, and `--region` picks it (default `kiawah`). Atlanta is a
 20-mile square, `-84.61,33.67,-84.25,33.97` (west,south,east,north), and its three sources are
 built once into `testdata/OSM/` before staging. About 30 seconds in all.
+`build_region.py atlanta` (above) runs the three commands below; they are kept here for reference.
 
 The cut, from the Geofabrik US South extract (swap in a fresher `georgia-latest.osm.pbf` for newer
 streets):
@@ -257,7 +299,7 @@ Open `port/apps/Pippin/Pippin.xcodeproj`, pick an iPhone simulator, press Run.
 ### The simulator, from the terminal
 
 ```sh
-xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath build-xcode-sim build
+xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Pippin -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 18 Pro Max' -derivedDataPath build-xcode-sim build
 ```
 
 ```sh
@@ -682,7 +724,7 @@ navigator → Energy Impact gauge.
 | What it says | What it is |
 |---|---|
 | `error: build-ios/…/libpippin_core.a is missing` | Step 1, with the preset the message names |
-| `error: … is older than the core it is built from` | Step 1 again; the message names the newer file |
+| `error: … is older than the core it is built from` | Step 1 again (`cmake --build build-ios-sim -j`, or `build-ios` for a device) |
 | `error: the offline data pack is not staged` | Step 2 |
 | `pippin: INCOMPLETE — …` | a source in `testdata/` is missing; the listing above it says which row |
 | `DANGLING sprite …` | the style's `sprite` pair is not both staged; Step 2 explains the pair |

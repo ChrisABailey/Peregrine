@@ -163,6 +163,12 @@ NS_SWIFT_SENDABLE
 /// one pinch brings it back.
 - (PPViewport *)viewportAtHomeView NS_SWIFT_NAME(atHomeView());
 
+/// The same camera with `bounds` as the box the centre may not leave. The
+/// zoom-out limit follows the new box, and the centre and scale are clamped
+/// into the new limits.
+- (PPViewport *)viewportWithCenterBounds:(PPGeoBounds)bounds
+    NS_SWIFT_NAME(withCenterBounds(_:));
+
 /// The content follows the finger: a drag of +dx moves the map +dx, so the
 /// centre moves the other way. Expressed as which position is under the
 /// centre pixel now, so rotation needs no special case.

@@ -62,6 +62,7 @@ struct HostTick {
   bool profile_requested = false;  ///< show the route profile; see TakeRouteProfileRequest
   bool profile_changed = false;    ///< the route profile was re-sampled; lay it out again
   bool layers_requested = false;   ///< show the layers panel; see TakeLayersRequest
+  bool layers_hide_requested = false;  ///< hide the layers panel; see TakeLayersHideRequest
   bool layers_changed = false;     ///< the layer rows changed; reload the panel
   bool find_requested = false;     ///< show the Find dialog; see TakeFindRequest
   bool form_requested = false;     ///< show the feature form; see TakeFeatureFormRequest
@@ -70,6 +71,7 @@ struct HostTick {
   bool fields_requested = false;   ///< show Layer Fields; see TakeLayerFieldsRequest
   bool new_layer_requested = false;  ///< show New Layer; see TakeNewLayerRequest
   bool properties_requested = false;  ///< show Properties; see TakeLayerPropertiesRequest
+  bool info_requested = false;  ///< show Get Info; see TakeItemInfoRequest
   bool select_requested = false;  ///< show Select by Attributes; see TakeSelectByAttributesRequest
   bool add_rule_requested = false;     ///< ask for a new rule; see TakeAddRuleRequest
   bool rule_rename_requested = false;  ///< edit the current rule's name; see TakeRuleRenameRequest
@@ -329,6 +331,10 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
 
   /// True once after the core asked to show the layers panel (Overlay ▸ Layers…).
   bool TakeLayersRequest();
+  /// True once after the core asked to hide the layers panel (the toolbar toggle).
+  bool TakeLayersHideRequest();
+  /// The shell reports whether the layers panel is showing (`Desk::SetLayersShown`).
+  void SetLayersShown(bool shown);
   /// Rows top of the stack first, as of the last `Tick` or layer change
   /// (`Desk::layers()`). Out-of-range rows read as empty.
   int LayerCount() const;
@@ -909,6 +915,30 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// A press that pans the map whatever overlay is being edited (the space
   /// bar held); the drag and release follow it.
   void PanPointerDown(double x, double y);
+
+  // MARK: Map context menu
+
+  /// Builds the map's right-click menu at `x, y` (`Desk::MapContextMenu`) and
+  /// keeps it until the next call; the number of entries, 0 for no menu.
+  /// Flattened in preorder like `MenuEntryAt`: a submenu's entries follow it
+  /// at `depth + 1`. Entries have no command id; run them by index.
+  int OpenMapMenu(double x, double y);
+  HostMenuEntry MapMenuEntryAt(int index) const;
+  bool MapMenuEntryEnabled(int index) const;
+  bool MapMenuEntryChecked(int index) const;
+  /// Runs entry `index` of the kept menu and forgets the menu.
+  void RunMapMenuEntry(int index);
+
+  // MARK: Get Info
+
+  /// True once after a map menu's Get Info… asked to show the sheet.
+  bool TakeItemInfoRequest();
+  std::string ItemInfoTitle() const;
+  /// Rows in order; a row whose section differs from the one before starts a new section.
+  int ItemInfoCount() const;
+  std::string ItemInfoSection(int i) const;
+  std::string ItemInfoKey(int i) const;
+  std::string ItemInfoValue(int i) const;
   void PointerDrag(double x, double y);
   void PointerUp(double x, double y);
   /// A key press for the overlay being edited. `key` is an fv::Key value

@@ -73,6 +73,22 @@ expect(DistanceUnits.withoutMetricClimb(" (turned round at 1 stop(s) with no oth
 expect(String(format: "%.3f", mi.longUnits(1609.344)), "1.000", "chart axis in miles")
 expect(String(format: "%.1f", km.longUnits(2500)), "2.5", "chart axis in km")
 
+// Nautical miles: feet close in, one decimal of a nautical mile beyond
+// a tenth of one, knots with a decimal, heights in feet.
+let nm = DistanceUnits.nauticalMiles
+expect(nm.distance(150), "492 ft", "short distances in feet")
+expect(nm.distance(185.2), "0.1 nm", "a tenth of a nautical mile")
+expect(nm.distance(1852), "1.0 nm", "a nautical mile exactly")
+expect(nm.distance(9260), "5.0 nm", "five nautical miles")
+expect(nm.speed(2.572), "5.0 kn", "5 knots is 2.572 m/s")
+expect(nm.speed(0.5), "1.0 kn", "slow speeds keep a decimal")
+expect(nm.height(1.524), "5 ft", "tide heights in feet")
+expect(nm.countdown(183), "200 yd", "countdown in yards close in")
+expect(nm.countdown(1830), "2000 yd", "still yards just under a nautical mile")
+expect(nm.countdown(1852), "1.0 nm", "a nautical mile exactly")
+expect(String(format: "%.3f", nm.longUnits(1852)), "1.000", "chart axis in nm")
+expect(String(format: "%.1f", nm.heightUnits(3.048)), "10.0", "height axis in feet")
+
 if failures > 0 {
     FileHandle.standardError.write("\(failures) failure(s)\n".data(using: .utf8)!)
     exit(1)

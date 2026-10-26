@@ -1074,6 +1074,39 @@ void PointOverlay::AppendMenuItems(const MapProjection& proj, PixelPoint p,
   }
 }
 
+std::optional<app::ItemInfoSheet> PointOverlay::InfoAt(const MapProjection& proj, PixelPoint p,
+                                                       double tolerance_px) {
+  std::vector<app::HitItem> hits;
+  HitTestPoint(proj, p, tolerance_px, hits);
+  if (hits.empty()) return std::nullopt;
+  const auto nearest = std::min_element(hits.begin(), hits.end(),
+      [](const app::HitItem& a, const app::HitItem& b) { return a.distance_px < b.distance_px; });
+  const int64_t id = (int64_t)nearest->feature;
+  const auto it = std::find_if(points_.begin(), points_.end(),
+                               [id](const MapPoint& mp) { return mp.id == id; });
+  if (it == points_.end()) return std::nullopt;
+  const MapPoint& mp = *it;
+
+  app::ItemInfoSheet sheet;
+  sheet.title = mp.name.empty() ? (mp.category.empty() ? "Point" : mp.category) : mp.name;
+  auto row = [&sheet](const char* section, const char* key, const std::string& value) {
+    if (!value.empty()) sheet.rows.push_back({section, key, value});
+  };
+  char elev[32];
+  std::snprintf(elev, sizeof(elev), "%.0f ft", mp.elevation_ft);
+  row("Point", "Name", mp.name);
+  row("Point", "Category", mp.category);
+  row("Point", "Position", app::FormatInfoPosition(mp.position));
+  row("Point", "Elevation", elev);
+  row("Point", "Remarks", mp.remarks);
+  row("Point", "Phone", mp.phone);
+  row("Point", "URL", mp.url);
+  row("Point", "Layer", Name());
+  sheet.edit_label = "Edit Point\xE2\x80\xA6";
+  sheet.select = [this, id] { SetSelected(id); };
+  return sheet;
+}
+
 // ---------------------------------------------------------------------------
 // The sample document
 // ---------------------------------------------------------------------------

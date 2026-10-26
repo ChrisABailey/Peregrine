@@ -7,7 +7,7 @@ import AppKit
 import CxxStdlib
 import PeregrineCore
 
-/// The layer manager panel, in two views. Sources: each data source with its
+/// The layer manager, docked at the right of the map window, in two views. Sources: each data source with its
 /// layers under it, a tri-state check box per source that shows or hides all
 /// its layers, and Move Up/Down and dragging that move a source, or a layer
 /// within its source. Layers: the overlay stack top first, ungrouped, each row
@@ -17,13 +17,11 @@ import PeregrineCore
 /// layer. Selecting a row makes it current; a right click shows DeskKit's
 /// source, layer or rule menu. Rows come from `DeskHost`'s layer snapshot.
 @MainActor
-final class LayersWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource,
+final class LayersPanelController: NSViewController, NSTableViewDataSource,
     NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     let host: fv.desk.DeskHost
     /// Runs a command chosen from a row's menu.
     let execute: (String) -> Void
-    /// Called once the window has closed.
-    var onClose: (() -> Void)?
 
     /// A source in the Sources view; `key` names it across reloads.
     private final class SourceNode {
@@ -73,24 +71,25 @@ final class LayersWindowController: NSWindowController, NSWindowDelegate, NSTabl
     init(host: fv.desk.DeskHost, execute: @escaping (String) -> Void) {
         self.host = host
         self.execute = execute
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 360),
-                            styleMask: [.titled, .closable, .resizable, .utilityWindow],
-                            backing: .buffered, defer: true)
-        panel.title = "Layers"
-        panel.minSize = NSSize(width: 280, height: 200)
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = true
-        super.init(window: panel)
-        panel.delegate = self
-        buildLayout(in: panel)
+        super.init(nibName: nil, bundle: nil)
+        view = buildLayout()
         reload()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// Re-reads both views; the current overlay's row is selected.
+    /// Re-reads both views; the current overlay's row is selected and each view keeps its scroll position.
     func reload() {
+        // Rebuilt nodes reload collapsed, which clamps the outline to the top before it re-expands.
+        let clips = [table, outline].compactMap { $0.enclosingScrollView?.contentView }
+        let origins = clips.map { $0.bounds.origin }
+        defer {
+            for (clip, origin) in zip(clips, origins) {
+                clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+                clip.enclosingScrollView?.reflectScrolledClipView(clip)
+            }
+        }
         reloading = true
         table.reloadData()
         let count = Int(host.LayerCount())
@@ -154,7 +153,7 @@ final class LayersWindowController: NSWindowController, NSWindowDelegate, NSTabl
 
     // MARK: Layout
 
-    private func buildLayout(in window: NSWindow) {
+    private func buildLayout() -> NSView {
         viewSwitch.selectedSegment = 0
         viewSwitch.target = self
         viewSwitch.action = #selector(switchView)
@@ -213,10 +212,10 @@ final class LayersWindowController: NSWindowController, NSWindowDelegate, NSTabl
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 400))
         content.addSubview(stack)
-        window.contentView = content
         NSLayoutConstraint.activate([
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.topAnchor.constraint(equalTo: content.topAnchor),
@@ -225,6 +224,7 @@ final class LayersWindowController: NSWindowController, NSWindowDelegate, NSTabl
             buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24),
         ])
         pages.setContentHuggingPriority(.defaultLow, for: .vertical)
+        return content
     }
 
     private func rowMenu() -> NSMenu {
@@ -712,6 +712,4 @@ final class LayersWindowController: NSWindowController, NSWindowDelegate, NSTabl
         if let layer = entry.layer { return move(layer: node.layers[layer], to: to) }
         return move(source: node, to: to)
     }
-
-    func windowWillClose(_ notification: Notification) { onClose?() }
 }

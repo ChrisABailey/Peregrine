@@ -83,13 +83,15 @@ struct TideCard: View {
                         Label(sun, systemImage: "sunrise")
                             .monospacedDigit()
                     }
-                    Text(beachLine(now: now, below: tide.rideableBelowMeters, activity: .ride,
-                                   zone: zone, locale: locale))
-                        .monospacedDigit()
-                    if tide.walkEasyBelowMeters.isFinite {
-                        Text(beachLine(now: now, below: tide.walkEasyBelowMeters, activity: .walk,
+                    if AppFlavor.current.showsBeach {
+                        Text(beachLine(now: now, below: tide.rideableBelowMeters, activity: .ride,
                                        zone: zone, locale: locale))
                             .monospacedDigit()
+                        if tide.walkEasyBelowMeters.isFinite {
+                            Text(beachLine(now: now, below: tide.walkEasyBelowMeters,
+                                           activity: .walk, zone: zone, locale: locale))
+                                .monospacedDigit()
+                        }
                     }
                 }
             }
@@ -114,9 +116,10 @@ struct TideCard: View {
     private func chart(now: TimeInterval, units: DistanceUnits) -> some View {
         let samples = curve(now: now)
         // An infinite limit (passable at any tide) has no line or band to draw.
-        let threshold = tide.rideableBelowMeters.isFinite
+        let beach = AppFlavor.current.showsBeach
+        let threshold = beach && tide.rideableBelowMeters.isFinite
             ? TideText.chartValue(tide.rideableBelowMeters, units: units) : nil
-        let walk = tide.walkEasyBelowMeters.isFinite
+        let walk = beach && tide.walkEasyBelowMeters.isFinite
             ? TideText.chartValue(tide.walkEasyBelowMeters, units: units) : nil
         let values = samples.map { TideText.chartValue($0.meters, units: units) }
         let limits = [threshold, walk].compactMap { $0 }

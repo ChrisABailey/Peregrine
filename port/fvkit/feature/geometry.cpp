@@ -233,6 +233,18 @@ const char* GeometryTypeName(GeometryType type) {
   return i >= 0 && i <= 7 ? kTypeNames[i] : "GEOMETRY";
 }
 
+const char* GeometryTypeTitle(GeometryType type) {
+  switch (type) {
+    case GeometryType::kPoint: return "Point";
+    case GeometryType::kLineString: return "Line";
+    case GeometryType::kPolygon: return "Area";
+    case GeometryType::kMultiPoint: return "Multipoint";
+    case GeometryType::kMultiLineString: return "Multiline";
+    case GeometryType::kMultiPolygon: return "Multi-area";
+    default: return "Any geometry";
+  }
+}
+
 bool GeometryTypeFromName(const char* name, GeometryType* out) {
   if (name == nullptr) return false;
   std::string upper(name);

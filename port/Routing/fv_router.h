@@ -213,6 +213,7 @@ struct RouteLeg {
 struct ElevationPoint {
   double along_m = 0.0;  ///< Distance from the route's start.
   double elev_m = 0.0;   ///< Ground elevation, metres.
+  uint32_t geometry_index = 0;  ///< The same point's index in `Route::geometry`.
 };
 
 struct Route {

@@ -255,9 +255,11 @@ Status LayerStyleModel::Classify() {
   const auto o = overlay_.lock();
   if (!o || !o->layer()) return Status::Error(kNotFound, "the overlay has closed");
   const int index = o->layer()->Schema().Find(draft_.field);
+  // Classes come from the features the definition query shows.
+  const auto shown = [&o](const Feature& f) { return o->Shows(f); };
   if (draft_.renderer == FeatureRenderer::kCategorised)
-    return ClassifyCategories(*o->layer(), index, draft_.symbol, &draft_.categories);
-  return ClassifyGraduated(*o->layer(), index, draft_.symbol, graduated_, &draft_.classes);
+    return ClassifyCategories(*o->layer(), index, draft_.symbol, &draft_.categories, shown);
+  return ClassifyGraduated(*o->layer(), index, draft_.symbol, graduated_, &draft_.classes, shown);
 }
 
 size_t LayerStyleModel::EntryCount() const {

@@ -43,6 +43,7 @@ class RoutingOverrides;
 class EditTarget;
 class SearchProvider;
 class Properties;
+class ItemInfo;
 }  // namespace app
 
 struct MouseEvent {
@@ -185,6 +186,8 @@ class Overlay {
   // settable properties, and every shell builds its property page from that
   // declaration instead of porting an MFC CPropertyPage per overlay.
   virtual app::Properties* AsProperties() { return nullptr; }
+  /// What Get Info shows about the item under a point (fvkit/app/capabilities.h).
+  virtual app::ItemInfo* AsItemInfo() { return nullptr; }
 
   // Draw in surface space for the given projection. Default: nothing.
   virtual Status OnDraw(const MapProjection& proj, ICanvas& canvas) {

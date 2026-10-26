@@ -5,6 +5,7 @@
 
 #include "PPRouteStore.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <utility>
@@ -42,6 +43,16 @@ RouteStore::RouteStore(std::string graph_path, std::string rules_path,
 
 void RouteStore::PlanNow() {
   const Clock::time_point t0 = Clock::now();
+  if (straight_legs_) {
+    overlay_->ClearRoads();
+    std::vector<fv::GeoPoint> stops;
+    stops.reserve(overlay_->waypoints().size());
+    for (const fv::RouteWaypoint& w : overlay_->waypoints()) stops.push_back(w.position);
+    straight_path_.SetPoints(std::move(stops));
+    last_plan_ms_ =
+        std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    return;
+  }
   // The document's own profile and beach setting are the defaults, so only
   // the tide is passed: a route saved as a cycle route replans as one.
   depart_s_ = now_ ? now_()
@@ -55,6 +66,7 @@ void RouteStore::PlanNow() {
   options.tide.limits = tide_limits_;
   options.tide.foot_limits = tide_foot_limits_;
   options.avoid_hills_penalty = avoid_hills_penalty_;
+  options.overrides = OverridesFor(overlay_->profile());
   overlay_->FollowRoads(options);
   last_plan_ms_ =
       std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -110,6 +122,19 @@ fv::Status RouteStore::LoadAtLaunch() {
   return fv::Status::Ok();
 }
 
+fv::Status RouteStore::Import(const std::string& path) {
+  // Read into a document of its own first, so a bad file is refused before
+  // the overlay or the saved route is touched.
+  fv::RouteDoc doc;
+  const fv::Status s = doc.Read(path);
+  if (!s.ok()) return s;
+  if (doc.waypoints().empty()) {
+    return fv::Status::Error(fv::kInvalidArg, path + ": the route has no stops");
+  }
+  SetWaypoints(doc.waypoints(), doc.profile(), doc.beach(), doc.avoid_hills());
+  return fv::Status::Ok();
+}
+
 RouteSnapshot RouteStore::SetWaypoints(std::vector<fv::RouteWaypoint> waypoints,
                                        const std::string& profile,
                                        std::optional<fv::RouteBeach> beach,
@@ -137,7 +162,15 @@ void RouteStore::SetTide(std::shared_ptr<const fv::nav::TideTable> table,
   tide_foot_limits_ = foot;
 }
 
+void RouteStore::SetStraightLegs(bool on) {
+  straight_legs_ = on;
+  straight_path_ = fv::analysis::GeoPath({}, fv::analysis::LineType::kRhumb);
+  overlay_->SetLegKind(on ? fv::LineKind::kRhumb : fv::LineKind::kGreatCircle);
+  PlanNow();
+}
+
 bool RouteStore::BeachAvailable() const {
+  if (straight_legs_) return false;
   if (!planner_->EnsureGraph().ok()) return false;
   const std::shared_ptr<const fv::routing::RoadGraph> graph = planner_->graph();
   if (graph == nullptr) return false;
@@ -148,9 +181,21 @@ bool RouteStore::BeachAvailable() const {
 }
 
 bool RouteStore::ElevationAvailable() const {
+  if (straight_legs_) return false;
   if (!planner_->EnsureGraph().ok()) return false;
   const std::shared_ptr<const fv::routing::RoadGraph> graph = planner_->graph();
   return graph != nullptr && graph->has_elevation();
+}
+
+fv::routing::ProfileOverrides RouteStore::OverridesFor(const std::string& profile) const {
+  fv::routing::ProfileOverrides out;
+  const auto it = adjustments_.find(profile);
+  if (profile.empty() || it == adjustments_.end()) return out;
+  const std::shared_ptr<const fv::routing::RouteRules> rules = this->rules();
+  const fv::routing::RouteProfile* shipped = rules ? rules->Find(profile) : nullptr;
+  // A rejected map leaves `out` empty: the shipped profile, not a partial one.
+  if (shipped != nullptr) fv::routing::OverridesFromStops(*shipped, it->second, &out);
+  return out;
 }
 
 RouteSnapshot RouteStore::Replan() {
@@ -158,8 +203,31 @@ RouteSnapshot RouteStore::Replan() {
   return Snapshot();
 }
 
+RouteSnapshot RouteStore::ReplanShowingPrevious(ReplanChange* change) {
+  *change = ReplanChange{};
+  if (straight_legs_ || !overlay_->has_plan()) return Snapshot();
+  const fv::RoutePlan before = overlay_->plan();
+  PlanNow();
+  const fv::RoutePlan& after = overlay_->plan();
+  change->before_m = before.length_m;
+  change->after_m = after.length_m;
+  change->road_dropped = fv::RoadDropped(before, after);
+  const auto same = [](const fv::GeoPoint& a, const fv::GeoPoint& b) {
+    return a.lat == b.lat && a.lon == b.lon;
+  };
+  change->line_changed =
+      before.legs.size() != after.legs.size() ||
+      !std::equal(before.legs.begin(), before.legs.end(), after.legs.begin(),
+                  [&](const std::vector<fv::GeoPoint>& a, const std::vector<fv::GeoPoint>& b) {
+                    return std::equal(a.begin(), a.end(), b.begin(), b.end(), same);
+                  });
+  if (change->line_changed) overlay_->SetGhost(before.legs);
+  return Snapshot();
+}
+
 RouteSnapshot RouteStore::Clear() {
   overlay_->FileNew();
+  straight_path_.SetPoints({});
   Persist();  // with no waypoints left, this is the remove
   last_plan_ms_ = 0.0;
   return Snapshot();
@@ -182,6 +250,18 @@ RouteSnapshot RouteStore::Snapshot() const {
   out.seconds = plan.seconds;
   out.status = plan.status;
   out.depart_s = depart_s_;
+  if (straight_legs_) {
+    out.straight = true;
+    // The planner's "no road graph" sentence does not describe this route.
+    out.status.clear();
+    out.length_m = straight_path_.TotalLength();
+    out.legs.reserve(straight_path_.LegCount());
+    for (size_t i = 0; i < straight_path_.LegCount(); ++i) {
+      const fv::analysis::PathLeg& leg = straight_path_.Leg(i);
+      out.legs.push_back(RouteLeg{leg.bearing_deg, leg.range_m, leg.ok});
+    }
+    return out;
+  }
   if (out.calculated) {
     out.beach_stretches = plan.beach;
     out.beach_verdicts = plan.beach_verdicts;
@@ -208,6 +288,12 @@ const std::vector<fv::nav::Maneuver>& RouteStore::RouteManeuvers() const {
 }
 
 std::vector<fv::GeoPoint> RouteStore::RoutePath() const {
+  if (straight_legs_) {
+    // Densified so a consumer measuring along great-circle segments stays on
+    // the rhumb line to within metres.
+    return straight_path_.PointCount() >= 2 ? straight_path_.Densify(250.0, 4000)
+                                            : std::vector<fv::GeoPoint>();
+  }
   std::vector<fv::GeoPoint> out;
   if (!overlay_->has_plan()) return out;
 
@@ -309,6 +395,7 @@ PlaceDescription RouteStore::DescribePoint(const fv::GeoPoint& p, double max_m,
   // which is what the point editor asks with.
   fv::RoutePlanOptions request;
   request.profile = profile.empty() ? overlay_->profile() : profile;
+  request.overrides = OverridesFor(request.profile);
   fv::routing::RouteOptions options;
   if (!planner_->BuildOptions(request, &options).ok()) {
     // A profile the rule file does not define. The router reports this on the

@@ -12,11 +12,10 @@
 // — the FvKit `IVectorSource` adapter and S-52 styling are later phases (E3+),
 // and this header is what they will sit on.
 //
-// BASE EDITION ONLY. `.001`, `.002`, … update files are NOT applied (phase E5).
-// A cell with unapplied updates on disk is STALE, which is the worst failure
-// mode a chart has, so `Open` reports them in `unapplied_updates()`, exposes
-// `StalenessWarning()`, and logs that warning (fvkit/log.h). Callers that must
-// not show stale charts should refuse to draw when it is non-empty.
+// Update files (`.001`, `.002`, …) beside a base cell are applied in order at
+// open (fv_s57_records.h). One that cannot be applied leaves the cell at the
+// last good update; `unapplied_updates()` and `StalenessWarning()` report it.
+// An update with EDTN 0 cancels the cell: it opens with no features.
 //
 // Coordinates are WGS-84 decimal degrees (D2): S-57 stores them as integers
 // scaled by the cell's COMF, and soundings scaled by SOMF. HDAT/VDAT/SDAT are
@@ -41,6 +40,9 @@
 #include "fvkit/geo.h"
 
 namespace fv {
+
+struct S57FeatureRecord;
+struct S57RecordSet;
 
 // FRID.PRIM — the feature's geometric primitive.
 enum class S57Primitive {
@@ -143,6 +145,9 @@ struct S57DatasetInfo {
   int height_units = 0;      // HUNI
   int position_units = 0;    // PUNI
   int coordinate_units = 0;  // COUN (1 = lat/lon)
+
+  // An update with EDTN 0 withdrew the cell; it must not be drawn.
+  bool cancelled = false;
 };
 
 // Counts of what was actually parsed, to compare against the DSSI declarations.
@@ -162,12 +167,20 @@ struct S57ParseCounts {
   int faces = 0;               // VF (ENC chain-node data has none)
 };
 
+// Whether `S57Cell::Open` applies the update files beside a base cell.
+enum class S57Updates {
+  kApply,
+  kBaseOnly,  // the base edition as published; tests pin its record counts
+};
+
 class S57Cell {
  public:
-  // Reads a base cell. Non-`.000` paths are accepted (an update file opens as
-  // its own record set) but only `.000` gets the update-file scan.
-  Status Open(const std::string& path);
+  // Reads a base cell and, for a `.000` under `kApply`, applies its update
+  // files. Other paths open as their own record set with nothing applied.
+  Status Open(const std::string& path, S57Updates updates = S57Updates::kApply);
   bool is_open() const { return is_open_; }
+  // True when an update withdrew the cell (EDTN 0).
+  bool cancelled() const { return info_.cancelled; }
 
   const std::string& path() const { return path_; }
   const S57DatasetInfo& info() const { return info_; }
@@ -177,9 +190,11 @@ class S57Cell {
   // this inverted (ll north/east of ur), which `Intersects` reports as empty.
   GeoRect bounds() const { return bounds_; }
 
-  // Update files found next to the cell and NOT applied, in sequence order.
+  // Update files beside the cell that were not applied, in sequence order:
+  // the one that failed and every one after it, or all of them under kBaseOnly.
   const std::vector<std::string>& unapplied_updates() const { return updates_; }
-  // Empty when the cell is current; otherwise a sentence naming what is missing.
+  // Empty when every update applied; otherwise a sentence naming what is missing.
+  // A cancelled cell reports the cancellation.
   std::string StalenessWarning() const;
 
  private:
@@ -189,9 +204,12 @@ class S57Cell {
     std::vector<S57Vertex> interior;
   };
 
-  Status ReadRecords();
+  Status ReadRecords(S57RecordSet* records);
+  // Scales the spatial records into `nodes_`/`edges_` and decodes every
+  // feature that is not deleted, assembling its geometry.
+  void BuildFeatures(const S57RecordSet& records);
   // Builds `feature`'s geometry from the FSPT pointers of its record.
-  void AssembleGeometry(const iso8211::Record& record, S57Feature* feature) const;
+  void AssembleGeometry(const S57FeatureRecord& record, S57Feature* feature) const;
   // Vertices of an edge, begin node first (reversed when `reverse`). False when
   // the edge itself is missing; `*complete` is cleared when the edge is there
   // but one of its end nodes is not, so a short run is never silently short.
@@ -208,6 +226,7 @@ class S57Cell {
   std::unordered_map<uint64_t, std::vector<S57Vertex>> nodes_;
   std::unordered_map<uint64_t, Edge> edges_;
   std::vector<std::string> updates_;
+  std::string update_error_;  // why the first unapplied update failed
   GeoRect bounds_{{90.0, 180.0}, {-90.0, -180.0}};
 };
 
@@ -230,6 +249,26 @@ struct S57CatalogEntry {
 };
 
 Status ReadS57Catalog(const std::string& path, std::vector<S57CatalogEntry>* out);
+
+// Reads only the dataset records (DSID, DSSI, DSPM) of a cell: edition,
+// compilation scale and usage without decoding any feature or spatial record.
+Status ReadS57DatasetInfo(const std::string& path, S57DatasetInfo* out);
+
+// The update files beside a base cell (<stem>.001, .002, …) up to the first
+// gap in the sequence. Empty for a path that is not a `.000`.
+std::vector<std::string> FindS57UpdateFiles(const std::string& base_cell);
+
+// What opening a base cell under kApply reaches, without building geometry.
+struct S57UpdateState {
+  S57DatasetInfo info;   // after the last update that applied
+  int update_files = 0;  // FindS57UpdateFiles(base_cell).size()
+  int applied = 0;       // a cancellation counts as applied
+  std::string error;     // why the next file failed; empty when none did
+};
+
+// Reads a base cell's records and applies its update files as S57Cell::Open
+// does. Fails only when the base cell itself cannot be read.
+Status ReadS57UpdateState(const std::string& base_cell, S57UpdateState* out);
 
 // Recursively finds base cells (`*.000`) under `root`, sorted by path. Cell
 // directories are located by extension, never by the standard

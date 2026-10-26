@@ -45,6 +45,10 @@
 		AA0100010000000000000022 /* PPPoint.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000028 /* PPPoint.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000023 /* PPPoint.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002A /* PPPoint.mm */; };
 		AA0100010000000000000024 /* PPPointStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002C /* PPPointStore.cpp */; };
+		AA01000100000000000000F2 /* PPEncChart.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F3 /* PPEncChart.cpp */; };
+		AA01000100000000000000F4 /* PPChartStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F5 /* PPChartStore.cpp */; };
+		AA01000100000000000000F5 /* PPChartImport.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F7 /* PPChartImport.mm */; };
+		AA01000100000000000000F6 /* PPChartImport.h in Headers */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F6 /* PPChartImport.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000025 /* PointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002D /* PointSheet.swift */; };
 		AA0100010000000000000026 /* Sharing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002E /* Sharing.swift */; };
 		AA0100010000000000000027 /* PlaceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002F /* PlaceLink.swift */; };
@@ -73,6 +77,7 @@
 		AA0100010000000000000036 /* PPGuidance.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003F /* PPGuidance.mm */; };
 		AA0100010000000000000037 /* DistanceUnits.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000040 /* DistanceUnits.swift */; };
 		AA0100010000000000000062 /* TideText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000063 /* TideText.swift */; };
+		AA01000100000000000000B5 /* ReplanNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000B5 /* ReplanNotice.swift */; };
 		AA0100010000000000000072 /* WindText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000073 /* WindText.swift */; };
 		AA0100010000000000000073 /* WindFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000074 /* WindFeed.swift */; };
 		AA0100010000000000000063 /* TideCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000064 /* TideCard.swift */; };
@@ -87,6 +92,61 @@
 		AA0100010000000000000F31 /* RideActivityContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F20 /* RideActivityContent.swift */; };
 		AA0100010000000000000F32 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
 		AA0100010000000000000F33 /* PippinActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000D /* PippinActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AA0100010000000000000F40 /* AppFlavor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F40 /* AppFlavor.swift */; };
+		AA0100010000000000000F41 /* Course.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F41 /* Course.swift */; };
+		AA0100010000000000000F42 /* ChartSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F42 /* ChartSettings.swift */; };
+		AA0100010000000000000F45 /* ChartDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F45 /* ChartDownloader.swift */; };
+		AA0100010000000000000F44 /* ChartRegions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F44 /* ChartRegions.swift */; };
+		AA0100010000000000000F43 /* ChartSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F43 /* ChartSheets.swift */; };
+		AB0100010000000000000007 /* PippinApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000007 /* PippinApp.swift */; };
+		AB0100010000000000000032 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
+		AB0100010000000000000F40 /* AppFlavor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F40 /* AppFlavor.swift */; };
+		AB0100010000000000000F41 /* Course.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F41 /* Course.swift */; };
+		AB0100010000000000000F42 /* ChartSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F42 /* ChartSettings.swift */; };
+		AB0100010000000000000F45 /* ChartDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F45 /* ChartDownloader.swift */; };
+		AB0100010000000000000F44 /* ChartRegions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F44 /* ChartRegions.swift */; };
+		AB0100010000000000000F43 /* ChartSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F43 /* ChartSheets.swift */; };
+		AB0100010000000000000008 /* MapScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000008 /* MapScreen.swift */; };
+		AB0100010000000000000038 /* AlertTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000041 /* AlertTone.swift */; };
+		AB0100010000000000000039 /* TurnAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000042 /* TurnAlerts.swift */; };
+		AB0100010000000000000037 /* DistanceUnits.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000040 /* DistanceUnits.swift */; };
+		AB0100010000000000000062 /* TideText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000063 /* TideText.swift */; };
+		AB01000100000000000000B5 /* ReplanNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000B5 /* ReplanNotice.swift */; };
+		AB0100010000000000000072 /* WindText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000073 /* WindText.swift */; };
+		AB0100010000000000000073 /* WindFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000074 /* WindFeed.swift */; };
+		AB0100010000000000000063 /* TideCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000064 /* TideCard.swift */; };
+		AB01000100000000000000A0 /* LegendSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000A0 /* LegendSheet.swift */; };
+		AB0100010000000000000030 /* MapMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000039 /* MapMenu.swift */; };
+		AB0100010000000000000009 /* MapModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000009 /* MapModel.swift */; };
+		AB0100010000000000000015 /* MapGestureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000015 /* MapGestureView.swift */; };
+		AB010001000000000000001E /* RouteSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000022 /* RouteSheet.swift */; };
+		AB010001000000000000002F /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000038 /* SearchView.swift */; };
+		AB0100010000000000000025 /* PointSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002D /* PointSheet.swift */; };
+		AB0100010000000000000026 /* Sharing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002E /* Sharing.swift */; };
+		AB0100010000000000000027 /* PlaceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002F /* PlaceLink.swift */; };
+		AB010001000000000000002B /* RenderGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000032 /* RenderGate.swift */; };
+		AB01000100000000000000F1 /* ScenePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F1 /* ScenePolicy.swift */; };
+		AB0100010000000000000F12 /* RecordingMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F12 /* RecordingMarker.swift */; };
+		AB0100010000000000000F13 /* GuidanceNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F13 /* GuidanceNotice.swift */; };
+		AB0100010000000000000F14 /* TurnNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F14 /* TurnNotifications.swift */; };
+		AB0100010000000000000F20 /* RideActivityContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F20 /* RideActivityContent.swift */; };
+		AB0100010000000000000F21 /* RideActivityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F21 /* RideActivityPolicy.swift */; };
+		AB0100010000000000000F22 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
+		AB0100010000000000000F23 /* RideActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F23 /* RideActivity.swift */; };
+		AB0100010000000000000051 /* EnergyLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000051 /* EnergyLog.swift */; };
+		AB0100010000000000000052 /* EnergyRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000052 /* EnergyRecorder.swift */; };
+		AB0100010000000000000053 /* FramePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000053 /* FramePolicy.swift */; };
+		AB0100010000000000000054 /* Momentum.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000054 /* Momentum.swift */; };
+		AB010001000000000000002C /* LocationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000033 /* LocationPolicy.swift */; };
+		AB010001000000000000000A /* PixelProbeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000000A /* PixelProbeScreen.swift */; };
+		AB0100010000000000000016 /* ViewportProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000016 /* ViewportProbe.swift */; };
+		AB0100010000000000000101 /* PippinKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000B /* PippinKit.framework */; };
+		AB0100010000000000000102 /* PippinKit.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000B /* PippinKit.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AB0100010000000000000103 /* Data in Resources */ = {isa = PBXBuildFile; fileRef = AB0200010000000000000003 /* Data */; };
+		AB0100010000000000000104 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AB0200010000000000000002 /* Assets.xcassets */; };
+		AB0100010000000000000105 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003A /* PrivacyInfo.xcprivacy */; };
+		AB0100010000000000000106 /* COPYING in Resources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000000E /* COPYING */; };
+		AB0100010000000000000107 /* COPYING.LESSER in Resources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000000F /* COPYING.LESSER */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -110,6 +170,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = AA0700010000000000000004;
 			remoteInfo = PippinActivity;
+		};
+		AB0F00010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0E00010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0700010000000000000001;
+			remoteInfo = PippinKit;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -137,9 +204,30 @@
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AB0C00010000000000000001 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AB0100010000000000000102 /* PippinKit.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AA0200010000000000000F40 /* AppFlavor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFlavor.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F41 /* Course.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Course.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F42 /* ChartSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartSettings.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F45 /* ChartDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartDownloader.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F44 /* ChartRegions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartRegions.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F43 /* ChartSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartSheets.swift; sourceTree = "<group>"; };
+		AB0200010000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AB0200010000000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AB0200010000000000000003 /* Data */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Data; sourceTree = "<group>"; };
+		AB0300010000000000000001 /* Osprey.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Osprey.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2AB49EFA3037AED100459DFF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AA0200010000000000000001 /* PPMap.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPMap.mm; sourceTree = "<group>"; };
 		AA0200010000000000000002 /* PPPixelBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPPixelBridge.mm; sourceTree = "<group>"; };
@@ -189,6 +277,12 @@
 		AA020001000000000000002A /* PPPoint.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPPoint.mm; sourceTree = "<group>"; };
 		AA020001000000000000002B /* PPPointStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPPointStore.h; sourceTree = "<group>"; };
 		AA020001000000000000002C /* PPPointStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PPPointStore.cpp; sourceTree = "<group>"; };
+		AA02000100000000000000F2 /* PPEncChart.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPEncChart.h; sourceTree = "<group>"; };
+		AA02000100000000000000F3 /* PPEncChart.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PPEncChart.cpp; sourceTree = "<group>"; };
+		AA02000100000000000000F4 /* PPChartStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPChartStore.h; sourceTree = "<group>"; };
+		AA02000100000000000000F5 /* PPChartStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PPChartStore.cpp; sourceTree = "<group>"; };
+		AA02000100000000000000F6 /* PPChartImport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPChartImport.h; sourceTree = "<group>"; };
+		AA02000100000000000000F7 /* PPChartImport.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPChartImport.mm; sourceTree = "<group>"; };
 		AA020001000000000000002D /* PointSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointSheet.swift; sourceTree = "<group>"; };
 		AA020001000000000000002E /* Sharing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sharing.swift; sourceTree = "<group>"; };
 		AA020001000000000000002F /* PlaceLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceLink.swift; sourceTree = "<group>"; };
@@ -220,6 +314,7 @@
 		AA020001000000000000003F /* PPGuidance.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPGuidance.mm; sourceTree = "<group>"; };
 		AA0200010000000000000040 /* DistanceUnits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistanceUnits.swift; sourceTree = "<group>"; };
 		AA0200010000000000000063 /* TideText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideText.swift; sourceTree = "<group>"; };
+		AA02000100000000000000B5 /* ReplanNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplanNotice.swift; sourceTree = "<group>"; };
 		AA0200010000000000000073 /* WindText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindText.swift; sourceTree = "<group>"; };
 		AA0200010000000000000074 /* WindFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindFeed.swift; sourceTree = "<group>"; };
 		AA0200010000000000000064 /* TideCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideCard.swift; sourceTree = "<group>"; };
@@ -268,6 +363,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AB0400010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB0100010000000000000101 /* PippinKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -278,6 +381,7 @@
 				AA0500010000000000000003 /* Pippin */,
 				AA0500010000000000000006 /* PippinShare */,
 				AA0500010000000000000007 /* PippinActivity */,
+				AB0500010000000000000001 /* Osprey */,
 				AA0500010000000000000005 /* Licensing */,
 				AA020001000000000000000B /* Data */,
 				AA020001000000000000003C /* Pippin.xcconfig */,
@@ -327,6 +431,12 @@
 				AA020001000000000000002A /* PPPoint.mm */,
 				AA020001000000000000002B /* PPPointStore.h */,
 				AA020001000000000000002C /* PPPointStore.cpp */,
+				AA02000100000000000000F2 /* PPEncChart.h */,
+				AA02000100000000000000F3 /* PPEncChart.cpp */,
+				AA02000100000000000000F4 /* PPChartStore.h */,
+				AA02000100000000000000F5 /* PPChartStore.cpp */,
+				AA02000100000000000000F6 /* PPChartImport.h */,
+				AA02000100000000000000F7 /* PPChartImport.mm */,
 				AA0200010000000000000018 /* PPLocationSource.mm */,
 				AA0200010000000000000010 /* PPPixelBridge.h */,
 				AA0200010000000000000002 /* PPPixelBridge.mm */,
@@ -343,11 +453,18 @@
 				AA020001000000000000003A /* PrivacyInfo.xcprivacy */,
 				AA0200010000000000000007 /* PippinApp.swift */,
 				AA020001000000000000003B /* AppName.swift */,
+				AA0200010000000000000F40 /* AppFlavor.swift */,
+				AA0200010000000000000F41 /* Course.swift */,
+				AA0200010000000000000F42 /* ChartSettings.swift */,
+				AA0200010000000000000F45 /* ChartDownloader.swift */,
+				AA0200010000000000000F44 /* ChartRegions.swift */,
+				AA0200010000000000000F43 /* ChartSheets.swift */,
 				AA0200010000000000000008 /* MapScreen.swift */,
 				AA0200010000000000000041 /* AlertTone.swift */,
 				AA0200010000000000000042 /* TurnAlerts.swift */,
 				AA0200010000000000000040 /* DistanceUnits.swift */,
 				AA0200010000000000000063 /* TideText.swift */,
+				AA02000100000000000000B5 /* ReplanNotice.swift */,
 				AA0200010000000000000073 /* WindText.swift */,
 				AA0200010000000000000074 /* WindFeed.swift */,
 				AA0200010000000000000064 /* TideCard.swift */,
@@ -389,6 +506,7 @@
 				AA030001000000000000000A /* Pippin.app */,
 				AA030001000000000000000C /* PippinShare.appex */,
 				AA030001000000000000000D /* PippinActivity.appex */,
+				AB0300010000000000000001 /* Osprey.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -421,6 +539,16 @@
 			path = PippinActivity;
 			sourceTree = "<group>";
 		};
+		AB0500010000000000000001 /* Osprey */ = {
+			isa = PBXGroup;
+			children = (
+				AB0200010000000000000001 /* Info.plist */,
+				AB0200010000000000000002 /* Assets.xcassets */,
+				AB0200010000000000000003 /* Data */,
+			);
+			path = ../Osprey;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -437,6 +565,7 @@
 				AA010001000000000000001B /* PPRoute.h in Headers */,
 				AA010001000000000000002D /* PPSearch.h in Headers */,
 				AA0100010000000000000035 /* PPGuidance.h in Headers */,
+				AA01000100000000000000F6 /* PPChartImport.h in Headers */,
 				AA010001000000000000001F /* PPTrip.h in Headers */,
 				AA0100010000000000000060 /* PPTide.h in Headers */,
 				AA0100010000000000000070 /* PPWind.h in Headers */,
@@ -470,6 +599,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = AA0800010000000000000003 /* Build configuration list for PBXNativeTarget "Pippin" */;
 			buildPhases = (
+				AA0B00010000000000000002 /* Check the data pack */,
 				AA0900010000000000000002 /* Sources */,
 				AA0400010000000000000002 /* Frameworks */,
 				AA0A00010000000000000001 /* Resources */,
@@ -520,6 +650,26 @@
 			productReference = AA030001000000000000000D /* PippinActivity.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		AB0700010000000000000001 /* Osprey */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB0800010000000000000001 /* Build configuration list for PBXNativeTarget "Osprey" */;
+			buildPhases = (
+				AB0B00010000000000000001 /* Check the data pack */,
+				AB0900010000000000000001 /* Sources */,
+				AB0400010000000000000001 /* Frameworks */,
+				AB0A00010000000000000001 /* Resources */,
+				AB0C00010000000000000001 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AB0D00010000000000000001 /* PBXTargetDependency */,
+			);
+			name = Osprey;
+			productName = Osprey;
+			productReference = AB0300010000000000000001 /* Osprey.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -542,6 +692,9 @@
 					AA0700010000000000000004 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					AB0700010000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = AA0800010000000000000001 /* Build configuration list for PBXProject "Pippin" */;
@@ -561,6 +714,7 @@
 				AA0700010000000000000002 /* Pippin */,
 				AA0700010000000000000003 /* PippinShare */,
 				AA0700010000000000000004 /* PippinActivity */,
+				AB0700010000000000000001 /* Osprey */,
 			);
 		};
 /* End PBXProject section */
@@ -575,6 +729,18 @@
 				AA0100010000000000000021 /* Assets.xcassets in Resources */,
 				AA010001000000000000000E /* COPYING in Resources */,
 				AA010001000000000000000F /* COPYING.LESSER in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AB0A00010000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB0100010000000000000103 /* Data in Resources */,
+				AB0100010000000000000105 /* PrivacyInfo.xcprivacy in Resources */,
+				AB0100010000000000000104 /* Assets.xcassets in Resources */,
+				AB0100010000000000000106 /* COPYING in Resources */,
+				AB0100010000000000000107 /* COPYING.LESSER in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -594,7 +760,37 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# The core is built by CMake, not by Xcode: the port is one CMake\n# build for every platform and a second build system that also knows\n# how to compile it is a second thing to keep true. This phase only\n# checks that the archive is there, and says exactly what makes it.\nset -e\ncase \"$PLATFORM_NAME\" in\n  iphonesimulator) PRESET=ios-sim; DIR=build-ios-sim ;;\n  iphoneos)        PRESET=ios;     DIR=build-ios ;;\n  *) echo \"error: Pippin builds for iOS only (got $PLATFORM_NAME)\"; exit 1 ;;\nesac\nROOT=\"$PROJECT_DIR/../../..\"\nif [ ! -f \"$ROOT/$DIR/port/apps/Pippin/libpippin_core.a\" ]; then\n  echo \"error: $DIR/port/apps/Pippin/libpippin_core.a is missing.\"\n  echo \"note: cmake --preset $PRESET && cmake --build $DIR -j\"\n  exit 1\nfi\n# AND THAT IT IS NOT STALE, which is the half this phase used to be missing.\n# Checking only that the archive EXISTS is how a session shipped a change to\n# the simulator and believed the screenshot (2026-09-02): Xcode rebuilt the\n# Swift, linked a three-day-old core, and the C++ half of the change was\n# simply not in the app. A mac `cmake --build build` does not touch this\n# file. port/apps is pruned because Xcode compiles PippinKit itself.\nCORE=\"$ROOT/$DIR/port/apps/Pippin/libpippin_core.a\"\nSTALE=$(find \"$ROOT/port\" -path \"$ROOT/port/apps\" -prune -o \\( -name '*.cpp' -o -name '*.h' \\) -newer \"$CORE\" -print 2>/dev/null | head -1)\nif [ -n \"$STALE\" ]; then\n  echo \"error: $DIR/port/apps/Pippin/libpippin_core.a is older than the core it is built from.\"\n  echo \"note: $STALE is newer. Run: cmake --build $DIR -j\"\n  exit 1\nfi\nif [ ! -f \"$PROJECT_DIR/Data/pippin.ini\" ]; then\n  echo \"error: the offline data pack is not staged.\"\n  echo \"note: python3 port/apps/Pippin/stage_data.py\"\n  exit 1\nfi\n";
+			shellScript = "# The core is built by CMake, not by Xcode: the port is one CMake\n# build for every platform and a second build system that also knows\n# how to compile it is a second thing to keep true. This phase only\n# checks that the archive is there, and says exactly what makes it.\nset -e\ncase \"$PLATFORM_NAME\" in\n  iphonesimulator) PRESET=ios-sim; DIR=build-ios-sim ;;\n  iphoneos)        PRESET=ios;     DIR=build-ios ;;\n  *) echo \"error: Pippin builds for iOS only (got $PLATFORM_NAME)\"; exit 1 ;;\nesac\nROOT=\"$PROJECT_DIR/../../..\"\nif [ ! -f \"$ROOT/$DIR/port/apps/Pippin/libpippin_core.a\" ]; then\n  echo \"error: $DIR/port/apps/Pippin/libpippin_core.a is missing.\"\n  echo \"note: cmake --preset $PRESET && cmake --build $DIR -j\"\n  exit 1\nfi\n# And that it is not stale: a stale archive links cleanly and ships old C++\n# behind new Swift. Ninja answers from the core's own dependency graph, so\n# Mac-only modules and tests do not trip it. Without ninja, any source under\n# port/ newer than the archive counts, except port/apps (Xcode compiles\n# PippinKit) and test directories (never linked).\nCORE=\"$ROOT/$DIR/port/apps/Pippin/libpippin_core.a\"\nNINJA=$(PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin\" command -v ninja || true)\nif [ -n \"$NINJA\" ] && [ -f \"$ROOT/$DIR/build.ninja\" ]; then\n  if ! \"$NINJA\" -C \"$ROOT/$DIR\" -n pippin_core 2>&1 | grep -q 'no work to do'; then\n    echo \"error: $DIR/port/apps/Pippin/libpippin_core.a is older than the core it is built from.\"\n    echo \"note: cmake --build $DIR -j\"\n    exit 1\n  fi\nelse\n  STALE=$(find \"$ROOT/port\" \\( -path \"$ROOT/port/apps\" -o -name test \\) -prune -o \\( -name '*.cpp' -o -name '*.h' \\) -newer \"$CORE\" -print 2>/dev/null | head -1)\n  if [ -n \"$STALE\" ]; then\n    echo \"error: $DIR/port/apps/Pippin/libpippin_core.a is older than the core it is built from.\"\n    echo \"note: $STALE is newer. Run: cmake --build $DIR -j\"\n    exit 1\n  fi\nfi\n";
+		};
+		AA0B00010000000000000002 /* Check the data pack */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Check the data pack";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ ! -f \"$PROJECT_DIR/Data/pippin.ini\" ]; then\n  echo \"error: the offline data pack is not staged.\"\n  echo \"note: python3 port/apps/Pippin/stage_data.py\"\n  exit 1\nfi\n";
+		};
+		AB0B00010000000000000001 /* Check the data pack */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Check the data pack";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ ! -f \"$PROJECT_DIR/../Osprey/Data/pippin.ini\" ]; then\n  echo \"error: the Osprey chart pack is not staged.\"\n  echo \"note: python3 port/apps/Pippin/stage_data.py --region charleston-enc --pack port/apps/Osprey/Data\"\n  exit 1\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -616,6 +812,9 @@
 				AA010001000000000000001D /* PPRouteStore.cpp in Sources */,
 				AA0100010000000000000023 /* PPPoint.mm in Sources */,
 				AA0100010000000000000024 /* PPPointStore.cpp in Sources */,
+				AA01000100000000000000F2 /* PPEncChart.cpp in Sources */,
+				AA01000100000000000000F4 /* PPChartStore.cpp in Sources */,
+				AA01000100000000000000F5 /* PPChartImport.mm in Sources */,
 				AA0100010000000000000002 /* PPPixelBridge.mm in Sources */,
 				AA0100010000000000000003 /* PPPixelProbe.mm in Sources */,
 			);
@@ -627,11 +826,18 @@
 			files = (
 				AA0100010000000000000007 /* PippinApp.swift in Sources */,
 				AA0100010000000000000032 /* AppName.swift in Sources */,
+				AA0100010000000000000F40 /* AppFlavor.swift in Sources */,
+				AA0100010000000000000F41 /* Course.swift in Sources */,
+				AA0100010000000000000F42 /* ChartSettings.swift in Sources */,
+				AA0100010000000000000F45 /* ChartDownloader.swift in Sources */,
+				AA0100010000000000000F44 /* ChartRegions.swift in Sources */,
+				AA0100010000000000000F43 /* ChartSheets.swift in Sources */,
 				AA0100010000000000000008 /* MapScreen.swift in Sources */,
 				AA0100010000000000000038 /* AlertTone.swift in Sources */,
 				AA0100010000000000000039 /* TurnAlerts.swift in Sources */,
 				AA0100010000000000000037 /* DistanceUnits.swift in Sources */,
 				AA0100010000000000000062 /* TideText.swift in Sources */,
+				AA01000100000000000000B5 /* ReplanNotice.swift in Sources */,
 				AA0100010000000000000072 /* WindText.swift in Sources */,
 				AA0100010000000000000073 /* WindFeed.swift in Sources */,
 				AA0100010000000000000063 /* TideCard.swift in Sources */,
@@ -684,6 +890,55 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AB0900010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB0100010000000000000007 /* PippinApp.swift in Sources */,
+				AB0100010000000000000032 /* AppName.swift in Sources */,
+				AB0100010000000000000F40 /* AppFlavor.swift in Sources */,
+				AB0100010000000000000F41 /* Course.swift in Sources */,
+				AB0100010000000000000F42 /* ChartSettings.swift in Sources */,
+				AB0100010000000000000F45 /* ChartDownloader.swift in Sources */,
+				AB0100010000000000000F44 /* ChartRegions.swift in Sources */,
+				AB0100010000000000000F43 /* ChartSheets.swift in Sources */,
+				AB0100010000000000000008 /* MapScreen.swift in Sources */,
+				AB0100010000000000000038 /* AlertTone.swift in Sources */,
+				AB0100010000000000000039 /* TurnAlerts.swift in Sources */,
+				AB0100010000000000000037 /* DistanceUnits.swift in Sources */,
+				AB0100010000000000000062 /* TideText.swift in Sources */,
+				AB01000100000000000000B5 /* ReplanNotice.swift in Sources */,
+				AB0100010000000000000072 /* WindText.swift in Sources */,
+				AB0100010000000000000073 /* WindFeed.swift in Sources */,
+				AB0100010000000000000063 /* TideCard.swift in Sources */,
+				AB01000100000000000000A0 /* LegendSheet.swift in Sources */,
+				AB0100010000000000000030 /* MapMenu.swift in Sources */,
+				AB0100010000000000000009 /* MapModel.swift in Sources */,
+				AB0100010000000000000015 /* MapGestureView.swift in Sources */,
+				AB010001000000000000001E /* RouteSheet.swift in Sources */,
+				AB010001000000000000002F /* SearchView.swift in Sources */,
+				AB0100010000000000000025 /* PointSheet.swift in Sources */,
+				AB0100010000000000000026 /* Sharing.swift in Sources */,
+				AB0100010000000000000027 /* PlaceLink.swift in Sources */,
+				AB010001000000000000002B /* RenderGate.swift in Sources */,
+				AB01000100000000000000F1 /* ScenePolicy.swift in Sources */,
+				AB0100010000000000000F12 /* RecordingMarker.swift in Sources */,
+				AB0100010000000000000F13 /* GuidanceNotice.swift in Sources */,
+				AB0100010000000000000F14 /* TurnNotifications.swift in Sources */,
+				AB0100010000000000000F20 /* RideActivityContent.swift in Sources */,
+				AB0100010000000000000F21 /* RideActivityPolicy.swift in Sources */,
+				AB0100010000000000000F22 /* RideActivityAttributes.swift in Sources */,
+				AB0100010000000000000F23 /* RideActivity.swift in Sources */,
+				AB0100010000000000000051 /* EnergyLog.swift in Sources */,
+				AB0100010000000000000052 /* EnergyRecorder.swift in Sources */,
+				AB0100010000000000000053 /* FramePolicy.swift in Sources */,
+				AB0100010000000000000054 /* Momentum.swift in Sources */,
+				AB010001000000000000002C /* LocationPolicy.swift in Sources */,
+				AB010001000000000000000A /* PixelProbeScreen.swift in Sources */,
+				AB0100010000000000000016 /* ViewportProbe.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -701,6 +956,11 @@
 			isa = PBXTargetDependency;
 			target = AA0700010000000000000004 /* PippinActivity */;
 			targetProxy = AA0F00010000000000000003 /* PBXContainerItemProxy */;
+		};
+		AB0D00010000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0700010000000000000001 /* PippinKit */;
+			targetProxy = AB0F00010000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -762,7 +1022,7 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				DYLIB_COMPATIBILITY_VERSION = 1;
@@ -772,6 +1032,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				"HEADER_SEARCH_PATHS[arch=*]" = (
 					"$(PROJECT_DIR)/../../include",
+					"$(PROJECT_DIR)/../../Enc",
 					"$(PROJECT_DIR)/../../Osm",
 					"$(PROJECT_DIR)/../../RouteKit",
 					"$(PROJECT_DIR)/../../Routing",
@@ -785,7 +1046,7 @@
 				);
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/../../../build-ios/port/apps/Pippin";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../../build-ios-sim/port/apps/Pippin";
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				OTHER_LDFLAGS = (
 					"-lpippin_core",
 					"-lsqlite3",
@@ -803,7 +1064,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -812,7 +1073,7 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				DYLIB_COMPATIBILITY_VERSION = 1;
@@ -822,6 +1083,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				"HEADER_SEARCH_PATHS[arch=*]" = (
 					"$(PROJECT_DIR)/../../include",
+					"$(PROJECT_DIR)/../../Enc",
 					"$(PROJECT_DIR)/../../Osm",
 					"$(PROJECT_DIR)/../../RouteKit",
 					"$(PROJECT_DIR)/../../Routing",
@@ -835,7 +1097,7 @@
 				);
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/../../../build-ios/port/apps/Pippin";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/../../../build-ios-sim/port/apps/Pippin";
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				OTHER_LDFLAGS = (
 					"-lpippin_core",
 					"-lsqlite3",
@@ -853,7 +1115,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -863,7 +1125,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "$(PP_APP_ICON)";
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -874,20 +1136,21 @@
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Recording and turn alerts continue with the screen locked. Your position stays on this phone and is never sent anywhere.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Recording and turn alerts continue with the screen locked. Your position stays on this device and is never sent anywhere.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -897,7 +1160,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "$(PP_APP_ICON)";
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -908,20 +1171,21 @@
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Recording and turn alerts continue with the screen locked. Your position stays on this phone and is never sent anywhere.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(PP_DISPLAY_NAME) draws your position on the map and follows it while you ride, and records a ride when you ask it to. Recording and turn alerts continue with the screen locked. Your position stays on this device and is never sent anywhere.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -929,7 +1193,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PippinShare/Info.plist;
@@ -940,12 +1204,12 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Share";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -953,7 +1217,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PippinShare/Info.plist;
@@ -964,12 +1228,12 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Share";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -977,7 +1241,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PippinActivity/Info.plist;
@@ -988,12 +1252,12 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Activity";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -1001,7 +1265,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PippinActivity/Info.plist;
@@ -1012,12 +1276,80 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PP_BUNDLE_ID).Activity";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		AB1000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = Pippin/Pippin.entitlements;
+				INFOPLIST_FILE = ../Osprey/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "$(OSPREY_DISPLAY_NAME)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(OSPREY_DISPLAY_NAME) draws your position on the chart and follows it while you are under way, and records a track when you ask it to. Recording continues with the screen locked. Your position stays on this device and is never sent anywhere.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(OSPREY_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AB1000010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(PP_DEVELOPMENT_TEAM)";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = Pippin/Pippin.entitlements;
+				INFOPLIST_FILE = ../Osprey/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "$(OSPREY_DISPLAY_NAME)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Peregrine is LGPL-3.0-or-later; see COPYING.LESSER.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "$(OSPREY_DISPLAY_NAME) draws your position on the chart and follows it while you are under way, and records a track when you ask it to. Recording continues with the screen locked. Your position stays on this device and is never sent anywhere.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(OSPREY_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -1065,6 +1397,15 @@
 			buildConfigurations = (
 				AA1000010000000000000009 /* Debug */,
 				AA100001000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AB0800010000000000000001 /* Build configuration list for PBXNativeTarget "Osprey" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB1000010000000000000001 /* Debug */,
+				AB1000010000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -49,13 +49,13 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "fv_osm_reader.h"
 #include "fv_road_graph.h"
 #include "fv_router.h"
 #include "fvkit/geo.h"
@@ -168,14 +168,17 @@ struct RouteProfile {
 
   /// `legend_tiers`: (upper bound, word) pairs, ascending, naming a legend row's
   /// cost factor. A factor takes the word of the first bound it does not exceed;
-  /// the last bound is infinity. An excluded way is always "Never".
+  /// the last bound is infinity. An excluded way is always "Never". The default
+  /// bounds sit midway (geometrically) between the key's class slider stops, so a
+  /// row with no modifiers reads the same word as its slider.
   std::vector<std::pair<double, std::string>> legend_tiers = {
-      {0.75, "Most preferred"}, {1.0, "Preferred"}, {2.0, "Acceptable"},
-      {5.0, "Avoided"},         {std::numeric_limits<double>::infinity(), "Last resort"}};
+      {0.735, "Most preferred"}, {1.16, "Preferred"}, {2.29, "Acceptable"},
+      {5.29, "Avoided"},          {std::numeric_limits<double>::infinity(), "Last resort"}};
 
-  /// `legend_baseline`: the raw OSM tags of the way a legend row's cost is
-  /// compared against in words.
-  std::vector<OsmTag> legend_baseline = {{"highway", "residential"}};
+  /// `key_locks`: settings the map key shows with a lock instead of a slider,
+  /// setting id (as `ProfileOverrides`) → the reason it shows, e.g. a
+  /// motorway closed to bikes. Overlaid key by key under `extends`.
+  std::map<std::string, std::string> key_locks;
 
   // Indexed by RoadClass; kClassExcluded for a class this profile bars.
   double class_weight[static_cast<size_t>(RoadClass::kCount)];
@@ -308,6 +311,23 @@ Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::
 /// Points `options` at `profile` and mirrors it onto the RouteOptions fields, as
 /// SelectProfile does once it has found the profile by name.
 void ApplyProfile(std::shared_ptr<const RouteProfile> profile, RouteOptions* options);
+
+/// A rider's adjustments to a profile: setting id (`CostTerm::setting`, e.g.
+/// "classes.tertiary" or "bike_lane_factor.lane") to its new value.
+/// kClassExcluded bars a class or a golf, toll or ferry way; a lane, route or
+/// surface factor cannot exclude.
+using ProfileOverrides = std::map<std::string, double>;
+
+/// Copies `base` into `out` with `overrides` applied. An unknown setting id or
+/// an out-of-range value is an error and leaves `out` untouched. An empty map
+/// gives an exact copy.
+Status ApplyOverrides(const RouteProfile& base, const ProfileOverrides& overrides,
+                      RouteProfile* out);
+
+/// Reads the setting `id` names in `profile` as the rule file gave it
+/// (kClassExcluded, or a non-positive penalty for "no preference"). False for
+/// an id ApplyOverrides would reject.
+bool ProfileSetting(const RouteProfile& profile, const std::string& id, double* value);
 
 }  // namespace routing
 }  // namespace fv

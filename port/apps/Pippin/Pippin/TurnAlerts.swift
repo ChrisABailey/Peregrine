@@ -93,6 +93,14 @@ final class TurnAlerts {
         case .passed:
             // Not an alert. It is how the banner knows to move on.
             break
+        case .waypoint:
+            impact.impactOccurred()
+            chime(.waypoint)
+        case .offCourse:
+            notice.notificationOccurred(.warning)
+            chime(.offRoute)
+        case .backOnCourse:
+            light.impactOccurred()
         @unknown default:
             break
         }
@@ -131,7 +139,7 @@ final class TurnAlerts {
     // MARK: - The chimes
 
     enum Chime: Hashable {
-        case headsUp, actNow, arrived, offRoute
+        case headsUp, actNow, arrived, offRoute, waypoint
     }
 
     /// Two notes a fifth apart for a turn, rising for the heads-up and a
@@ -157,6 +165,10 @@ final class TurnAlerts {
             return [.init(hertz: 1568.0, seconds: 0.12),   // G6
                     .init(hertz: 2093.0, seconds: 0.12),   // C7
                     .init(hertz: 2637.0, seconds: 0.30)]   // E7
+        case .waypoint:
+            // A route point reached: the arrival pair without its top note.
+            return [.init(hertz: 1568.0, seconds: 0.12),   // G6
+                    .init(hertz: 2637.0, seconds: 0.24)]   // E7
         case .offRoute:
             // Falling, and the only one that does: leaving the route is the
             // one alert that is not an instruction.

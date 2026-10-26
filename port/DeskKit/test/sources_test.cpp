@@ -112,6 +112,22 @@ TEST_F(SourcesTest, AFileOfTwoTablesIsOneSourceOfTwoLayers) {
   EXPECT_EQ(Specs().size(), 2u);
 }
 
+TEST_F(SourcesTest, TheOverlayMenuListsAFilesLayersUnderIt) {
+  const fv::desk::Menu* menu = fd_.desk().menus().Find("overlay");
+  ASSERT_NE(menu, nullptr);
+  const fv::desk::MenuItem* file = nullptr;
+  for (const fv::desk::MenuItem& m : menu->items)
+    if (m.label == "two.gpkg") file = &m;
+  ASSERT_NE(file, nullptr);
+  ASSERT_EQ(file->children.size(), 2u);
+  EXPECT_EQ(file->children[0].label, "Charleston rivers");
+  EXPECT_EQ(file->children[1].label, "Creeks");
+  // The first table is current, and choosing the other makes it current.
+  EXPECT_TRUE(fd_.desk().commands().IsChecked(file->children[0].command_id));
+  ASSERT_TRUE(fd_.Run({file->children[1].command_id}).ok());
+  EXPECT_TRUE(fd_.desk().commands().IsChecked(file->children[1].command_id));
+}
+
 TEST_F(SourcesTest, TheSourceCheckBoxShowsAndHidesEveryLayer) {
   auto& desk = fd_.desk();
   EXPECT_EQ(Sources()[0].shown, SourceShown::kAll);
@@ -210,7 +226,8 @@ TEST_F(SourcesTest, MenusListTheirCommandsAndFollowTheRow) {
   EXPECT_EQ(ids(desk.LayerMenu()),
             (std::vector<std::string>{"layers.properties", "overlay.style", "overlay.fields",
                                       "overlay.attribute_table", "layers.select_by_attributes",
-                                      "layers.clear_selection", "layers.rule.add", "layers.import_style",
+                                      "layers.clear_selection", "overlay.export_selection", "layers.rule.add",
+                                      "layers.import_style",
                                       "layers.export_style", "layers.zoom_to", "layers.close"}));
   EXPECT_EQ(ids(desk.SourceMenu()),
             (std::vector<std::string>{"layers.source.properties", "layers.source.show_all", "layers.source.hide_all",

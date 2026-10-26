@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -185,16 +186,20 @@ struct GraduatedOptions {
 /// One category per distinct value of field `field_index`, each from `base`
 /// with its colours from a fixed palette. An enumeration's categories follow
 /// its choice order and take the choice labels; other fields sort by value
-/// (numbers numerically). Nulls are left to the "Other" symbol.
+/// (numbers numerically). Nulls are left to the "Other" symbol. A non-empty
+/// `keep` limits the values to the features it accepts.
 Status ClassifyCategories(const IFeatureLayer& layer, int field_index, const FeatureSymbol& base,
-                          std::vector<FeatureCategory>* out);
+                          std::vector<FeatureCategory>* out,
+                          const std::function<bool(const Feature&)>& keep = {});
 
 /// Classes over the numeric field `field_index`, each from `base` varied as
 /// `options` says. Fewer classes than asked when the data has fewer distinct
 /// values; kInvalidArg for a field that is not integer or real, kNotFound
-/// when no feature has a value.
+/// when no feature has a value. A non-empty `keep` limits the values to the
+/// features it accepts.
 Status ClassifyGraduated(const IFeatureLayer& layer, int field_index, const FeatureSymbol& base,
-                         const GraduatedOptions& options, std::vector<FeatureClass>* out);
+                         const GraduatedOptions& options, std::vector<FeatureClass>* out,
+                         const std::function<bool(const Feature&)>& keep = {});
 
 /// `style` as a MapLibre style document (version 8), the form a feature
 /// layer renders through `MapLibreStyleEngine` and the form it is stored in:

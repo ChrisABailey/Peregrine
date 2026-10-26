@@ -81,11 +81,13 @@
                  "steep_descent_s_per_m": 2.0, "max_kph": 40.0 },
       "golf_cartpath_penalty": "exclude",
       "golf_path_penalty": 10.0,
+      // The key offers no slider for a way the law closes to bikes.
+      "key_locks": { "classes.motorway": "Interstates are closed to bicycles.",
+                     "classes.motorway_link": "Interstate ramps are closed to bicycles." },
 
       // Map legend words by cost per metre; a residential street is 0.8.
-      "legend_tiers": [[0.75, "Most preferred"], [1.0, "Preferred"], [2.0, "Acceptable"],
-                       [5.0, "Avoided"], [null, "Last resort"]],
-      "legend_baseline": { "highway": "residential" }
+      "legend_tiers": [[0.735, "Most preferred"], [1.16, "Preferred"], [2.29, "Acceptable"],
+                       [5.29, "Avoided"], [null, "Last resort"]]
     },
 
     "foot": {
@@ -114,7 +116,9 @@
       // Naismith up (an hour per 600 m), Langmuir down; slow on steep descents.
       "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
                  "steep_descent_s_per_m": 2.0, "max_kph": 7.0 },
-      "golf_cartpath_penalty": "exclude"
+      "golf_cartpath_penalty": "exclude",
+      "key_locks": { "classes.motorway": "Interstates are closed to pedestrians.",
+                     "classes.motorway_link": "Interstate ramps are closed to pedestrians." }
     },
 
     "car": {

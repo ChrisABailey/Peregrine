@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <utility>
 
 #include "fvkit/detail/sqlite.h"
+#include "fvkit/draw_interrupt.h"
 #include "fvkit/feature/schema_change.h"
 #include "fvkit/log.h"
 
@@ -654,6 +656,12 @@ std::vector<std::shared_ptr<GeoPackageFeatureLayer>> GeoPackage::OpenLayers() co
   return out;
 }
 
+std::shared_ptr<GeoPackageFeatureLayer> GeoPackage::FindOpenLayer(const std::string& table) const {
+  for (auto& layer : OpenLayers())
+    if (Lower(layer->Table()) == Lower(table)) return layer;
+  return nullptr;
+}
+
 Status GeoPackage::Layers(std::vector<GeoPackageLayerInfo>* out) const {
   if (out == nullptr) return Bad("Layers: null out");
   out->clear();
@@ -1164,15 +1172,35 @@ Status GeoPackageFeatureLayer::Extent(GeoRect* out) const {
 }
 
 Status GeoPackageFeatureLayer::Select(const std::string& where_sql, const std::vector<int64_t>& ids,
-                                      std::vector<Feature>* out) const {
+                                      std::vector<Feature>* out, const std::vector<bool>* fields) const {
+  std::string sql = select_sql_;
+  if (fields != nullptr) {
+    // Unread columns are selected as NULL so every column keeps its index.
+    sql = "SELECT " + Quote(id_column_) + ", " + Quote(geometry_column_);
+    for (size_t i = 0; i < schema_.fields.size(); ++i)
+      sql += ", " + (i < fields->size() && (*fields)[i] ? Quote(schema_.fields[i].name) : std::string("NULL"));
+    sql += " FROM " + Quote(table_);
+  }
+  sql += (where_sql.empty() ? "" : " WHERE " + where_sql) + " ORDER BY " + Quote(id_column_);
   SqliteStmt st;
-  const std::string sql =
-      select_sql_ + (where_sql.empty() ? "" : " WHERE " + where_sql) + " ORDER BY " +
-      Quote(id_column_);
   Status s = st.Prepare(*package_->db_, sql.c_str());
   if (!s.ok()) return s;
   for (size_t i = 0; i < ids.size(); ++i) st.BindInt64(static_cast<int>(i) + 1, ids[i]);
-  while (st.Step(&s)) {
+  // Under an interruptible draw SQLite polls as well: an R-tree subquery is
+  // materialised inside the first step, before any row reaches the loop.
+  struct Progress {
+    sqlite3* db = nullptr;
+    ~Progress() {
+      if (db != nullptr) sqlite3_progress_handler(db, 0, nullptr, nullptr);
+    }
+  } progress;
+  if (DrawInterruptible()) {
+    progress.db = package_->db_->get();
+    sqlite3_progress_handler(progress.db, 10000, [](void*) { return DrawInterrupted() ? 1 : 0; },
+                             nullptr);
+  }
+  for (size_t row = 0; st.Step(&s); ++row) {
+    if (DrawInterruptedAt(row)) return Status::Error(kInterrupted, "feature query interrupted");
     Feature f;
     f.id = st.ColInt64(0);
     if (st.ColType(1) != SQLITE_NULL) {
@@ -1187,6 +1215,8 @@ Status GeoPackageFeatureLayer::Select(const std::string& where_sql, const std::v
       f.values.push_back(Column(st, static_cast<int>(i) + 2, schema_.fields[i].type));
     out->push_back(std::move(f));
   }
+  if (!s.ok() && progress.db != nullptr && DrawInterrupted())
+    return Status::Error(kInterrupted, "feature query interrupted");
   return s;
 }
 
@@ -1236,7 +1266,13 @@ Status GeoPackageFeatureLayer::Get(int64_t id, Feature* out) const {
 }
 
 Status GeoPackageFeatureLayer::Query(const GeoRect& box, std::vector<Feature>* out) const {
+  return QueryFields(box, {}, out);
+}
+
+Status GeoPackageFeatureLayer::QueryFields(const GeoRect& box, const std::vector<bool>& fields,
+                                           std::vector<Feature>* out) const {
   if (out == nullptr) return Bad("Query: null out");
+  const std::vector<bool>* read = fields.empty() ? nullptr : &fields;
   out->clear();
   std::vector<Feature> candidates;
   Status s;
@@ -1245,7 +1281,6 @@ Status GeoPackageFeatureLayer::Query(const GeoRect& box, std::vector<Feature>* o
   } else if (has_rtree_) {
     const std::string rtree = Quote("rtree_" + table_ + "_" + geometry_column_);
     std::string where;
-    std::vector<int64_t> unused;
     const std::vector<GeoRect> parts = box.SplitAtAntimeridian();
     // The R-tree stores 32-bit bounds rounded outward, so its hits are a superset.
     for (size_t i = 0; i < parts.size(); ++i) {
@@ -1254,10 +1289,10 @@ Status GeoPackageFeatureLayer::Query(const GeoRect& box, std::vector<Feature>* o
       where += "(minx <= " + Number(p.ur.lon) + " AND maxx >= " + Number(p.ll.lon) +
                " AND miny <= " + Number(p.ur.lat) + " AND maxy >= " + Number(p.ll.lat) + ")";
     }
-    s = Select(Quote(id_column_) + " IN (SELECT id FROM " + rtree + " WHERE " + where + ")",
-               unused, &candidates);
+    s = Select(Quote(id_column_) + " IN (SELECT id FROM " + rtree + " WHERE " + where + ")", {},
+               &candidates, read);
   } else {
-    s = Select(Quote(geometry_column_) + " IS NOT NULL", {}, &candidates);
+    s = SelectScanned(box, &candidates, read);
   }
   if (!s.ok()) return s;
   Merge(&candidates, &box);
@@ -1316,6 +1351,7 @@ Status GeoPackageFeatureLayer::NextId(int64_t* out) {
 }
 
 Status GeoPackageFeatureLayer::Insert(Feature* feature) {
+  ++revision_;
   if (feature == nullptr) return Bad("Insert: null feature");
   Status s = package_->RequireWritable();
   if (!s.ok()) return s;
@@ -1334,6 +1370,7 @@ Status GeoPackageFeatureLayer::Insert(Feature* feature) {
 }
 
 Status GeoPackageFeatureLayer::InsertWithId(const Feature& feature) {
+  ++revision_;
   Status s = package_->RequireWritable();
   if (!s.ok()) return s;
   if (feature.id <= 0) return Bad("feature id must be positive");
@@ -1354,6 +1391,7 @@ Status GeoPackageFeatureLayer::InsertWithId(const Feature& feature) {
 }
 
 Status GeoPackageFeatureLayer::Update(const Feature& feature) {
+  ++revision_;
   Status s = package_->RequireWritable();
   if (!s.ok()) return s;
   Feature old;
@@ -1372,6 +1410,7 @@ Status GeoPackageFeatureLayer::Update(const Feature& feature) {
 }
 
 Status GeoPackageFeatureLayer::Delete(int64_t id) {
+  ++revision_;
   Status s = package_->RequireWritable();
   if (!s.ok()) return s;
   s = Get(id, nullptr);
@@ -1387,6 +1426,7 @@ Status GeoPackageFeatureLayer::Delete(int64_t id) {
 }
 
 Status GeoPackageFeatureLayer::ChangeSchema(const SchemaChange& change) {
+  ++revision_;
   Status s = package_->RequireWritable();
   if (!s.ok()) return s;
   s = ValidateSchemaChange(schema_, change);
@@ -1600,8 +1640,83 @@ Status GeoPackageFeatureLayer::RebuildTable() {
   return Status::Ok();
 }
 
+Status GeoPackageFeatureLayer::ScanEnvelopes() const {
+  if (scan_.complete) return Status::Ok();
+  SqliteStmt st;
+  const std::string id = Quote(id_column_);
+  Status s = st.Prepare(*package_->db_, ("SELECT " + id + ", " + Quote(geometry_column_) + " FROM " +
+                                         Quote(table_) + " WHERE " + Quote(geometry_column_) +
+                                         " IS NOT NULL" + (scan_.started ? " AND " + id + " > ?" : "") +
+                                         " ORDER BY " + id).c_str());
+  if (!s.ok()) return s;
+  if (scan_.started) st.BindInt64(1, scan_.last_id);
+  for (size_t row = 0; st.Step(&s); ++row) {
+    if (DrawInterruptedAt(row)) return Status::Error(kInterrupted, "feature scan interrupted");
+    const int64_t fid = st.ColInt64(0);
+    scan_.last_id = fid;
+    scan_.started = true;
+    double env[4];
+    bool empty = false;
+    if (!BlobEnvelope(static_cast<const uint8_t*>(st.ColBlob(1)), static_cast<size_t>(st.ColBytes(1)), env,
+                      &empty) ||
+        empty)
+      continue;
+    scan_.ids.push_back(fid);
+    for (int i = 0; i < 4; ++i) {
+      // Rounded outward so the float box still holds the feature.
+      const bool low = i % 2 == 0;
+      float f = static_cast<float>(env[i]);
+      if (low ? f > env[i] : f < env[i]) f = std::nextafter(f, low ? -HUGE_VALF : HUGE_VALF);
+      scan_.boxes.push_back(f);
+    }
+  }
+  if (!s.ok()) return s;
+  scan_.complete = true;
+  return Status::Ok();
+}
+
+Status GeoPackageFeatureLayer::SelectScanned(const GeoRect& box, std::vector<Feature>* out,
+                                             const std::vector<bool>* fields) const {
+  const std::vector<GeoRect> parts = box.SplitAtAntimeridian();
+  std::vector<int64_t> hits;
+  std::unique_lock<std::mutex> lock(scan_mu_);
+  Status s = ScanEnvelopes();
+  if (!s.ok()) return s;
+  const float* b = scan_.boxes.data();
+  for (size_t i = 0; i < scan_.ids.size(); ++i, b += 4) {
+    for (const GeoRect& p : parts) {
+      if (b[0] <= p.ur.lon && b[1] >= p.ll.lon && b[2] <= p.ur.lat && b[3] >= p.ll.lat) {
+        hits.push_back(scan_.ids[i]);
+        break;
+      }
+    }
+  }
+  lock.unlock();
+  // Read in groups under SQLite's bound-parameter limit; the ids are ascending,
+  // so the groups come back in id order.
+  const size_t kGroup = 500;
+  for (size_t at = 0; at < hits.size(); at += kGroup) {
+    const std::vector<int64_t> group(hits.begin() + static_cast<std::ptrdiff_t>(at),
+                                     hits.begin() + static_cast<std::ptrdiff_t>(std::min(hits.size(), at + kGroup)));
+    std::string in = Quote(id_column_) + " IN (?";
+    for (size_t i = 1; i < group.size(); ++i) in += ",?";
+    in += ")";
+    std::vector<Feature> found;
+    s = Select(in, group, &found, fields);
+    if (!s.ok()) return s;
+    for (Feature& f : found) out->push_back(std::move(f));
+  }
+  return Status::Ok();
+}
+
 void GeoPackageFeatureLayer::ClearEdits(bool saved) {
+  ++revision_;
   const bool reload = rebuild_;
+  // A save rewrote the stored rows the scan describes.
+  if (saved) {
+    std::lock_guard<std::mutex> lock(scan_mu_);
+    scan_ = EnvelopeScan();
+  }
   edits_.clear();
   rebuild_ = false;
   if (!saved) next_id_ = 0;

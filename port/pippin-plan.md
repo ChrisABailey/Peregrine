@@ -1781,7 +1781,7 @@ upright symbols), no longer optional.
 
   The screen-off numbers are the first phone baseline for BG (release 1.3).
 
-#### BT4 — the night chart (M; approved by Chris 2026-09-25)
+#### BT4 — the night chart (M; approved by Chris 2026-09-25) — **DONE**, delivered as DM (the dark map, 2026-10-05)
 
 Chris wants it for its own sake and for the 2.5D view, so it is a feature rather than a
 battery experiment, and it does not wait on BT1's numbers.
@@ -1855,7 +1855,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   blank; the soft-frame count is recorded as DR2's baseline.
 - This underlay is also the two-tier far field PV5 needs for the 2.5D view.
 
-**Built 2026-09-25** (simulator; phone acceptance pending).
+**Built 2026-09-25; phone-accepted 2026-10-21** (Chris).
 
 - `PPBaseCoverage.h`: `kUnderlayZoomOut = 4`, `LayerReaches`, `ScreenCover
   {kSharp,kUnderlay,kBackground}`, `ScreenCoverage(base, underlay*, live)` (corner test, worst of
@@ -1883,9 +1883,8 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   the style background, drawn identically by the sharp base, so it is not a blank. Known trade:
   the render queue is serial, so a gesture that starts during an underlay build waits up to that
   build's time (~20–30 ms sim) for its first frame.
-- Still open: the acceptance screen recording of a fast wide drag and a two-finger turn (the
-  simulator's synthesized two-finger path registered as a pinch, not a rotate), a phone check, and
-  DR2's soft-frame baseline to be recorded on the phone.
+- **Phone-accepted 2026-10-21** (Chris, on his iPhone). The simulator could not drive a two-finger
+  turn (its synthesized path registers as a pinch).
 
 #### DR2 — the band ready before the finger moves, and ahead of it (M, sim + phone)
 
@@ -1908,7 +1907,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
 - Acceptance: DR1's soft-frame count reaches zero for drags and turns at riding zooms and is
   brief at the widest view; BT1's energy table shows no regression.
 
-**Built 2026-09-25** (simulator; phone acceptance pending).
+**Built 2026-09-25; phone-accepted 2026-10-21** (Chris).
 
 - `PPBaseCoverage.h`: `GrownSurfaceSize` replaced by `GrownSurfacePixels(w,h,margin,rotation_safe)`
   — grows by whole, equal device pixels per side (the old band was 1769 px wide, 1179×1.5
@@ -1947,8 +1946,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   97–112 ms at 1:28,538, 47 ms at 1:96,161). A ~80° two-finger turn in 0.5 s (the sim registered
   it as a rotate this time): 0 blank, 7 soft ticks; the rotation-safe band costs 232 ms per draw
   on the sim.
-- Still open: phone acceptance (soft-frame count to zero at riding zooms, BT1 energy table no
-  regression, the rotation-safe draw time on the phone); a pinch out from 1:1,614 to 1:28,538
+- **Phone-accepted 2026-10-21** (Chris). Noted on the simulator: a pinch out from 1:1,614 to 1:28,538
   produced 4 blank frames — the underlay (DR1) is stale during a fast pinch-out, DR1's layer, not
   the band; the held band is still retained by the displayed `PPFrame` after a memory-warning
   drop (pre-existing from P18).
@@ -1980,7 +1978,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
 - Acceptance on the phone: a flick coasts and eases to a stop like Maps; a tap stops it without
   selecting anything; the edges stay filled during a coast at riding zoom.
 
-**Built 2026-09-25** (simulator; phone acceptance pending).
+**Built 2026-09-25; phone-accepted 2026-10-21** (Chris).
 
 - `Momentum.swift` (CoreGraphics-only): `Momentum(velocity:decelerationRate:minSpeed:)` — nil
   below `minSpeed` (never below the 10 pt/s stop speed); τ = −0.001/ln(rate) (0.998/ms → τ ≈
@@ -2009,9 +2007,8 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   after release) and was still afterwards; a tap during a coast stopped it (0 px change over 0.5 s
   after the tap, where an unstopped coast would still be at ~140 pt/s); a tap on a marker at rest
   still opens its sheet (Retts Bluff); three coasts at 1:96,161 counted 0 soft 0 blank.
-- Still open: phone acceptance — the flick eases to a stop like Maps; a tap stops it without
-  selecting anything (the tap-on-a-marker-during-a-coast case was not exercised on the sim); edges
-  stay filled during a coast at riding zoom.
+- **Phone-accepted 2026-10-21** (Chris): the flick eases to a stop, a tap stops it, edges stay
+  filled during a coast.
 
 ### TD — tides (item 2)
 
@@ -2623,7 +2620,7 @@ off-pack point message no longer names Kiawah. Data/ restaged to Kiawah afterwar
 both apps claim `pippin://`; the Atlanta `pippin.ini` keeps the Kiawah-specific comment above
 `[routing] graph`; not ridden for real.
 
-#### RG1 — more than one region in one app (optional; needs Chris)
+#### RG1 — more than one region in one app — **NOT PLANNED** (Chris, 2026-10-21: the app stays single-region)
 
 Once Atlanta exists, a phone that goes to both places wants both packs. Sketch only: the bundle
 (or `Documents/`, for a pack added later) holds several packs; the app opens the one whose bounds
@@ -2700,7 +2697,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - Acceptance: screenshots at 0, 30 and 45° following the demo feed; the cache hit rate in follow
   reported against P18's ~89%.
 
-**Built 2026-10-04** (simulator; phone acceptance pending).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - `PPViewport.pitchDegrees` + `pitched(_:)` (clamped 0–45; every derivation keeps it; bands and
   the underlay are flat, pitch 0). Anchor is the follow anchor: x centre, y = (h−1)(0.5 +
@@ -2760,7 +2757,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - **Reduced 2026-10-04:** for 1.3 only the toggle and the flatten-on-drag; free 3D pan, pinch and
   the pitch gesture wait until asked for.
 
-**Built 2026-10-04** (simulator; phone acceptance pending).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - `[display] follow_pitch_deg` pack key (default 45, the cap) in `pippin.ini`, read by
   `PPMap.followPitchDegrees` and snapshotted on the Swift `Renderer`. Decision: the key is the
@@ -2799,7 +2796,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
   `PointOverlay` gain a lines-only / markers-only draw switch, or the shell draws markers from the
   overlays' data.
 
-**Built 2026-10-04** (simulator; phone acceptance pending).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - Decision: the plan's first option, a draw switch on the overlays, plus a per-marker stamp
   (BT3's `DrawSymbolAt` pattern). fvkit `PointOverlay` and RouteKit `RouteOverlay` gain
@@ -2849,7 +2846,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - Found in PV3: tilted follow at the Atlanta launch scale (1:240,401) shows blank frames with no
   touch at all (51 blank, 32 soft in 38 s; base z11 → z10). PV2's 0/8 was at 1:7,233.
 
-**Built 2026-10-04, partly** (simulator; the far-field and BT1 items wait for the phone).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - Two causes behind both blank-frame findings. (1) The screen-sized underlay is too narrow for the
   tilted quad: at 45° the far corners sit 3,884 px ahead of the centre (3.44 screen widths) and
@@ -3576,7 +3573,7 @@ data source, and the rider's position is still never sent.
 - When the compass is hidden (not GPS mode, chart north-up), the badge takes the compass slot.
 - Accessibility label: "Wind from the south-west, 9 miles per hour."
 
-**WD4 — GPS mode: entering a beach stretch.**
+**WD4 — GPS mode: entering a beach stretch.** — **BUILT then REMOVED** (Chris, 2026-10-21: clutter on the ride; the beach wind arrows (WD2) carry the information better)
 - When the matched route position passes a stretch's `startMeters`, and the component at the
   current hour exceeds the threshold, show `noticeBanner` for ~6 s: "Headwind 9 mph for the
   next 1.8 mi." / "Tailwind 8 mph on the beach." Once per stretch per ride; no sound (turn
@@ -3585,29 +3582,126 @@ data source, and the rider's position is still never sent.
 - Tests: the trigger rule is in `WindText`/a small policy struct, tested on the mac with a
   synthetic route position sequence.
 
-**Order:** WD1 → WD2 → (WD3 withdrawn) → WD4. Each is a commit with tests green on macOS; WD2 and WD4 are
+**Order:** WD1 → WD2 → (WD3 withdrawn) → (WD4 removed). Each is a commit with tests green on macOS; WD2 and WD4 were
 checked on the simulator with `kiawah_demo_2x.gpx` and a cached forecast file.
 
 **Docs:** TIDES_AND_WEATHER.md — the settings table (`along_warn_mps`), the "Wind" row's
 "Shown in" column (map arrows, ride banner), a screenshot of the arrows, and the Known
 limits line about net heading.
 
+### SC — the route coloured by slope (Chris, 2026-10-21) — **BUILT 2026-10-21**
+
+The calculated route can be drawn in colours by grade, so a rider sees where the climbs are.
+
+- Router: `ElevationPoint::geometry_index` (index into `Route::geometry`), set in `Router::Materialize`.
+- `RouteOverlay::SetSlopeColors` / property `slope_colors` (Bool, off by default, "Calculated route"
+  group). `SegmentGrades(profile, window_m = 50)`: grade per profile segment over at least 50 m
+  centred on it, kept within the route, rounded to 0.5% so neighbours merge.
+- Bands (`SlopeColor`): |grade| < 1.5% flat, no slope colour; climb 1.5-3% yellow {240,200,20} to red
+  {215,30,30} at 8%+; descent from -1.5% light green {100,200,90} to dark green {0,115,45} at -6%.
+  First guesses, to tune from riding.
+- The centre line keeps the line colour and its normal style (dashed for bicycle); the slope colour is a
+  halo in place of the casing: `RouteOverlay::kSlopeHaloPt` 2 pt each side, then `kSlopeFringePt` 1 pt
+  outer fringe (points x symbol DPI scale). The fringe is an opaque tint halfway between slope and casing
+  colour, not 50% alpha: CpuCanvas blends every square-nib stamp, so a translucent stroke overlaps itself
+  to near-opaque. Flat ground keeps the white casing (sand on beach), drawn at halo+fringe width so the
+  outline is one width; casing width 0 gives flat pieces no outline. `DrawSlopeHalo` draws the fringe
+  pass for the whole route, then the halo pass, then the centre line per leg, so no fringe covers a
+  neighbour's halo. No elevation in the plan: drawn as before.
+- Pippin: `PPMap.routeSlopeColors`; `MapModel.routeSlopeColors` (UserDefaults `routeSlopeColors`);
+  RouteSheet "Colour by slope" under "Avoid hills", only when the graph has elevation; no replan.
+  Help text: "A halo around the line by grade where the road graph has elevation: green downhill,
+  yellow to red uphill, the casing on the flat."
+- Tests: 6 `RouteOverlay.*` plus `geometry_index` checks in `RouterElevation.*`; `RouteOverlay|RouterElevation|BeachRide`
+  58/58 pass. Sim: Atlanta pack, Paces Mill -> Buckhead, screenshot `apps/Pippin/docs/route-slope-colours.png`;
+  iPad Pro 13" sim, Atlanta build: blue centre with halos stays readable over green bike-route lines.
+  Recolouring the line itself (first version) lost green pieces on green roads (Chris, iPad, 2026-10-21).
+- Open: thresholds from riding; short arcs make the line busy at overview zooms; true 50% fringe needs a CpuCanvas change. LX: additive;
+  PeregrineGtk gets the property only through the generic property sheet.
+
+### IP — iPad (7e669f00, 072c5750, 4a7c4405, c7045964) — **BUILT 2026-10-20**, tool card and route sharing built
+
+`TARGETED_DEVICE_FAMILY = 1,2`: iPhone stays portrait-only, iPad allows all four orientations. Verified on the iPad Pro 13" simulator
+in portrait and by Chris on a real iPad rotated. The Xcode script-phase stale-core check now runs `ninja -n pippin_core` (fallback: `find`
+skipping `port/apps` and `test/`); before, any edited test or DeskKit source failed the Xcode build.
+
+**Tool card (4a7c4405, replaced the 072c5750 inspector):** at regular width (both orientations) the route, point info, point editor and map
+key open in one floating card at the top leading corner, 360pt wide. iOS 18+: sized to content via `onScrollGeometryChange` (contentSize +
+insets; readings under 100pt ignored, since before first layout the form reports ~0 and the card would never lay out); iOS 17: max height.
+It stops above the bottom buttons and drops below the ride bar / guidance banner. The chevron collapses it to one line (route status / pin
+name / "Map key"); a different tool opens it expanded and re-measured. Route OK reads Apply and keeps the card up, Cancel reads Close; pin
+info over the route covers it and Done uncovers it; pick-on-map keeps the card up, disabled. Compact width (iPhone, narrow Split View) keeps
+the sheets. Long-press waypoint drag is allowed with the route card up (the iPhone sheet still refuses: it covers the map); after the drop the
+card's stops reload from the replanned route, discarding un-applied edits. User-visible "phone" wording replaced (location prompt "stays on
+this device", problem-report footer, recording notice "with the screen locked"). Card verified on the iPad Pro 13" simulator in portrait,
+on iPhone 18 Pro Max, and by Chris on an iPad in all four orientations (2026-10-21).
+
+**Gotchas:** the card content builder must be empty at compact width: building the route tool there too (even unpresented) shifted the
+iPhone map ~130pt under the sheet (found with the inspector, still applies). The full-height inspector (072c5750) was dropped because it took
+a full-height column and floated over the map controls on iPadOS 26.
+
+**Route sharing (c7045964):** the route tool's Share Route row shares a copy of `current.fvrte` (stops + settings, the PythonView JSON), not a GPX:
+a GPX is a fixed track that cannot be edited or guided. Info.plist exports UTI `org.peregrine.fvrte` (conforms `public.json`) and registers it as an Owner document type. Receive: `onOpenURL` -> `RouteShare.receive` copies out of the (security-scoped / Inbox) URL, asks "Replace your route?" if one exists, then `RouteStore::Import` reads into its own RouteDoc (unparseable or no-stops file refused, current route untouched) and `SetWaypoints` plans + writes; the route tool opens on the result. The receiver plans on its own graph, so the line can differ if the packs differ. Verified: iPad's file opened on the iPhone simulator via `simctl openurl` -> prompt -> planned on roads (2.5 mi, 20 min, beach kept); share sheet offers Route.fvrte with the app as a target. AirDrop/Messages untestable on the simulator.
+
+**Open:** Handoff of the same document between the user's own devices (optional, not started). Failing test, pre-existing (fails identically before c7045964): `RouteStore.ARouteSurvivesARelaunchWITHItsBeach` - on kiawah.fvroad rebuilt 2026-10-19 18:32 the two boardwalks do not connect with the beach off (`road.length_m == 0`).
+
+**Testing landscape:** this Xcode has no Simulator.app and no `simctl rotate`, and iPadOS refuses `requestGeometryUpdate` ("current windowing
+mode does not allow"). Rotate from the Claude simulator panel instead; screenshots stay in the device's portrait frame while taps are in
+interface (landscape) coordinates.
+
+### LP — long press on the map adds a pin, prefilled from the chart — **BUILT 2026-10-22** (1168ba46, 3b4abb1c)
+
+- A long press that does not grab a route waypoint opens the New Pin editor at the pressed coordinate; a waypoint grab still drags it.
+- Prefill: name = the topmost named feature the last base render drew under the press. `-[PPMap chartFeatureNear:inViewport:tolerance:]`
+  returns `PPChartFeature {name, kind}`: press mapped through the ground into the cached base band (`_baseViewport`), then
+  `VectorRenderer::pick_index()` (topmost first) described by `OsmVectorSource::Describe` (`name`, `name:latin`, `name:en`); unnamed ink
+  (building fill, landuse) is passed over for the name. Remarks = the feature's `class`, then `subclass`, then the style key,
+  capitalised ("Town"). Pack key `points.feature_hit_tolerance` (iOS points, default 12).
+- Unnamed (3b4abb1c): with nothing named under the press, `chartFeatureNear` returns the topmost hit with an empty name and its class,
+  not nil; nil only when nothing was drawn. `PPChartFeature.name` may be empty, `kind` never is. Remarks fill ("Wetland", "Minor"),
+  the name stays blank.
+- Fallback: road names live in a label layer the pick index does not hold, so with no named feature the name comes from `describePlace`
+  (road graph) when `isNamed` (still runs for an unnamed hit); an unnamed road leaves the name blank (Save disabled until typed).
+- Look: yellow (`PointPalette.yellowHex`) circle, `marker` teardrop, as a shared-in place (`MapModel.sharedPlaceSymbol`, now internal).
+  Save adds the point and opens its info sheet; Cancel discards.
+- **Decision:** the editor opens on finger release (`MapGestureView.onHoldReleased`, sent only when the grab was empty and the finger stayed
+  within `allowableMovement`), not at recognition. Presenting the sheet under a held finger left the long-press recognizer stuck: no
+  further long press after the first Cancel.
+- Sim (iPhone 18 Pro Max, Kiawah): "Kiawah Island" label -> prefilled "Kiawah Island" / "Town"; unnamed footway -> blank; Save adds the pin
+  and opens info; long press still works after Cancel; route start waypoint still grabs. 3b4abb1c: open marsh -> blank name,
+  Remarks "Wetland"; near an unnamed road -> Remarks "Minor". No unit tests (PippinKit/Swift, no target).
+- Open: long-pressing an existing pin to move it — built as LP2.
+
+### LP2 — long press on a pin drags it — **BUILT 2026-10-22** (83a15a7d)
+
+- A long press that grabs no route waypoint tries the pins next (`MapModel.grabPoint`, pack `points.hit_tolerance`); a hit captures the
+  touch like a waypoint grab (haptic, pan cancelled) and the pin follows the finger. A miss still opens the LP New Pin editor on release.
+- **Decision — precedence:** waypoint first, then pin. Waypoints snap onto pins (`pick.snap_tolerance`), so a pin under a stop is common
+  and the route is the thing being edited; such a pin is moved after moving the stop off it.
+- Core: `pippin::PointStore::BeginDrag/DragTo/EndDrag/CancelDrag`. Moves redraw through the overlay and write nothing; `EndDrag`
+  persists once; cancel restores the original row. `PPMap beginPointDrag:/dragPointTo:/endPointDragAt:/cancelPointDrag` keep the
+  press-to-anchor offset (no jump under the finger), draw the held pin selected and restore the prior selection on release. A release
+  within 3 points of the press writes nothing. Swift coalesces drag positions per render hop, as the waypoint drag does.
+- Refused with the points hidden (`grabPoint` checks `pointsVisible`) and, with the waypoint grab, during crosshair placement, an open
+  editor, or the route sheet.
+- Tests: `PointStore.ADragWritesOnceOnReleaseAndSurvivesARelaunch`, `PointStore.ACancelledDragPutsThePointBack` (18/18 PointStore green).
+- Sim (iPhone 18 Pro Max, Kiawah): Retts Bluff dragged into the ocean, document row changed, position survived relaunch, dragged back;
+  route Start waypoint still drags and replans; long press on empty map still opens the New Pin editor.
+
 ### Open for Chris
 
-1. **Which tide station stands for the beach.** The default is 8667062 Kiawah River Bridge —
-   NOAA's "Kiawah" station, but it sits in the river behind the island. The alternatives are
-   Charleston 8665530 itself or another subordinate station whose timing matches the ocean front
-   better. It is a pack key, so riding can change it.
+1. ~~Which tide station stands for the beach~~ — **answered 2026-10-21: 8667062 Kiawah River
+   Bridge stays**; it works as expected from riding. It remains a pack key.
 2. **The rideable threshold.** `[beach] rideable_below_m` starts as a guess — 0.8 m (2.5 ft) above
    MLLW, the lower half of Charleston's ~1.6 m mean range — to be set from riding.
-3. **More network.** SH2 sends a place name to Apple; WX would fetch wind. Pippin's only network
-   use today is following a short link. Both are optional, and both need a yes.
+3. ~~More network~~ — **closed 2026-10-21:** both were approved and built (SH2 sends a place
+   name to Apple, WX fetches wind from api.weather.gov); the rider's position is never sent.
 4. ~~A night chart~~ — **answered 2026-09-25: yes**, for its own sake and for the 2.5D view (BT4).
-5. **Where the beach choice lives** — decided here as an `options` object in `.fvrte` (a three-way value since 2026-09-26) that
-   route.py learns, rather than profile variants. Override if the format should not move.
+5. ~~Where the beach choice lives~~ — **closed 2026-10-21:** an `options` object in `.fvrte` (a
+   three-way value since 2026-09-26) that route.py learns, rather than profile variants.
 6. ~~The hilly pack~~ — **answered 2026-09-25: Atlanta**, the next place to map; Chris downloads
-   the DTED level 2 before EL starts. Still open: **the Atlanta box** (EL5), and whether one app
-   should carry both regions (RG1).
+   the DTED level 2 before EL starts. The Atlanta box was set in EL5; **the app stays
+   single-region** (Chris, 2026-10-21), so RG1 is not planned.
 7. ~~2.5D~~ — **answered 2026-10-04:** follow-only, capped at 45°, base-map labels lying on the
    plane, points of interest upright (PV4).
 8. ~~Keeping the band at rest~~ (DR2) — **answered by the build, 2026-09-25**: the band is held at

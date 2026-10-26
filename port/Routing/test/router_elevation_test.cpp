@@ -357,6 +357,12 @@ TEST(RouterElevation, ProfileFromMidRoadEnds) {
   EXPECT_NEAR(r.profile.front().elev_m, 7.5, 0.11);
   EXPECT_NEAR(r.profile.back().elev_m, 42.5, 0.11);
   EXPECT_NEAR(r.profile.back().along_m, r.length_m, 1e-6);
+  // Each profile point names the geometry vertex it sits on: on this
+  // north-running road, the vertex's northing is the point's distance along.
+  for (const fv::routing::ElevationPoint& e : r.profile) {
+    ASSERT_LT(e.geometry_index, r.geometry.size());
+    EXPECT_NEAR((r.geometry[e.geometry_index].lat - from.lat) * kMetresPerDegLat, e.along_m, 0.5);
+  }
 }
 
 TEST(RouterElevation, NoElevationNoProfile) {
@@ -395,9 +401,13 @@ TEST(RouterElevation, ViaProfileIsOneSeries) {
             fv::kOk);
   ASSERT_TRUE(r.found);
   ASSERT_GE(r.profile.size(), 2u);
-  for (size_t k = 1; k < r.profile.size(); ++k)
+  for (size_t k = 1; k < r.profile.size(); ++k) {
     EXPECT_GE(r.profile[k].along_m, r.profile[k - 1].along_m);
+    EXPECT_GE(r.profile[k].geometry_index, r.profile[k - 1].geometry_index);
+  }
   EXPECT_NEAR(r.profile.back().along_m, r.length_m, 1e-6);
+  EXPECT_EQ(r.profile.front().geometry_index, 0u);
+  EXPECT_EQ(r.profile.back().geometry_index, r.geometry.size() - 1);
   EXPECT_GT(r.climb_m, 20.0);
   EXPECT_GT(r.descent_m, 20.0);
   EXPECT_NEAR(r.climb_m - r.descent_m, r.profile.back().elev_m - r.profile.front().elev_m,

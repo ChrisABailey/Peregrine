@@ -138,6 +138,36 @@ TEST(DeskHost, DeliversAFrameAtThePixelSize) {
   EXPECT_NEAR(h->Placement().tx, 0.0, 1e-6);
 }
 
+TEST(DeskHost, ADragDrawsABandAndSettlesOnTheScreen) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  ASSERT_TRUE(Settle(h.host).new_frame);
+  ASSERT_EQ(h->FrameWidth(), 200);
+
+  // The first move of a drag asks for a frame a quarter larger on each side.
+  h->PointerDown(100, 50);
+  h->PointerDrag(110, 50);
+  ASSERT_TRUE(Settle(h.host).new_frame);
+  EXPECT_EQ(h->FrameWidth(), 300);
+  EXPECT_EQ(h->FrameHeight(), 150);
+  EXPECT_NEAR(h->Placement().tx, -50.0, 0.5);
+  EXPECT_NEAR(h->Placement().ty, -25.0, 0.5);
+
+  // While the band covers the screen, moving on draws nothing.
+  const uint64_t drawn = h->FramesRendered();
+  h->PointerDrag(130, 40);
+  EXPECT_TRUE(h->Tick().redraw);
+  h->WaitForRender();
+  EXPECT_EQ(h->FramesRendered(), drawn);
+  EXPECT_NEAR(h->Placement().tx, -30.0, 0.5);
+
+  // Released without a fling: the screen is drawn exactly.
+  h->PointerUp(130, 40);
+  ASSERT_TRUE(Settle(h.host).new_frame);
+  EXPECT_EQ(h->FrameWidth(), 200);
+  EXPECT_NEAR(h->Placement().tx, 0.0, 1e-6);
+}
+
 TEST(DeskHost, StatusReportsScaleAndCursor) {
   HostRef h;
   h->Resize(200, 100, 1.0, 0.25);
@@ -308,8 +338,11 @@ TEST(DeskHost, MenusFlattenInPreorderWithShortcuts) {
     EXPECT_NE(e.id, "map.zoom_out");
     EXPECT_NE(e.id, "map.recenter");
   }
-  EXPECT_EQ(h->ToolbarEntryAt(0).id.rfind("editor.mode.", 0), 0u);
-  EXPECT_TRUE(h->ToolbarEntryAt(0).checkable);
+  // The layers toggle, a gap, then the editor modes.
+  EXPECT_EQ(h->ToolbarEntryAt(0).id, "overlay.layers_panel");
+  EXPECT_EQ(h->ToolbarEntryAt(1).kind, fv::desk::kMenuSeparator);
+  EXPECT_EQ(h->ToolbarEntryAt(2).id.rfind("editor.mode.", 0), 0u);
+  EXPECT_TRUE(h->ToolbarEntryAt(2).checkable);
   for (int i = 0; i < h->MenuEntryCount(); ++i) {
     const HostMenuEntry e = h->MenuEntryAt(i);
     if (e.id.rfind("map.projection.", 0) == 0) EXPECT_TRUE(e.checkable) << e.id;
@@ -1509,4 +1542,52 @@ TEST(DeskHost, LayerFieldsAndNewLayerFlattenForAShell) {
   EXPECT_EQ(h->CreateNewLayer(), "");
   EXPECT_FALSE(h->NewLayerOpen());
   EXPECT_TRUE(std::filesystem::exists(scratch.Path("monuments.geojson")));
+}
+
+TEST(DeskHost, MapMenuFlattensAndRunsGetInfoAndEditRoute) {
+  HostRef h;
+  h->Resize(200, 100, 1.0, 0.25);
+  const std::string route_mode = std::string("editor.mode.") + fv::RouteOverlay::kTypeId;
+  ASSERT_EQ(h->Execute(route_mode), "");
+  h->Tick();
+  h->WaitForRender();
+  h->Tick();  // the route now has a projection to place clicks with
+  ASSERT_TRUE(h->KeyDown('A', 'a', false, false, false, false));
+  h->PointerDown(40, 50);
+  h->PointerUp(40, 50);
+  h->PointerDown(160, 50);
+  h->PointerUp(160, 50);
+  ASSERT_EQ(h->Execute(route_mode), "");  // leaves the editor
+  ASSERT_FALSE(h->IsChecked(route_mode));
+
+  EXPECT_EQ(h->OpenMapMenu(100, 95), 0);
+  const int n = h->OpenMapMenu(100, 50);
+  ASSERT_GT(n, 0);
+  int info = -1, edit = -1;
+  for (int i = 0; i < n; ++i) {
+    const fv::desk::HostMenuEntry e = h->MapMenuEntryAt(i);
+    EXPECT_EQ(e.depth, 0);
+    if (e.label == "Get Info\u2026") info = i;
+    if (e.label == "Edit Route\u2026") edit = i;
+  }
+  ASSERT_GE(info, 0);
+  ASSERT_GE(edit, 0);
+  EXPECT_EQ(h->MapMenuEntryAt(info).kind, fv::desk::kMenuCommand);
+  EXPECT_TRUE(h->MapMenuEntryEnabled(info));
+  h->RunMapMenuEntry(info);
+  EXPECT_TRUE(h->Tick().info_requested);
+  EXPECT_TRUE(h->TakeItemInfoRequest());
+  EXPECT_FALSE(h->TakeItemInfoRequest());
+  EXPECT_FALSE(h->ItemInfoTitle().empty());
+  ASSERT_GT(h->ItemInfoCount(), 0);
+  EXPECT_EQ(h->ItemInfoSection(0), "Route");
+  EXPECT_EQ(h->ItemInfoKey(0), "Name");
+  EXPECT_EQ(h->ItemInfoValue(-1), "");
+
+  // The menu is spent once run; Edit Route… needs a fresh one.
+  h->RunMapMenuEntry(edit);
+  EXPECT_FALSE(h->IsChecked(route_mode));
+  ASSERT_GT(h->OpenMapMenu(100, 50), edit);
+  h->RunMapMenuEntry(edit);
+  EXPECT_TRUE(h->IsChecked(route_mode));
 }

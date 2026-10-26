@@ -84,6 +84,13 @@ class VectorRenderer {
   }
   double label_reference_scale() const { return label_ref_scale_; }
 
+  /// Skips a label whose text was already drawn this frame within `px` of
+  /// it, so a name carried by several overlapping features is drawn once.
+  /// Draw order is display priority, so the first placement wins. 0 = off,
+  /// the default.
+  void SetLabelRepeatPixels(double px) { label_repeat_px_ = px > 0.0 ? px : 0.0; }
+  double label_repeat_pixels() const { return label_repeat_px_; }
+
   // --- the retained scene (R3a, plan §5.4) ---------------------------------
   //
   // Every Render goes through a VectorScene; these control how long one lives.
@@ -175,6 +182,7 @@ class VectorRenderer {
   double scene_margin_ = 0.0;
   double simplify_px_ = 0.0;
   double label_ref_scale_ = 0.0;
+  double label_repeat_px_ = 0.0;
   VectorScene scene_;
   bool scene_reused_ = false;
   bool pick_enabled_ = true;

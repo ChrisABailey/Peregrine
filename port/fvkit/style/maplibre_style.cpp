@@ -1294,12 +1294,22 @@ std::string SpriteSymbolId(const std::string& name) {
   return std::string(kSpritePrefix) + name;
 }
 
+/// `c` as eight hex digits, r g b a, from `digits`. Called per styled
+/// feature, where snprintf is a measurable share of the time.
+std::string HexBytes(const FvColor& c, const char* digits) {
+  const unsigned char bytes[4] = {c.r, c.g, c.b, c.a};
+  std::string out(8, '0');
+  for (int i = 0; i < 4; ++i) {
+    out[2 * i] = digits[bytes[i] >> 4];
+    out[2 * i + 1] = digits[bytes[i] & 15];
+  }
+  return out;
+}
+
 /// "sprite:<name>#rrggbbaa": the sprite with its colour replaced (an SDF
 /// sprite) and its alpha scaled by `tint.a`.
 std::string TintedSpriteId(const std::string& name, FvColor tint) {
-  char hex[10];
-  std::snprintf(hex, sizeof hex, "#%02x%02x%02x%02x", tint.r, tint.g, tint.b, tint.a);
-  return SpriteSymbolId(name) + hex;
+  return SpriteSymbolId(name) + '#' + HexBytes(tint, "0123456789abcdef");
 }
 
 /// A generated circle or square marker, all sizes in HIMETRIC.
@@ -1311,11 +1321,7 @@ struct CircleSymbol {
   bool square = false;
 };
 
-std::string ColorHex(const FvColor& c) {
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", c.r, c.g, c.b, c.a);
-  return buf;
-}
+std::string ColorHex(const FvColor& c) { return HexBytes(c, "0123456789ABCDEF"); }
 
 bool ColorFromHex(const std::string& hex, FvColor* c) {
   if (hex.size() != 8) return false;

@@ -5,6 +5,8 @@
 
 #include "fv_desk_menu_model.h"
 
+#include <map>
+
 namespace fv {
 namespace desk {
 namespace {
@@ -76,7 +78,8 @@ std::vector<MenuSpec> DefaultMenuLayout() {
   using S = MenuSlot;
   return {
       {"file", "File",
-       {S::Sub("New Overlay", {S::Expand("overlay.new.")}), S::Cmd("overlay.open"), S::Sep(),
+       {S::Sub("New Overlay", {S::Expand("overlay.new.")}), S::Cmd("overlay.open"),
+        S::Sub("Recent Overlay", {S::Expand("file.recent.")}), S::Sep(),
         S::Cmd("file.save"), S::Cmd("file.save_as"), S::Cmd("file.close"), S::Sep(),
         S::Cmd("file.open_workspace"), S::Cmd("file.save_workspace"), S::Sep(),
         S::Cmd("file.export_image"), S::Sep(), S::Cmd("app.quit")}},
@@ -96,13 +99,15 @@ std::vector<MenuSpec> DefaultMenuLayout() {
 
 std::vector<MenuSlot> DefaultToolbarLayout() {
   using S = MenuSlot;
-  return {S::Expand("editor.mode."), S::Sep(), S::Expand("editor.tool.")};
+  return {S::Cmd("overlay.layers_panel"), S::Sep(), S::Expand("editor.mode."), S::Sep(),
+          S::Expand("editor.tool.")};
 }
 
 std::vector<MenuSlot> LayerContextLayout() {
   using S = MenuSlot;
   return {S::Cmd("layers.properties"), S::Sep(), S::Cmd("overlay.style"), S::Cmd("overlay.fields"),
           S::Cmd("overlay.attribute_table"), S::Cmd("layers.select_by_attributes"), S::Cmd("layers.clear_selection"),
+          S::Cmd("overlay.export_selection"),
           S::Sep(), S::Cmd("layers.rule.add"), S::Cmd("layers.import_style"), S::Cmd("layers.export_style"), S::Sep(),
           S::Cmd("layers.zoom_to"), S::Sep(),
           S::Cmd("layers.close")};
@@ -137,10 +142,25 @@ std::vector<MenuItem> MenuModel::ResolveSlots(const std::vector<MenuSlot>& slots
       case MenuSlot::Kind::kCommand:
         if (const Command* c = commands_.Find(s.ref)) out.push_back(ItemFor(*c));
         break;
-      case MenuSlot::Kind::kExpand:
-        for (const std::string& id : commands_.IdsWithPrefix(s.ref))
-          out.push_back(ItemFor(*commands_.Find(id)));
+      case MenuSlot::Kind::kExpand: {
+        std::map<std::string, size_t> groups;  // submenu title -> index in out
+        for (const std::string& id : commands_.IdsWithPrefix(s.ref)) {
+          const Command& c = *commands_.Find(id);
+          if (c.submenu.empty()) {
+            out.push_back(ItemFor(c));
+            continue;
+          }
+          auto it = groups.find(c.submenu);
+          if (it == groups.end()) {
+            MenuItem sub;
+            sub.label = c.submenu;
+            it = groups.emplace(c.submenu, out.size()).first;
+            out.push_back(std::move(sub));
+          }
+          out[it->second].children.push_back(ItemFor(c));
+        }
         break;
+      }
       case MenuSlot::Kind::kSubmenu: {
         MenuItem sub;
         sub.label = s.title;

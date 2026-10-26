@@ -62,6 +62,9 @@ struct Command {
   std::function<bool()> enabled;
   std::function<bool()> checked;
   std::function<void()> action;
+  /// Under an Expand slot, commands with the same non-empty `submenu` are
+  /// gathered into one submenu of that title, placed where the first falls.
+  std::string submenu;
 };
 
 /// The command table, in registration order.

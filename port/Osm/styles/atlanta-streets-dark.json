@@ -107,11 +107,7 @@
                     "bicycle": "designated"
                   }
                 }
-              ],
-              "osm": {
-                "highway": "residential",
-                "bicycle": "designated"
-              }
+              ]
             },
             {
               "id": "no-bicycles",

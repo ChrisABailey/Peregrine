@@ -46,6 +46,13 @@
 
 namespace fv {
 
+/** A cell to open by path with its extent known in advance (a CATALOG.031 row
+ *  or a cell index), so it need not be parsed until a query reaches it. */
+struct EncCellEntry {
+  std::string path;
+  GeoRect bounds;
+};
+
 class EncVectorSource : public IVectorSource {
  public:
   EncVectorSource();
@@ -75,8 +82,27 @@ class EncVectorSource : public IVectorSource {
   // from it stacks a 1:1,000,000 general cell under a 1:12,000 harbour one.
   // A band is a scale, not a place; picking cells by name is the only way to
   // say which one is wanted.
+  //
+  // A cell that cannot be read is skipped and listed in unreadable_cells();
+  // Open fails only when no cell is readable.
   Status OpenCells(const std::vector<std::string>& cell_paths,
                    const std::string& catalog_dir);
+
+  /** Opens `cells` without parsing any. A cell is parsed when a Query area
+   *  first meets its bounds; cells beyond SetMaxResidentCells are dropped
+   *  least recently used first. Layers() is every acronym in the catalogue.
+   *  Not thread-safe: Query and Describe may parse or drop cells. */
+  Status OpenIndexed(const std::vector<EncCellEntry>& cells,
+                     const std::string& catalog_dir);
+
+  /** Cap on parsed cells kept between queries; 0 (the default) keeps all.
+   *  A single query that needs more cells keeps them until the next one. */
+  void SetMaxResidentCells(size_t n);
+  size_t resident_cell_count() const;
+  /** Drops every parsed cell of an OpenIndexed source; no-op otherwise. */
+  void ReleaseCells();
+  /** Cells skipped because they could not be read, each "path: reason". */
+  const std::vector<std::string>& unreadable_cells() const;
 
   bool IsOpen() const override;
 
@@ -88,8 +114,9 @@ class EncVectorSource : public IVectorSource {
   // Cells opened, in the order their tile ids are numbered.
   size_t cell_count() const;
   const std::string& cell_path(size_t index) const;
-  // Non-empty when any open cell has update files on disk that E1 does not
-  // apply. A caller that must not show a stale chart should refuse to draw.
+  // Non-empty when any parsed cell has an update that could not be applied or
+  // was cancelled (S57Cell::StalenessWarning, one line per cell). An
+  // OpenIndexed source reports only the cells resident now.
   std::string StalenessWarning() const;
 
   // Features skipped by the last Query because their SCAMIN was smaller than
@@ -97,6 +124,8 @@ class EncVectorSource : public IVectorSource {
   size_t last_query_scamin_skipped() const;
 
  private:
+  Status QueryCells(const VectorQuery& q, std::vector<VectorFeature>* out);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

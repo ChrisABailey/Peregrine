@@ -43,6 +43,11 @@ void RenderScheduler::WaitIdle() {
   idle_.wait(lock, [this] { return stop_ || (!pending_ && !busy_); });
 }
 
+bool RenderScheduler::Busy() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return pending_ || busy_;
+}
+
 std::shared_ptr<const Frame> RenderScheduler::LastFrame() const {
   std::lock_guard<std::mutex> lock(mu_);
   return last_;

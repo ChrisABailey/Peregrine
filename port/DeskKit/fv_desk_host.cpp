@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <utility>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -73,6 +74,7 @@ class HostShell : public DeskShell {
   bool sources_requested = false;
   bool profile_requested = false;
   bool layers_requested = false;
+  bool layers_hide_requested = false;
   bool find_requested = false;
   bool form_requested = false;
   bool table_requested = false;
@@ -80,6 +82,7 @@ class HostShell : public DeskShell {
   bool fields_requested = false;
   bool new_layer_requested = false;
   bool properties_requested = false;
+  bool info_requested = false;
   bool properties_tabs = false;
   bool select_requested = false;
   bool add_rule_requested = false;
@@ -162,6 +165,7 @@ class HostShell : public DeskShell {
   void ShowDataSources() override { sources_requested = true; }
   void ShowRouteProfile() override { profile_requested = true; }
   void ShowLayers() override { layers_requested = true; }
+  void HideLayers() override { layers_hide_requested = true; }
   void ShowFind() override { find_requested = true; }
   void ShowFeatureForm() override { form_requested = true; }
   void ShowAttributeTable() override { table_requested = true; }
@@ -169,6 +173,7 @@ class HostShell : public DeskShell {
   void ShowLayerFields() override { fields_requested = true; }
   void ShowNewLayer() override { new_layer_requested = true; }
   void ShowLayerProperties() override { properties_requested = true; }
+  void ShowItemInfo() override { info_requested = true; }
   bool HostsPropertiesTabs() const override { return properties_tabs; }
   void ShowSelectByAttributes() override { select_requested = true; }
   void ShowAddRule() override { add_rule_requested = true; }
@@ -232,11 +237,16 @@ struct Job {
   uint64_t base_seq = 0;       ///< requests with the same value share a base map
   uint64_t overlay_epoch = 0;  ///< `Impl::overlay_epoch` when requested
   uint64_t map_style = 0;      ///< `Desk::MapStyleGeneration()` when requested
+  bool pan = false;            ///< a band drawn while the map pans
 };
+
+/// A pan frame draws the overlays only when the last full overlay pass took
+/// less than this; slower overlays wait for the pan to stop.
+constexpr double kPanOverlayBudget = 0.04;
 
 /// What decides the base map's pixels; a change starts a new base sequence.
 struct BaseKey {
-  uint64_t view_gen = 0;  ///< MapView generation: viewport and product
+  uint64_t view_gen = 0;  ///< MapView frame generation: all but the centre, and the product
   std::string catalog_path;
   uint64_t catalog_epoch = 0;
   uint64_t map_style = 0;
@@ -247,6 +257,31 @@ struct BaseKey {
   }
   bool operator!=(const BaseKey& o) const { return !(*this == o); }
 };
+
+/// The viewport drawn while the map pans: `live` grown by `margin` of its
+/// width and height on each side, its centre led by `lead` points the way
+/// the content moves from, so the side being uncovered has the most map.
+view::Viewport PanBand(const view::Viewport& live, double margin, const view::PointF& lead) {
+  const double mx = std::ceil(live.WidthPt() * margin), my = std::ceil(live.HeightPt() * margin);
+  const view::Viewport band = live.WithSurface(live.WidthPt() + 2 * mx, live.HeightPt() + 2 * my,
+                                               live.DisplayScale(), live.MmPerPoint());
+  const double lx = std::clamp(lead.x, -0.75 * mx, 0.75 * mx);
+  const double ly = std::clamp(lead.y, -0.75 * my, 0.75 * my);
+  return band.Panned(lx, ly);
+}
+
+/// True when the frame drawn for `drawn` still covers the screen of `live`
+/// once the content has moved by `ahead` points.
+bool FrameCovers(const view::Viewport& drawn, const view::Viewport& live, const view::PointF& ahead) {
+  const double w = live.WidthPt(), h = live.HeightPt();
+  const view::PointF corners[] = {{0, 0}, {w, 0}, {0, h}, {w, h}};
+  for (const view::PointF& c : corners) {
+    view::PointF q;
+    if (!drawn.PointFor(live.GeoAt(view::PointF{c.x - ahead.x, c.y - ahead.y}), &q)) return false;
+    if (q.x < 0 || q.y < 0 || q.x > drawn.WidthPt() || q.y > drawn.HeightPt()) return false;
+  }
+  return true;
+}
 
 /// "1,234 ft", rounded to the foot, thousands separated.
 std::string FormatFeet(double feet) {
@@ -277,10 +312,23 @@ std::string FormatPosition(const GeoPoint& g) {
 
 }  // namespace
 
+namespace {
+
+/// One entry of the map's right-click menu, with its action.
+struct MapMenuEntry {
+  HostMenuEntry entry;
+  bool enabled = true;
+  bool checked = false;
+  std::function<void()> action;
+};
+
+}  // namespace
+
 struct DeskHost::Impl {
   Settings settings;
   UserSettings user;
   std::string user_path;  // "" until LoadSettings
+  uint64_t saved_user_gen = 0;  // the user settings' generation last on disk
   HostShell shell;
   std::unique_ptr<Desk> desk;
 
@@ -296,6 +344,9 @@ struct DeskHost::Impl {
   // UI thread: the newest request posted.
   bool requested_any = false;
   BaseKey requested_base;
+  view::Viewport requested_view;  ///< the viewport of the newest request
+  bool requested_pan = false;     ///< the newest request is a pan band
+  uint64_t ticked_view_gen = 0;   ///< MapView generation at the last Tick
   uint64_t requested_epoch = 0;
   uint64_t seq = 0;       // request number, the scheduler's generation
   uint64_t base_seq = 0;  // bumped when the base key changes
@@ -314,6 +365,10 @@ struct DeskHost::Impl {
   // Read by the worker to abandon a render that a newer request overtook.
   std::atomic<uint64_t> latest_seq{0};
   std::atomic<uint64_t> latest_base_seq{0};
+  /// Seconds the last base map took to draw; how far ahead a pan band leads.
+  std::atomic<double> draw_seconds{0.1};
+  /// Seconds the last overlay pass took, or ran before it was interrupted.
+  std::atomic<double> overlay_seconds{0.0};
   // Bumped by the UI thread before it takes `stack_mu` to change overlays.
   std::atomic<uint64_t> overlay_epoch{0};
   // Held by the worker for the overlay pass and by the UI thread in Execute.
@@ -354,6 +409,8 @@ struct DeskHost::Impl {
   std::unique_ptr<view::RenderScheduler> scheduler;
 
   class StackEdit;
+  /// The map menu `OpenMapMenu` built, flattened.
+  std::vector<MapMenuEntry> map_menu;
   /// Re-reads `layer_rows` when the Desk's layer generation moved; true when it did.
   bool RefreshLayers();
   /// Runs a rule edit with the stack held, then re-reads the rows; the error message or "".
@@ -438,6 +495,7 @@ std::shared_ptr<const view::Frame> DeskHost::Impl::Render(const view::Viewport& 
   }
 
   if (!base_px_valid || base_px_seq != job.base_seq) {
+    const auto started = std::chrono::steady_clock::now();
     base_px_valid = false;
     CpuCanvas canvas(v.PixelWidth(), v.PixelHeight());
     canvas.Clear(FvColor{0, 0, 0, 255});
@@ -472,21 +530,27 @@ std::shared_ptr<const view::Frame> DeskHost::Impl::Render(const view::Viewport& 
     base_px_valid = true;
     base_view = v;
     have_base_view = true;
+    draw_seconds.store(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
   }
   base_lock.unlock();
 
   CpuCanvas canvas(v.PixelWidth(), v.PixelHeight());
   if (!HostLabelFont().empty()) canvas.SetDefaultFont(HostLabelFont());
   canvas.Buffer() = base_px;
-  {
+  if (!job.pan || overlay_seconds.load() < kPanOverlayBudget) {
     const auto stale = [this, &job, seq] {
       return latest_seq.load() != seq || overlay_epoch.load() != job.overlay_epoch;
     };
     std::lock_guard<std::mutex> lock(stack_mu);
     if (stale()) return nullptr;
+    const auto started = std::chrono::steady_clock::now();
     // A failing overlay leaves the ones below it drawn, as the base map does.
-    if (desk->overlays().DrawAll(v.Projection(), canvas, stale).code == kInterrupted)
-      return nullptr;
+    const bool interrupted =
+        desk->overlays().DrawAll(v.Projection(), canvas, stale).code == kInterrupted;
+    const double took =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (!interrupted || took > overlay_seconds.load()) overlay_seconds.store(took);
+    if (interrupted) return nullptr;
   }
 
   auto f = std::make_shared<view::Frame>();
@@ -828,7 +892,10 @@ std::string DeskHost::ApplyOptions(int kind) {
     s = kind == kOptionsMap ? m.desk->ApplyMapOptions(model)
                             : m.desk->ApplyOverlayOptions(model);
   }
-  if (s.ok() && !m.user_path.empty() && m.user.dirty()) s = m.user.Save(m.user_path);
+  if (s.ok() && !m.user_path.empty() && m.user.dirty()) {
+    s = m.user.Save(m.user_path);
+    m.saved_user_gen = m.user.Generation();
+  }
   return s.ok() ? std::string() : s.message;
 }
 
@@ -855,6 +922,7 @@ std::string DeskHost::LoadSettings(const std::string& user_settings_path) {
   else if (error.empty()) error = s.message;
   m.user.ApplyTo(m.settings);
   m.desk->SetUserSettings(&m.user);
+  m.saved_user_gen = m.user.Generation();
   m.desk->SettingsLoaded();
   return error;
 }
@@ -1905,6 +1973,14 @@ bool DeskHost::TakeLayersRequest() {
   return asked;
 }
 
+bool DeskHost::TakeLayersHideRequest() {
+  const bool asked = impl_->shell.layers_hide_requested;
+  impl_->shell.layers_hide_requested = false;
+  return asked;
+}
+
+void DeskHost::SetLayersShown(bool shown) { impl_->desk->SetLayersShown(shown); }
+
 int DeskHost::LayerCount() const { return static_cast<int>(impl_->layer_rows.size()); }
 
 std::string DeskHost::LayerName(int row) const {
@@ -2945,6 +3021,96 @@ void DeskHost::PointerDown(double x, double y, bool shift, int clicks) {
   if (!m.pointer_on_overlay) m.desk->map_view().PointerDown(view::PointF{x, y});
 }
 
+namespace {
+
+/// Appends `node`'s children to `out` in preorder, submenus before their entries.
+void FlattenMapMenu(const app::MenuNode& node, int depth,
+                    std::vector<MapMenuEntry>* out) {
+  for (const app::MenuNode& child : node.children) {
+    MapMenuEntry e;
+    e.entry.depth = depth;
+    e.entry.label = child.label;
+    e.entry.icon = child.icon;
+    e.enabled = child.enabled;
+    e.checked = child.checked;
+    if (child.is_separator()) {
+      e.entry.kind = kMenuSeparator;
+    } else if (!child.children.empty()) {
+      e.entry.kind = kMenuSubmenu;
+    } else {
+      e.entry.kind = kMenuCommand;
+      e.action = child.action;
+      if (!e.action) e.enabled = false;
+    }
+    out->push_back(std::move(e));
+    if (!child.children.empty()) FlattenMapMenu(child, depth + 1, out);
+  }
+}
+
+}  // namespace
+
+int DeskHost::OpenMapMenu(double x, double y) {
+  Impl& m = *impl_;
+  m.map_menu.clear();
+  app::MenuNode root;
+  {
+    Impl::StackEdit edit(m);
+    root = m.desk->MapContextMenu(x, y);
+  }
+  FlattenMapMenu(root, 0, &m.map_menu);
+  return static_cast<int>(m.map_menu.size());
+}
+
+HostMenuEntry DeskHost::MapMenuEntryAt(int index) const {
+  const auto& menu = impl_->map_menu;
+  return index >= 0 && index < static_cast<int>(menu.size()) ? menu[index].entry : HostMenuEntry();
+}
+
+bool DeskHost::MapMenuEntryEnabled(int index) const {
+  const auto& menu = impl_->map_menu;
+  return index >= 0 && index < static_cast<int>(menu.size()) && menu[index].enabled;
+}
+
+bool DeskHost::MapMenuEntryChecked(int index) const {
+  const auto& menu = impl_->map_menu;
+  return index >= 0 && index < static_cast<int>(menu.size()) && menu[index].checked;
+}
+
+void DeskHost::RunMapMenuEntry(int index) {
+  Impl& m = *impl_;
+  if (index < 0 || index >= static_cast<int>(m.map_menu.size())) return;
+  const std::function<void()> action = std::move(m.map_menu[index].action);
+  m.map_menu.clear();
+  if (!action) return;
+  Impl::StackEdit edit(m);
+  action();
+}
+
+bool DeskHost::TakeItemInfoRequest() {
+  const bool asked = impl_->shell.info_requested;
+  impl_->shell.info_requested = false;
+  return asked;
+}
+
+std::string DeskHost::ItemInfoTitle() const { return impl_->desk->item_info().title; }
+
+int DeskHost::ItemInfoCount() const { return static_cast<int>(impl_->desk->item_info().rows.size()); }
+
+std::string DeskHost::ItemInfoSection(int i) const {
+  const auto& rows = impl_->desk->item_info().rows;
+  return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].section : std::string();
+}
+
+std::string DeskHost::ItemInfoKey(int i) const {
+  const auto& rows = impl_->desk->item_info().rows;
+  return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].key : std::string();
+}
+
+std::string DeskHost::ItemInfoValue(int i) const {
+  const auto& rows = impl_->desk->item_info().rows;
+  return i >= 0 && i < static_cast<int>(rows.size()) ? rows[i].value : std::string();
+}
+
 void DeskHost::PanPointerDown(double x, double y) {
   Impl& m = *impl_;
   m.pointer_on_overlay = false;
@@ -3022,6 +3188,13 @@ HostTick DeskHost::Tick() {
     m.ticked_job = std::move(job);
     t.job_changed = true;
   }
+  // Settings changed outside an options dialog, such as the recent overlays.
+  // One attempt per change: a failed write is logged, not retried each tick.
+  if (!m.user_path.empty() && m.user.Generation() != m.saved_user_gen) {
+    m.saved_user_gen = m.user.Generation();
+    const Status saved = m.user.Save(m.user_path);
+    if (!saved.ok()) FV_LOG_WARNING("user settings not saved: " << saved.message);
+  }
   if (m.desk->menus().Generation() != m.ticked_menus_gen) {
     m.ticked_menus_gen = m.desk->menus().Generation();
     t.menus_changed = true;
@@ -3030,6 +3203,7 @@ HostTick DeskHost::Tick() {
   if (m.shell.sources_requested) t.sources_requested = true;
   if (m.shell.profile_requested) t.profile_requested = true;
   if (m.shell.layers_requested) t.layers_requested = true;
+  if (m.shell.layers_hide_requested) t.layers_hide_requested = true;
   if (m.shell.find_requested) t.find_requested = true;
   if (m.RefreshLayers()) t.layers_changed = true;
   if (m.shell.form_requested) t.form_requested = true;
@@ -3038,6 +3212,7 @@ HostTick DeskHost::Tick() {
   if (m.shell.fields_requested) t.fields_requested = true;
   if (m.shell.new_layer_requested) t.new_layer_requested = true;
   if (m.shell.properties_requested) t.properties_requested = true;
+  if (m.shell.info_requested) t.info_requested = true;
   if (m.shell.select_requested) t.select_requested = true;
   if (m.shell.add_rule_requested) t.add_rule_requested = true;
   if (m.shell.rule_rename_requested) t.rule_rename_requested = true;
@@ -3059,16 +3234,53 @@ HostTick DeskHost::Tick() {
     m.overlay_epoch.fetch_add(1);
     t.redraw = true;
   }
-  const view::MapView& mv = m.desk->map_view();
-  const BaseKey key{mv.Generation(), m.desk->catalog_path(), m.catalog_epoch,
+  view::MapView& mv = m.desk->map_view();
+  mv.Advance();
+  const view::Viewport& live = mv.View();
+  if (mv.Generation() != m.ticked_view_gen) {
+    m.ticked_view_gen = mv.Generation();
+    t.redraw = true;  // the placement moved
+  }
+  const BaseKey key{mv.FrameGeneration(), m.desk->catalog_path(), m.catalog_epoch,
                     m.desk->MapStyleGeneration()};
   const uint64_t epoch = m.overlay_epoch.load();
-  if (mv.View().HasSurface() &&
-      (!m.requested_any || key != m.requested_base || epoch != m.requested_epoch)) {
+  // What to draw: the live view at rest; while panning, a band larger than
+  // the screen, replaced one draw ahead of the screen leaving it. A pan
+  // never interrupts a draw, so the map keeps filling in under the drag.
+  std::optional<view::Viewport> next;
+  bool new_base = false;
+  bool pan = false;
+  if (live.HasSurface()) {
     if (!m.requested_any || key != m.requested_base) {
-      ++m.base_seq;
-      m.requested_base = key;
+      next = live;
+      new_base = true;
+    } else if (mv.Panning()) {
+      // A full frame in flight is abandoned for the pan; a band is not.
+      if (!(m.requested_pan && m.scheduler->Busy())) {
+        const view::PointF v = mv.PanVelocity();
+        const double draw = std::clamp(m.draw_seconds.load(), 1.0 / 120, 0.5);
+        const double horizon = 1.5 * draw + 1.0 / 60;
+        if (!FrameCovers(m.requested_view, live, view::PointF{v.x * horizon, v.y * horizon})) {
+          const double margin = std::clamp(m.settings.GetDouble("display.pan_band_margin", 0.25), 0.0, 1.0);
+          next = PanBand(live, margin, view::PointF{v.x * draw, v.y * draw});
+          new_base = true;
+          pan = true;
+        }
+      }
+    } else if (m.requested_view != live) {
+      next = live;
+      new_base = true;
     }
+    if (!next && epoch != m.requested_epoch) {
+      next = m.requested_view;
+      pan = m.requested_pan;
+    }
+  }
+  if (next) {
+    if (new_base) ++m.base_seq;
+    m.requested_base = key;
+    m.requested_view = *next;
+    m.requested_pan = pan;
     ++m.seq;
     Job job;
     job.has_product = mv.HasProduct();
@@ -3077,13 +3289,14 @@ HostTick DeskHost::Tick() {
     job.base_seq = m.base_seq;
     job.overlay_epoch = epoch;
     job.map_style = key.map_style;
+    job.pan = pan;
     {
       std::lock_guard<std::mutex> lock(m.jobs_mu);
       m.jobs[m.seq] = std::move(job);
     }
     m.latest_base_seq.store(m.base_seq);
     m.latest_seq.store(m.seq);
-    m.scheduler->Request(mv.View(), m.seq);
+    m.scheduler->Request(*next, m.seq);
     m.requested_epoch = epoch;
     m.requested_any = true;
     t.redraw = true;

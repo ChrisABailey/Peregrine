@@ -127,6 +127,59 @@ TEST(RoutePlanner, AThroughRouteCarriesItsTurnList) {
   EXPECT_NEAR(plan.maneuvers.back().distance_m, joined_m, 1.0);
 }
 
+// The road runs cover the whole route, so per-road metres compare between plans.
+TEST(RoutePlanner, AThroughRouteCarriesItsRoadRuns) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+
+  const RoutePlan plan = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  ASSERT_TRUE(plan.found) << plan.status;
+  ASSERT_FALSE(plan.roads.empty());
+  double sum = 0.0;
+  for (const fv::routing::RouteLeg& leg : plan.roads) sum += leg.length_m;
+  EXPECT_NEAR(plan.length_m, sum, 1.0);
+}
+
+fv::routing::RouteLeg RoadRun(const std::string& name, double meters) {
+  fv::routing::RouteLeg leg;
+  leg.name = name;
+  leg.length_m = meters;
+  return leg;
+}
+
+TEST(RoadDropped, NamesTheRoadThatLostTheMostMetres) {
+  RoutePlan before, after;
+  before.roads = {RoadRun("Flyaway Drive", 400), RoadRun("", 900), RoadRun("Kiawah Island Parkway", 1500),
+                  RoadRun("Flyaway Drive", 300)};
+  after.roads = {RoadRun("Flyaway Drive", 700), RoadRun("Bike path", 1800), RoadRun("Kiawah Island Parkway", 200)};
+  EXPECT_EQ("Kiawah Island Parkway", fv::RoadDropped(before, after));
+}
+
+TEST(RoadDropped, IgnoresUnnamedRoadsAndSmallOrPartialLosses) {
+  RoutePlan before, after;
+  // Unnamed loses everything; A loses 80 m (under 100); B keeps 60%.
+  before.roads = {RoadRun("", 2000), RoadRun("A", 80), RoadRun("B", 1000)};
+  after.roads = {RoadRun("C", 2000), RoadRun("B", 600)};
+  EXPECT_EQ("", fv::RoadDropped(before, after));
+  EXPECT_EQ("A", fv::RoadDropped(before, after, 50.0));
+}
+
+TEST(RoadDropped, TiesGoToTheFirstRoadRidden) {
+  RoutePlan before, after;
+  before.roads = {RoadRun("First", 500), RoadRun("Second", 500)};
+  after.roads = {RoadRun("Other", 1000)};
+  EXPECT_EQ("First", fv::RoadDropped(before, after));
+}
+
+TEST(RoadDropped, EmptyWithoutRoadsOnEitherPlan) {
+  RoutePlan before, after;
+  before.roads = {RoadRun("A", 1000)};
+  EXPECT_EQ("", fv::RoadDropped(before, after));
+  EXPECT_EQ("", fv::RoadDropped(after, before));
+}
+
 // A plan that fell back to straight legs is not one to be guided along.
 TEST(RoutePlanner, ThePerPairFallbackCarriesNoTurnList) {
   SKIP_WITHOUT_GRAPH();
@@ -194,6 +247,58 @@ TEST(RoutePlanner, AProfileTheRuleFileDoesNotHaveIsReportedOnceAndNotDrawn) {
   // The bicycle test is on the NAME, so a profile nobody defined is still
   // classified — the line has to be styled before the route is priced.
   EXPECT_FALSE(plan.is_bicycle);
+}
+
+/// Whether two plans drew exactly the same legs.
+bool SameLegs(const RoutePlan& a, const RoutePlan& b) {
+  if (a.legs.size() != b.legs.size()) return false;
+  for (size_t i = 0; i < a.legs.size(); ++i) {
+    if (a.legs[i].size() != b.legs[i].size()) return false;
+    for (size_t j = 0; j < a.legs[i].size(); ++j) {
+      if (a.legs[i][j].lat != b.legs[i][j].lat || a.legs[i][j].lon != b.legs[i][j].lon)
+        return false;
+    }
+  }
+  return true;
+}
+
+// The rider's adjustments reach the router; an empty map, or one holding the
+// shipped values, plans exactly what the rule file plans.
+TEST(RoutePlanner, ProfileOverridesReachThePlan) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  const RoutePlan base = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  ASSERT_TRUE(base.found) << base.status;
+
+  opts.overrides = {{"classes.residential", 0.75}, {"classes.cycleway", 0.7}};
+  const RoutePlan same = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  ASSERT_TRUE(same.found) << same.status;
+  EXPECT_TRUE(SameLegs(same, base));
+  EXPECT_EQ(same.seconds, base.seconds);
+
+  opts.overrides = {{"classes.cycleway", fv::routing::kClassExcluded}};
+  const RoutePlan off = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  ASSERT_TRUE(off.found) << off.status;
+  EXPECT_FALSE(SameLegs(off, base));
+}
+
+TEST(RoutePlanner, ABadOverrideIsReportedOnceAndNotDrawn) {
+  SKIP_WITHOUT_GRAPH();
+  RoutePlanner planner(graph_path, FV_ROUTE_RULES_FILE);
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  opts.overrides = {{"classes.spaceway", 1.0}};
+  const RoutePlan plan = planner.Plan({kRuddyTurnstone, kBeachClub}, opts);
+  EXPECT_FALSE(plan.found);
+  EXPECT_TRUE(plan.legs.empty());
+  EXPECT_NE(std::string::npos, plan.status.find("spaceway")) << plan.status;
+
+  // Overrides adjust a profile; without one there is nothing to adjust.
+  opts.profile.clear();
+  opts.overrides = {{"classes.cycleway", 0.5}};
+  EXPECT_FALSE(planner.Plan({kRuddyTurnstone, kBeachClub}, opts).found);
 }
 
 TEST(RoutePlanner, FewerThanTwoWaypointsIsAnAnswerAndNotAnEruption) {

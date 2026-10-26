@@ -77,9 +77,15 @@
 // "legend_tiers" names a map legend row by its cost per metre relative to the
 // profile's own speed: [[bound, "word"], ...] with ascending bounds, the last
 // [null, "word"]. A row takes the word of the first bound it does not exceed;
-// a way the profile may not use is "Never". "legend_baseline" is the raw OSM
-// tags of the street the legend compares each row with ("ride up to 33%
-// further to use this"). Both default to the values written out below.
+// a way the profile may not use is "Never". It defaults to the value written
+// out below, whose bounds sit midway (geometrically) between the key's class
+// slider stops so an unmodified row's word matches its slider. The legend's
+// sentences compare each row with factor 1.0.
+//
+// "key_locks" { "setting": "reason", ... } shows a map key row with a lock and
+// that reason instead of a slider; settings are named as the key names them
+// ("classes.motorway", "bike_lane_factor.lane"). A class the profile excludes
+// but does not lock is offered on the slider at Never. Overlaid under "extends".
 //
 // "hills" changes an arc's seconds by the climb and descent the graph carries
 // for it (fvgraph build --dem), in the cost and the reported time alike:
@@ -194,10 +200,12 @@
       // saving, unless the way says bicycle=designated.
       "golf_cartpath_penalty": "exclude",
       "golf_path_penalty": 10.0,
+      // The key offers no slider for a way the law closes to bikes.
+      "key_locks": { "classes.motorway": "Interstates are closed to bicycles.",
+                     "classes.motorway_link": "Interstate ramps are closed to bicycles." },
 
-      "legend_tiers": [[0.75, "Most preferred"], [1.0, "Preferred"], [2.0, "Acceptable"],
-                       [5.0, "Avoided"], [null, "Last resort"]],
-      "legend_baseline": { "highway": "residential" }
+      "legend_tiers": [[0.735, "Most preferred"], [1.16, "Preferred"], [2.29, "Acceptable"],
+                       [5.29, "Avoided"], [null, "Last resort"]]
     },
 
     // -----------------------------------------------------------------------
@@ -230,7 +238,9 @@
       "beach_penalty": "exclude",
       "beach_prefer_factor": 0.5,
       // Cart paths are for carts, not walkers.
-      "golf_cartpath_penalty": "exclude"
+      "golf_cartpath_penalty": "exclude",
+      "key_locks": { "classes.motorway": "Interstates are closed to pedestrians.",
+                     "classes.motorway_link": "Interstate ramps are closed to pedestrians." }
     },
 
     // -----------------------------------------------------------------------

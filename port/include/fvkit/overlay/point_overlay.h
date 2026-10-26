@@ -175,7 +175,8 @@ class PointOverlay : public Overlay,
                      public app::ContextMenu,
                      public app::EditTarget,
                      public app::EditHint,
-                     public app::SearchProvider {
+                     public app::SearchProvider,
+                     public app::ItemInfo {
  public:
   explicit PointOverlay(std::string name = "Points");
   ~PointOverlay() override;
@@ -192,6 +193,7 @@ class PointOverlay : public Overlay,
   app::EditTarget* AsEditTarget() override { return this; }
   app::SearchProvider* AsSearch() override { return this; }
   app::EditHint* AsEditHint() override { return this; }
+  app::ItemInfo* AsItemInfo() override { return this; }
   std::string EditHintAt(PixelPoint p) override;
 
   // --- drawing ------------------------------------------------------------
@@ -384,6 +386,10 @@ class PointOverlay : public Overlay,
 
   void AppendMenuItems(const MapProjection& proj, PixelPoint p,
                        app::MenuNode& menu) override;
+
+  /// The nearest point's fields; Edit Point… selects it.
+  std::optional<app::ItemInfoSheet> InfoAt(const MapProjection& proj, PixelPoint p,
+                                           double tolerance_px) override;
 
   // --- SearchProvider -----------------------------------------------------
 

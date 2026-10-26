@@ -37,6 +37,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -105,6 +106,25 @@ class PointStore {
 
   bool RemovePoint(int64_t id);
 
+  // --- dragging a point ---------------------------------------------------
+
+  // Takes hold of `id`. False when there is no such row. While held, moves
+  // redraw the point and write nothing; the release writes once.
+  bool BeginDrag(int64_t id);
+
+  // Moves the held point. False when nothing is held.
+  bool DragTo(const fv::GeoPoint& position);
+
+  // Lets go at `position` and persists. A release where the press landed
+  // writes nothing. Returns whether the document changed.
+  bool EndDrag(const fv::GeoPoint& position);
+
+  // Puts the held point back where it was. Nothing is written.
+  void CancelDrag();
+
+  // The id held, or 0.
+  int64_t dragging() const { return drag_original_ ? drag_original_->id : 0; }
+
   // --- what is under a finger ---------------------------------------------
 
   // The nearest point within `tolerance_px` of `p`, or 0.
@@ -163,6 +183,8 @@ class PointStore {
 
   std::string last_write_error_;
   bool seeded_ = false;
+  // The held point as it was before the drag, for `CancelDrag`.
+  std::optional<fv::MapPoint> drag_original_;
 };
 
 }  // namespace pippin

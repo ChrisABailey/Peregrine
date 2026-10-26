@@ -946,7 +946,7 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
       elev_source = graph_.node_elevation_m(graph_.ArcSource(step.arc));
       elev_target = graph_.node_elevation_m(arc.target);
       if (i == 0)
-        out->profile.push_back({0.0, elev_source + step.t0 * (elev_target - elev_source)});
+        out->profile.push_back({0.0, elev_source + step.t0 * (elev_target - elev_source), 0u});
     }
     // Read before this step pushes anything: the previous step's end point is
     // this one's start, and on the first step the next push is index 0.
@@ -988,8 +988,8 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
     if (out->has_elevation) {
       out->climb_m += f * (step.stored_order() ? arc.climb_m() : arc.descent_m());
       out->descent_m += f * (step.stored_order() ? arc.descent_m() : arc.climb_m());
-      out->profile.push_back(
-          {out->length_m, elev_source + step.t1 * (elev_target - elev_source)});
+      out->profile.push_back({out->length_m, elev_source + step.t1 * (elev_target - elev_source),
+                              static_cast<uint32_t>(out->geometry.size()) - 1u});
     }
 
     if (out->legs.empty() || arc.name != leg_name || arc.klass != leg_class) {

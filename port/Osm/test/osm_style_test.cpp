@@ -1665,7 +1665,8 @@ void ExpectLegendLoadsAndEveryRowDraws(const char* dir, const char* light, const
     for (const fv::MapLibreLegendGroup& g : e->legend()) {
       for (const fv::MapLibreLegendEntry& entry : g.entries) {
         ids.push_back(entry.id);
-        EXPECT_FALSE(entry.osm.empty()) << name << ": " << entry.id;
+        // "designated" explains a map colour but is not a routing row in the key.
+        EXPECT_EQ(entry.osm.empty(), entry.id == "designated") << name << ": " << entry.id;
         const double from = fv::LegendEntryMinZoom(*e, entry);
         ASSERT_GE(from, 0.0) << name << ": " << entry.id << " draws at no zoom";
         const double z = std::max(16.0, from);

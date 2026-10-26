@@ -29,6 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+@interface PPRouteLeg ()
+- (instancetype)initWithLeg:(const pippin::RouteLeg &)leg;
+@end
+
 @interface PPElevationSample ()
 - (instancetype)initWithAlong:(double)alongMeters elevation:(double)elevationMeters;
 @end

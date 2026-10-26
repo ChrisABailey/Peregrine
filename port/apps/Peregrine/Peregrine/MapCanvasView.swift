@@ -182,6 +182,11 @@ final class MapCanvasView: NSView {
 
     override func mouseDown(with e: NSEvent) {
         window?.makeFirstResponder(self)
+        // Control-click is a right click; menu(for:) builds its menu.
+        if e.modifierFlags.contains(.control) {
+            super.mouseDown(with: e)
+            return
+        }
         let p = point(e)
         if spaceHeld {
             NSCursor.closedHand.set()
@@ -200,6 +205,49 @@ final class MapCanvasView: NSView {
         let p = point(e)
         host.PointerUp(p.x, p.y)
         if spaceHeld { NSCursor.openHand.set() }
+    }
+
+    /// The map's right-click menu from `DeskHost.OpenMapMenu`; nil when nothing
+    /// is under the pointer, so no empty menu opens.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let p = point(event)
+        let count = host.OpenMapMenu(p.x, p.y)
+        guard count > 0 else { return nil }
+        let root = NSMenu()
+        root.autoenablesItems = false
+        // The menu that holds entries of each depth; a submenu entry opens the next.
+        var menus: [NSMenu] = [root]
+        for i in 0..<count {
+            let entry = host.MapMenuEntryAt(i)
+            let depth = Int(entry.depth)
+            guard depth < menus.count else { continue }
+            menus.removeSubrange((depth + 1)...)
+            let menu = menus[depth]
+            switch entry.kind {
+            case fv.desk.kMenuSeparator:
+                if menu.items.last.map({ !$0.isSeparatorItem }) ?? false { menu.addItem(.separator()) }
+            case fv.desk.kMenuSubmenu:
+                let item = NSMenuItem(title: String(entry.label), action: nil, keyEquivalent: "")
+                let sub = NSMenu(title: String(entry.label))
+                sub.autoenablesItems = false
+                item.submenu = sub
+                menu.addItem(item)
+                menus.append(sub)
+            default:
+                let item = NSMenuItem(title: String(entry.label), action: #selector(runMapMenuEntry(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.tag = Int(i)
+                item.isEnabled = host.MapMenuEntryEnabled(i)
+                item.state = host.MapMenuEntryChecked(i) ? .on : .off
+                menu.addItem(item)
+            }
+        }
+        return root
+    }
+
+    @objc private func runMapMenuEntry(_ sender: NSMenuItem) {
+        host.RunMapMenuEntry(Int32(sender.tag))
     }
 
     /// A trackpad pans; a wheel takes one ladder step per notch, rolled away

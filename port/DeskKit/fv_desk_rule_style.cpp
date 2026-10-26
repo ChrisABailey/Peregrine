@@ -545,7 +545,7 @@ Status RuleStyleModel::FillFieldValues(size_t k) {
   const int fi = schema.Find(v.field);
   if (fi < 0) return Status::Error(kNotFound, "no field \"" + v.field + "\"");
   std::vector<Feature> all;
-  Status s = overlay_->layer()->All(&all);
+  Status s = overlay_->AllShown(&all);
   if (!s.ok()) return s;
   std::set<std::string> keys;
   for (const Feature& f : all) {

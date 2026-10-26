@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -83,6 +84,9 @@ class GeoPackage : public std::enable_shared_from_this<GeoPackage> {
   /// curve type or an SRS that is not WGS-84 degrees (EPSG:4326, OGC:CRS84, an
   /// equivalent WKT definition) or undefined geographic.
   Status OpenLayer(const std::string& table, std::shared_ptr<GeoPackageFeatureLayer>* out);
+  /// The layer of `table` opened earlier and still held somewhere, so a
+  /// caller can share its edits; null when none is.
+  std::shared_ptr<GeoPackageFeatureLayer> FindOpenLayer(const std::string& table) const;
   /// Adds an empty feature table with its index and metadata, inside the edit
   /// transaction. kInvalidArg for an invalid schema, a reserved or taken table
   /// name; kUnsupported when the schema has a blob field with a choice list.
@@ -149,6 +153,9 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   Status All(std::vector<Feature>* out) const override;
   /// Uses the R-tree when the table has one, then checks each envelope.
   Status Query(const GeoRect& box, std::vector<Feature>* out) const override;
+  /// Reads only the columns `fields` marks; an empty `fields` reads all.
+  Status QueryFields(const GeoRect& box, const std::vector<bool>& fields,
+                     std::vector<Feature>* out) const override;
   Status Get(int64_t id, Feature* out) const override;
   /// Geometry must match the layer's type and Z/M; values the schema.
   Status Insert(Feature* feature) override;
@@ -161,6 +168,10 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   /// triggers and indexes, and rewrites the field metadata. A new field may
   /// not take the id or geometry column's name.
   Status ChangeSchema(const SchemaChange& change) override;
+  bool Revision(uint64_t* out) const override {
+    *out = revision_;
+    return true;
+  }
 
   /// True when the layer holds edits not yet written to the file.
   bool HasEdits() const { return rebuild_ || !edits_.empty(); }
@@ -169,6 +180,8 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   /// Other layers' edits stay unsaved. On failure nothing this call wrote
   /// stays in the file's transaction.
   Status Save(const std::string* style_json = nullptr);
+  /// Drops this layer's unsaved edits; the file's other layers keep theirs.
+  void DiscardEdits() { ClearEdits(/*saved=*/false); }
 
   const std::string& Table() const { return table_; }
   const std::shared_ptr<GeoPackage>& Package() const { return package_; }
@@ -186,8 +199,10 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
 
   /// Reads `table_`'s schema, geometry column and metadata from the file.
   Status Load();
+  /// Rows matching `where_sql`, in id order. A field `fields` marks false is
+  /// read as null; null `fields` reads every one.
   Status Select(const std::string& where_sql, const std::vector<int64_t>& ids,
-                std::vector<Feature>* out) const;
+                std::vector<Feature>* out, const std::vector<bool>* fields = nullptr) const;
   /// `stored` with this layer's edits applied, in id order.
   void Merge(std::vector<Feature>* stored, const GeoRect* box) const;
   Status CheckFeature(Feature* feature) const;
@@ -201,6 +216,11 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   Status RebuildTable();
   /// Forgets the edits after they were committed (`saved`) or discarded.
   void ClearEdits(bool saved);
+  /// Reads the stored rows' boxes into `scan_`, continuing after the last row
+  /// an interrupted read reached.
+  Status ScanEnvelopes() const;
+  /// The stored rows whose box meets `box`, from `scan_`, in id order.
+  Status SelectScanned(const GeoRect& box, std::vector<Feature>* out, const std::vector<bool>* fields) const;
 
   std::shared_ptr<GeoPackage> package_;
   std::string table_;
@@ -218,6 +238,19 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   /// The schema changed: `edits_` holds every row and `Save` rebuilds the table.
   bool rebuild_ = false;
   int64_t next_id_ = 0;  ///< 0 until the first insert reads it from the file
+  uint64_t revision_ = 0;
+
+  /// Every stored row's id and x/y box, for a table without an R-tree. The
+  /// first `Query` reads it; a save that writes the table drops it.
+  struct EnvelopeScan {
+    std::vector<int64_t> ids;
+    std::vector<float> boxes;  ///< min x, max x, min y, max y per id, rounded outward
+    int64_t last_id = 0;       ///< the last row read, when `started`
+    bool started = false;
+    bool complete = false;
+  };
+  mutable EnvelopeScan scan_;
+  mutable std::mutex scan_mu_;  ///< queries come from the draw worker and the UI thread
 };
 
 }  // namespace fv

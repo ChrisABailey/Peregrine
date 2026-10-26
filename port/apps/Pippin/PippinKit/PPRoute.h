@@ -99,6 +99,17 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) double elevationMeters;
 @end
 
+/// One straight leg between consecutive waypoints, measured as a rhumb line.
+NS_SWIFT_SENDABLE
+@interface PPRouteLeg : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// Constant course, degrees true, [0, 360).
+@property(nonatomic, readonly) double courseDegrees;
+@property(nonatomic, readonly) double distanceMeters;
+/// NO when the pair could not be measured (coincident points, a pole).
+@property(nonatomic, readonly) BOOL isMeasured;
+@end
+
 /// The route, photographed. Every field is meaningful when `isCalculated` is
 /// NO — that is the state the status line exists for.
 NS_SWIFT_SENDABLE
@@ -150,6 +161,11 @@ NS_SWIFT_SENDABLE
 /// where there is not.
 @property(nonatomic, readonly) BOOL isComplete;
 @property(nonatomic, readonly) NSInteger straightLegs;
+
+/// The pack plans no roads: waypoints are joined by rhumb lines, `legs` has
+/// one entry per leg and `lengthMeters` is their sum. `isCalculated` is NO.
+@property(nonatomic, readonly) BOOL isStraight;
+@property(nonatomic, readonly, copy) NSArray<PPRouteLeg *> *legs;
 
 /// Priced as a bicycle route, which is why the line is drawn dashed. Derived
 /// from the profile name, which is right for the two modes this app has a

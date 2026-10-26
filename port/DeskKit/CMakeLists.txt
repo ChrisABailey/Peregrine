@@ -69,8 +69,11 @@ if(FVW_BUILD_TESTS)
     test/feature_editor_test.cpp
     test/layer_style_test.cpp
     test/layer_fields_test.cpp
+    test/export_selection_test.cpp
     test/layer_properties_test.cpp
+    test/map_menu_test.cpp
     test/query_test.cpp
+    test/recent_overlays_test.cpp
     test/host_test.cpp
     test/launch_test.cpp
     test/map_groups_test.cpp

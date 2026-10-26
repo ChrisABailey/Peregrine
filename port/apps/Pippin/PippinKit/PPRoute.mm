@@ -42,6 +42,19 @@ std::string Cxx(NSString* _Nullable s) {
 
 @end
 
+@implementation PPRouteLeg
+
+- (instancetype)initWithLeg:(const pippin::RouteLeg&)leg {
+  self = [super init];
+  if (self == nil) return nil;
+  _courseDegrees = leg.course_deg;
+  _distanceMeters = leg.distance_m;
+  _isMeasured = leg.ok ? YES : NO;
+  return self;
+}
+
+@end
+
 @implementation PPBeachStretch
 
 - (instancetype)initWithStretch:(const fv::RouteBeachStretch*)stretch
@@ -143,6 +156,11 @@ std::string Cxx(NSString* _Nullable s) {
   _isCalculated = snapshot.calculated ? YES : NO;
   _isComplete = snapshot.complete ? YES : NO;
   _straightLegs = (NSInteger)snapshot.straight_legs;
+  _isStraight = snapshot.straight ? YES : NO;
+  NSMutableArray<PPRouteLeg*>* legs = [NSMutableArray arrayWithCapacity:snapshot.legs.size()];
+  for (const pippin::RouteLeg& leg : snapshot.legs)
+    [legs addObject:[[PPRouteLeg alloc] initWithLeg:leg]];
+  _legs = [legs copy];
   _isBicycle = snapshot.is_bicycle ? YES : NO;
   _lengthMeters = snapshot.length_m;
   _seconds = snapshot.seconds;

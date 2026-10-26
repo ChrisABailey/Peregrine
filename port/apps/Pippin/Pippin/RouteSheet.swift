@@ -24,8 +24,9 @@ struct RouteStop: Identifiable, Equatable {
     var coordinate: PPGeoPoint?
 
     /// The name the rider chose when the stop came from a search, or nil.
-    /// Display only: document labels stay positional ("Start", "Via 1",
-    /// "End") because two waypoints sharing a label would delete as a pair.
+    /// Display only: document labels stay positional ("Start", "Via 1" or
+    /// "WP 1", "End") because two waypoints sharing a label would delete as
+    /// a pair.
     /// Filling the row any other way clears this.
     var name: String?
 
@@ -44,11 +45,14 @@ final class RouteDraft: ObservableObject {
         case stops
     }
 
-    @Published var phase: Phase = .search
+    @Published var phase: Phase = RouteDraft.emptyPhase
     @Published var stops: [RouteStop] = [RouteStop(), RouteStop()]
     @Published var profile: String = "bicycle"
     @Published var beachUse: PPBeachUse = RouteDraft.lastBeachUse
     @Published var avoidHills: Bool = RouteDraft.lastAvoidHills
+
+    /// The phase an empty draft opens on.
+    static var emptyPhase: Phase { AppFlavor.current.appendsStops ? .stops : .search }
 
     /// The "Use beach:" setting a new route starts with: the last one chosen.
     static var lastBeachUse: PPBeachUse {
@@ -77,12 +81,40 @@ final class RouteDraft: ObservableObject {
     func label(at index: Int) -> String {
         if index == 0 { return "Start" }
         if index == stops.count - 1 { return "End" }
-        return "Via \(index)"
+        return "\(AppFlavor.current.intermediateStopPrefix) \(index)"
     }
 
     /// Inserts a via before the End.
     func addVia() {
         stops.insert(RouteStop(), at: max(1, stops.count - 1))
+    }
+
+    /// Adds an empty stop after the End; the old End becomes the last via.
+    func appendStop() {
+        stops.append(RouteStop())
+    }
+
+    /// Places a tapped coordinate: it fills the first stop with no position,
+    /// or becomes a new End when every stop has one.
+    func appendTapped(_ coordinate: PPGeoPoint, named name: String?) {
+        if let empty = stops.firstIndex(where: { $0.coordinate == nil }) {
+            stops[empty].coordinate = coordinate
+            stops[empty].name = name
+        } else {
+            stops.append(RouteStop(coordinate: coordinate, name: name))
+        }
+    }
+
+    /// Takes back the last placed stop: it is removed while more than two
+    /// stops remain, otherwise its position is cleared.
+    func removeLastPlaced() {
+        guard let last = stops.lastIndex(where: { $0.coordinate != nil }) else { return }
+        if stops.count > 2 {
+            stops.remove(at: last)
+        } else {
+            stops[last].coordinate = nil
+            stops[last].name = nil
+        }
     }
 
     /// Reverses the stops, so the route runs from the End back to the Start.
@@ -116,7 +148,7 @@ final class RouteDraft: ObservableObject {
             stops = [RouteStop(), RouteStop()]
             beachUse = Self.lastBeachUse
             avoidHills = Self.lastAvoidHills
-            phase = .search
+            phase = Self.emptyPhase
             return
         }
         stops = route.waypoints.map { RouteStop(coordinate: $0.coordinate) }
@@ -165,6 +197,12 @@ struct RouteSheet: View {
     let elevationAvailable: Bool
     /// The pack's tide table, or nil.
     let tide: PPTide?
+    /// The pack joins stops with rhumb lines; there is no mode to pick.
+    let straightLegs: Bool
+
+    /// The beach controls need a beach in the graph and a flavor that rides it.
+    private var showsBeach: Bool { beachAvailable && AppFlavor.current.showsBeach }
+    private var showsHills: Bool { elevationAvailable && AppFlavor.current.showsHills }
 
     /// Search callback, handed in so this view never sees `MapModel`.
     let search: (String) async -> [PPSearchResult]
@@ -175,6 +213,8 @@ struct RouteSheet: View {
     let onSearched: (String) -> Void
 
     let onPick: (Int) -> Void
+    /// Dismisses into tapping stops onto the end of the route; nil hides it.
+    var onAddOnMap: (() -> Void)? = nil
     /// A search result was chosen. The sheet has already written the
     /// coordinate into the draft; the caller moves the camera.
     let onFrame: (PPSearchResult) -> Void
@@ -188,12 +228,27 @@ struct RouteSheet: View {
     let onBeachChange: (PPBeachUse) -> Void
     /// The "Avoid hills" toggle changed; handled like `onProfileChange`.
     let onHillsChange: (Bool) -> Void
+    /// The route is drawn coloured by grade; shown with "Avoid hills".
+    let slopeColors: Bool
+    let onSlopeColorsChange: (Bool) -> Void
     let onClear: () -> Void
     let onCancel: () -> Void
+    /// True in the iPad side panel: the confirm button reads Apply and the
+    /// caller keeps the panel open after it, so Cancel reads Close.
+    var appliesInPlace = false
+    /// Map-key settings adjusted on the draft's profile; the chip shows when
+    /// above zero.
+    var adjustedCount = 0
+    /// Opens the map key on its Adjusted rows; nil hides the chip.
+    var onOpenPreferences: (() -> Void)? = nil
+    /// The route on the map as a share-sheet payload, or nil when it cannot
+    /// be shared. Nil hides the Share row.
+    var shareRoute: (() -> SharePayload?)? = nil
 
     @ObservedObject private var windFeed = WindFeed.shared
     /// The tide card, presented over this sheet.
     @State private var tidesShown = false
+    @State private var sharing: SharePayload?
 
     var body: some View {
         Group {
@@ -209,7 +264,7 @@ struct RouteSheet: View {
         // on the other.
         .presentationDetents([.medium, .large])
         // Only a pack with a beach has anything for the wind to say here.
-        .onAppear { if beachAvailable { windFeed.refresh() } }
+        .onAppear { if showsBeach { windFeed.refresh() } }
     }
 
     // MARK: - Phase one: search
@@ -253,13 +308,27 @@ struct RouteSheet: View {
                     }
                     // Borderless so each button takes its own taps; a Form row
                     // otherwise fires every button in it.
-                    HStack {
-                        Button {
-                            draft.addVia()
-                        } label: {
-                            Label("Add via", systemImage: "plus.circle")
+                    if let onAddOnMap {
+                        Button(action: onAddOnMap) {
+                            Label("Add Stops on Map", systemImage: "hand.tap")
                         }
-                        .buttonStyle(.borderless)
+                    }
+                    HStack {
+                        if AppFlavor.current.appendsStops {
+                            Button {
+                                draft.appendStop()
+                            } label: {
+                                Label("Add stop", systemImage: "plus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                        } else {
+                            Button {
+                                draft.addVia()
+                            } label: {
+                                Label("Add via", systemImage: "plus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                        }
                         Spacer()
                         Button {
                             draft.reverse()
@@ -287,50 +356,84 @@ struct RouteSheet: View {
                     }
                 }
 
-                Section {
-                    Picker("Mode", selection: $draft.profile) {
-                        ForEach(Self.offeredModes(profileNames), id: \.profile) { mode in
-                            Text(mode.title).tag(mode.profile)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    // Inside the stops phase so it exists only while the
-                    // control is on screen; `load(from:)` and `onAppear` also
-                    // write `profile` and are not taps.
-                    .onChange(of: draft.profile) { _, profile in
-                        onProfileChange(profile)
-                    }
-
-                    // A menu rather than a segmented control: "Whenever
-                    // Possible" truncates in a third of a phone's width.
-                    if beachAvailable {
-                        Picker("Use beach", selection: $draft.beachUse) {
-                            Text("Never").tag(PPBeachUse.never)
-                            Text("To Save Time").tag(PPBeachUse.toSaveTime)
-                            Text("Whenever Possible").tag(PPBeachUse.wheneverPossible)
-                        }
-                        .pickerStyle(.menu)
-                        // Clear's `load(from: nil)` also writes `beachUse`,
-                        // while the cleared route is still `model.route`.
-                        .onChange(of: draft.beachUse) { _, beachUse in
-                            guard draft.phase == .stops else { return }
-                            onBeachChange(beachUse)
-                        }
-                    }
-
-                    if elevationAvailable {
-                        Toggle("Avoid hills", isOn: $draft.avoidHills)
-                            .onChange(of: draft.avoidHills) { _, avoidHills in
-                                guard draft.phase == .stops else { return }
-                                onHillsChange(avoidHills)
-                            }
-                    }
-                } footer: {
-                    if beachAvailable { beachFooter }
+                if let route, route.isStraight, !route.legs.isEmpty {
+                    legsSection(route)
                 }
 
+                if !straightLegs || showsBeach || showsHills {
+                    Section {
+                        if !straightLegs {
+                            Picker("Mode", selection: $draft.profile) {
+                                ForEach(Self.offeredModes(profileNames), id: \.profile) { mode in
+                                    Text(mode.title).tag(mode.profile)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            // Inside the stops phase so it exists only while the
+                            // control is on screen; `load(from:)` and `onAppear` also
+                            // write `profile` and are not taps.
+                            .onChange(of: draft.profile) { _, profile in
+                                onProfileChange(profile)
+                            }
+                        }
+
+                        // A menu rather than a segmented control: "Whenever
+                        // Possible" truncates in a third of a phone's width.
+                        if showsBeach {
+                            Picker("Use beach", selection: $draft.beachUse) {
+                                Text("Never").tag(PPBeachUse.never)
+                                Text("To Save Time").tag(PPBeachUse.toSaveTime)
+                                Text("Whenever Possible").tag(PPBeachUse.wheneverPossible)
+                            }
+                            .pickerStyle(.menu)
+                            // Clear's `load(from: nil)` also writes `beachUse`,
+                            // while the cleared route is still `model.route`.
+                            .onChange(of: draft.beachUse) { _, beachUse in
+                                guard draft.phase == .stops else { return }
+                                onBeachChange(beachUse)
+                            }
+                        }
+
+                        if showsHills {
+                            Toggle("Avoid hills", isOn: $draft.avoidHills)
+                                .onChange(of: draft.avoidHills) { _, avoidHills in
+                                    guard draft.phase == .stops else { return }
+                                    onHillsChange(avoidHills)
+                                }
+                            Toggle("Colour by slope", isOn: Binding(
+                                get: { slopeColors },
+                                set: { onSlopeColorsChange($0) }))
+                        }
+
+                        if !straightLegs, adjustedCount > 0, let onOpenPreferences {
+                            Button(action: onOpenPreferences) {
+                                Label("Custom preferences (\(adjustedCount))",
+                                      systemImage: "slider.horizontal.3")
+                                    .font(.subheadline)
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.small)
+                        }
+                    } footer: {
+                        if showsBeach { beachFooter }
+                    }
+                }
+
+                if let shareRoute, route?.exists == true {
+                    Section {
+                        Button {
+                            sharing = shareRoute()
+                        } label: {
+                            Label("Share Route", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
             }
             .navigationTitle("Route")
+            .sheet(item: $sharing) { payload in
+                ShareSheet(items: payload.items, subject: payload.subject)
+            }
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $tidesShown) {
                 if let tide {
@@ -339,7 +442,7 @@ struct RouteSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
+                    Button(appliesInPlace ? "Close" : "Cancel", action: onCancel)
                 }
                 // Clear is in the toolbar so it is reachable at the medium
                 // detent, shown only when there is a route, and does not
@@ -353,7 +456,7 @@ struct RouteSheet: View {
                         .accessibilityLabel("Clear Route")
                     }
                     // iOS 26 groups adjacent trailing items into one glass
-                    // capsule; Clear is destructive and must not read as part of OK.
+                    // capsule; Clear is destructive and must not read as part of OK/Apply.
                     if #available(iOS 26.0, *) {
                         ToolbarSpacer(.fixed, placement: .topBarTrailing)
                     }
@@ -362,7 +465,8 @@ struct RouteSheet: View {
                     if isPlanning {
                         ProgressView()
                     } else {
-                        Button("OK", action: onSubmit).disabled(!draft.isRoutable)
+                        Button(appliesInPlace ? "Apply" : "OK", action: onSubmit)
+                            .disabled(!draft.isRoutable)
                     }
                 }
             }
@@ -399,6 +503,29 @@ struct RouteSheet: View {
                     }
                 }
             }
+    }
+
+    /// The live route's legs, each with its course and distance.
+    private func legsSection(_ route: PPRoute) -> some View {
+        Section("Legs") {
+            ForEach(Array(route.legs.enumerated()), id: \.offset) { index, leg in
+                HStack {
+                    Text("\(Self.waypointLabel(route, index)) → \(Self.waypointLabel(route, index + 1))")
+                        .lineLimit(1)
+                    Spacer()
+                    Text(leg.isMeasured ? Course.text(leg.courseDegrees) : "—")
+                        .monospacedDigit()
+                    Text(display.units.distance(leg.distanceMeters))
+                        .monospacedDigit()
+                        .frame(minWidth: 64, alignment: .trailing)
+                }
+                .font(.subheadline)
+            }
+        }
+    }
+
+    private static func waypointLabel(_ route: PPRoute, _ index: Int) -> String {
+        route.waypoints.indices.contains(index) ? route.waypoints[index].label : "?"
     }
 
     /// Under "Use beach:": why the tide took the beach off the route, the
@@ -527,10 +654,11 @@ struct RouteSheet: View {
     }
 
     private var statusLine: String? {
-        if currentLocation == nil && !draft.isRoutable {
+        if currentLocation == nil && !draft.isRoutable && !straightLegs {
             return "No position yet — pick both ends on the map."
         }
-        guard let route, !route.statusText.isEmpty else { return nil }
+        guard let route, route.exists, route.isStraight || !route.statusText.isEmpty
+        else { return nil }
         return Self.statusText(route, units: display.units)
     }
 
@@ -540,8 +668,13 @@ struct RouteSheet: View {
     /// numbers and only the tail after " min" is kept, less its metric climb,
     /// which the footer shows in the rider's units. A line with no " min"
     /// is not a plan and is passed through untouched.
-    private static func statusText(_ route: PPRoute,
+    static func statusText(_ route: PPRoute,
                                    units: DistanceUnits) -> String {
+        if route.isStraight {
+            let legs = route.legs.count
+            guard legs > 0 else { return "Add another stop to make a leg." }
+            return "\(legs) \(legs == 1 ? "leg" : "legs"), \(units.distance(route.lengthMeters))"
+        }
         let text = route.statusText
         guard route.isCalculated,
               let minutes = text.range(of: " min") else { return text }
@@ -562,7 +695,7 @@ struct RouteSheet: View {
 
     /// The status line's name for a profile: "Walking" and "Cycling" for the
     /// two modes with a control, otherwise the rule file's own name.
-    private static func modeName(_ profile: String) -> String {
+    static func modeName(_ profile: String) -> String {
         switch profile {
         case "": return "roads"
         case "foot": return "Walking"
@@ -800,6 +933,62 @@ extension LocationRow where Extra == EmptyView {
                   currentLocation: currentLocation, onUseCurrent: onUseCurrent,
                   onPickOnMap: onPickOnMap, onSearchResult: onSearchResult,
                   extraItems: { EmptyView() })
+    }
+}
+
+// MARK: - Tap pick
+
+/// A route pick made by tapping the map instead of centring a crosshair.
+enum TapPick: Equatable {
+    /// The next tap fills this draft row and returns to the sheet.
+    case stop(Int)
+    /// Each tap adds a stop to the end of the route until Done. Holds what
+    /// Cancel puts back: the route on the map and the draft's stops.
+    case append(route: PPRoute?, stops: [RouteStop])
+}
+
+/// The banner and buttons over the map while a `TapPick` runs. The map keeps
+/// its gestures; a tap places.
+struct TapPickOverlay: View {
+    let title: String
+    /// The route as tapped so far, for the readout; nil for a single stop.
+    let summary: String?
+    let topMargin: CGFloat
+    let bottomMargin: CGFloat
+    /// Nil hides Undo and Done, which a single-stop pick does not have.
+    let onUndo: (() -> Void)?
+    let canUndo: Bool
+    let onDone: (() -> Void)?
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack {
+            VStack(spacing: 2) {
+                Text(title).font(.subheadline)
+                if let summary { Text(summary).font(.caption).foregroundStyle(.secondary) }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: Capsule())
+            .padding(.top, topMargin)
+            Spacer()
+            HStack(spacing: 12) {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(.bordered)
+                if let onUndo {
+                    Button(action: onUndo) {
+                        Label("Undo", systemImage: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!canUndo)
+                }
+                if let onDone {
+                    Button("Done", action: onDone)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(.bottom, bottomMargin)
+        }
     }
 }
 

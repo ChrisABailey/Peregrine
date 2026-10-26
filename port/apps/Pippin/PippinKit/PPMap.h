@@ -60,6 +60,7 @@ typedef NS_ERROR_ENUM(PPErrorDomain, PPErrorCode) {
   PPErrorRouteFailed = 4,    ///< a saved route would not read
   PPErrorPointsFailed = 5,   ///< a saved point set would not read
   PPErrorRecordFailed = 6,   ///< a ride would not be written
+  PPErrorChartImportFailed = 7, ///< a chart zip would not install or open
 };
 
 /// Where the ship was, and pointing where, in the frame just drawn.
@@ -101,6 +102,12 @@ NS_SWIFT_SENDABLE
 
 @property(nonatomic, readonly) double speedMetersPerSecond;
 @property(nonatomic, readonly) BOOL hasSpeed;
+
+/// Course over ground as the receiver reported it, degrees true, [0, 360).
+/// NO when the receiver gave none; a heading derived from movement is a
+/// screen angle and is not offered here.
+@property(nonatomic, readonly) double courseDegrees;
+@property(nonatomic, readonly) BOOL hasCourse;
 
 /// The fix was put on a road before anything else saw it, so `coordinate` is
 /// the snapped one. Always NO outside GPS mode, where the snapper is off.
@@ -211,6 +218,11 @@ NS_SWIFT_SENDABLE
 /// Each event is delivered on exactly one frame.
 @property(nonatomic, readonly) NSArray<PPGuidanceEvent *> *guidanceEvents;
 
+/// The course deviation indicator as of this frame, or nil outside GPS mode,
+/// with no straight-leg route, or past the last point. Its events ride on
+/// `guidanceEvents`.
+@property(nonatomic, readonly, nullable) PPCourseDeviation *courseDeviation;
+
 #pragma mark - What the camera decided
 
 /// The moving map's answer travels on the frame.
@@ -263,10 +275,37 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly, nullable) PPTrip *trip;
 @property(nonatomic, readonly, nullable) PPGuidance *guidance;
 @property(nonatomic, readonly) NSArray<PPGuidanceEvent *> *guidanceEvents;
+@property(nonatomic, readonly, nullable) PPCourseDeviation *courseDeviation;
 @property(nonatomic, readonly) BOOL hasCameraUpdate;
 @property(nonatomic, readonly) PPGeoPoint cameraCenter;
 @property(nonatomic, readonly) double cameraRotationDegrees;
 @property(nonatomic, readonly) BOOL cameraIsAnimating;
+@end
+
+/// The slider a map key row offers for its setting.
+typedef NS_ENUM(NSInteger, PPLegendSettingKind) {
+  /// No slider: pace, paved surface, or a row with no single setting.
+  PPLegendSettingKindNone = 0,
+  /// A road type, on the tier scale (Most preferred … Never).
+  PPLegendSettingKindRoadType = 1,
+  /// A lane, route, unpaved surface or golf way, on the relative scale
+  /// (Much better … Much worse).
+  PPLegendSettingKindModifier = 2,
+  /// Private, toll, ferry or beach: named by the row, adjusted elsewhere.
+  PPLegendSettingKindCondition = 3,
+};
+
+/// A modifier row's specimen moved onto one road class, for the key's
+/// "On the map this becomes" line.
+@interface PPLegendOnRoad : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// The key's name for the class, e.g. "Busy road".
+@property(nonatomic, readonly, copy) NSString *label;
+@property(nonatomic, readonly, copy) NSString *tierWord;
+/// As `PPLegendEntry.tierRank`.
+@property(nonatomic, readonly) NSInteger tierRank;
+/// NaN when excluded.
+@property(nonatomic, readonly) double factor;
 @end
 
 /// One row of the map key: a style legend entry drawn at the map's scale,
@@ -302,6 +341,31 @@ NS_SWIFT_SENDABLE
 /// The specimen drawn by the style, `swatchPixelsPerPoint` pixels per point.
 @property(nonatomic, readonly, nullable) CGImageRef swatch;
 @property(nonatomic, readonly) double swatchPixelsPerPoint;
+/// The profile setting the row's slider moves, e.g. "classes.tertiary" or
+/// "bike_lane_factor.lane"; the key in `PPMap.routeAdjustments`. Empty when
+/// the row has no single setting.
+@property(nonatomic, readonly, copy) NSString *settingId;
+@property(nonatomic, readonly) PPLegendSettingKind settingKind;
+/// The key shows a lock instead of a slider: the shipped profile's
+/// `key_locks` name the setting (a motorway for bikes), or the way's access
+/// tags or a non-class rule close it. A class the rules merely exclude is
+/// adjustable from Never.
+@property(nonatomic, readonly, getter=isLocked) BOOL locked;
+/// The reason the key shows with the lock; empty when not locked.
+@property(nonatomic, readonly, copy) NSString *lockReason;
+/// For a row with no single setting: the modifier and condition settings
+/// behind its cost, in the order they apply ("set by Rough surface and Local
+/// route"). Empty otherwise.
+@property(nonatomic, readonly, copy) NSArray<NSString *> *termSettingIds;
+/// The slider's stop words, best first; empty when the row has no slider.
+@property(nonatomic, readonly, copy) NSArray<NSString *> *stopWords;
+/// The stop the setting is on with the adjustments applied, and the stop
+/// holding the shipped value (the "default" mark). -1 with no slider.
+@property(nonatomic, readonly) NSInteger stop;
+@property(nonatomic, readonly) NSInteger defaultStop;
+/// For a modifier row: the result on a quiet street, a moderate road, a busy
+/// road and an arterial, adjustments applied. Empty for other rows.
+@property(nonatomic, readonly, copy) NSArray<PPLegendOnRoad *> *onRoads;
 @end
 
 /// A titled group of legend rows, in the style's order.
@@ -310,6 +374,67 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly, copy) NSString *title;
 @property(nonatomic, readonly, copy) NSString *subtitle;
 @property(nonatomic, readonly, copy) NSArray<PPLegendEntry *> *entries;
+@end
+
+/// A feature of the base map under a press, as the OSM tiles describe it.
+/// What a new point is prefilled from.
+NS_SWIFT_SENDABLE
+@interface PPChartFeature : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// The feature's own name ("Sanctuary Hotel"), or empty when nothing named
+/// was drawn under the press.
+@property(nonatomic, readonly, copy) NSString *name;
+/// What kind of thing it is, from the tile's `class`, else `subclass`
+/// ("grass", "pitch", "town"), with underscores as spaces. Never empty.
+@property(nonatomic, readonly, copy) NSString *kind;
+@end
+
+/// Which S-52 display categories a chart draws; each includes the ones before.
+typedef NS_ENUM(NSInteger, PPChartCategory) {
+  PPChartCategoryBase = 0,
+  PPChartCategoryStandard = 1,
+  PPChartCategoryAll = 2,
+};
+
+/// The chart's colour table. Automatic is day, or night while `darkStyle` is on.
+typedef NS_ENUM(NSInteger, PPChartPalette) {
+  PPChartPaletteAutomatic = 0,
+  PPChartPaletteDay = 1,
+  PPChartPaletteDusk = 2,
+  PPChartPaletteNight = 3,
+};
+
+/// One ENC feature under a tap, for the chart info sheet.
+NS_SWIFT_SENDABLE
+@interface PPChartFeatureInfo : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// The object's name (OBJNAM), else its class name.
+@property(nonatomic, readonly, copy) NSString *title;
+/// The S-57 class name ("Light"); equal to `title` for an unnamed feature.
+@property(nonatomic, readonly, copy) NSString *kind;
+/// The S-57 class acronym ("LIGHTS").
+@property(nonatomic, readonly, copy) NSString *acronym;
+/// Chart notation ("Fl(2) G 6s 12m 5M", "Depth 2–5 m"); may be empty.
+@property(nonatomic, readonly, copy) NSString *summary;
+/// Attribute names in record order, and their decoded values at the same index.
+@property(nonatomic, readonly, copy) NSArray<NSString *> *attributeNames;
+@property(nonatomic, readonly, copy) NSArray<NSString *> *attributeValues;
+/// Cell, edition and record id.
+@property(nonatomic, readonly, copy) NSString *source;
+@end
+
+/// What `-[PPMap replanForAdjustments]` did to the route on screen.
+NS_SWIFT_SENDABLE
+@interface PPRouteReplan : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+@property(nonatomic, readonly) PPRoute *route;
+/// The route's length before the re-plan, metres.
+@property(nonatomic, readonly) double previousLengthMeters;
+/// The named road the new route rides least of what the old one rode, or
+/// empty (`fv::RoadDropped`).
+@property(nonatomic, readonly, copy) NSString *avoidedRoad;
+/// The drawn line moved, so the previous one is shown faded.
+@property(nonatomic, readonly) BOOL lineChanged;
 @end
 
 @interface PPMap : NSObject
@@ -372,7 +497,8 @@ NS_SWIFT_SENDABLE
 /// `display.min_move_pt` (0.25).
 @property(nonatomic, readonly) double followMinMovePoints;
 
-/// The bundled data's own extent, from `pippin.home_bounds`.
+/// The map's extent: `pippin.home_bounds`, or the coverage of an imported
+/// chart set once `openChartsAtURL:` has opened one.
 @property(nonatomic, readonly) PPGeoBounds homeBounds;
 
 /// The pack's tide table and rideable threshold (`[tides]`, `[beach]`), or
@@ -434,6 +560,24 @@ NS_SWIFT_SENDABLE
 /// for a memory warning and for a test that wants to force a draw.
 - (void)invalidateBaseLayer;
 
+/// The pack draws S-57 ENC charts rather than an OSM map.
+@property(nonatomic, readonly) BOOL drawsCharts;
+
+/// The pack's S-52 directory, which holds the S-57 catalogue; nil when the
+/// pack draws no charts. Fixed for the pack, so readable from any thread.
+@property(nonatomic, readonly, nullable) NSURL *chartCatalogURL;
+
+/// Replaces the chart set with the cells under `url` (an indexed set from
+/// `PPChartStore`), keeping the pack's S-52 library, and sets `homeBounds` to
+/// the new set's coverage. Render queue only. On failure, or for a pack that
+/// does not draw charts, the current set and bounds stay.
+- (BOOL)openChartsAtURL:(NSURL *)url error:(NSError **)error
+    NS_SWIFT_NAME(openCharts(at:));
+
+/// Cells of the open chart set drawn without some of their update files,
+/// from its index; 0 for the pack's own charts. Render queue only.
+@property(nonatomic, readonly) NSInteger outdatedChartCellCount;
+
 /// Hands one position report to the moving map.
 ///
 /// Render queue only, like everything else on this class. The fix was born on
@@ -467,6 +611,7 @@ NS_SWIFT_SENDABLE
 /// where no frame is drawn. Render queue only.
 - (nullable PPGuidance *)currentGuidance;
 - (nullable PPTrip *)currentTrip;
+- (nullable PPCourseDeviation *)currentCourseDeviation;
 
 /// Starts the demo feed: the recorded Kiawah ride in the pack, replayed at
 /// the speed it was ridden, through the machinery a live receiver uses
@@ -604,6 +749,13 @@ NS_SWIFT_SENDABLE
 - (nullable PPRoute *)loadSavedRouteWithError:(NSError **)error
     NS_SWIFT_NAME(loadSavedRoute());
 
+/// Makes the `.fvrte` at `url` (a route shared from another device) the
+/// current route, replanned here and saved as the route document. `url` is
+/// only read. A file that will not read, or has no stops, throws and leaves
+/// the current route as it was.
+- (nullable PPRoute *)importRouteFromURL:(NSURL *)url error:(NSError **)error
+    NS_SWIFT_NAME(importRoute(from:));
+
 /// The route as it stands. Never nil: an empty route is `exists` = NO rather
 /// than an absent object, so the sheet has something to bind to.
 - (PPRoute *)currentRoute;
@@ -654,6 +806,10 @@ NS_SWIFT_SENDABLE
 /// default) means the system clock. For debugging at a chosen tide.
 @property(nonatomic) NSTimeInterval routeDepartureOverride;
 
+/// The pack plans no roads (`[routing] legs = "rhumb"`): waypoints are joined
+/// by rhumb lines and every route is `isStraight`. Fixed at construction.
+@property(nonatomic, readonly) BOOL routeLegsAreStraight;
+
 /// The road graph has a beach to ride, so the sheet offers "Use beach:".
 /// Loads the graph on first call; call it on the render queue.
 @property(nonatomic, readonly) BOOL beachAvailable;
@@ -661,6 +817,29 @@ NS_SWIFT_SENDABLE
 /// The road graph carries elevation, so the sheet offers "Avoid hills".
 /// Loads the graph on first call; call it on the render queue.
 @property(nonatomic, readonly) BOOL elevationAvailable;
+
+/// Draws the calculated route coloured by grade where the graph has
+/// elevation: green downhill, blue on the flat, yellow to red uphill.
+/// Off by default. Set it on the render queue.
+@property(nonatomic) BOOL routeSlopeColors;
+
+/// The rider's map-key adjustments: profile name → (`PPLegendEntry.settingId`
+/// → stop index into its `stopWords`). Each plan on a profile and the legend
+/// for it use that profile's entry; a stop on the shipped value restores that
+/// exact value. Setting it does not replan; plan again to see it. A profile's
+/// map that names an unknown setting or a stop out of range is ignored
+/// whole. Set it on the render queue.
+@property(nonatomic, copy)
+    NSDictionary<NSString *, NSDictionary<NSString *, NSNumber *> *> *routeAdjustments;
+
+/// Replans the route on screen after `routeAdjustments` changed. When the
+/// line moves, the previous one stays drawn faded until `clearRouteGhost` or
+/// the next edit. Without a calculated route nothing is planned and the
+/// result's `lineChanged` is NO. Call it on the render queue.
+- (PPRouteReplan *)replanForAdjustments NS_SWIFT_NAME(replanForAdjustments());
+
+/// Stops drawing the previous line `replanForAdjustments` kept.
+- (void)clearRouteGhost;
 
 /// No route, and no document on disk either. Clear Route in the sheet.
 - (PPRoute *)clearRoute;
@@ -982,6 +1161,31 @@ NS_SWIFT_SENDABLE
 
 - (BOOL)removePointWithId:(int64_t)pointId NS_SWIFT_NAME(removePoint(id:));
 
+/// Takes hold of point `pointId`, pressed at `screenPoint` (flat iOS points
+/// in `viewport`). The point is drawn selected while held and keeps its
+/// offset from the finger, so it does not jump under the press. NO when
+/// there is no such point.
+- (BOOL)beginPointDrag:(int64_t)pointId
+                    at:(CGPoint)screenPoint
+            inViewport:(PPViewport *)viewport
+    NS_SWIFT_NAME(beginPointDrag(_:at:in:));
+
+/// Moves the held point. Redraws only; nothing is written. NO when nothing
+/// is held.
+- (BOOL)dragPointTo:(CGPoint)screenPoint
+         inViewport:(PPViewport *)viewport
+    NS_SWIFT_NAME(dragPoint(to:in:));
+
+/// Lets go and writes the document. A release within 3 points of the press
+/// leaves the point where it was and writes nothing. Returns whether the
+/// point moved.
+- (BOOL)endPointDragAt:(CGPoint)screenPoint
+            inViewport:(PPViewport *)viewport
+    NS_SWIFT_NAME(endPointDrag(at:in:));
+
+/// Puts the held point back where it was. Nothing is written.
+- (void)cancelPointDrag;
+
 /// The error from the last point write, or empty. A failed write is not a
 /// refused edit — the point is on screen and correct, and what the user loses
 /// is the next launch — so it is reported here rather than thrown from the
@@ -997,6 +1201,46 @@ NS_SWIFT_SENDABLE
 /// the right value differs between a dense harbour set and a dozen places on
 /// an island.
 @property(nonatomic, readonly) double pointHitTolerance;
+
+/// The topmost named feature the last base map render drew under
+/// `screenPoint`. Unnamed ink above it (a building fill, a landuse area) is
+/// passed over for the name, so a press on a shop inside a park names the
+/// shop. With nothing named there, the topmost feature with an empty name;
+/// nil only when nothing was drawn.
+///
+/// Render queue only: it reads the renderer's pick index and the tile cache.
+/// `screenPoint` and `tolerance` are flat-surface iOS points in `viewport`'s
+/// space; the conversion into the cached band happens here.
+- (nullable PPChartFeature *)chartFeatureNear:(CGPoint)screenPoint
+                                   inViewport:(PPViewport *)viewport
+                                    tolerance:(double)tolerance
+    NS_SWIFT_NAME(chartFeature(near:in:tolerance:));
+
+/// How far from drawn ink a press still names a feature, in iOS points
+/// (`points.feature_hit_tolerance`, 12 by default).
+@property(nonatomic, readonly) double chartFeatureHitTolerance;
+
+/// The ENC features the last base map render drew under `screenPoint`,
+/// topmost first, at most eight; empty when the pack does not draw charts.
+/// Render queue only; coordinates as in `chartFeatureNear:inViewport:tolerance:`.
+- (NSArray<PPChartFeatureInfo *> *)chartFeaturesNear:(CGPoint)screenPoint
+                                         inViewport:(PPViewport *)viewport
+                                          tolerance:(double)tolerance
+    NS_SWIFT_NAME(chartFeatures(near:in:tolerance:));
+
+#pragma mark - Chart settings
+// Mariner settings for a chart pack. Each setter drops the cached base map;
+// they are kept across `openChartsAtURL:`. No-ops for a pack without charts.
+// Render queue only.
+
+/// The safety contour in metres (30 by default, S-52's own).
+@property(nonatomic) double chartSafetyContour;
+/// Soundings at or shallower than this print black, in metres (30 by default).
+@property(nonatomic) double chartSafetyDepth;
+@property(nonatomic) PPChartCategory chartCategory;
+@property(nonatomic) PPChartPalette chartPalette;
+/// Depths in `chartFeaturesNear:` summaries are in feet rather than metres.
+@property(nonatomic) BOOL chartDepthsInFeet;
 
 #pragma mark - Recording the ride
 
@@ -1083,11 +1327,13 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly, copy) NSString *styleName;
 @property(nonatomic, readonly) BOOL hasLabelFont;
 
-/// Whether the pack names a dark style sheet (`osm.style_dark`).
+/// Whether the pack names a dark style sheet (`osm.style_dark`), or draws
+/// charts, whose night palette stands in for one.
 @property(nonatomic, readonly) BOOL hasDarkStyle;
 
 /// Draws with the dark sheet instead of `osm.style`. Reloads the sheet and
-/// drops the cached base map; a no-op when the pack has no dark sheet.
+/// drops the cached base map; a no-op when the pack has no dark sheet. On a
+/// chart pack it selects the night palette while `chartPalette` is automatic.
 /// Render queue only, like every other call on this class.
 @property(nonatomic) BOOL darkStyle;
 
@@ -1103,7 +1349,8 @@ NS_SWIFT_SENDABLE
 /// and the current `symbolZoom`; tiers come from `routing.profile`, and
 /// `appName` is the subject of each router sentence. Swatches are cached per
 /// quarter zoom until the style, the scale's latitude band or the size
-/// changes. Empty when the style has no legend.
+/// changes. Rows are priced with `routeAdjustments` for that profile applied.
+/// Empty when the style has no legend.
 - (NSArray<PPLegendGroup *> *)legendForViewport:(PPViewport *)viewport
                                      swatchSize:(CGSize)swatchSize
                                         appName:(NSString *)appName

@@ -18,28 +18,42 @@
 add_library(fv_enc STATIC
   fv_iso8211.cpp
   fv_s57.cpp
+  fv_s57_records.cpp
   fv_s52_preslib.cpp
   fv_s57_catalog.cpp
   fv_enc_vector_source.cpp
   fv_s52_style.cpp
   fv_enc_format.cpp
+  fv_enc_index.cpp
+  fv_enc_catalog.cpp
+  fv_enc_names.cpp
+  fv_zip_reader.cpp
 )
 target_include_directories(fv_enc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(fv_enc PUBLIC fv_compat fv_fvkit PRIVATE expat)
+target_link_libraries(fv_enc PUBLIC fv_compat fv_fvkit PRIVATE expat fv_zlib)
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_enc_test
     test/iso8211_test.cpp
     test/s57_test.cpp
+    test/s57_update_test.cpp
     test/s52_preslib_test.cpp
     test/s57_catalog_test.cpp
     test/enc_vector_source_test.cpp
     test/s52_style_test.cpp
     test/enc_format_test.cpp
+    test/enc_index_test.cpp
+    test/enc_catalog_test.cpp
+    test/enc_names_test.cpp
+    test/zip_reader_test.cpp
   )
   # fv_png: golden-PNG side channel for the E3a chart render, same
   # convention as canvas_test and the GeoSym harbor golden.
-  target_link_libraries(fv_enc_test PRIVATE fv_enc fv_png GTest::gtest_main)
+  target_link_libraries(fv_enc_test PRIVATE fv_enc fv_png fv_zlib GTest::gtest_main)
   gtest_discover_tests(fv_enc_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
+
+  # Feature dump for port/tools/enc_update_diff.py (the GDAL cross-check).
+  add_executable(fv_enc_dump tools/enc_dump.cpp)
+  target_link_libraries(fv_enc_dump PRIVATE fv_enc)
 endif()

@@ -47,6 +47,12 @@ PP_BUNDLE_ID = org.peregrine.Pippin
 // xcodebuild line beside its bundle id (BUILDING.md, "Another region").
 PP_APP_ICON = AppIcon
 
+// Osprey, the S-57 chart app built from the same sources
+// (port/apps/Osprey). Its share and activity extensions are not built, so
+// only the app itself needs an id.
+OSPREY_DISPLAY_NAME = Osprey
+OSPREY_BUNDLE_ID = org.peregrine.Osprey
+
 // THE LOCAL OVERRIDE, and the `?` is the whole point: `#include?` is the
 // OPTIONAL spelling, so a checkout without the file builds silently rather
 // than warning "unable to open base configuration reference file" at everyone

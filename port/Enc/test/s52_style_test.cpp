@@ -463,6 +463,37 @@ TEST(S52Style, TextKeepsTheLibrarysRelativeOrderAmongLabels) {
   EXPECT_GT(buoy_text, land_text);
 }
 
+// Hiding buoy names drops only the buoy's text: its symbol still draws, and a
+// beacon's name is unaffected.
+TEST(S52Style, BuoyNamesCanBeHiddenWithoutHidingTheBuoy) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+  ASSERT_TRUE(e->show_buoy_names());
+  e->SetShowBuoyNames(false);
+
+  fv::VectorFeature buoy = MakeFeature(fv::VectorGeometryType::kPoint, "BOYLAT");
+  SetAttr(&buoy, "BOYSHP", "2");
+  SetAttr(&buoy, "OBJNAM", "R \"6\"");
+  fv::VectorFeature beacon = MakeFeature(fv::VectorGeometryType::kPoint, "BCNLAT");
+  SetAttr(&beacon, "BCNSHP", "1");
+  SetAttr(&beacon, "OBJNAM", "G \"3\"");
+
+  auto has = [](const std::vector<fv::StyleResult>& out, bool label) {
+    for (const auto& r : out)
+      if (label ? r.label.valid : r.symbol.valid) return true;
+    return false;
+  };
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(buoy, Ctx(), &out).ok());
+  EXPECT_TRUE(has(out, false));
+  EXPECT_FALSE(has(out, true));
+  out.clear();
+  ASSERT_TRUE(e->Style(beacon, Ctx(), &out).ok());
+  EXPECT_TRUE(has(out, true));
+}
+
 // TX/TE carry HJUST, VJUST, XOFFS and YOFFS for every string in the library and
 // all four were being skipped, so every ENC label drew baseline-left exactly on
 // its anchor — a name sitting on the symbol it belongs beside.
@@ -1407,7 +1438,14 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // lon -80.15..-79.75, which is the padded extent of every coordinate these
 // tests name.
 // Area holes are cut (even-odd over every ring): 173 px moved, re-checked.
-constexpr uint64_t kHashCharleston = 0x73753f02e6669aa4ull;
+// Every vertex of a sounding feature is drawn with its own depth, not only the
+// first (0x73753f02e6669aa4 -> 0x7e83d929600ab269). This test draws all 8 cells
+// at every usage band with no SCAMIN cut, so the channels fill with digits.
+// S-57 updates applied (CH10): 0x7e83d929600ab269 -> 0xf4f4a09bb8902ea3. With
+// the update files removed the old hash reproduces exactly; with them, 848 px
+// change in 28 clusters, all inside updated cells (a pier redrawn beside the
+// light, one new symbol, one dashed line removed).
+constexpr uint64_t kHashCharleston = 0xf4f4a09bb8902ea3ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();
@@ -1770,6 +1808,7 @@ TEST(S52Render, RasterOnlySymbolsAreDrawnFromTheSheet) {
   ASSERT_FALSE(features.empty());
 
   size_t vector_symbols = 0, raster_symbols = 0, question_marks = 0;
+  size_t sounding_digits = 0;
   std::vector<fv::StyleResult> out;
   for (const auto& f : features) {
     out.clear();
@@ -1778,6 +1817,8 @@ TEST(S52Render, RasterOnlySymbolsAreDrawnFromTheSheet) {
       if (!r.symbol.valid) continue;
       if (r.symbol.symbol_id == "QUESMRK1") {
         ++question_marks;
+      } else if (r.symbol.symbol_id.compare(0, 5, "SOUND") == 0) {
+        ++sounding_digits;
       } else if (e->Symbol(r.symbol.symbol_id) != nullptr) {
         ++vector_symbols;
       } else if (e->Pixmap(r.symbol.symbol_id) != nullptr) {
@@ -1788,9 +1829,11 @@ TEST(S52Render, RasterOnlySymbolsAreDrawnFromTheSheet) {
     }
   }
   // Both halves of the library are load-bearing on this chart: the buoys,
-  // beacons and daymarks are raster, most of the rest is vector.
+  // beacons and daymarks are raster, most of the rest is vector. Sounding
+  // digits are raster tiles too, counted apart because they outnumber both.
   EXPECT_GT(raster_symbols, 50u) << "the sheet is not reaching the canvas";
   EXPECT_GT(vector_symbols, raster_symbols);
+  EXPECT_GT(sounding_digits, 5000u) << "every sounding draws its digits";
   // Nothing in these cells needs a placeholder any more: every CS procedure
   // they reach is implemented (E3b) and every symbol they name now resolves.
   EXPECT_EQ(question_marks, 0u);

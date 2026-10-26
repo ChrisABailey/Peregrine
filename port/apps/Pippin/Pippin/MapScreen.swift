@@ -6,6 +6,7 @@
 import PippinKit
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// The app's one screen: a full-bleed map with controls floating in the safe
 /// area over it.
@@ -16,12 +17,18 @@ import UIKit
 /// sheet, so the drafts are owned here rather than by the sheets. The rides,
 /// problem-report and about sheets are about the app rather than the map and
 /// do not join that exclusion.
+///
+/// At regular width (an iPad) the route, point and legend views sit in one
+/// floating card at the top leading corner instead of in sheets, sized to
+/// its content and collapsible to one line. The card stays up through a
+/// pick and a waypoint drag. See `toolCard`.
 struct MapScreen: View {
     @StateObject private var model = MapModel()
     @StateObject private var draft = RouteDraft()
     @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var sizeClass
     /// Opens Settings for a notice that offers it. See `openSettings()`.
     @Environment(\.openURL) private var openURL
 
@@ -39,12 +46,25 @@ struct MapScreen: View {
     /// The window's safe-area insets. Read from UIKit rather than the
     /// `GeometryProxy`, which reports zero here because the reader has
     /// `.ignoresSafeArea()` on it (the map surface must be the whole screen).
-    /// The app is portrait only, so the value is fixed for the process.
+    /// Re-read on every size change, which covers rotation on the iPad.
     @State private var safeArea: UIEdgeInsets = .zero
+    /// The tool card is folded to its summary line.
+    @State private var cardCollapsed = false
+    /// The card content's natural height, measured where the OS can (iOS 18);
+    /// nil means the card takes its maximum height.
+    @State private var cardContentHeight: CGFloat?
+    /// A waypoint drag began with the route card up; the card's stops are
+    /// reloaded from the replanned route when it lands.
+    @State private var draftFollowsDrag = false
+    /// A received route waiting for the rider to agree to replace theirs:
+    /// the local copy `RouteShare.receive` made.
+    @State private var pendingRoute: URL?
 
     @State private var sheetShown = false
     /// Which draft row the crosshair is filling, or nil when it is not up.
     @State private var pickingIndex: Int?
+    /// The tap pick running in place of the crosshair, or nil.
+    @State private var tapPick: TapPick?
 
     /// Point flow state: `infoShown` is a tap on a marker, `editing` is the
     /// form, `placingPoint` is the crosshair the form dismisses into. The
@@ -58,6 +78,17 @@ struct MapScreen: View {
     @State private var aboutShown = false
     @State private var tidesShown = false
     @State private var legendShown = false
+    /// The rows the map key opens on.
+    @State private var legendScope: LegendSheet.Scope = .onMap
+    /// The map key over the route sheet, opened from its preferences chip.
+    @State private var preferencesShown = false
+    @State private var navigationNoticeShown = NavigationNotice.isNeeded(flavor: .current)
+    @State private var chartImporterShown = false
+    @State private var chartSettingsShown = false
+    @State private var chartHelpShown = false
+    @State private var chartDownloadShown = false
+    /// The chart features under the last tap; non-empty while their sheet is up.
+    @State private var chartFeatures: [PPChartFeatureInfo] = []
 
     /// The unit preference. `@ObservedObject` because this view does not own
     /// it; `DisplayUnits.shared` is also observed from views across sheet
@@ -86,12 +117,28 @@ struct MapScreen: View {
                     onHoldBegan: { point, grabbed in
                         handleHold(at: point, then: grabbed)
                     },
-                    onHoldMoved: { model.dragRouteWaypoint(to: $0) },
-                    onHoldEnded: { model.dropRouteWaypoint(at: $0) },
-                    onHoldCancelled: { model.cancelRouteWaypointDrag() },
+                    // At most one of each pair holds anything; the other
+                    // returns at its guard.
+                    onHoldMoved: {
+                        model.dragRouteWaypoint(to: $0)
+                        model.dragPoint(to: $0)
+                    },
+                    onHoldEnded: {
+                        draftFollowsDrag = (sheetShown || tapPick != nil)
+                            && model.draggingWaypoint != nil
+                        model.dropRouteWaypoint(at: $0)
+                        model.dropPoint(at: $0)
+                    },
+                    onHoldCancelled: {
+                        model.cancelRouteWaypointDrag()
+                        model.cancelPointDrag()
+                    },
+                    onHoldReleased: { beginPressedPoint(at: $0) },
                     holdSeconds: model.routeWaypointHoldSeconds)
                 if let index = pickingIndex {
                     pickOverlay(index: index, top: top, bottom: bottom)
+                } else if let pick = tapPick {
+                    tapPickOverlay(pick, top: top, bottom: bottom)
                 } else if let draft = placingPoint {
                     pointPlaceOverlay(draft: draft, top: top, bottom: bottom)
                 } else {
@@ -101,11 +148,21 @@ struct MapScreen: View {
                     LiveMapReader(model.live) { rideBar(top: top) }
                 }
                 LiveMapReader(model.live) {
-                    if let guidance = model.guidance {
+                    if let course = model.courseDeviation {
+                        courseIndicator(course, top: top)
+                    } else if let guidance = model.guidance {
                         guidanceBanner(guidance, top: top)
                     }
                 }
-                if let notice = model.notice { noticeBanner(notice) }
+                if cardShown { toolCard(top: top, size: geo.size) }
+                if let progress = model.chartImportProgress {
+                    noticeBanner(MapNotice(text: "Importing charts… \(Int(progress * 100))%"))
+                } else if let download = model.chartDownload {
+                    noticeBanner(MapNotice(text: ChartDownloadText.progress(download.region,
+                                                                            fraction: download.fraction)))
+                } else if let notice = model.notice {
+                    noticeBanner(notice)
+                }
                 #if DEBUG
                 if MapModel.showsStats {
                     LiveMapReader(model.live) { statsOverlay(top: top) }
@@ -143,6 +200,21 @@ struct MapScreen: View {
             .onChange(of: scenePhase, initial: true) { _, phase in
                 model.setScenePhase(SceneVisibility(phase))
             }
+            // The drag replans on the render queue; the card's stops follow
+            // once the new route is published.
+            .onChange(of: model.isPlanning) { _, planning in
+                guard !planning, draftFollowsDrag else { return }
+                draftFollowsDrag = false
+                draft.load(from: model.route)
+            }
+            .onChange(of: cardShown) { _, shown in
+                if !shown { cardCollapsed = false }
+            }
+            // Another tool in the card opens expanded and is measured afresh.
+            .onChange(of: cardSummaryKind) { _, _ in
+                cardCollapsed = false
+                cardContentHeight = nil
+            }
             .onChange(of: colorScheme, initial: true) { _, scheme in
                 model.setDarkMap(scheme == .dark)
             }
@@ -151,12 +223,37 @@ struct MapScreen: View {
                 safeArea = Self.windowSafeArea()
                 model.resize(to: size, scale: displayScale)
             }
-            // `pippin://place?lat=…&lon=…` from the share extension, whether
-            // the app was running or launched by the share.
-            .onOpenURL { url in acceptSharedPlace(from: url) }
+            // `pippin://place?lat=…&lon=…` from the share extension, or a
+            // `.fvrte` route from another device, whether the app was running
+            // or launched by it.
+            .onOpenURL { url in
+                if RouteShare.isRouteFile(url) {
+                    receiveRoute(from: url)
+                } else {
+                    acceptSharedPlace(from: url)
+                }
+            }
+            .alert("Replace your route?",
+                   isPresented: Binding(get: { pendingRoute != nil },
+                                        set: { if !$0 { pendingRoute = nil } }),
+                   presenting: pendingRoute) { local in
+                Button("Replace", role: .destructive) { importRoute(local) }
+                Button("Cancel", role: .cancel) {
+                    try? FileManager.default.removeItem(at: local)
+                }
+            } message: { _ in
+                Text("The route you received replaces the one on the map.")
+            }
+            .alert(NavigationNotice.title, isPresented: $navigationNoticeShown) {
+                Button(NavigationNotice.acknowledge) {
+                    UserDefaults.standard.set(true, forKey: NavigationNotice.acknowledgedKey)
+                }
+            } message: {
+                Text(NavigationNotice.body)
+            }
             // A `.sheet` is a new presentation and does not inherit this
             // view's environment values, so each one gets them explicitly.
-            .sheet(isPresented: $sheetShown) {
+            .sheet(isPresented: sheetOnly($sheetShown)) {
                 routeSheet
                     .environment(\.describePlace, model.describePlace)
                     .environment(\.searchPlaces, model.search(for:))
@@ -164,8 +261,44 @@ struct MapScreen: View {
             // Two sheet modifiers rather than one `item:`: the info sheet is
             // bound to the model's selection (re-read after edits) and the
             // editor to a draft this view owns.
-            .sheet(isPresented: $infoShown) { pointInfoSheet }
+            .sheet(isPresented: sheetOnly($infoShown)) { pointInfoSheet }
             .sheet(isPresented: $ridesShown) { ridesSheet }
+            .fileImporter(isPresented: $chartImporterShown,
+                          allowedContentTypes: [.zip]) { result in
+                if case .success(let url) = result { model.importCharts(from: url) }
+            }
+            .sheet(isPresented: $chartSettingsShown) {
+                ChartSettingsSheet(settings: model.chartSettings,
+                                   onChange: { model.setChartSettings($0) },
+                                   onClose: { chartSettingsShown = false })
+                    .presentationDetents([.medium, .large])
+                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            }
+            .sheet(isPresented: $chartDownloadShown) {
+                ChartDownloadSheet(active: model.chartDownload?.region,
+                                   resumable: model.resumableChartRegions,
+                                   updateRegion: model.chartUpdateRegion,
+                                   busy: model.chartImportProgress != nil,
+                                   onChoose: { region in
+                                       model.downloadCharts(region)
+                                       chartDownloadShown = false
+                                   },
+                                   onCancel: { model.cancelChartDownload() },
+                                   onClose: { chartDownloadShown = false })
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $chartHelpShown) {
+                ChartHelpSheet(onClose: { chartHelpShown = false })
+                    .presentationDetents([.medium, .large])
+            }
+            // Medium with the map live above, so another tap re-queries in place.
+            .sheet(isPresented: Binding(get: { !chartFeatures.isEmpty },
+                                        set: { if !$0 { chartFeatures = [] } })) {
+                ChartFeatureSheet(features: chartFeatures,
+                                  onClose: { chartFeatures = [] })
+                    .presentationDetents([.medium, .large])
+                    .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            }
             .sheet(isPresented: $problemShown) { problemSheet }
             .sheet(isPresented: $aboutShown) {
                 AboutSheet(onClose: { aboutShown = false })
@@ -176,18 +309,147 @@ struct MapScreen: View {
                 }
             }
             // Medium with the map live above it, so a pinch redraws the swatches.
-            .sheet(isPresented: $legendShown) {
-                LegendSheet(model: model, onClose: { legendShown = false })
+            .sheet(isPresented: sheetOnly($legendShown)) {
+                LegendSheet(model: model, scope: legendScope, onClose: { legendShown = false })
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
-            .sheet(item: $editing) { draft in
+            .sheet(item: editingSheet) { draft in
                 pointEditSheet(draft)
                     .environment(\.describePlace, model.describePlace)
                     .environment(\.searchPlaces, model.search(for:))
             }
         }
         .ignoresSafeArea()
+    }
+
+    // MARK: - Tool card
+
+    /// Card width: a phone sheet's width, less on a narrow window.
+    private static let cardWidth: CGFloat = 360
+    /// Room kept below the card for the two rows of round buttons.
+    private static let cardBottomClearance =
+        ControlMetrics.bottom + 2 * ControlMetrics.diameter + 2 * ControlMetrics.spacing
+
+    /// True when the map tools use the floating card rather than sheets.
+    private var usesToolCard: Bool { sizeClass == .regular }
+
+    /// Up while any map tool is open, including through a pick.
+    private var cardShown: Bool {
+        usesToolCard && (sheetShown || infoShown || editing != nil
+            || legendShown || pickingIndex != nil || tapPick != nil
+            || placingPoint != nil)
+    }
+
+    /// `shown`, but false while the card is in use, so a tool is presented
+    /// by exactly one of the card and its sheet.
+    private func sheetOnly(_ shown: Binding<Bool>) -> Binding<Bool> {
+        Binding(get: { !usesToolCard && shown.wrappedValue },
+                set: { shown.wrappedValue = $0 })
+    }
+
+    /// `editing` for the editor's sheet; nil while the card is in use.
+    private var editingSheet: Binding<PointDraft?> {
+        Binding(get: { usesToolCard ? nil : editing },
+                set: { editing = $0 })
+    }
+
+    /// The floating card: below any top bars, clear of the bottom buttons,
+    /// and as tall as its content within that.
+    private func toolCard(top: CGFloat, size: CGSize) -> some View {
+        let cardTop = Self.belowBars(top: top, model.gpsMode ? rideBarHeight : 0,
+                                     guidanceBannerHeight)
+        let maxHeight = max(160, size.height - cardTop - Self.cardBottomClearance)
+        let height = min(cardContentHeight ?? maxHeight, maxHeight)
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        return VStack(spacing: 0) {
+            if cardCollapsed {
+                Button { cardCollapsed = false } label: {
+                    HStack {
+                        Text(cardSummary).lineLimit(1)
+                        Spacer()
+                        Image(systemName: "chevron.compact.down")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Expand \(cardSummary)")
+            } else {
+                cardContent
+                    .environment(\.describePlace, model.describePlace)
+                    .environment(\.searchPlaces, model.search(for:))
+                    .modifier(ContentHeightReader(height: $cardContentHeight))
+                    .frame(height: height)
+                Button { cardCollapsed = true } label: {
+                    Image(systemName: "chevron.compact.up")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Collapse")
+            }
+        }
+        .frame(width: min(Self.cardWidth, size.width - 2 * ControlMetrics.side))
+        .background(Color(.systemGroupedBackground), in: shape)
+        .clipShape(shape)
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 2)
+        .padding(.leading, ControlMetrics.side)
+        .padding(.top, cardTop)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// Which tool the card shows, for re-measuring when it changes.
+    private var cardSummaryKind: Int {
+        if editing != nil || placingPoint != nil { return 1 }
+        if infoShown { return 2 }
+        if sheetShown || pickingIndex != nil || tapPick != nil { return 3 }
+        return legendShown ? 4 : 0
+    }
+
+    /// The collapsed card's one line: the route's status, or the open tool.
+    private var cardSummary: String {
+        if editing != nil || placingPoint != nil { return "Edit pin" }
+        if infoShown { return model.selectedPoint?.name ?? "Pin" }
+        if sheetShown || pickingIndex != nil || tapPick != nil {
+            guard let route = model.route, route.exists else { return "Route" }
+            return RouteSheet.statusText(route, units: display.units)
+        }
+        return "Map key"
+    }
+
+    /// The topmost open tool. A point opened over the route covers it, and
+    /// closing the point uncovers the route. A tool waiting on a pick is
+    /// shown but disabled; the crosshair's own buttons finish the pick.
+    @ViewBuilder
+    private var cardContent: some View {
+        // Empty while the sheets are in use, so no tool is built twice.
+        if !usesToolCard {
+            EmptyView()
+        } else if let draft = placingPoint {
+            pointEditSheet(draft).id(draft.id).disabled(true)
+        } else if let draft = editing {
+            pointEditSheet(draft).id(draft.id)
+        } else if infoShown {
+            pointInfoSheet
+        } else if sheetShown || pickingIndex != nil || tapPick != nil {
+            routeSheet.disabled(pickingIndex != nil || tapPick != nil)
+        } else if legendShown {
+            LegendSheet(model: model, scope: legendScope, onClose: { legendShown = false })
+        }
+    }
+
+    /// Opens the map key. In the card it replaces the route and point
+    /// info, which would otherwise cover it.
+    private func showLegend(scope: LegendSheet.Scope = .onMap) {
+        if usesToolCard, editing == nil {
+            sheetShown = false
+            infoShown = false
+        }
+        legendScope = scope
+        legendShown = true
     }
 
     // MARK: - Route flow
@@ -202,20 +464,30 @@ struct MapScreen: View {
             beachAvailable: model.beachAvailable,
             elevationAvailable: model.elevationAvailable,
             tide: model.tide,
+            straightLegs: model.routeLegsAreStraight,
             search: model.search(for:),
             initialSearchText: model.lastSearchText,
             onSearched: { model.rememberSearch($0) },
             onPick: { index in
                 sheetShown = false
-                pickingIndex = index
+                if AppFlavor.current.placesStopsByTap {
+                    tapPick = .stop(index)
+                } else {
+                    pickingIndex = index
+                }
             },
+            onAddOnMap: AppFlavor.current.placesStopsByTap ? {
+                sheetShown = false
+                tapPick = .append(route: model.route, stops: draft.stops)
+            } : nil,
             onFrame: { result in
                 model.frame(result)
             },
             onSubmit: {
                 model.setRoute(waypoints: draft.waypoints(), profile: draft.profile,
                                beachUse: draft.beachUse, avoidHills: draft.avoidHills)
-                sheetShown = false
+                // Apply in the card: the route redraws beside the open tool.
+                if !usesToolCard { sheetShown = false }
             },
             // Walk/Cycle replans the live route's waypoints on the spot, not
             // the draft's: a half-edited draft must not reach the document.
@@ -238,6 +510,8 @@ struct MapScreen: View {
                 model.setRoute(waypoints: route.waypoints, profile: route.profile,
                                beachUse: route.beachUse, avoidHills: avoidHills)
             },
+            slopeColors: model.routeSlopeColors,
+            onSlopeColorsChange: { model.setRouteSlopeColors($0) },
             onClear: {
                 // The sheet stays up and returns to the search box on an
                 // empty draft; `load(from: nil)` sets the phase.
@@ -248,8 +522,25 @@ struct MapScreen: View {
                 // Discards the draft only. Clear and the mode picker act on
                 // the live route and are not undone.
                 sheetShown = false
+            },
+            appliesInPlace: usesToolCard,
+            adjustedCount: model.adjustedSettingCount(profile: draft.profile),
+            // In the card the key replaces the route tool; on a phone it opens
+            // over the route sheet, which stays put for the re-planned route.
+            onOpenPreferences: model.hasLegend ? {
+                if usesToolCard { showLegend(scope: .adjusted) } else { preferencesShown = true }
+            } : nil,
+            shareRoute: {
+                guard let document = MapModel.routeDocumentURL() else { return nil }
+                return RouteShare.payload(document: document,
+                                          destination: draft.stops.last?.name)
             })
         .presentationDetents([.medium, .large])
+        .sheet(isPresented: $preferencesShown) {
+            LegendSheet(model: model, scope: .adjusted, onClose: { preferencesShown = false })
+                .presentationDetents([.medium, .large])
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        }
     }
 
     /// The crosshair state for a route stop. The map keeps its gestures; the
@@ -285,40 +576,173 @@ struct MapScreen: View {
             .onDisappear { model.endPick() }
     }
 
+    /// The tap-pick state for route stops: the map keeps its gestures and a
+    /// tap places. Appended stops go on the live route as they land, so the
+    /// legs are drawn while the next one is chosen.
+    private func tapPickOverlay(_ pick: TapPick, top: CGFloat,
+                                bottom: CGFloat) -> some View {
+        switch pick {
+        case .stop(let index):
+            return TapPickOverlay(
+                title: "Tap the map to place \(draft.label(at: index))",
+                summary: nil, topMargin: top, bottomMargin: bottom,
+                onUndo: nil, canUndo: false, onDone: nil,
+                onCancel: {
+                    tapPick = nil
+                    sheetShown = true
+                })
+        case .append(let route, let stops):
+            return TapPickOverlay(
+                title: "Tap the map to add stops",
+                summary: model.route.flatMap { r in
+                    r.exists ? RouteSheet.statusText(r, units: display.units) : nil
+                },
+                topMargin: top, bottomMargin: bottom,
+                onUndo: {
+                    draft.removeLastPlaced()
+                    applyTappedDraft()
+                },
+                canUndo: draft.hasAnything,
+                onDone: {
+                    tapPick = nil
+                    sheetShown = true
+                },
+                onCancel: {
+                    tapPick = nil
+                    draft.stops = stops
+                    if let route, route.exists {
+                        model.setRoute(waypoints: route.waypoints, profile: route.profile)
+                    } else {
+                        model.clearRoute()
+                    }
+                    sheetShown = true
+                })
+        }
+    }
+
+    /// Places a tap for the running tap pick.
+    private func placeByTap(_ pick: TapPick, at location: CGPoint) {
+        model.tapTarget(at: location) { coordinate, name in
+            // The answer comes a hop later; the pick may have ended.
+            guard let coordinate, tapPick == pick else { return }
+            UISelectionFeedbackGenerator().selectionChanged()
+            switch pick {
+            case .stop(let index):
+                if draft.stops.indices.contains(index) {
+                    draft.stops[index].coordinate = coordinate
+                    draft.stops[index].name = name
+                }
+                tapPick = nil
+                sheetShown = true
+            case .append:
+                draft.appendTapped(coordinate, named: name)
+                applyTappedDraft()
+            }
+        }
+    }
+
+    /// Puts the draft's placed stops on the map as the route.
+    private func applyTappedDraft() {
+        let waypoints = draft.waypoints()
+        if waypoints.isEmpty {
+            model.clearRoute()
+        } else {
+            model.setRoute(waypoints: waypoints, profile: draft.profile)
+        }
+    }
+
     // MARK: - Point flow
 
     /// A tap on the map: a marker under the finger selects it and opens the
-    /// info sheet; a miss with a sheet open closes it; a miss with nothing
-    /// open does nothing (so a finger that lands without moving does not
-    /// flicker a dialog).
+    /// info sheet; a miss with a sheet open closes it. A miss with nothing
+    /// open lists the chart features there on a chart pack, and otherwise
+    /// does nothing.
     private func handleTap(at location: CGPoint) {
+        if let pick = tapPick {
+            placeByTap(pick, at: location)
+            return
+        }
         // During a placement the map is being dragged, not tapped.
         guard pickingIndex == nil, placingPoint == nil, editing == nil else {
             return
         }
         model.point(under: location) { hit in
             if let hit {
+                chartFeatures = []
                 model.select(hit)
                 infoShown = true
             } else if infoShown {
                 infoShown = false
                 model.select(nil)
+            } else if model.importsCharts {
+                showChartFeatures(at: location)
             }
         }
     }
 
-    /// A press held on the map. Tries to grab a route waypoint and tells the
-    /// recognizer whether the rest of the touch belongs to it. Refused during
-    /// a placement and while the route sheet (the other editor of the same
-    /// waypoints) is up.
+    /// Lists the chart features under a tap that hit no marker; a tap on
+    /// uncharted ground closes the list.
+    private func showChartFeatures(at location: CGPoint) {
+        model.chartFeatures(under: location) { features in
+            guard pickingIndex == nil, placingPoint == nil, editing == nil else { return }
+            chartFeatures = features
+        }
+    }
+
+    /// A press held on the map. Tries to grab a route waypoint, then a pin,
+    /// and tells the recognizer whether the rest of the touch belongs to the
+    /// grabbed thing; a press that grabs nothing starts a new point on
+    /// release. The waypoint wins because waypoints snap onto pins and the
+    /// route is the thing being edited. Refused during a placement and while
+    /// the route sheet (the other editor of the same waypoints) covers the
+    /// map. The card leaves the map in reach, so a drag is allowed there and
+    /// the card's stops reload from the result, discarding edits not yet
+    /// applied.
     private func handleHold(at location: CGPoint,
                             then grabbed: @escaping (Bool) -> Void) {
         guard pickingIndex == nil, placingPoint == nil, editing == nil,
-              !sheetShown else {
+              !sheetShown || usesToolCard else {
             grabbed(false)
             return
         }
-        model.grabRouteWaypoint(at: location, then: grabbed)
+        if case .stop = tapPick {
+            grabbed(false)
+            return
+        }
+        model.grabRouteWaypoint(at: location) { onWaypoint in
+            // While stops are being tapped on, only the route is editable.
+            guard !onWaypoint, tapPick == nil else { return grabbed(onWaypoint) }
+            model.grabPoint(at: location, then: grabbed)
+        }
+    }
+
+    /// Opens the editor on a new point at a long-pressed spot, prefilled from
+    /// the named map feature drawn there. Nothing is added until Save.
+    private func beginPressedPoint(at location: CGPoint) {
+        model.chartFeature(under: location) { coordinate, feature in
+            // The answer comes a hop later; the state may have moved on.
+            guard let coordinate, pickingIndex == nil, tapPick == nil,
+                  placingPoint == nil, editing == nil,
+                  !sheetShown || usesToolCard else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            infoShown = false
+            model.select(nil)
+            let pin = model.pointSymbols.first {
+                $0.name == MapModel.sharedPlaceSymbol
+            }
+            let draft = PointDraft(newAt: coordinate, feature: feature,
+                                   symbolId: pin?.symbolId ?? 0,
+                                   sizePx: model.points.first?.sizePx ?? 22)
+            editing = draft
+            // The tiles carry road names in a label layer the pick index does
+            // not hold, so a press on a road names it through the road graph.
+            guard feature?.name.isEmpty ?? true else { return }
+            Task {
+                guard let place = await model.describePlace(at: coordinate),
+                      place.isNamed, draft.name.isEmpty else { return }
+                draft.name = place.name
+            }
+        }
     }
 
     /// The info sheet, bound to the model's selection so an edit that lands
@@ -355,7 +779,8 @@ struct MapScreen: View {
     /// the map, and Save is held back until one is chosen. The size matches
     /// an existing point so the marker sits beside its neighbours.
     private func beginNewPoint() {
-        guard pickingIndex == nil, placingPoint == nil, editing == nil else {
+        guard pickingIndex == nil, tapPick == nil, placingPoint == nil,
+              editing == nil else {
             return
         }
         infoShown = false
@@ -425,6 +850,42 @@ struct MapScreen: View {
             .onDisappear { model.endPick() }
     }
 
+    // MARK: - Shared routes
+
+    /// Takes a `.fvrte` handed to the app. Refused during a placement; asks
+    /// first when there is already a route to lose.
+    private func receiveRoute(from url: URL) {
+        guard pickingIndex == nil, tapPick == nil, placingPoint == nil else {
+            model.post("Finish placing the point first, then open the route again.")
+            return
+        }
+        guard let local = RouteShare.receive(url) else {
+            model.post("Could not open that route file.")
+            return
+        }
+        if model.route?.exists == true {
+            pendingRoute = local
+        } else {
+            importRoute(local)
+        }
+    }
+
+    /// Imports a received route and opens the route tool on it, so the rider
+    /// sees what arrived.
+    private func importRoute(_ local: URL) {
+        pendingRoute = nil
+        model.importRoute(from: local) { imported in
+            try? FileManager.default.removeItem(at: local)
+            guard imported else { return }
+            editing = nil
+            infoShown = false
+            legendShown = false
+            draft.load(from: model.route)
+            if draft.profile.isEmpty { draft.profile = model.routeDefaultProfile }
+            sheetShown = true
+        }
+    }
+
     // MARK: - Shared places
 
     /// Handles a `pippin://place` URL. The URL is untrusted input from another
@@ -441,7 +902,7 @@ struct MapScreen: View {
             PippinLog.share.error("app: that URL is not a place callback")
             return
         }
-        guard pickingIndex == nil, placingPoint == nil else {
+        guard pickingIndex == nil, tapPick == nil, placingPoint == nil else {
             PippinLog.share.notice("app: refused — a placement is in progress")
             return
         }
@@ -573,6 +1034,38 @@ struct MapScreen: View {
         }
     }
 
+    /// The COG vector: a line from the ship to where it will be in
+    /// `Course.vectorSeconds` at its present course and speed, drawn through
+    /// the perspective. Nothing when the receiver reports no course or speed,
+    /// or the speed is below `Course.vectorMinimumSpeed`.
+    @ViewBuilder
+    private static func courseVector(_ ship: PPOwnship, in live: PPViewport,
+                                     screen: CGSize) -> some View {
+        if ship.hasCourse, ship.hasSpeed,
+           let end = Course.vectorEnd(latitude: ship.coordinate.latitude,
+                                      longitude: ship.coordinate.longitude,
+                                      courseDegrees: ship.courseDegrees,
+                                      speedMetersPerSecond: ship.speedMetersPerSecond) {
+            let from = live.screenPoint(forFlat: live.point(forGeo: ship.coordinate))
+            let to = live.screenPoint(forFlat: live.point(
+                forGeo: PPGeoPointMake(end.latitude, end.longitude)))
+            if from.x.isFinite, from.y.isFinite, to.x.isFinite, to.y.isFinite {
+                let line = Path { path in
+                    path.move(to: from)
+                    path.addLine(to: to)
+                }
+                // A white casing keeps the line readable on dark chart fills.
+                ZStack {
+                    line.stroke(Color.white, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    line.stroke(Color.black, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                }
+                // Framed to the screen and centred, so its origin is the screen's.
+                .frame(width: screen.width, height: screen.height)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
     /// An upright marker on a tilted map: placed at its ground point through
     /// the perspective and shrunk with depth, but never foreshortened. Placed
     /// by offset from the centre, as the ship is; off-screen ones are skipped.
@@ -656,6 +1149,9 @@ struct MapScreen: View {
                 }
                 farFade(live, size: size)
                 if let ship = model.ownship {
+                    if AppFlavor.current.showsCourseOverGround {
+                        Self.courseVector(ship, in: live, screen: size)
+                    }
                     Self.ship(ship, in: live, screen: size)
                 }
             }
@@ -711,7 +1207,15 @@ struct MapScreen: View {
                             ridesShown = true
                         },
                         onTides: model.tide == nil ? nil : { tidesShown = true },
-                        onMapKey: model.hasLegend ? { legendShown = true } : nil,
+                        onMapKey: model.hasLegend ? { showLegend() } : nil,
+                        onDownloadCharts: model.importsCharts ? { chartDownloadShown = true } : nil,
+                        onImportCharts: model.importsCharts && model.chartDownload == nil
+                            ? { chartImporterShown = true } : nil,
+                        onCheckChartUpdates: model.hasInstalledCharts && model.chartDownload == nil
+                            && model.chartImportProgress == nil && !model.checkingChartUpdates
+                            ? { model.checkForChartUpdates() } : nil,
+                        onChartSettings: model.importsCharts ? { chartSettingsShown = true } : nil,
+                        onChartHelp: model.importsCharts ? { chartHelpShown = true } : nil,
                         onAbout: { aboutShown = true },
                         onReportProblem: { problemShown = true })
                         .equatable()
@@ -725,6 +1229,11 @@ struct MapScreen: View {
                             draft.load(from: model.route)
                             if draft.profile.isEmpty {
                                 draft.profile = model.routeDefaultProfile
+                            }
+                            // In the card a point's info would cover the route.
+                            if usesToolCard, infoShown {
+                                infoShown = false
+                                model.select(nil)
                             }
                             sheetShown = true
                         }
@@ -752,7 +1261,7 @@ struct MapScreen: View {
                     // recording because that is what red means.
                     CircleButton(
                         systemName: "record.circle",
-                        label: model.isRecording ? "Stop recording" : "Record a ride",
+                        label: model.isRecording ? "Stop recording" : "Record a \(AppFlavor.current.trackNoun)",
                         isActive: model.isRecording,
                         activeSystemName: "stop.circle.fill",
                         activeTint: .red,
@@ -760,7 +1269,7 @@ struct MapScreen: View {
                             model.refreshRides()
                             ridesShown = true
                         },
-                        longPressLabel: "Saved rides") {
+                        longPressLabel: "Saved \(AppFlavor.current.trackNoun)s") {
                             model.toggleRecording()
                         }
                     CircleButton(
@@ -820,6 +1329,9 @@ struct MapScreen: View {
                     Label(Self.elapsedText(model.trip), systemImage: "stopwatch")
                     Label(speedText(model.trip), systemImage: "speedometer")
                     Label(odometerText(model.trip), systemImage: "arrow.forward")
+                    if AppFlavor.current.showsCourseOverGround {
+                        Label(Self.courseText(model.ownship), systemImage: "safari")
+                    }
                 }
                 Spacer(minLength: 8)
                 if model.trip?.hasRemaining == true {
@@ -864,6 +1376,14 @@ struct MapScreen: View {
         // Hours appear only once there are some.
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, sec) }
         return String(format: "%d:%02d", m, sec)
+    }
+
+    /// COG as reported by the receiver, "047°T"; an en-dash when it reports
+    /// none or the boat is slower than the vector's minimum speed.
+    private static func courseText(_ ship: PPOwnship?) -> String {
+        guard let ship, ship.hasCourse, ship.hasSpeed,
+              ship.speedMetersPerSecond >= Course.vectorMinimumSpeed else { return "—" }
+        return Course.text(ship.courseDegrees)
     }
 
     /// Instance methods because they read `display.units`. The underlying
@@ -948,6 +1468,84 @@ struct MapScreen: View {
             Spacer()
         }
         .allowsHitTesting(false)
+    }
+
+    /// The course deviation indicator for a straight-leg route: the point
+    /// steered for, a needle on a cross-track scale, and the leg and bearing
+    /// readouts. Sits where the turn banner does and, like it, takes no taps.
+    private func courseIndicator(_ course: PPCourseDeviation, top: CGFloat) -> some View {
+        let units = display.units
+        let limit = course.offCourseLimitMeters
+        let xte = course.crossTrackMeters
+        let alarm = course.offCourse
+        let name = course.waypointName.isEmpty
+            ? "Point \(course.waypointIndex)" : course.waypointName
+        return VStack {
+            VStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .foregroundStyle(.secondary)
+                    Text(name)
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Text("\(course.waypointIndex)/\(course.waypointCount - 1)")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(units.distance(course.distanceToWaypointMeters))
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                }
+                CourseNeedle(position: Course.needle(crossTrackMeters: xte, limitMeters: limit),
+                             alarm: alarm)
+                    .frame(height: 26)
+                HStack {
+                    Text("XTE \(Course.crossTrackText(xte, units: units))")
+                        .foregroundStyle(alarm ? Color.red : Color.primary)
+                    Spacer()
+                    Text(alarm ? "Off course · \(Course.steerText(crossTrackMeters: xte, limitMeters: limit))"
+                               : Course.steerText(crossTrackMeters: xte, limitMeters: limit))
+                        .foregroundStyle(alarm ? Color.red : Color.secondary)
+                }
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                HStack(spacing: 0) {
+                    courseReadout("DTK", Course.text(course.legCourseDegrees))
+                    courseReadout("BRG", Course.text(course.bearingToWaypointDegrees))
+                    courseReadout("TTG", course.hasTimeToGo
+                                  ? Course.timeToGoText(course.secondsToWaypoint) : "–")
+                    courseReadout("ETA", course.hasTimeToGo
+                                  ? Date().addingTimeInterval(course.secondsToWaypoint)
+                                      .formatted(date: .omitted, time: .shortened)
+                                  : "–")
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 420)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20,
+                                                            style: .continuous))
+            .padding(.horizontal, 12)
+            .measuredHeight(GuidanceBannerHeightKey.self)
+            .padding(.top, Self.belowBars(top: top, rideBarHeight))
+            Spacer()
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// One labelled CDI readout, "BRG" over "047°T".
+    private func courseReadout(_ label: String, _ value: String) -> some View {
+        VStack(spacing: 1) {
+            Text(label)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     /// The SF Symbol for a turn; the table is shared with the Live Activity.
@@ -1071,6 +1669,30 @@ struct MapScreen: View {
 
 /// Geometry of the floating controls, in one place so views that must clear
 /// one another (the notice above the control stack, say) share the numbers.
+/// Reports the natural height of the scroll view inside `content`: its
+/// content plus the insets around it (the navigation bar). iOS 18 only;
+/// earlier, `height` stays nil and the caller uses its maximum.
+private struct ContentHeightReader: ViewModifier {
+    @Binding var height: CGFloat?
+
+    private static let minimumNatural: CGFloat = 100
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height + geometry.contentInsets.top
+                    + geometry.contentInsets.bottom
+            } action: { _, natural in
+                // Before the first layout the form reports almost nothing;
+                // a card sized to that would never lay out its rows.
+                if natural > Self.minimumNatural { height = natural }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 enum ControlMetrics {
     /// Diameter of every round control.
     static let diameter: CGFloat = 56
@@ -1119,6 +1741,55 @@ private extension View {
 /// the glyph turns. The needle points at north, not the heading, so one
 /// control serves both modes: it swings in course-up and sits still in
 /// north-up.
+/// The CDI scale: five dots each side of a centre mark, and the needle (the
+/// course line) at `position`, -1 full left to 1 full right. The needle is
+/// red at full scale or when `alarm` is set.
+struct CourseNeedle: View {
+    let position: Double
+    let alarm: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let step = (w - 16) / 10
+            ZStack {
+                ForEach(-5...5, id: \.self) { i in
+                    if i == 0 {
+                        Triangle()
+                            .fill(Color.primary)
+                            .frame(width: 12, height: 10)
+                            .position(x: w / 2, y: h - 5)
+                    } else {
+                        Circle()
+                            .stroke(Color.secondary, lineWidth: 1.5)
+                            .frame(width: 7, height: 7)
+                            .position(x: w / 2 + CGFloat(i) * step, y: h / 2)
+                    }
+                }
+                Capsule()
+                    .fill(alarm || abs(position) >= 1 ? Color.red : Color.green)
+                    .frame(width: 5, height: h)
+                    .position(x: w / 2 + CGFloat(position) * step * 5, y: h / 2)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Course deviation")
+    }
+}
+
+/// An upward-pointing triangle filling its frame.
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.closeSubpath()
+        return p
+    }
+}
+
 struct CompassButton: View {
     /// Where north is on screen, degrees clockwise from up.
     let northAngleDegrees: Double

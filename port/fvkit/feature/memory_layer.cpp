@@ -73,6 +73,7 @@ Status MemoryFeatureLayer::Conform(Feature* f) const {
 }
 
 Status MemoryFeatureLayer::Insert(Feature* feature) {
+  ++revision_;
   if (feature == nullptr) return Status::Error(kInvalidArg, "Insert: null feature");
   Feature f = *feature;
   Status s = Conform(&f);
@@ -85,6 +86,7 @@ Status MemoryFeatureLayer::Insert(Feature* feature) {
 }
 
 Status MemoryFeatureLayer::InsertWithId(const Feature& stored) {
+  ++revision_;
   Feature feature = stored;
   if (feature.id <= 0) return Status::Error(kInvalidArg, "feature id must be positive");
   if (features_.count(feature.id) != 0)
@@ -97,6 +99,7 @@ Status MemoryFeatureLayer::InsertWithId(const Feature& stored) {
 }
 
 Status MemoryFeatureLayer::Update(const Feature& feature) {
+  ++revision_;
   const auto it = features_.find(feature.id);
   if (it == features_.end())
     return Status::Error(kNotFound, "no feature " + std::to_string(feature.id) + " in \"" + name_ + "\"");
@@ -108,12 +111,14 @@ Status MemoryFeatureLayer::Update(const Feature& feature) {
 }
 
 Status MemoryFeatureLayer::Delete(int64_t id) {
+  ++revision_;
   if (features_.erase(id) == 0)
     return Status::Error(kNotFound, "no feature " + std::to_string(id) + " in \"" + name_ + "\"");
   return Status::Ok();
 }
 
 Status MemoryFeatureLayer::ChangeSchema(const SchemaChange& change) {
+  ++revision_;
   Status s = ValidateSchemaChange(schema_, change);
   if (!s.ok()) return s;
   std::map<int64_t, Feature> next;

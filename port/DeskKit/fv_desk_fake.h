@@ -30,6 +30,8 @@ class FakeDeskShell : public DeskShell {
   std::string save_spec;                   ///< empty: cancelled
   int save_format = 0;
   std::optional<int> list_choice;
+  /// Answers for successive lists, used before `list_choice` while any remain.
+  std::vector<std::optional<int>> list_choices;
   bool revert_answer = false;
   std::string directory;                   ///< empty: cancelled
   bool properties_tabs = false;            ///< the shell hosts the Properties tabs
@@ -45,12 +47,15 @@ class FakeDeskShell : public DeskShell {
   std::shared_ptr<OptionsModel> options_shown;      ///< the last overlay options dialog
   std::shared_ptr<OptionsModel> map_options_shown;  ///< the last map options dialog
   std::vector<std::string> list_rows;           ///< what the last list offered
+  std::vector<std::vector<std::string>> lists;  ///< every list offered, in order
   std::vector<std::string> notices;
   int data_sources_shown = 0;
   int route_profile_shown = 0;
   int layers_shown = 0;
+  int layers_hidden = 0;
   int find_shown = 0;
   int feature_form_shown = 0;
+  int item_info_shown = 0;
   int attribute_table_shown = 0;
   int layer_style_shown = 0;
   int layer_fields_shown = 0;
@@ -85,8 +90,10 @@ class FakeDeskShell : public DeskShell {
   void ShowDataSources() override { ++data_sources_shown; }
   void ShowRouteProfile() override { ++route_profile_shown; }
   void ShowLayers() override { ++layers_shown; }
+  void HideLayers() override { ++layers_hidden; }
   void ShowFind() override { ++find_shown; }
   void ShowFeatureForm() override { ++feature_form_shown; }
+  void ShowItemInfo() override { ++item_info_shown; }
   void ShowAttributeTable() override { ++attribute_table_shown; }
   void ShowLayerStyle() override { ++layer_style_shown; }
   void ShowLayerFields() override { ++layer_fields_shown; }

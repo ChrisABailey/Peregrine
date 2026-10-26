@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 
@@ -78,7 +79,9 @@ const char* const kBuiltinRules = R"JSON({
       "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
                  "steep_descent_s_per_m": 2.0, "max_kph": 40.0 },
       "beach_penalty": "exclude",
-      "beach_prefer_factor": 0.5
+      "beach_prefer_factor": 0.5,
+      "key_locks": { "classes.motorway": "Interstates are closed to bicycles.",
+                     "classes.motorway_link": "Interstate ramps are closed to bicycles." }
     },
     "foot": {
       "description": "Walking at a flat speed; anything on foot, no class preference.",
@@ -93,7 +96,9 @@ const char* const kBuiltinRules = R"JSON({
       "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
                  "steep_descent_s_per_m": 2.0, "max_kph": 7.0 },
       "beach_penalty": "exclude",
-      "beach_prefer_factor": 0.5
+      "beach_prefer_factor": 0.5,
+      "key_locks": { "classes.motorway": "Interstates are closed to pedestrians.",
+                     "classes.motorway_link": "Interstate ramps are closed to pedestrians." }
     },
     "car_shortest": {
       "description": "Driving, minimising distance instead of time.",
@@ -115,6 +120,8 @@ int64_t NowMs() {
 // Every key each object level understands. An unknown key is an error rather
 // than something skipped: the whole value of a hand-edited rule file is that a
 // typo tells you, instead of quietly leaving the old weight in place.
+// `legend_baseline` is accepted and ignored so packs written before the legend
+// measured against factor 1.0 still load.
 bool KnownProfileKey(const std::string& k) {
   return k == "description" || k == "extends" || k == "mode" || k == "speed" ||
          k == "metric" || k == "turn_restrictions" || k == "private_penalty" ||
@@ -124,7 +131,7 @@ bool KnownProfileKey(const std::string& k) {
          k == "class_kph" || k == "bike_lane_factor" || k == "speed_factor" ||
          k == "bike_route_factor" || k == "surface_factor" || k == "signal_seconds" ||
          k == "crossing_seconds" || k == "legend_tiers" || k == "legend_baseline" ||
-         k == "hills";
+         k == "hills" || k == "key_locks";
 }
 
 Status ParseMode(const Json& v, const std::string& where, TravelMode* out) {
@@ -320,15 +327,17 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
     const Status s = ParseLegendTiers(obj["legend_tiers"], where, &p.legend_tiers);
     if (!s.ok()) return s;
   }
-  if (obj.contains("legend_baseline")) {
-    const Json& o = obj["legend_baseline"];
-    if (!o.is_object() || o.empty())
-      return Fail(where, "'legend_baseline' must be a non-empty object of OSM tags");
-    p.legend_baseline.clear();
+
+  if (obj.contains("key_locks")) {
+    const Json& o = obj["key_locks"];
+    if (!o.is_object()) return Fail(where, "'key_locks' must be an object");
     for (auto it = o.begin(); it != o.end(); ++it) {
-      if (!it.value().is_string())
-        return Fail(where, "'legend_baseline." + it.key() + "' must be a string");
-      p.legend_baseline.push_back(OsmTag{it.key(), it.value().get<std::string>()});
+      double unused = 0.0;
+      if (!ProfileSetting(p, it.key(), &unused))
+        return Fail(where, "'key_locks' names no adjustable setting '" + it.key() + "'");
+      if (!it.value().is_string() || it.value().get<std::string>().empty())
+        return Fail(where, "'key_locks." + it.key() + "' must be a non-empty reason");
+      p.key_locks[it.key()] = it.value().get<std::string>();
     }
   }
 
@@ -728,6 +737,84 @@ void ApplyProfile(std::shared_ptr<const RouteProfile> profile, RouteOptions* opt
   options->golf_path_penalty = p->golf_path_penalty;
   options->beach_penalty = p->beach_penalty;
   options->beach_prefer_factor = p->beach_prefer_factor;
+}
+
+namespace {
+
+/// The index `key` names among `names`, or -1.
+int IndexOf(const std::string& key, std::initializer_list<const char*> names) {
+  int i = 0;
+  for (const char* n : names) {
+    if (key == n) return i;
+    ++i;
+  }
+  return -1;
+}
+
+/// The value `id` names in `p`, and whether it may be kClassExcluded; null
+/// for an id that is not an adjustable setting.
+double* SettingSlot(RouteProfile* p, const std::string& id, bool* can_exclude) {
+  const size_t dot = id.find('.');
+  const std::string group = id.substr(0, dot);
+  const std::string key = dot == std::string::npos ? std::string() : id.substr(dot + 1);
+  *can_exclude = false;
+  // Index 0 of each factor array is "none" and is not a setting.
+  if (group == "classes") {
+    const RoadClass klass = RoadClassFromName(key);
+    if (klass == RoadClass::kNone) return nullptr;
+    *can_exclude = true;
+    return &p->class_weight[static_cast<size_t>(klass)];
+  }
+  if (group == "bike_lane_factor") {
+    const int i = IndexOf(key, {"", "shared_lane", "lane", "track"});
+    return i > 0 ? &p->bike_lane_factor[i] : nullptr;
+  }
+  if (group == "bike_route_factor") {
+    const int i = IndexOf(key, {"", "local", "regional", "national"});
+    return i > 0 ? &p->bike_route_factor[i] : nullptr;
+  }
+  if (group == "surface_factor") {
+    const int i = IndexOf(key, {"", "paved", "compacted", "rough"});
+    return i > 0 ? &p->surface_factor[i] : nullptr;
+  }
+  if (!key.empty()) return nullptr;
+  // private_penalty has no exclude in the rule file grammar either.
+  if (id == "private_penalty") return &p->private_penalty;
+  *can_exclude = true;
+  if (id == "golf_cartpath_penalty") return &p->golf_cartpath_penalty;
+  if (id == "golf_path_penalty") return &p->golf_path_penalty;
+  if (id == "toll_penalty") return &p->toll_penalty;
+  if (id == "ferry_penalty") return &p->ferry_penalty;
+  return nullptr;
+}
+
+}  // namespace
+
+Status ApplyOverrides(const RouteProfile& base, const ProfileOverrides& overrides,
+                      RouteProfile* out) {
+  RouteProfile p = base;
+  for (const auto& [id, value] : overrides) {
+    const bool excluded = value == kClassExcluded;
+    if (!excluded && !(value > 0.0))
+      return Status::Error(kInvalidArg, "override '" + id + "' must be greater than zero");
+    bool can_exclude = false;
+    double* slot = SettingSlot(&p, id, &can_exclude);
+    if (slot == nullptr) return Status::Error(kInvalidArg, "no adjustable setting '" + id + "'");
+    if (excluded && !can_exclude)
+      return Status::Error(kInvalidArg, "override '" + id + "' cannot exclude");
+    *slot = value;
+  }
+  *out = std::move(p);
+  return Status::Ok();
+}
+
+bool ProfileSetting(const RouteProfile& profile, const std::string& id, double* value) {
+  bool can_exclude = false;
+  // SettingSlot only locates; nothing is written through the pointer.
+  const double* slot = SettingSlot(const_cast<RouteProfile*>(&profile), id, &can_exclude);
+  if (slot == nullptr) return false;
+  *value = *slot;
+  return true;
 }
 
 }  // namespace routing

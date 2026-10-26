@@ -14,12 +14,15 @@
 // the comment above OpensEveryCellUnderTheRoot.
 
 #include "fv_enc_vector_source.h"
+#include "fv_enc_format.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -108,7 +111,9 @@ TEST(EncVectorSource, OneNamedCellHasExactlyTheFeaturesItHas) {
 
   std::vector<fv::VectorFeature> f;
   ASSERT_TRUE(src.Query(fv::VectorQuery(), &f).ok());
-  EXPECT_EQ(f.size(), 600u);
+  // After its three updates: 590 features plus 165 soundings, each vertex of
+  // the 11 sounding records being its own point.
+  EXPECT_EQ(f.size(), 755u);
 
   size_t points = 0, lines = 0, areas = 0;
   for (const auto& v : f) {
@@ -118,15 +123,15 @@ TEST(EncVectorSource, OneNamedCellHasExactlyTheFeaturesItHas) {
       default: ++areas; break;
     }
   }
-  EXPECT_EQ(points, 105u);
-  EXPECT_EQ(lines, 287u);
-  EXPECT_EQ(areas, 208u);
+  EXPECT_EQ(points, 259u);
+  EXPECT_EQ(lines, 294u);
+  EXPECT_EQ(areas, 202u);
 
   // The classes that carry the chart.
   EXPECT_EQ(CountOf(f, "DEPARE"), 59u);
   EXPECT_EQ(CountOf(f, "DEPCNT"), 70u);
   EXPECT_EQ(CountOf(f, "COALNE"), 83u);
-  EXPECT_EQ(CountOf(f, "SOUNDG"), 11u);
+  EXPECT_EQ(CountOf(f, "SOUNDG"), 165u);
 
   const fv::GeoRect b = src.Bounds();
   EXPECT_NEAR(b.ll.lat, 32.700, 0.001);
@@ -324,13 +329,22 @@ TEST(EncVectorSource, SoundingsPublishTheirDepthAsAnAttribute) {
   ASSERT_TRUE(src.Query(fv::VectorQuery(), &f).ok());
 
   size_t with_depth = 0;
+  // Per record: the distinct depths its points carry.
+  std::map<std::pair<int32_t, int32_t>, std::set<std::string>> depths;
   for (const auto& v : f) {
     if (v.style_key != "SOUNDG") continue;
+    EXPECT_EQ(v.type, fv::VectorGeometryType::kPoint);
+    ASSERT_EQ(v.parts.size(), 1u);
+    EXPECT_EQ(v.parts[0].size(), 1u) << "one sounding per feature";
     const std::string* d = v.Attribute("DEPTH");
     if (d == nullptr) continue;
     ++with_depth;
     EXPECT_FALSE(d->empty());
+    depths[{v.ref.tile, v.ref.feature}].insert(*d);
   }
+  size_t varied = 0;
+  for (const auto& kv : depths) varied += kv.second.size() > 1 ? 1 : 0;
+  EXPECT_GT(varied, depths.size() / 2) << "each point carries its own depth";
   // Same shape: every sounding republishes its depth, whatever the corpus is.
   EXPECT_EQ(with_depth, CountOf(f, "SOUNDG"));
   EXPECT_GE(with_depth, 70u);
@@ -423,12 +437,123 @@ TEST(EncVectorSource, DescribeRejectsARefFromNowhere) {
   EXPECT_FALSE(src.Describe(bogus, &d).ok());
 }
 
-// E1 refuses to hide unapplied updates, and the source must carry that warning
-// up: these four cells all ship with update files this phase does not apply.
-TEST(EncVectorSource, StalenessWarningNamesTheUnappliedUpdates) {
+// Every Charleston cell ships update files and every one applies, so the
+// source has nothing to warn about.
+TEST(EncVectorSource, NoStalenessWarningOnceUpdatesApply) {
   SKIP_WITHOUT_ENC();
   OPEN_SOURCE(src);
-  const std::string w = src.StalenessWarning();
-  EXPECT_NE(w.find("US5CHS"), std::string::npos) << w;
-  EXPECT_NE(w.find("BASE EDITION"), std::string::npos) << w;
+  std::vector<fv::VectorFeature> f;
+  ASSERT_TRUE(src.Query(fv::VectorQuery(), &f).ok());
+  EXPECT_EQ("", src.StalenessWarning());
+}
+
+namespace {
+
+/** Every cell under `root` with its catalogued bounds. */
+std::vector<fv::EncCellEntry> IndexOf(const std::string& root) {
+  std::vector<fv::EncCellEntry> out;
+  fv::EncFrameEnumerator e;
+  if (!e.Begin(root).ok()) return out;
+  fv::FrameInfo f;
+  while (e.Next(&f)) out.push_back(fv::EncCellEntry{f.path, f.bounds});
+  return out;
+}
+
+/** A file named like a base cell that is not ISO 8211. */
+std::string WriteGarbageCell() {
+  const fs::path dir = fs::temp_directory_path() / "fv_enc_garbage_cell";
+  fs::create_directories(dir);
+  const fs::path p = dir / "US5XXXAA.000";
+  std::ofstream(p) << "not an ISO 8211 file";
+  return p.string();
+}
+
+}  // namespace
+
+TEST(EncVectorSource, AnUnreadableCellIsSkippedNotFatal) {
+  SKIP_WITHOUT_ENC();
+  const std::string good = enc_root + "/US5CHSDC/US5CHSDC.000";
+  if (!fs::is_regular_file(good)) GTEST_SKIP() << "no US5CHSDC";
+  const std::string bad = WriteGarbageCell();
+
+  fv::EncVectorSource src;
+  const fv::Status s = src.OpenCells({bad, good}, enc_root);
+  ASSERT_TRUE(s.ok()) << s.message;
+  EXPECT_EQ(2u, src.cell_count()) << "the bad cell keeps its tile id";
+  ASSERT_EQ(1u, src.unreadable_cells().size());
+  EXPECT_NE(std::string::npos, src.unreadable_cells()[0].find("US5XXXAA"));
+
+  std::vector<fv::VectorFeature> f;
+  ASSERT_TRUE(src.Query(fv::VectorQuery(), &f).ok());
+  ASSERT_FALSE(f.empty());
+  for (const auto& v : f) EXPECT_EQ(1, v.ref.tile);
+
+  fv::EncVectorSource none;
+  EXPECT_EQ(fv::kIoError, none.OpenCells({bad}, enc_root).code);
+  fs::remove_all(fs::path(bad).parent_path());
+}
+
+TEST(EncVectorSource, OpenIndexedParsesOnlyTheCellsAQueryMeets) {
+  SKIP_WITHOUT_ENC();
+  const std::vector<fv::EncCellEntry> cells = IndexOf(enc_root);
+  ASSERT_GE(cells.size(), 2u);
+
+  fv::EncVectorSource src;
+  ASSERT_TRUE(src.OpenIndexed(cells, enc_root).ok());
+  EXPECT_EQ(cells.size(), src.cell_count());
+  EXPECT_EQ(0u, src.resident_cell_count());
+  EXPECT_FALSE(src.Layers().empty());
+
+  fv::VectorQuery q;
+  q.area = kCharlestonHarbour;
+  std::vector<fv::VectorFeature> lazy;
+  ASSERT_TRUE(src.Query(q, &lazy).ok());
+  size_t meeting = 0;
+  for (const auto& c : cells)
+    if (c.bounds.Intersects(q.area)) ++meeting;
+  EXPECT_EQ(meeting, src.resident_cell_count());
+
+  // The same features as a source that parsed everything up front.
+  fv::EncVectorSource eager;
+  ASSERT_TRUE(eager.Open(enc_root, enc_root).ok());
+  std::vector<fv::VectorFeature> all;
+  ASSERT_TRUE(eager.Query(q, &all).ok());
+  EXPECT_EQ(all.size(), lazy.size());
+}
+
+TEST(EncVectorSource, TheResidentCapDropsTheLeastRecentlyUsedCells) {
+  SKIP_WITHOUT_ENC();
+  const std::vector<fv::EncCellEntry> cells = IndexOf(enc_root);
+  ASSERT_GE(cells.size(), 2u);
+  fv::EncVectorSource src;
+  src.SetMaxResidentCells(1);
+  ASSERT_TRUE(src.OpenIndexed(cells, enc_root).ok());
+
+  std::vector<fv::VectorFeature> f;
+  fv::VectorQuery q;
+  q.area = cells[0].bounds;
+  ASSERT_TRUE(src.Query(q, &f).ok());
+  const size_t first = src.resident_cell_count();
+  EXPECT_GE(first, 1u) << "a query keeps every cell it needed";
+
+  // A small query keeps only the cells it met; the rest go past the cap.
+  const fv::GeoRect& b0 = cells[0].bounds;
+  const double lat = (b0.ll.lat + b0.ur.lat) / 2, lon = (b0.ll.lon + b0.ur.lon) / 2;
+  q.area = fv::GeoRect{{lat - 0.001, lon - 0.001}, {lat + 0.001, lon + 0.001}};
+  size_t meeting = 0;
+  for (const auto& c : cells)
+    if (c.bounds.Intersects(q.area)) ++meeting;
+  f.clear();
+  ASSERT_TRUE(src.Query(q, &f).ok());
+  EXPECT_EQ(meeting, src.resident_cell_count());
+  EXPECT_LE(src.resident_cell_count(), first);
+
+  // A dropped cell is parsed again for Describe.
+  ASSERT_FALSE(f.empty());
+  src.ReleaseCells();
+  EXPECT_EQ(0u, src.resident_cell_count());
+  fv::FeatureDescription d;
+  const fv::Status s = src.Describe(f[0].ref, &d);
+  EXPECT_TRUE(s.ok()) << s.message;
+  EXPECT_FALSE(d.class_name.empty());
 }

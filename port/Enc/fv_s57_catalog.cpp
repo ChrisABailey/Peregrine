@@ -5,6 +5,7 @@
 
 #include "fv_s57_catalog.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -243,6 +244,15 @@ std::string S57ObjectCatalog::DescribeValue(int attribute_code,
     out += meaning != nullptr ? *meaning : tok + " (undefined)";
   }
   return out.empty() ? raw : out;
+}
+
+std::vector<std::string> S57ObjectCatalog::ObjectClassAcronyms() const {
+  std::vector<std::string> out;
+  out.reserve(classes_.size());
+  for (const auto& kv : classes_)
+    if (!kv.second.acronym.empty()) out.push_back(kv.second.acronym);
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 }  // namespace fv

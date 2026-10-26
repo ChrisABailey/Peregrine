@@ -18,6 +18,7 @@
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/canvas/geo_draw.h"
 #include "fvkit/feature/geojson.h"
+#include "fvkit/feature/value_text.h"
 #include "fvkit/feature/vector_source.h"
 #include "fvkit/log.h"
 #include "fvkit/symbol/builtin_icons.h"
@@ -83,6 +84,115 @@ void ForgetPackage(const std::string& path) {
   open.by_path.erase(PackageKey(path));
 }
 
+std::string LowerAscii(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+  return s;
+}
+
+/// A table name and a `gpkg_contents` identifier for a new layer `name`, unused
+/// in `infos`: the name reduced to letters, digits and underscores, numbered
+/// when taken; the identifier numbered too, since that column is UNIQUE.
+void NewTableNames(const std::vector<GeoPackageLayerInfo>& infos, const std::string& name, std::string* table,
+                   std::string* identifier) {
+  std::string base;
+  for (unsigned char c : name) base += std::isalnum(c) ? static_cast<char>(std::tolower(c)) : '_';
+  if (base.empty() || std::isdigit(static_cast<unsigned char>(base[0]))) base = "layer_" + base;
+  auto taken = [&infos](const std::string& t) {
+    return std::any_of(infos.begin(), infos.end(),
+                       [&t](const GeoPackageLayerInfo& i) { return LowerAscii(i.table) == t; });
+  };
+  *table = base;
+  for (int n = 2; taken(*table); ++n) *table = base + "_" + std::to_string(n);
+  *identifier = name;
+  for (int n = 2; std::any_of(infos.begin(), infos.end(),
+                              [identifier](const GeoPackageLayerInfo& i) { return i.identifier == *identifier; });
+       ++n)
+    *identifier = name + " " + std::to_string(n);
+}
+
+/// The features `ids` of `source` (every feature when null) in a memory layer
+/// named `name`, keeping their ids.
+Status CopyFeatures(const IFeatureLayer& source, const std::vector<int64_t>* ids, const std::string& name,
+                    std::shared_ptr<MemoryFeatureLayer>* out) {
+  auto copy = std::make_shared<MemoryFeatureLayer>(name, source.Schema());
+  std::vector<Feature> features;
+  if (ids == nullptr) {
+    Status s = source.All(&features);
+    if (!s.ok()) return s;
+  } else {
+    for (int64_t id : *ids) {
+      Feature f;
+      Status s = source.Get(id, &f);
+      if (!s.ok()) return s;
+      features.push_back(std::move(f));
+    }
+  }
+  for (const Feature& f : features) {
+    Status s = copy->InsertWithId(f);
+    if (!s.ok()) return s;
+  }
+  *out = std::move(copy);
+  return Status::Ok();
+}
+
+/// Writes `layer` and `style_json` as a new GeoPackage at `path`, its table
+/// named after the file. Written beside the target and moved over it, so a
+/// failed write leaves the old file.
+Status WritePackageFile(const IFeatureLayer& layer, const std::string& path, const std::string& style_json) {
+  const std::string temp = path + ".saving";
+  std::error_code ec;
+  std::filesystem::remove(temp, ec);
+  {
+    std::shared_ptr<GeoPackage> out;
+    Status s = GeoPackage::Create(temp, &out);
+    if (!s.ok()) return s;
+    std::string table = std::filesystem::path(path).stem().string();
+    if (table.empty()) table = "features";
+    s = out->WriteLayer(layer, table, nullptr);
+    if (s.ok()) s = out->WriteLayerStyle(table, style_json);
+    if (s.ok()) s = out->Save();
+    if (!s.ok()) {
+      out.reset();
+      std::filesystem::remove(temp, ec);
+      return s;
+    }
+  }
+  std::filesystem::rename(temp, path, ec);
+  if (ec) return Status::Error(kIoError, "cannot replace " + path + ": " + ec.message());
+  ForgetPackage(path);
+  return Status::Ok();
+}
+
+/// Adds the features `ids` of `source` (every one when null) and `style_json`
+/// as a new table for a layer named `name` in the GeoPackage at `path`, and
+/// commits the table alone. `spec` receives `path|layername=table`.
+Status AddTableToPackage(const std::string& path, const IFeatureLayer& source, const std::vector<int64_t>* ids,
+                         const std::string& name, const std::string& style_json, std::string* spec) {
+  if (LowerExtension(path) != FeatureOverlay::kExtension) return Status::Error(kInvalidArg, path + " is not a GeoPackage");
+  std::shared_ptr<GeoPackage> package;
+  Status s = SharedPackage(path, &package);
+  if (!s.ok()) return s;
+  if (!package->Writable()) return Status::Error(kInvalidArg, path + " cannot be written");
+  std::vector<GeoPackageLayerInfo> infos;
+  s = package->Layers(&infos);
+  if (!s.ok()) return s;
+  std::string table, identifier;
+  NewTableNames(infos, name.empty() ? "features" : name, &table, &identifier);
+  // WriteLayer takes the identifier from the layer's name.
+  std::shared_ptr<MemoryFeatureLayer> copy;
+  s = CopyFeatures(source, ids, identifier, &copy);
+  if (s.ok()) s = package->WriteLayer(*copy, table, nullptr);
+  if (s.ok()) s = package->WriteLayerStyle(table, style_json);
+  // The new table commits alone; the file's open layers keep their unsaved edits.
+  if (s.ok()) s = package->SaveTableChanges();
+  if (!s.ok()) {
+    package->RevertTableChanges();
+    return s;
+  }
+  *spec = app::JoinSourceSpec(path, table);
+  return Status::Ok();
+}
+
 /// A MapLibre engine loaded from style JSON, labels on, the builtin icons
 /// standing in when the style names no sprite.
 Status LoadEngine(const std::string& json, const std::string& font, MapLibreStyleEngine* engine) {
@@ -92,6 +202,28 @@ Status LoadEngine(const std::string& json, const std::string& font, MapLibreStyl
   engine->SetLabelFont(font);
   engine->SetDrawLabels(true);
   return Status::Ok();
+}
+
+/// The fraction of the view added on each side of a scene rebuilt after a pan.
+constexpr double kPanSceneMargin = 0.25;
+
+/// By schema index, the fields `style_json` or `filter_json` names, as a
+/// quoted string or a `{field}` text token. A name JSON would escape is always kept.
+std::vector<bool> UsedFields(const FeatureSchema& schema, const std::string& style_json,
+                             const std::string& filter_json) {
+  std::vector<bool> keep(schema.fields.size(), false);
+  for (size_t i = 0; i < schema.fields.size(); ++i) {
+    const std::string& name = schema.fields[i].name;
+    const bool plain = std::all_of(name.begin(), name.end(), [](char c) {
+      const auto u = static_cast<unsigned char>(c);
+      return u >= 0x20 && u < 0x80 && c != '"' && c != '\\';
+    });
+    const std::string quoted = '"' + name + '"';
+    keep[i] = !plain || style_json.find(quoted) != std::string::npos ||
+              style_json.find('{' + name + '}') != std::string::npos ||
+              filter_json.find(quoted) != std::string::npos;
+  }
+  return keep;
 }
 
 /// Where a search result points: the point, a line's middle vertex, an
@@ -112,6 +244,24 @@ bool SearchAnchor(const Geometry& g, GeoPoint* out) {
 }
 
 }  // namespace
+
+bool SchemasMatchForAppend(const FeatureSchema& from, const FeatureSchema& to) {
+  if (from.geometry_type != to.geometry_type || from.fields.size() != to.fields.size()) return false;
+  for (const FieldDef& f : from.fields) {
+    const auto same = std::find_if(to.fields.begin(), to.fields.end(), [&f](const FieldDef& t) {
+      return LowerAscii(t.name) == LowerAscii(f.name);
+    });
+    if (same == to.fields.end() || same->type != f.type) return false;
+  }
+  return true;
+}
+
+bool PackageIsOpen(const std::string& path) {
+  OpenPackages& open = Packages();
+  std::lock_guard<std::mutex> lock(open.mu);
+  const auto it = open.by_path.find(PackageKey(path));
+  return it != open.by_path.end() && !it->second.expired();
+}
 
 FeatureOverlay::FeatureOverlay(std::string name)
     : Overlay(std::move(name)), edit_(std::make_unique<FeatureEditSession>(*this)) {}
@@ -148,6 +298,7 @@ Status FeatureOverlay::SetDefinitionQuery(const std::string& json) {
   Status s = FeatureFilter::Parse(json, &filter);
   if (!s.ok()) return s;
   definition_query_ = std::move(filter);
+  ++definition_generation_;
   if (layer_ && !definition_query_.empty()) {
     std::vector<int64_t> kept;
     for (int64_t id : selection_) {
@@ -304,21 +455,42 @@ Status FeatureOverlay::DrawLayer(const MapProjection& proj, ICanvas& canvas) {
   Status s = WriteFeatureStyleJson(style_, &json, selection_,
                                    has_selection_style_ ? selection_style_ : FeatureSelectionStyle());
   if (!s.ok()) return s;
+  bool rebuild = false;
   if (json != engine_json_ || label_font_ != engine_font_) {
     s = LoadEngine(json, label_font_, engine_.get());
     if (!s.ok()) return s;
     engine_json_ = std::move(json);
     engine_font_ = label_font_;
+    rebuild = true;
   }
   if (!source_) {
     source_ = std::make_shared<FeatureVectorSource>(layer_);
     source_->SetFilter([this](const Feature& f) { return Shows(f); });
     renderer_ = std::make_unique<VectorRenderer>(source_, engine_);
     renderer_->SetPickEnabled(false);
+    rebuild = true;
   }
+  // The definition query filters the features read, so its fields are read too.
+  std::vector<bool> fields = UsedFields(layer_->Schema(), engine_json_, definition_query_.text());
+  if (fields != source_fields_) {
+    source_->SetAttributeFields(fields);
+    source_fields_ = std::move(fields);
+    rebuild = true;
+  }
+  // The scene is kept while the layer, the style and the definition query
+  // are as it was built from; a layer without a revision is always rebuilt.
+  uint64_t revision = 0;
+  const bool tracked = layer_->Revision(&revision);
+  if (!tracked || revision != scene_revision_ || definition_generation_ != scene_definition_generation_)
+    rebuild = true;
+  if (rebuild) renderer_->InvalidateScene();
+  scene_revision_ = revision;
+  scene_definition_generation_ = definition_generation_;
   renderer_->SetDeviceDpi(96.0 * display_scale_);
-  // Features change under the overlay without the style knowing.
-  renderer_->InvalidateScene();
+  // A rebuild at the scale already drawn follows a pan, so the scene takes in
+  // a margin the next pans reuse; the first draw at a scale stays fast.
+  renderer_->SetSceneMargin(proj.Scale() == scene_scale_ ? kPanSceneMargin : 0.0);
+  scene_scale_ = proj.Scale();
   s = renderer_->Render(proj, &canvas);
   features_drawn_ = source_->features_returned();
   return s;
@@ -327,6 +499,7 @@ Status FeatureOverlay::DrawLayer(const MapProjection& proj, ICanvas& canvas) {
 void FeatureOverlay::SetLayer(std::shared_ptr<IEditableFeatureLayer> layer) {
   layer_ = std::move(layer);
   source_.reset();
+  source_fields_.clear();
   renderer_.reset();
   package_.reset();
   selection_.clear();
@@ -349,6 +522,29 @@ void FeatureOverlay::HitTestPoint(const MapProjection& proj, PixelPoint p, doubl
   item.hint.tool_tip = FeatureMapTip(f);
   item.hint.status = Name() + ": " + item.hint.tool_tip;
   out.push_back(std::move(item));
+}
+
+std::optional<app::ItemInfoSheet> FeatureOverlay::InfoAt(const MapProjection& proj, PixelPoint p,
+                                                         double tolerance_px) {
+  (void)proj;
+  (void)tolerance_px;
+  if (!layer_) return std::nullopt;
+  const int64_t id = edit_->FeatureAt(p);
+  Feature f;
+  if (id == 0 || !layer_->Get(id, &f).ok()) return std::nullopt;
+  app::ItemInfoSheet sheet;
+  sheet.title = FeatureTitle(f);
+  sheet.rows.push_back({"Feature", "Layer", Name()});
+  sheet.rows.push_back({"Feature", "Geometry", GeometryTypeTitle(f.geometry.type)});
+  sheet.rows.push_back({"Feature", "ID", std::to_string(f.id)});
+  const FeatureSchema& schema = layer_->Schema();
+  for (size_t i = 0; i < schema.fields.size() && i < f.values.size(); ++i) {
+    const FieldDef& field = schema.fields[i];
+    std::string value = FormatFieldValue(field, f.values[i]);
+    if (!value.empty() && !field.unit.empty()) value += " " + field.unit;
+    sheet.rows.push_back({"Attributes", field.DisplayTitle(), std::move(value)});
+  }
+  return sheet;
 }
 
 std::string FeatureOverlay::FeatureTitle(const Feature& f) const {
@@ -412,6 +608,7 @@ Status FeatureOverlay::ChangeSchema(const SchemaChange& change) {
   if (!s.ok()) return s;
   RemapStyleFields(&style_, old, change);
   source_.reset();
+  source_fields_.clear();
   renderer_.reset();
   edit_->CancelSketch();
   edit_->ClearHistory();
@@ -513,13 +710,11 @@ void FeatureOverlay::UseStoredStyle(const std::string& spec, const std::string& 
 
 Status FeatureOverlay::FileOpen(const std::string& spec) { return Load(spec); }
 
-Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
-  if (!layer_) return Status::Error(kInvalidArg, "no feature layer to save");
-  std::string style_json;
-  Status st = WriteFeatureStyleJson(style_, &style_json);
+Status FeatureOverlay::StyleDocument(bool keep_name, std::string* json) const {
+  Status st = WriteFeatureStyleJson(style_, json);
   if (!st.ok()) return st;
   FeatureLayerInfo info;
-  if (Name() != layer_->Name()) info.name = Name();
+  if (keep_name && Name() != layer_->Name()) info.name = Name();
   info.description = description();
   info.credits = credits();
   info.min_scale = min_scale();
@@ -529,7 +724,13 @@ Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
   info.has_selection_style = has_selection_style_;
   info.selection = selection_style_;
   info.definition_query = definition_query_.text();
-  st = WriteFeatureLayerInfoJson(info, &style_json);
+  return WriteFeatureLayerInfoJson(info, json);
+}
+
+Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
+  if (!layer_) return Status::Error(kInvalidArg, "no feature layer to save");
+  std::string style_json;
+  Status st = StyleDocument(/*keep_name=*/true, &style_json);
   if (!st.ok()) return st;
   if (format_index == kFormatGeoJson) {
     Status s = WriteGeoJsonFile(*layer_, spec, style_json);
@@ -549,29 +750,126 @@ Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
     // This layer's edits and style only: the file's other layers save on their own.
     return table->Save(&style_json);
   }
-
-  // Written beside the target and moved over it, so a failed write leaves the old file.
-  const std::string temp = spec + ".saving";
-  std::filesystem::remove(temp, ec);
-  {
-    std::shared_ptr<GeoPackage> out;
-    Status s = GeoPackage::Create(temp, &out);
-    if (!s.ok()) return s;
-    std::string table = std::filesystem::path(spec).stem().string();
-    if (table.empty()) table = "features";
-    s = out->WriteLayer(*layer_, table, nullptr);
-    if (s.ok()) s = out->WriteLayerStyle(table, style_json);
-    if (s.ok()) s = out->Save();
-    if (!s.ok()) {
-      out.reset();
-      std::filesystem::remove(temp, ec);
-      return s;
-    }
-  }
-  std::filesystem::rename(temp, spec, ec);
-  if (ec) return Status::Error(kIoError, "cannot replace " + spec + ": " + ec.message());
-  ForgetPackage(spec);
+  Status s = WritePackageFile(*layer_, spec, style_json);
+  if (!s.ok()) return s;
   return Load(spec);
+}
+
+std::vector<std::string> FeatureOverlay::SaveAsWouldReplace(const std::string& spec, int format_index) {
+  const app::SourceSpec target = app::SplitSourceSpec(spec);
+  std::error_code ec;
+  if (format_index != kFormatGeoPackage || !target.layer.empty() || LowerExtension(target.path) != kExtension ||
+      !std::filesystem::exists(target.path, ec))
+    return {};
+  std::shared_ptr<GeoPackage> package;
+  std::vector<GeoPackageLayerInfo> infos;
+  if (!SharedPackage(target.path, &package).ok() || !package->Layers(&infos).ok() || infos.size() < 2) return {};
+  const auto* own = dynamic_cast<const GeoPackageFeatureLayer*>(layer_.get());
+  const bool same_file = package_ == package && own != nullptr;
+  // Its own file opened by the plain path: the save commits this table alone.
+  if (same_file && spec_layer_.empty()) return {};
+  std::vector<std::string> others;
+  for (const GeoPackageLayerInfo& i : infos)
+    if (!same_file || LowerAscii(i.table) != LowerAscii(own->Table())) others.push_back(i.identifier);
+  return others;
+}
+
+Status FeatureOverlay::FileSaveAsAddedLayer(const std::string& path, std::string* spec) {
+  if (!layer_) return Status::Error(kInvalidArg, "no feature layer to save");
+  if (spec == nullptr) return Status::Error(kInvalidArg, "FileSaveAsAddedLayer: null spec");
+  std::string style_json;
+  Status s = StyleDocument(/*keep_name=*/false, &style_json);
+  if (!s.ok()) return s;
+  s = AddTableToPackage(path, *layer_, nullptr, Name(), style_json, spec);
+  if (!s.ok()) return s;
+  return Load(*spec);
+}
+
+Status FeatureOverlay::AppendTargets(const std::string& path, std::vector<GeoPackageLayerInfo>* out) const {
+  out->clear();
+  if (!layer_) return Status::Error(kInvalidArg, "no feature layer");
+  std::shared_ptr<GeoPackage> package;
+  Status s = SharedPackage(path, &package);
+  if (!s.ok()) return s;
+  std::vector<GeoPackageLayerInfo> infos;
+  s = package->Layers(&infos);
+  if (!s.ok()) return s;
+  const auto* own = dynamic_cast<const GeoPackageFeatureLayer*>(layer_.get());
+  for (const GeoPackageLayerInfo& i : infos) {
+    if (own != nullptr && package_ == package && LowerAscii(i.table) == LowerAscii(own->Table())) continue;
+    std::shared_ptr<GeoPackageFeatureLayer> table = package->FindOpenLayer(i.table);
+    if (!table && !package->OpenLayer(i.table, &table).ok()) continue;  // a table this reader cannot open
+    if (SchemasMatchForAppend(layer_->Schema(), table->Schema())) out->push_back(i);
+  }
+  return Status::Ok();
+}
+
+Status FeatureOverlay::ExportSelection(const FeatureExport& to, std::string* spec) {
+  if (!layer_) return Status::Error(kInvalidArg, "no feature layer to export");
+  if (spec == nullptr) return Status::Error(kInvalidArg, "ExportSelection: null spec");
+  if (selection_.empty()) return Status::Error(kInvalidArg, "no features are selected");
+  std::string style_json;
+  Status s = StyleDocument(/*keep_name=*/false, &style_json);
+  if (!s.ok()) return s;
+
+  switch (to.mode) {
+    case FeatureExport::Mode::kNewFile: {
+      if (PackageIsOpen(to.path))
+        return Status::Error(kInvalidArg, to.path + " is open; export into it as a new layer instead");
+      std::shared_ptr<MemoryFeatureLayer> copy;
+      s = CopyFeatures(*layer_, &selection_, Name(), &copy);
+      if (s.ok()) s = WritePackageFile(*copy, to.path, style_json);
+      if (!s.ok()) return s;
+      std::string table = std::filesystem::path(to.path).stem().string();
+      *spec = app::JoinSourceSpec(to.path, table.empty() ? "features" : table);
+      return Status::Ok();
+    }
+    case FeatureExport::Mode::kNewTable:
+      return AddTableToPackage(to.path, *layer_, &selection_, Name(), style_json, spec);
+    case FeatureExport::Mode::kAppend:
+      break;
+  }
+
+  std::shared_ptr<GeoPackage> package;
+  s = SharedPackage(to.path, &package);
+  if (!s.ok()) return s;
+  if (!package->Writable()) return Status::Error(kInvalidArg, to.path + " cannot be written");
+  // An open table is appended to through its own layer, so the overlay showing it sees the rows.
+  std::shared_ptr<GeoPackageFeatureLayer> table = package->FindOpenLayer(to.table);
+  if (!table) {
+    s = package->OpenLayer(to.table, &table);
+    if (!s.ok()) return s;
+  }
+  if (table.get() == layer_.get()) return Status::Error(kInvalidArg, "cannot append a layer to itself");
+  if (table->HasEdits())
+    return Status::Error(kInvalidArg, table->Name() + " has unsaved edits; save or revert it before appending to it");
+  const FeatureSchema& from = layer_->Schema();
+  const FeatureSchema& into = table->Schema();
+  if (!SchemasMatchForAppend(from, into))
+    return Status::Error(kInvalidArg, table->Name() + " has other fields; export as a new layer instead");
+  // The target's field order may differ from the source's.
+  std::vector<size_t> source_index(into.fields.size());
+  for (size_t i = 0; i < into.fields.size(); ++i)
+    for (size_t j = 0; j < from.fields.size(); ++j)
+      if (LowerAscii(from.fields[j].name) == LowerAscii(into.fields[i].name)) source_index[i] = j;
+  for (int64_t id : selection_) {
+    Feature f;
+    s = layer_->Get(id, &f);
+    if (!s.ok()) break;
+    Feature row;
+    row.geometry = std::move(f.geometry);
+    row.values.resize(into.fields.size());
+    for (size_t i = 0; i < into.fields.size(); ++i) row.values[i] = f.values[source_index[i]];
+    s = table->Insert(&row);
+    if (!s.ok()) break;
+  }
+  if (s.ok()) s = table->Save();
+  if (!s.ok()) {
+    table->DiscardEdits();
+    return s;
+  }
+  *spec = app::JoinSourceSpec(to.path, table->Table());
+  return Status::Ok();
 }
 
 // The edits live in the layer, so reading the table afresh discards them and
@@ -606,26 +904,9 @@ Status AddFeatureLayerToPackage(const std::string& path, const std::string& name
   std::vector<GeoPackageLayerInfo> infos;
   s = package->Layers(&infos);
   if (!s.ok()) return s;
-  std::string base;
-  for (unsigned char c : name) base += std::isalnum(c) ? static_cast<char>(std::tolower(c)) : '_';
-  if (base.empty() || std::isdigit(static_cast<unsigned char>(base[0]))) base = "layer_" + base;
-  auto taken = [&infos](const std::string& t) {
-    return std::any_of(infos.begin(), infos.end(), [&t](const GeoPackageLayerInfo& i) {
-      std::string a = i.table;
-      std::transform(a.begin(), a.end(), a.begin(), [](unsigned char c) { return std::tolower(c); });
-      return a == t;
-    });
-  };
-  std::string table = base;
-  for (int n = 2; taken(table); ++n) table = base + "_" + std::to_string(n);
-
-  // gpkg_contents.identifier is UNIQUE, so a repeated name is numbered too.
+  std::string table;
   GeoPackageLayerOptions options;
-  options.identifier = name;
-  for (int n = 2; std::any_of(infos.begin(), infos.end(),
-                              [&options](const GeoPackageLayerInfo& i) { return i.identifier == options.identifier; });
-       ++n)
-    options.identifier = name + " " + std::to_string(n);
+  NewTableNames(infos, name, &table, &options.identifier);
   std::shared_ptr<GeoPackageFeatureLayer> layer;
   std::string style_json;
   s = package->CreateLayer(table, schema, options, &layer);

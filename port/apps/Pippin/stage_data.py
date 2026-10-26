@@ -15,6 +15,8 @@ assembles that bundle directory out of the working tree.
     python3 port/apps/Pippin/stage_data.py --release  # the pack that ships
     python3 port/apps/Pippin/stage_data.py --regen-points   # redo the points
     python3 port/apps/Pippin/stage_data.py --region atlanta # another region
+    python3 port/apps/Pippin/stage_data.py --region charleston-enc  # ENC charts
+    python3 port/apps/Pippin/stage_data.py --region tampa-enc       # ENC, Tampa Bay
 
 TWO OF THOSE FLAGS ARE ABOUT WHAT MUST NOT HAPPEN BY ACCIDENT. `--release`
 leaves out the rows that exist to measure the app rather than to ride with it
@@ -134,7 +136,7 @@ ATLANTA_INI = {
     "pippin.mbtiles": '"atlanta.mbtiles"',
     "pippin.home_bounds": '"%s"' % ATLANTA_BOUNDS,
     "points.seed": '"atlanta.fvpoints"',
-    "search.initial_text": '"BeltLine"',
+    "search.initial_text": '"Peach"',
     "routing.graph": '"atlanta.fvroad"',
     # City Rules: private ways are a last resort, not the island's network.
     "routing.rules": '"route-weights-city.json"',
@@ -154,12 +156,13 @@ ATLANTA_INI = {
 ATLANTA_DROP = ["tides", "beach", "movingmap.demo_track"]
 
 
-def region_ini(values, drop):
+def region_ini(values, drop, append=""):
     """A transform that stages pippin.ini with some keys reset and some removed.
 
     `values` maps dotted keys to the literal text after `=`; each must already
     exist in pippin.ini, so a renamed key fails here rather than on a phone.
     `drop` names whole sections or dotted keys. Comments are kept as written.
+    `append` is text added at the end, for sections pippin.ini does not have.
     """
     def write(src, dst):
         out, section, seen, skipping = [], "", set(), False
@@ -185,7 +188,124 @@ def region_ini(values, drop):
             raise SystemExit("pippin.ini has no %s to set" % ", ".join(unknown))
         with open(dst, "w") as f:
             f.writelines(out)
+            f.write(append)
     return write
+
+
+# ENC charts: the Charleston fixture's eight S-57 cells, drawn with S-52
+# symbology instead of the OSM map. The S-52 library and the S-57 catalogue
+# travel in `s52/`; base cells only, since update files are not applied.
+ENC_FIXTURE = "testdata/enc"
+ENC_S52_FILES = ["chartsymbols.xml", "rastersymbols-day.png",
+                 "rastersymbols-dusk.png", "rastersymbols-dark.png",
+                 "s57attributes.csv", "s57expectedinput.csv",
+                 "s57objectclasses.csv"]
+CHARLESTON_BOUNDS = "-79.98,32.70,-79.86,32.82"
+
+CHARLESTON_ENC_INI = {
+    "routing.legs": '"rhumb"',
+    "pippin.home_bounds": '"%s"' % CHARLESTON_BOUNDS,
+    "points.seed": '"charleston.fvpoints"',
+    "search.initial_text": '""',
+    "tides.station": '"8665530"',
+    "wind.lat": "32.7808",
+    "wind.lon": "-79.9236",
+}
+CHARLESTON_ENC_DROP = ["pippin.mbtiles", "routing.graph", "beach",
+                       "osm.style_dark"]
+CHARLESTON_ENC_APPEND = """
+[enc]
+# The base map is these S-57 cells (any directory with *.000 below it) instead
+# of pippin.mbtiles. data_dir holds the S-52 library and S-57 catalogue.
+cells = "enc"
+data_dir = "s52"
+# The camera's zoom range, which an OSM pack takes from its pyramid.
+min_zoom = 5
+max_zoom = 18
+"""
+
+
+# Tampa Bay: the NOAA Florida exchange set, cut to the cells whose catalogue
+# box touches the bay from Anna Maria to Clearwater. Band 1 is left out; its two
+# Gulf-wide overview cells are 5 MB and add nothing below band 2's coverage.
+ENC_FLORIDA = "testdata/enc-regions/FL/ENC_ROOT"
+TAMPA_CELL_BOUNDS = (-82.90, 27.25, -82.35, 28.05)   # west, south, east, north
+TAMPA_BOUNDS = "-82.85,27.2,-82.3,28.0"
+
+TAMPA_ENC_INI = {
+    "routing.legs": '"rhumb"',
+    "pippin.home_bounds": '"%s"' % TAMPA_BOUNDS,
+    "points.seed": '"tampa.fvpoints"',
+    "search.initial_text": '""',
+    "tides.station": '"8726520"',
+    "wind.lat": "27.6667",
+    "wind.lon": "-82.6667",
+}
+
+
+def read_enc_catalog(path):
+    """Each base cell's (relative path, west, south, east, north) from the
+    CATD records of an S-57 CATALOG.031. Rows without a box are skipped."""
+    with open(path, "rb") as f:
+        data = f.read()
+    cells = []
+    pos = 0
+    while pos + 24 <= len(data):
+        length = int(data[pos:pos + 5])
+        rec = data[pos:pos + length]
+        pos += length
+        base = int(rec[12:17])
+        size_len, size_pos, size_tag = int(rec[20:21]), int(rec[21:22]), int(rec[23:24])
+        entry = size_len + size_pos + size_tag
+        directory = rec[24:base - 1]
+        for i in range(0, len(directory), entry):
+            tag = directory[i:i + size_tag]
+            if tag != b"CATD":
+                continue
+            n = int(directory[i + size_tag:i + size_tag + size_len])
+            at = int(directory[i + size_tag + size_len:i + entry])
+            # RCNM, RCID and FILE are fixed-width and share the first unit;
+            # IMPL is a fixed three characters in front of SLAT.
+            units = rec[base + at:base + at + n].rstrip(b"\x1e").split(b"\x1f")
+            name = units[0][12:].decode("ascii").replace("\\", "/")
+            if not name.endswith(".000") or not units[3][3:].strip():
+                continue
+            south, west = float(units[3][3:]), float(units[4])
+            north, east = float(units[5]), float(units[6])
+            cells.append((name, west, south, east, north))
+    return cells
+
+
+def enc_cell_rows(fixture, bounds=None, min_band=1):
+    """One row per base cell under `fixture`, staged as enc/<cell>/<cell>.000.
+
+    With `bounds` (west, south, east, north), only the cells whose box in the
+    fixture's CATALOG.031 overlaps it, at usage band `min_band` or above.
+    """
+    if bounds is not None:
+        catalog = os.path.join(ROOT, fixture, "CATALOG.031")
+        if not os.path.isfile(catalog):
+            return []  # the set is not unpacked; staging says the region is empty
+        rows = []
+        for name, west, south, east, north in sorted(read_enc_catalog(catalog)):
+            cell = os.path.basename(name)[:-4]
+            if (int(cell[2]) < min_band or west >= bounds[2] or east <= bounds[0]
+                    or south >= bounds[3] or north <= bounds[1]):
+                continue
+            rows.append(Item("%s/%s" % (fixture, name),
+                             "enc/%s/%s.000" % (cell, cell),
+                             "S-57 cell %s" % cell))
+        return rows
+    rows = []
+    base = os.path.join(ROOT, fixture)
+    for dirpath, _, files in sorted(os.walk(base)):
+        for name in sorted(files):
+            if name.endswith(".000"):
+                rel = os.path.relpath(os.path.join(dirpath, name), ROOT)
+                cell = name[:-4]
+                rows.append(Item(rel, "enc/%s/%s" % (cell, name),
+                                 "S-57 cell %s" % cell))
+    return rows
 
 
 class Region:
@@ -216,11 +336,40 @@ REGIONS = {
              "the settings file, rewritten for Atlanta",
              transform=region_ini(ATLANTA_INI, ATLANTA_DROP)),
     ], "Atlanta", []),
+    "charleston-enc": Region(
+        [Item("%s/%s" % (ENC_FIXTURE, f), "s52/%s" % f,
+              "S-52 presentation library / S-57 catalogue")
+         for f in ENC_S52_FILES]
+        + enc_cell_rows(ENC_FIXTURE)
+        + [Item("testdata/kiawah_cycle.gpx", "kiawah_cycle.gpx",
+                "the demo feed, inside the coastal cell's coverage",
+                debug_only=True),
+           Item("testdata/tides/8665530.json", "tides.json",
+                "NOAA tide predictions, Charleston Harbor (Customs House)")]
+        + [Item("port/apps/Pippin/pippin.ini", "pippin.ini",
+                "the settings file, rewritten for Charleston ENC",
+                transform=region_ini(CHARLESTON_ENC_INI, CHARLESTON_ENC_DROP,
+                                     CHARLESTON_ENC_APPEND))],
+        "Charleston", []),
+    "tampa-enc": Region(
+        [Item("%s/%s" % (ENC_FIXTURE, f), "s52/%s" % f,
+              "S-52 presentation library / S-57 catalogue")
+         for f in ENC_S52_FILES]
+        + enc_cell_rows(ENC_FLORIDA, TAMPA_CELL_BOUNDS, min_band=2)
+        + [Item("testdata/tides/8726520.json", "tides.json",
+                "NOAA tide predictions, St. Petersburg")]
+        + [Item("port/apps/Pippin/pippin.ini", "pippin.ini",
+                "the settings file, rewritten for Tampa Bay ENC",
+                transform=region_ini(TAMPA_ENC_INI,
+                                     CHARLESTON_ENC_DROP + ["movingmap.demo_track"],
+                                     CHARLESTON_ENC_APPEND))],
+        "Tampa Bay", []),
 }
 
 # Every seed name any region uses. A seed may be hand-edited and lives only in
 # the pack, so switching regions or pruning a release pack never deletes one.
-REGION_SEEDS = {"kiawah.fvpoints", "atlanta.fvpoints"}
+REGION_SEEDS = {"kiawah.fvpoints", "atlanta.fvpoints", "charleston.fvpoints",
+                "tampa.fvpoints"}
 
 # Where to find the font when `port/apps/Pippin/fonts/` is empty. That
 # directory is git-ignored (it is 756 KB of binary, and this repo has been
@@ -645,6 +794,12 @@ def main():
                 if item.dst not in own and os.path.isfile(stale):
                     os.remove(stale)
                     print("  %-22s removed  (belongs to %s)" % (item.dst, name))
+                    # A cell's folder goes with its last file.
+                    parent = os.path.dirname(stale)
+                    while (os.path.abspath(parent) != os.path.abspath(args.pack)
+                           and os.path.isdir(parent) and not os.listdir(parent)):
+                        os.rmdir(parent)
+                        parent = os.path.dirname(parent)
 
     if not args.check:
         fetch_font()

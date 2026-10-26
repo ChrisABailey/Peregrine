@@ -182,6 +182,22 @@ TEST_F(LayerStyleTest, TheRiversGraduatedByFlowSaveAndReopenIdentical) {
   EXPECT_TRUE(overlay_->style() == applied);
 }
 
+TEST_F(LayerStyleTest, ClassifyTakesOnlyTheFeaturesTheDefinitionQueryShows) {
+  OpenPizza();
+  ASSERT_TRUE(overlay_->SetDefinitionQuery(R"([">=", ["get", "rating"], 4])").ok());
+  ASSERT_TRUE(fd_.Run({"overlay.style"}).ok());
+  ASSERT_TRUE(style().SetRenderer(FeatureRenderer::kCategorised).ok());
+  ASSERT_TRUE(style().SetField("name").ok());
+  ASSERT_EQ(style().EntryCount(), 3u);  // Andolini's, Paulie Gee's, Other
+  EXPECT_EQ(style().EntryValue(0), "Andolini's");
+  EXPECT_EQ(style().EntryValue(1), "Paulie Gee's");
+  EXPECT_TRUE(style().EntryIsOther(2));
+
+  ASSERT_TRUE(style().SetRenderer(FeatureRenderer::kGraduated).ok());
+  ASSERT_TRUE(style().SetField("rating").ok());
+  EXPECT_EQ(style().EntryValue(0), "4");  // Slice Box's 3.0 is hidden
+}
+
 TEST_F(LayerStyleTest, StyleThisFeatureSetsAndClearsAnOverride) {
   OpenPizza();
   overlay_->SetSelected(2);

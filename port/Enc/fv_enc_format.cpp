@@ -138,9 +138,11 @@ Status EncFrameEnumerator::Begin(const std::string& dir) {
       f.bounds = hit->second;
     } else {
       // No catalogue row: parse the cell for its own extent. Correct but
-      // expensive, which is exactly why the catalogue is tried first.
+      // expensive, which is exactly why the catalogue is tried first. The
+      // base edition's extent, as a catalogue gives, so a cell an update
+      // cancelled is still listed.
       S57Cell cell;
-      if (!cell.Open(cell_path).ok()) continue;  // unreadable cell: skip
+      if (!cell.Open(cell_path, S57Updates::kBaseOnly).ok()) continue;  // unreadable: skip
       f.bounds = cell.bounds();
       f.edition = cell.info().edition;
       if (!RectIsUsable(f.bounds)) continue;  // a cell with no geometry

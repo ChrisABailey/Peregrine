@@ -13,6 +13,8 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
+#include <functional>
 
 #include "fv_view_ladder.h"
 #include "fv_view_viewport.h"
@@ -65,6 +67,8 @@ class MapView {
   void PointerDown(const PointF& p);
   /// A drag pans: the position grabbed at PointerDown stays under the pointer.
   void PointerDrag(const PointF& p);
+  /// Ends a drag. A release faster than `kFlingMinSpeed` starts a coast,
+  /// which `Advance` moves; any other input stops it.
   void PointerUp(const PointF& p);
 
   /// A scroll event at `at`. Precise (trackpad) scrolling pans by
@@ -89,6 +93,27 @@ class MapView {
   /// when the cursor is outside the widget.
   LadderStep Step(int direction);
 
+  // MARK: Motion
+
+  /// Release speed below which a drag simply stops, in points per second.
+  static constexpr double kFlingMinSpeed = 200.0;
+  /// Speed kept per millisecond of a coast (UIKit's normal deceleration).
+  static constexpr double kFlingDecelerationRate = 0.998;
+
+  /// Moves a running coast to the clock's present. Call once per display
+  /// refresh. True while a coast is running.
+  bool Advance();
+  bool Coasting() const { return coasting_; }
+  /// True while the view is being panned: a drag that moved in the last
+  /// quarter second, a coast, or a scroll pan moments ago (trackpad
+  /// scrolling stops without an end).
+  bool Panning() const;
+  /// How fast the content is moving across the widget, in points per
+  /// second; zero at rest.
+  PointF PanVelocity() const;
+  /// Replaces the monotonic clock, in seconds. For tests.
+  void SetClock(std::function<double()> clock);
+
   // MARK: State
 
   const Viewport& View() const { return view_; }
@@ -99,6 +124,9 @@ class MapView {
   LadderOutcome LastOutcome() const { return last_outcome_; }
   /// Bumped whenever the view or the product changes.
   uint64_t Generation() const { return generation_; }
+  /// Bumped on every change but a pan: the frame drawn for the previous
+  /// view can still be shown, translated.
+  uint64_t FrameGeneration() const { return frame_generation_; }
   bool InGesture() const { return dragging_ || magnifying_; }
   /// Whether the cursor is over the widget, and where (the keyboard anchor).
   bool Hovering() const { return hovering_; }
@@ -106,6 +134,9 @@ class MapView {
 
  private:
   void SetView(const Viewport& v);
+  /// Moves the camera by a pan of (dx, dy) content points to `v`.
+  void PanTo(const Viewport& v, double dx, double dy);
+  void StopCoast() { coasting_ = false; }
   void Apply(const LadderStep& s, const PointF& anchor);
   PointF KeyAnchor() const;
 
@@ -122,6 +153,22 @@ class MapView {
   bool dragging_ = false;
   GeoPoint drag_grab_;
   bool magnifying_ = false;
+
+  /// One pan movement, for the velocity estimate.
+  struct PanSample {
+    double t = 0, dt = 0, dx = 0, dy = 0;
+  };
+  std::function<double()> clock_;
+  uint64_t frame_generation_ = 0;
+  std::deque<PanSample> samples_;
+  double last_pan_t_ = -1e9;   ///< last scroll or coast pan
+  double last_drag_t_ = -1e9;  ///< last drag move
+  PointF drag_last_;
+  bool dragged_ = false;
+  bool coasting_ = false;
+  double coast_start_ = 0;
+  PointF coast_v_;            ///< release velocity, points per second
+  PointF coast_travelled_;    ///< content offset applied so far
 };
 
 }  // namespace view

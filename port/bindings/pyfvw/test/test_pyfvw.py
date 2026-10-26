@@ -1262,9 +1262,8 @@ def test_enc_source_open_layers_bounds():
     b = s.bounds
     assert b.ll.lat <= 32.70 and b.ur.lat >= 32.85
     assert b.ll.lon <= -80.025 and b.ur.lon >= -79.875
-    # These cells ship update files the reader does not apply, and saying so
-    # is a navigational duty, not a diagnostic nicety.
-    assert "BASE EDITION" in s.staleness_warning
+    # These cells ship update files and every one applies, so nothing is stale.
+    assert s.staleness_warning == ""
 
 
 def test_enc_open_cells_is_one_usage_band():

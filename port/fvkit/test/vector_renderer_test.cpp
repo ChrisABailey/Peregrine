@@ -1698,6 +1698,38 @@ TEST(VectorRenderer, AnAlongPathLabelTurnsWithItsLine) {
   EXPECT_FALSE(rb.pick_index().empty()) << "an along-path label is identifiable";
 }
 
+TEST(VectorRenderer, TheRepeatFilterDrawsANearbyDuplicateNameOnce) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("a", {{0.0, 0.0}, {0.0, 0.0}}));
+  src->features.push_back(Line("b", {{0.0, 4.0}, {0.0, 4.0}}));
+  src->features.push_back(Line("c", {{0.0, 60.0}, {0.0, 60.0}}));
+  auto eng = std::make_shared<LabelStyleEngine>();
+  eng->label.valid = true;
+  eng->label.text = "Cooper River";
+  eng->label.style.font_path = font;
+  eng->label.style.size = 12;
+  eng->label.style.color = fv::FvColor{255, 255, 255, 255};
+
+  auto draws = [&](double repeat_px) {
+    fv::CpuCanvas c(200, 200);
+    fv::VectorRenderer r(src, eng);
+    r.SetLabelRepeatPixels(repeat_px);
+    EXPECT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+    return r.draws_emitted();
+  };
+  EXPECT_EQ(3u, draws(0.0)) << "off by default";
+  EXPECT_EQ(2u, draws(20.0)) << "the copy 4 px away is dropped, 60 px is not";
+  EXPECT_EQ(1u, draws(100.0));
+
+  // A copy anchored off the canvas does not hide the one on it.
+  src->features.clear();
+  src->features.push_back(Line("off", {{0.0, -104.0}, {0.0, -104.0}}));
+  src->features.push_back(Line("on", {{0.0, -96.0}, {0.0, -96.0}}));
+  EXPECT_EQ(2u, draws(20.0));
+}
+
 // A point label hangs off its anchor by halign/valign. The canvas draws
 // baseline-left, so kLeft/kBaseline must stay a no-op — GeoSym and OSM both
 // pre-compute a dx/dy and say nothing about alignment, and neither may move.

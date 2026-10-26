@@ -39,6 +39,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
+using fv::routing::ApplyOverrides;
+using fv::routing::ProfileOverrides;
 using fv::routing::RoadClass;
 using fv::routing::RoadGraph;
 using fv::routing::Route;
@@ -664,6 +666,98 @@ TEST(RouteRules, CityRulesTakeTheLaneAndAvoidTheFastStreet) {
   // The island rules name neither key, so the shorter road wins both times.
   EXPECT_EQ(ride(island, 1, 2), "No Lane");
   EXPECT_EQ(ride(island, 11, 12), "Fast Street");
+}
+
+// A rider's overrides go to a copy of the profile; the rule file is untouched.
+TEST(RouteRules, OverridesAdjustACopyOfTheProfile) {
+  RoadGraph g;
+  ASSERT_EQ(fv::routing::BuildRoadGraph({WriteFile("lanes.osm", kLaneAndSpeedOsm)}, {}, &g,
+                                        nullptr)
+                .code,
+            fv::kOk);
+  std::shared_ptr<const RouteRules> city;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  const fv::routing::RouteProfile& shipped = *city->Find("bicycle");
+
+  auto ride = [&](const ProfileOverrides& overrides, int64_t from, int64_t to) {
+    auto adjusted = std::make_shared<fv::routing::RouteProfile>();
+    EXPECT_EQ(ApplyOverrides(shipped, overrides, adjusted.get()).code, fv::kOk);
+    RouteOptions o;
+    fv::routing::ApplyProfile(adjusted, &o);
+    Route r;
+    Router(g).RouteNodes(NodeByOsmId(g, from), NodeByOsmId(g, to), o, &r);
+    return FirstStreet(r);
+  };
+  EXPECT_EQ(ride({}, 1, 2), "With Lane");
+  // A painted lane at Much worse: the lane road loses, the unlaned pair does not move.
+  EXPECT_EQ(ride({{"bike_lane_factor.lane", 2.5}}, 1, 2), "No Lane");
+  EXPECT_EQ(ride({{"bike_lane_factor.lane", 2.5}}, 11, 12), "Quiet Street");
+  // Never on a class takes it out of the search.
+  EXPECT_EQ(ride({{"classes.secondary", fv::routing::kClassExcluded}}, 1, 2), "");
+  EXPECT_EQ(ride({{"classes.secondary", fv::routing::kClassExcluded}}, 11, 12), "Quiet Street");
+  EXPECT_EQ(shipped.bike_lane_factor[static_cast<size_t>(fv::routing::BikeProvision::kLane)],
+            0.6);
+}
+
+// An empty map, or every setting at its shipped value, is the rule file exactly.
+TEST(RouteRules, UntouchedOverridesAreTheRuleFile) {
+  std::shared_ptr<const RouteRules> city;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  const fv::routing::RouteProfile& shipped = *city->Find("bicycle");
+  auto same = [&](const fv::routing::RouteProfile& p) {
+    for (size_t i = 0; i < static_cast<size_t>(RoadClass::kCount); ++i)
+      EXPECT_EQ(p.class_weight[i], shipped.class_weight[i]) << i;
+    for (size_t i = 0; i < 4; ++i) {
+      EXPECT_EQ(p.bike_lane_factor[i], shipped.bike_lane_factor[i]);
+      EXPECT_EQ(p.bike_route_factor[i], shipped.bike_route_factor[i]);
+      EXPECT_EQ(p.surface_factor[i], shipped.surface_factor[i]);
+    }
+    EXPECT_EQ(p.private_penalty, shipped.private_penalty);
+    EXPECT_EQ(p.golf_path_penalty, shipped.golf_path_penalty);
+    EXPECT_EQ(p.golf_cartpath_penalty, shipped.golf_cartpath_penalty);
+    EXPECT_EQ(p.toll_penalty, shipped.toll_penalty);
+    EXPECT_EQ(p.ferry_penalty, shipped.ferry_penalty);
+    EXPECT_EQ(p.legend_tiers, shipped.legend_tiers);
+  };
+  fv::routing::RouteProfile copy;
+  ASSERT_EQ(ApplyOverrides(shipped, {}, &copy).code, fv::kOk);
+  same(copy);
+  ASSERT_EQ(ApplyOverrides(shipped,
+                           {{"classes.tertiary", shipped.weight(RoadClass::kTertiary)},
+                            {"bike_lane_factor.lane", 0.6},
+                            {"golf_path_penalty", shipped.golf_path_penalty}},
+                           &copy)
+                .code,
+            fv::kOk);
+  same(copy);
+}
+
+TEST(RouteRules, OverridesRejectWhatTheyCannotSet) {
+  std::shared_ptr<const RouteRules> city;
+  ASSERT_EQ(RouteRules::Load(FV_CITY_ROUTE_RULES_FILE, &city).code, fv::kOk);
+  const fv::routing::RouteProfile& shipped = *city->Find("bicycle");
+  fv::routing::RouteProfile out = shipped;
+  out.private_penalty = 99.0;
+  const double kNever = fv::routing::kClassExcluded;
+  const ProfileOverrides kBad[] = {
+      {{"classes.spaceway", 1.0}},          // not a class
+      {{"bike_lane_factor.none", 0.5}},     // not a provision
+      {{"bike_lane_factor.lane", kNever}},  // a modifier has no Never
+      {{"surface_factor.rough", 0.0}},      // not positive
+      {{"private_penalty", kNever}},        // no exclude in the grammar either
+      {{"speed_factor", 1.0}},              // not adjustable
+      {{"classes.tertiary", 2.0}, {"legend_tiers", 1.0}},
+  };
+  for (const ProfileOverrides& o : kBad) {
+    SCOPED_TRACE(o.rbegin()->first);
+    EXPECT_EQ(ApplyOverrides(shipped, o, &out).code, fv::kInvalidArg);
+    EXPECT_EQ(out.private_penalty, 99.0);  // untouched on error
+  }
+  ASSERT_EQ(ApplyOverrides(shipped, {{"golf_path_penalty", kNever}, {"toll_penalty", 3.0}}, &out)
+                .code,
+            fv::kOk);
+  EXPECT_EQ(out.golf_path_penalty, kNever);
+  EXPECT_EQ(out.toll_penalty, 3.0);
 }
 
 // ---------------------------------------------------------------------------

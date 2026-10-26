@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "fvkit/draw_interrupt.h"
 #include "fvkit/feature/style.h"
 
 namespace fv {
@@ -62,7 +63,7 @@ void EmitGeometry(const Geometry& g, const VectorFeature& proto, std::vector<Vec
 }  // namespace
 
 void FeatureToVector(const Feature& f, const FeatureSchema& schema,
-                     std::vector<VectorFeature>* out) {
+                     std::vector<VectorFeature>* out, const std::vector<bool>* fields) {
   VectorFeature proto;
   proto.layer = kFeatureSourceLayer;
   proto.has_id = true;
@@ -70,6 +71,7 @@ void FeatureToVector(const Feature& f, const FeatureSchema& schema,
   proto.ref.layer = 0;
   proto.ref.feature = static_cast<int32_t>(f.id);
   for (size_t i = 0; i < schema.fields.size() && i < f.values.size(); ++i) {
+    if (fields != nullptr && (i >= fields->size() || !(*fields)[i])) continue;
     const FieldValue& v = f.values[i];
     if (IsNull(v) || std::holds_alternative<std::vector<uint8_t>>(v)) continue;
     proto.attributes.emplace_back(schema.fields[i].name, FeatureCategoryKey(v));
@@ -92,12 +94,14 @@ Status FeatureVectorSource::Query(const VectorQuery& q, std::vector<VectorFeatur
   features_returned_ = 0;
   if (!layer_) return Status::Ok();
   std::vector<Feature> features;
-  Status s = layer_->Query(q.area, &features);
+  Status s = fields_.empty() ? layer_->Query(q.area, &features) : layer_->QueryFields(q.area, fields_, &features);
   if (!s.ok()) return s;
   const FeatureSchema& schema = layer_->Schema();
-  for (const Feature& f : features) {
+  for (size_t i = 0; i < features.size(); ++i) {
+    if (DrawInterruptedAt(i)) return Status::Error(kInterrupted, "feature query interrupted");
+    const Feature& f = features[i];
     if (keep_ && !keep_(f)) continue;
-    FeatureToVector(f, schema, out);
+    FeatureToVector(f, schema, out, fields_.empty() ? nullptr : &fields_);
     ++features_returned_;
   }
   return Status::Ok();

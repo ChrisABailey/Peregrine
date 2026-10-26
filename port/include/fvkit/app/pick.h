@@ -40,6 +40,7 @@
 
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -129,6 +130,10 @@ class PickSession {
   // own section, separated from the one above it. The returned root has an
   // empty label and is a pure container.
   MenuNode BuildContextMenu(const MapProjection& proj, PixelPoint p) const;
+  /// The same, with `append` adding the shell's own items (Get Info, Edit) to
+  /// each overlay's section after the overlay's items.
+  MenuNode BuildContextMenu(const MapProjection& proj, PixelPoint p,
+                            const std::function<void(Overlay&, MenuNode&)>& append) const;
   // The same, then AppShell::ShowContextMenu. Returns false -- and does NOT
   // call the shell -- when no overlay contributed anything, because an empty
   // menu flashing open on a right-click is worse than no menu.

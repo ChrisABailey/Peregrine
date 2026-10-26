@@ -475,10 +475,25 @@ FlowResult OverlaySession::SaveAsImpl(Overlay& overlay) {
       shell_.ChooseSaveSpec(*desc->file, suggested);
   if (chosen.first.empty()) return FlowResult::kCanceled;
 
-  Status s = p->FileSaveAs(chosen.first, chosen.second);
+  // The file panel confirmed replacing a file; replacing other layers in it is asked separately.
+  std::string saved_spec = chosen.first;
+  const std::vector<std::string> others = p->SaveAsWouldReplace(chosen.first, chosen.second);
+  bool add_as_layer = false;
+  if (!others.empty()) {
+    std::string names;
+    for (const std::string& n : others) names += (names.empty() ? "" : ", ") + n;
+    const std::optional<int> answer = shell_.ChooseFromList(
+        SplitSourceSpec(chosen.first).path + " also holds " + names,
+        {"Add \"" + overlay.Name() + "\" as a new layer", "Replace the file and its layers"});
+    if (!answer) return FlowResult::kCanceled;
+    add_as_layer = *answer == 0;
+  }
+
+  Status s = add_as_layer ? p->FileSaveAsAddedLayer(SplitSourceSpec(chosen.first).path, &saved_spec)
+                          : p->FileSaveAs(chosen.first, chosen.second);
   if (!s.ok()) return Fail(s);
 
-  p->set_file_spec(chosen.first);   // fires OverlayFileSpecChanged
+  p->set_file_spec(saved_spec);   // fires OverlayFileSpecChanged
   p->set_save_format_index(chosen.second);
   p->set_has_been_saved(true);
   p->set_dirty(false);
