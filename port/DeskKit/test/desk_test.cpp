@@ -957,6 +957,8 @@ TEST_F(DeskTest, MapDataSourcesCreatesACatalogAndGeneratesCoverage) {
   Scratch dir;
   const std::string root = dir.Path("data");
   std::filesystem::create_directories(root + "/sub");
+  std::filesystem::create_directories(root + "/rpf");
+  std::filesystem::create_directories(root + "/enc");
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
   ASSERT_TRUE(desk.AvailableGroups().empty());
@@ -1001,7 +1003,25 @@ TEST_F(DeskTest, MapDataSourcesCreatesACatalogAndGeneratesCoverage) {
   std::vector<fv::DataSourceRow> sources;
   ASSERT_TRUE(desk.catalog()->DataSources(&sources).ok());
   ASSERT_EQ(sources.size(), 2u);
-  for (const fv::DataSourceRow& r : sources) EXPECT_EQ(r.path, root);
+  // Each format is catalogued from its own folder.
+  for (const fv::DataSourceRow& r : sources) EXPECT_EQ(r.path, root + "/" + (r.format == "cadrg" ? "rpf" : "enc"));
+}
+
+TEST_F(DeskTest, GenerateCoverageNamesTheFoldersItLooksFor) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root + "/intel");
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  fd.shell().save_spec = dir.Path("new.sqlite");
+  ASSERT_TRUE(fd.Run({"map.sources"}).ok());
+  ASSERT_TRUE(desk.AddScanRoot(root).ok());
+  ASSERT_TRUE(fd.Run({"map.generate_coverage"}).ok());
+  EXPECT_FALSE(desk.Building());
+  ASSERT_EQ(fd.shell().errors.size(), 1u);
+  const std::string& message = fd.shell().errors[0].message;
+  EXPECT_NE(message.find(root), std::string::npos) << message;
+  EXPECT_NE(message.find("rpf"), std::string::npos) << message;
 }
 
 TEST_F(DeskTest, AnOldCatalogOffersItsSourceDirectories) {
