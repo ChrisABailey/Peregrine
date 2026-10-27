@@ -22,21 +22,6 @@ namespace {
 constexpr int kSwatchWidth = 36;
 constexpr int kSwatchHeight = 18;
 
-Gdk::RGBA ToRgba(uint32_t rgba) {
-  Gdk::RGBA c;
-  c.set_rgba(((rgba >> 24) & 0xff) / 255.0, ((rgba >> 16) & 0xff) / 255.0,
-             ((rgba >> 8) & 0xff) / 255.0, (rgba & 0xff) / 255.0);
-  return c;
-}
-
-uint32_t FromRgba(const Gdk::RGBA& c) {
-  const auto byte = [](double v) {
-    return static_cast<uint32_t>(std::clamp(std::lround(v * 255), 0L, 255L));
-  };
-  return byte(c.get_red()) << 24 | byte(c.get_green()) << 16 | byte(c.get_blue()) << 8 |
-         byte(c.get_alpha());
-}
-
 /// A text entry that calls `commit` with its text on Enter or when it loses
 /// focus with a changed value.
 Gtk::Entry* CommitEntry(const std::string& text, std::function<void(const std::string&)> commit) {
