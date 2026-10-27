@@ -1945,6 +1945,10 @@ double DeskHost::SearchRowDistance(int row) const {
   return r ? r->distance_m : 0.0;
 }
 
+std::string DeskHost::SearchRowDistanceText(int row) const {
+  return FormatSearchDistance(SearchRowDistance(row));
+}
+
 double DeskHost::SearchRowLatitude(int row) const {
   const DeskSearchRow* r = SearchRowAt(impl_->search_rows, row);
   return r ? r->position.lat : 0.0;
