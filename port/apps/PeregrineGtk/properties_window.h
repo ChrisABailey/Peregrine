@@ -92,7 +92,9 @@ class PropertiesWindow : public Gtk::Window {
   LayerStylePanel* symbology_ = nullptr;
   LayerStylePanel* labels_ = nullptr;
   LayerFieldsPanel* fields_ = nullptr;
-  /// The tabs the pages were built for.
+  /// The tabs the host offered when the pages were built.
+  std::vector<int> host_tabs_;
+  /// The tab of each page, in page order; a tab without a page here is left out.
   std::vector<int> tabs_;
   Gtk::Label message_;
   Gtk::Box* buttons_ = nullptr;
