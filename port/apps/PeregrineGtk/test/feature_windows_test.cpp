@@ -15,6 +15,7 @@
 #include <string>
 
 #include "fv_desk_layer_properties.h"
+#include "fv_desk_query.h"
 #include "map_window.h"
 #include "test/test_support.h"
 
@@ -172,7 +173,9 @@ TEST_F(FeatureWindowsTest, SymbologyTabClassifiesGraduatedAndApplies) {
   ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
   PropertiesWindow& props = *window().properties_window();
   EXPECT_EQ(props.get_title(), "Layer Properties — Charleston rivers");
-  EXPECT_EQ(props.notebook().get_n_pages(), 5);
+  // Every tab the host lists has a page.
+  EXPECT_EQ(props.notebook().get_n_pages(), host().LayerPropertiesTabCount());
+  EXPECT_EQ(host().LayerPropertiesTabCount(), 8);
   EXPECT_EQ(props.current_tab(), static_cast<int>(fv::desk::PropertiesTab::kSymbology));
   ASSERT_NE(props.symbology(), nullptr);
   LayerStylePanel& style = *props.symbology();
@@ -276,6 +279,75 @@ TEST_F(FeatureWindowsTest, GeneralTabRenamesAndSetsTheScaleRange) {
   props.close();
 }
 
+TEST_F(FeatureWindowsTest, DisplayAndSelectionTabsWriteTheDraft) {
+  window().Execute("layers.properties");
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& props = *window().properties_window();
+  ASSERT_TRUE(props.ShowTab(static_cast<int>(fv::desk::PropertiesTab::kDisplay)));
+  EXPECT_EQ(props.opacity_text(), "100%");
+  props.opacity_scale().set_value(50);
+  EXPECT_EQ(props.opacity_text(), "50%");
+  EXPECT_EQ(host().LayerDisplayFieldName(0), "name");
+  props.hyperlink_drop_down().set_selected(1);  // item 0 is None
+  EXPECT_EQ(props.message(), "");
+
+  ASSERT_TRUE(props.ShowTab(static_cast<int>(fv::desk::PropertiesTab::kSelection)));
+  EXPECT_TRUE(props.default_selection_button().get_active());
+  EXPECT_FALSE(props.selection_width_entry().get_sensitive());
+  EXPECT_EQ(props.selection_count_text(), "0 features are selected.");
+  props.own_selection_button().set_active(true);
+  EXPECT_TRUE(props.selection_width_entry().get_sensitive());
+  props.selection_width_entry().set_text("wide");
+  EXPECT_FALSE(props.Apply());
+  EXPECT_NE(props.message(), "");
+  props.selection_width_entry().set_text("3");
+  EXPECT_TRUE(props.Apply());
+  EXPECT_EQ(props.message(), "");
+  EXPECT_EQ(host().LayerDisplayOpacity(), 50);
+  EXPECT_EQ(host().LayerDisplayHyperlinkField(), "name");
+  EXPECT_FALSE(host().LayerSelectionUsesDefault());
+  EXPECT_EQ(host().LayerSelectionWidth(), 3);
+  EXPECT_EQ(props.opacity_text(), "50%");
+  props.close();
+}
+
+TEST_F(FeatureWindowsTest, DefinitionQueryBuildsClausesAndVerifies) {
+  window().Execute("layers.properties");
+  ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
+  PropertiesWindow& props = *window().properties_window();
+  ASSERT_TRUE(props.ShowTab(static_cast<int>(fv::desk::PropertiesTab::kDefinitionQuery)));
+  ASSERT_NE(props.definition_query(), nullptr);
+  QueryBuilderPanel& query = *props.definition_query();
+  EXPECT_EQ(query.clause_count(), 0);
+  EXPECT_EQ(query.sentence_text(), "Every feature");
+
+  query.AddClause();
+  ASSERT_EQ(query.clause_count(), 1);
+  query.field_drop_down(0).set_selected(2);  // flow
+  query.op_drop_down(0).set_selected(static_cast<guint>(fv::desk::QueryOp::kGreaterEqual));
+  query.value_entry(0).set_text("40");
+  query.CommitClause(0);
+  EXPECT_EQ(query.sentence_text(), "flow \u2265 40");
+  query.Verify();
+  EXPECT_EQ(query.verify_text(), "2 of 3 features match");
+
+  // The − button removes its clause once its click has returned.
+  query.RemoveClause(0);
+  EXPECT_EQ(query.clause_count(), 0);
+  query.expression_entry().set_text(R"(["any", ["has", "name"], ["==", ["get", "depth"], 6]])");
+  query.CommitPending();
+  ASSERT_EQ(query.clause_count(), 2);
+  EXPECT_EQ(query.match_drop_down().get_selected(), 1u);
+  EXPECT_EQ(query.value_entry(1).get_text().raw(), "6");
+
+  EXPECT_TRUE(host().LayerPropertiesDirty());
+  EXPECT_TRUE(props.Apply());
+  EXPECT_FALSE(host().LayerPropertiesDirty());
+  EXPECT_EQ(props.definition_query()->clause_count(), 2);
+  props.close();
+  EXPECT_FALSE(host().QueryOpen(fv::desk::DeskHost::kQueryDefinition));
+}
+
 TEST_F(FeatureWindowsTest, StyleThisFeatureTakesTheStyleTabsAway) {
   window().Execute("layers.properties");
   ASSERT_TRUE(SpinUntil([&] { return window().properties_window() != nullptr; }));
@@ -289,7 +361,8 @@ TEST_F(FeatureWindowsTest, StyleThisFeatureTakesTheStyleTabsAway) {
   EXPECT_TRUE(feature.get_visible());
   EXPECT_TRUE(host().LayerStyleIsFeature());
   ASSERT_TRUE(SpinUntil([&] { return props.symbology() == nullptr; }));
-  EXPECT_EQ(props.notebook().get_n_pages(), 3);
+  EXPECT_EQ(props.notebook().get_n_pages(), host().LayerPropertiesTabCount());
+  EXPECT_EQ(host().LayerPropertiesTabCount(), 6);
 
   // Properties takes the style back; the feature's dialog goes.
   window().Execute("overlay.style");

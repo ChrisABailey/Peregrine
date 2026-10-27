@@ -25,6 +25,7 @@ layers panel, the feature-layer dialogs and the route profile.
 | `options_window.{h,cpp}` | `OptionsWindow.swift` |
 | `layers_window.{h,cpp}` | `LayersWindow.swift` |
 | `properties_window.{h,cpp}` | `PropertiesWindow.swift` |
+| `query_builder_panel.{h,cpp}` | `QueryBuilderPanel.swift` |
 | `find_window.{h,cpp}` | `FindWindow.swift` |
 | `feature_form_window.{h,cpp}` | `FeatureFormWindow.swift` |
 | `attribute_table_window.{h,cpp}` | `AttributeTableWindow.swift` |
@@ -77,7 +78,7 @@ Layer Fields) and adds the Feature Layer menu.
 | Test | What it proves |
 |---|---|
 | `peregrine_gtk_test` (gtest) | every command in DeskKit's menu bar has one menu item and one action; shortcuts map to GTK accelerators, and a bare key (an arrow) is not one; actions follow the commands' enabled and checked state; the menus rebuild when a catalog with data opens; every icon the macOS toolbar draws has a symbolic icon; GDK keys map to the core's key codes; the frame placement is a transform every GSK renderer draws |
-| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; Style This Feature… takes the style tabs away and Layer Style… takes them back; Go To / Find lists results under group headings, steps the selection over a heading and goes to a coordinate on Enter; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
+| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; the Display tab sets opacity and a hyperlink field and the Selection tab refuses a bad width, then applies its own colour; the Definition Query tab builds a clause, verifies it, and splits a typed expression into clauses; Style This Feature… takes the style tabs away and Layer Style… takes them back; Go To / Find lists results under group headings, steps the selection over a heading and goes to a coordinate on Enter; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
 | `peregrine_gtk.shot_empty_catalog` | `--shot` writes a PNG and the status line reports the empty catalog |
 | `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, and the PNG holds the picture |
 
@@ -177,8 +178,9 @@ a control re-reads the model after each edit.
   source has the read-only *Source* sheet alone (a heading per section,
   values selectable). A layer adds *General* (name, description, credits and
   the scale range it draws in, Current filling a scale from the map) and, for
-  a feature layer, *Symbology*, *Labels* and *Fields*; a tab with no page
-  here yet (*Display*, *Selection*, *Definition Query*) is left out. Layer Style… and
+  a feature layer, *Display* (opacity, the map tip and hyperlink fields),
+  *Symbology*, *Labels*, *Fields*, *Selection* (the default halo or a colour
+  and width of the layer's own) and *Definition Query*. Layer Style… and
   Layer Fields… open it at their tab (`SetPropertiesTabs`). One Apply writes
   every tab, asking first when a change of fields loses values.
 - **Attribute Table, Edit Feature** (`AttributeTableWindow`,
@@ -191,6 +193,11 @@ a control re-reads the model after each edit.
   (the Labels tab); the Style This Feature… dialog shows both over one
   feature's symbol. An edit rebuilds the panel once its signal has returned,
   since the rebuild replaces the control that sent it.
+- **Query builder** (`QueryBuilderPanel`): clauses of field, comparison and
+  value joined by all or any, the query as a sentence, the filter expression
+  (editable by hand) and Verify, over one of the host's query models. The
+  value's menu button lists the field's sample values (GTK 4.10 deprecates
+  the entry-with-list widgets).
 - **Fields panel, New Feature Layer** (`LayerFieldsPanel`, `NewLayerWindow`):
   the field list and editor of the Fields tab; New Layer's template, geometry
   and file.
