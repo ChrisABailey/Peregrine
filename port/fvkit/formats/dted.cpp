@@ -16,6 +16,7 @@
 #include <system_error>
 
 #include "fv_dted_cell.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fs = std::filesystem;
 
@@ -75,6 +76,7 @@ Status ScanTree(const std::string& root, std::vector<FrameInfo>* out) {
     fs::directory_iterator files(d.path(), ec);
     if (ec) continue;
     for (const auto& f : files) {
+      if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
       int sw_lat = 0, level = 0;
       if (!f.is_regular_file(ec) || ec) continue;
       if (!ParseCellFile(f.path().filename().string(), &sw_lat, &level))

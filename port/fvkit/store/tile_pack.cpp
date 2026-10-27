@@ -17,6 +17,7 @@
 
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/tools/png_io.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fv {
 
@@ -420,6 +421,7 @@ Status TilePackEnumerator::Begin(const std::string& dir) {
       dir, fs::directory_options::skip_permission_denied, ec), end;
   if (ec) return Status::Error(kNotFound, "pack dir not readable: " + dir);
   for (; it != end; it.increment(ec)) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     if (ec) break;
     if (!it->is_regular_file(ec) || ec) continue;
     if (it->path().extension() != ".gpkg") continue;
