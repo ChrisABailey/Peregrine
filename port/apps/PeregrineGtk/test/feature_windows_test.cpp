@@ -5,7 +5,7 @@
 
 /// feature_windows_test.cpp — the windows the core opens for feature layers
 /// (layers, Properties and its tabs, form, table, feature style, new layer),
-/// the options and profile windows, and the window title, driven through a
+/// Go To / Find, the options and profile windows, and the window title, driven through a
 /// real DeskHost and a shown map window on the Charleston rivers sample. Needs
 /// a display (run under xvfb-run).
 
@@ -355,6 +355,35 @@ TEST_F(FeatureWindowsTest, ProfileWindowWithoutARouteShowsItsMessage) {
   profile.SetCursor(10.0);
   EXPECT_EQ(profile.readout(), "");
   profile.close();
+}
+
+TEST_F(FeatureWindowsTest, FindListsGroupsAndGoesToACoordinate) {
+  window().Execute("map.goto");
+  ASSERT_TRUE(SpinUntil([&] { return window().find_window() != nullptr; }));
+  FindWindow& find = *window().find_window();
+  EXPECT_EQ(find.get_title(), "Go To / Find");
+  find.SetViewOnly(false);
+
+  find.SearchFor("River");
+  ASSERT_GE(find.line_count(), 4) << find.status_text();
+  EXPECT_EQ(find.heading_at(0), "Overlays");
+  EXPECT_FALSE(find.go_button().get_sensitive());
+  find.SelectLine(0);
+  EXPECT_EQ(find.selected_line(), 1) << "a heading is stepped over";
+  EXPECT_TRUE(find.go_button().get_sensitive());
+
+  find.SearchFor("32.7 -79.9");
+  ASSERT_EQ(find.line_count(), 2);
+  EXPECT_EQ(find.heading_at(0), "Location");
+  find.Activate();
+  EXPECT_NEAR(host().CenterLat(), 32.7, 1e-6);
+  EXPECT_NEAR(host().CenterLon(), -79.9, 1e-6);
+
+  find.SearchFor("");
+  EXPECT_EQ(find.line_count(), 0);
+  find.close();
+  window().Execute("map.goto");
+  EXPECT_TRUE(SpinUntil([&] { return find.get_visible(); })) << "the closed window comes back";
 }
 
 TEST_F(FeatureWindowsTest, EveryToolbarIconHasArt) {

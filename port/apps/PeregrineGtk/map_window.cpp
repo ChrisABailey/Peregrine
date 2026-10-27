@@ -171,6 +171,7 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
       return std::make_unique<LayersWindow>(*host_, *this, [this](const std::string& id) { Execute(id); });
     });
   if (t.layers_changed && layers_ && layers_->get_visible()) layers_->Reload();
+  if (t.find_requested && host_->TakeFindRequest()) ShowFind();
   if (t.form_requested && host_->TakeFeatureFormRequest())
     ShowPanel(feature_form_, [this] { return std::make_unique<FeatureFormWindow>(*host_, *this); });
   if (t.table_requested && host_->TakeAttributeTableRequest())
@@ -244,6 +245,12 @@ void MapWindow::ShowDataSources() {
         PresentError(message, detail, parent);
       });
   data_sources_->present();
+}
+
+void MapWindow::ShowFind() {
+  if (!find_) find_ = std::make_unique<FindWindow>(*host_, *this);
+  find_->present();
+  find_->FocusField();
 }
 
 void MapWindow::ShowLog() {
