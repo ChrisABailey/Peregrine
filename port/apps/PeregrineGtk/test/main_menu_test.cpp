@@ -218,10 +218,10 @@ TEST(IconNames, CoverTheMacToolbarsIcons) {
   for (const char* icon :
        {"zoom_in", "zoom_out", "recenter", "grid", "points", "features", "contour", "tamask",
         "scalebar", "movingmap", "route", "pencil", "add_point", "edit_point", "delete_point",
-        "leg_type", "follow_roads", "follow_roads_bicycle", "straight_legs", "labels", "select",
+        "leg_type", "follow_roads", "follow_roads_bicycle", "avoid_hills", "straight_legs", "labels", "select",
         "draw_line", "draw_area", "add_hole", "finish", "delete_vertex", "delete_hole",
         "delete_feature", "undo", "redo", "elevation_profile", "attribute_table", "layer_style",
-        "style_feature", "layer_fields"}) {
+        "style_feature", "layer_fields", "export_selection", "layers"}) {
     const std::string name = IconNameFor(icon);
     EXPECT_NE(name.find("-symbolic"), std::string::npos) << icon;
   }
