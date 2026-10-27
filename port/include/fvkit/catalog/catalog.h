@@ -28,6 +28,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,12 @@ class Catalog {
   // Enumerates the source via the format registry (RegisterBuiltinFormats or
   // a custom RegisterFormat must have run) and replaces its coverage rows.
   Status Scan(int64_t data_source_id, int* frames_added);
+  // As above; `cancelled` is polled through the walk (`ScanInterruptScope`)
+  // and the write, and a true answer stops the scan with kInterrupted and
+  // leaves the source's coverage as it was. The tree is read before the
+  // write lock is taken, so the lock is held only for the write.
+  Status Scan(int64_t data_source_id, int* frames_added,
+              const std::function<bool()>& cancelled);
 
   Status Series(std::vector<SeriesRow>* out) const;
 
