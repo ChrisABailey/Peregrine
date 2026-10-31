@@ -50,6 +50,11 @@ void SetChoices(Gtk::DropDown& drop_down, const std::vector<std::string>& items,
 /// The selected item of a drop-down as an index, -1 when none.
 int SelectedIndex(const Gtk::DropDown& drop_down);
 
+/// A colour from 0xRRGGBBAA, as `DeskHost` passes colours.
+Gdk::RGBA ToRgba(uint32_t rgba);
+/// The colour as 0xRRGGBBAA.
+uint32_t FromRgba(const Gdk::RGBA& c);
+
 /// A modal message with buttons and, optionally, a drop-down of rows. Closing
 /// the window or pressing Escape answers `cancel_button`.
 class ChoiceDialog : public Gtk::Window {

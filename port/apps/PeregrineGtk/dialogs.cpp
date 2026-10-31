@@ -5,6 +5,8 @@
 
 #include "dialogs.h"
 
+#include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace peregrine {
@@ -379,6 +381,21 @@ void SetChoices(Gtk::DropDown& drop_down, const std::vector<std::string>& items,
 int SelectedIndex(const Gtk::DropDown& drop_down) {
   const guint k = drop_down.get_selected();
   return k == GTK_INVALID_LIST_POSITION ? -1 : static_cast<int>(k);
+}
+
+Gdk::RGBA ToRgba(uint32_t rgba) {
+  Gdk::RGBA c;
+  c.set_rgba(((rgba >> 24) & 0xff) / 255.0, ((rgba >> 16) & 0xff) / 255.0,
+             ((rgba >> 8) & 0xff) / 255.0, (rgba & 0xff) / 255.0);
+  return c;
+}
+
+uint32_t FromRgba(const Gdk::RGBA& c) {
+  const auto byte = [](double v) {
+    return static_cast<uint32_t>(std::clamp(std::lround(v * 255), 0L, 255L));
+  };
+  return byte(c.get_red()) << 24 | byte(c.get_green()) << 16 | byte(c.get_blue()) << 8 |
+         byte(c.get_alpha());
 }
 
 }  // namespace peregrine

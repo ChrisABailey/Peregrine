@@ -25,6 +25,7 @@ set(PEREGRINE_GTK_WINDOWS
   layer_style_window.cpp
   layers_window.cpp
   properties_window.cpp
+  query_builder_panel.cpp
   main_menu.cpp
   map_canvas.cpp
   map_window.cpp

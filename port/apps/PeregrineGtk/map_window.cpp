@@ -102,7 +102,12 @@ MapWindow::MapWindow()
   }
 }
 
-MapWindow::~MapWindow() { host_->SetRequestHandler(nullptr, nullptr); }
+MapWindow::~MapWindow() {
+  // Unmapped here, while the host lives: the base destructor's unmap sends the
+  // canvas a pointer leave, which would reach a destroyed host.
+  set_visible(false);
+  host_->SetRequestHandler(nullptr, nullptr);
+}
 
 /// Copies the host's status bar text and hover tool tip into the window.
 void MapWindow::RefreshStatus() {
