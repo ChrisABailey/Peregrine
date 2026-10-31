@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <optional>
