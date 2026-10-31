@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# Copyright (C) 2026 Chris Bailey
+# Part of Peregrine, a cross-platform port of FalconView(tm).
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
+
+# Builds the tree on Linux and runs the whole ctest suite against testdata/.
+#
+#   gcc   — the reference Linux build (README "Build > Linux"): every module, the
+#           Python bindings and the GTK app, tests under xvfb-run.
+#   clang — the shared code only (no gtkmm installed, so the GTK app configures
+#           itself out), built with clang to catch portability breaks that the
+#           macOS and iOS builds, both clang, would otherwise hit first.
+name: Linux
+
+on:
+  push:
+    branches: [main, "linux/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc, full tree with GTK app
+            id: gcc
+            cc: gcc
+            cxx: g++
+            packages: libgtkmm-4.0-dev
+          - name: clang, shared code only
+            id: clang
+            cc: clang
+            cxx: clang++
+            packages: clang
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPRESS: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config git ccache \
+            libsqlite3-dev xvfb xauth fonts-dejavu-core \
+            python3-dev python3-numpy python3-pytest python3-tk \
+            ${{ matrix.packages }}
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.id }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.id }}-
+
+      # PYTHON_EXECUTABLE pins the bindings to the interpreter apt installed
+      # NumPy, pytest and Tk into, not a runner tool-cache Python on the PATH.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DPYTHON_EXECUTABLE=/usr/bin/python3
+
+      - name: Build
+        run: |
+          ccache --zero-stats
+          cmake --build build -j "$(nproc)"
+          ccache --show-stats
+
+      # xvfb-run gives the Tk tests of the Python app a display; without it they
+      # skip. ctest counts a skip as a pass, so the summary reports skips too.
+      - name: Test
+        run: |
+          set -o pipefail
+          xvfb-run -a ctest --test-dir build -j "$(nproc)" --output-on-failure \
+            --output-junit "${{ github.workspace }}/ctest-junit.xml" \
+            | tee ctest.log
+
+      - name: Summarize
+        if: always()
+        run: |
+          [ -f ctest.log ] || exit 0
+          {
+            echo "### ${{ matrix.name }}"
+            grep -E 'tests passed|Total Test time' ctest.log || true
+            echo
+            echo "Skipped: $(grep -c '(Skipped)' ctest.log || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.id }}
+          path: |
+            ctest.log
+            ctest-junit.xml
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
