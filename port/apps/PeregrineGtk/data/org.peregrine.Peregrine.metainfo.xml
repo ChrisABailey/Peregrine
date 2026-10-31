@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later
+     Copyright (C) 2026 Chris Bailey
+     Part of Peregrine, a cross-platform port of FalconView(tm).
+     See COPYING.LESSER and NOTICE.md for the full licensing picture. -->
+<component type="desktop-application">
+  <id>org.peregrine.Peregrine</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>LGPL-3.0-or-later</project_license>
+  <name>Peregrine</name>
+  <summary>View and annotate raster and vector map data</summary>
+  <description>
+    <p>
+      Peregrine is a cross-platform port of the FalconView mapping application. It reads
+      GeoTIFF, DTED, CADRG, VPF/DNC, ENC and OpenStreetMap data from a local catalog, and
+      draws overlays, feature layers and routes over it.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.peregrine.Peregrine.desktop</launchable>
+  <url type="homepage">https://github.com/ChrisABailey/Peregrine</url>
+  <provides>
+    <binary>peregrine-gtk</binary>
+  </provides>
+</component>

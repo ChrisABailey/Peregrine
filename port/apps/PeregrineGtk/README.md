@@ -80,10 +80,35 @@ Layer Fields) and adds the Feature Layer menu.
 | `peregrine_gtk_test` (gtest) | every command in DeskKit's menu bar has one menu item and one action; shortcuts map to GTK accelerators, and a bare key (an arrow) is not one; actions follow the commands' enabled and checked state; the menus rebuild when a catalog with data opens; every icon the macOS toolbar draws has a symbolic icon; GDK keys map to the core's key codes; the frame placement is a transform every GSK renderer draws |
 | `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; the Display tab sets opacity and a hyperlink field and the Selection tab refuses a bad width, then applies its own colour; the Definition Query tab builds a clause, verifies it, and splits a typed expression into clauses; Style This Feature… takes the style tabs away and Layer Style… takes them back; Go To / Find lists results under group headings, steps the selection over a heading and goes to a coordinate on Enter; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
 | `peregrine_gtk.shot_empty_catalog` | `--shot` writes a PNG and the status line reports the empty catalog |
-| `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, and the PNG holds the picture |
+| `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, GEOTRANS finds its datum tables, and the PNG holds the picture |
+| `peregrine_gtk.installed_shot` | the same, from a copy installed into a scratch prefix with `MSPCCS_DATA` unset: the installed app finds the datum tables installed beside it |
 
 The screenshot tests run under `xvfb-run` with GSK's cairo renderer, the
 fallback GTK uses without GL.
+
+## Install and package
+
+`cmake --install build --component peregrine --prefix <prefix>` installs the
+app and what it reads at run time:
+
+| Path under the prefix | Contents |
+|---|---|
+| `bin/peregrine-gtk` | the app |
+| `share/applications/`, `share/icons/hicolor/scalable/apps/`, `share/metainfo/` | the launcher entry, icon and AppStream metadata (`data/`) |
+| `share/peregrine/geotrans/` | the GEOTRANS datum tables (`fvw_core/PdfLib/sdk/lib`) |
+| `share/peregrine/osm-styles/` | the OpenStreetMap style sheets (`port/Osm/styles`), for the `osm.style` option |
+| `share/doc/peregrine/` | the licence files |
+
+When `MSPCCS_DATA` is unset, the app sets it to `../share/peregrine/geotrans`
+relative to its own executable, so an install under any prefix needs no
+environment. A build-tree binary has no such directory and still needs
+`MSPCCS_DATA`, as above.
+
+`cd build && cpack --config CPackConfig.cmake` builds
+`peregrine_<version>_<arch>.deb` from that component; the version is the
+`PEREGRINE_VERSION` cache variable (default `0.0.0`). CI builds the package on
+every run and attaches it to a GitHub Release for a tag `v<version>`; see the
+root `README.md`.
 
 ## Options
 
