@@ -125,14 +125,15 @@ TEST(DeskHost, DeliversAFrameAtThePixelSize) {
   EXPECT_FALSE(idle.new_frame);
   EXPECT_FALSE(idle.redraw);
 
-  // A drag moves the placement before the next frame arrives.
+  // A drag moves the placement before the next frame arrives. Read before the
+  // tick: the tick requests a pan band, which can be delivered within it.
   h->PointerDown(100, 50);
   h->PointerDrag(130, 40);
-  EXPECT_TRUE(h->Tick().redraw);
   p = h->Placement();
   ASSERT_TRUE(p.valid);
   EXPECT_NEAR(p.tx, 30.0, 0.5);
   EXPECT_NEAR(p.ty, -10.0, 0.5);
+  EXPECT_TRUE(h->Tick().redraw);
   h->PointerUp(130, 40);
   EXPECT_TRUE(Settle(h.host).new_frame);
   EXPECT_NEAR(h->Placement().tx, 0.0, 1e-6);
@@ -140,6 +141,9 @@ TEST(DeskHost, DeliversAFrameAtThePixelSize) {
 
 TEST(DeskHost, ADragDrawsABandAndSettlesOnTheScreen) {
   HostRef h;
+  // A frozen clock: on a loaded machine the moves would otherwise read as a
+  // fast pan, which leads the band and flings on release.
+  h->SetClock([] { return 1.0; });
   h->Resize(200, 100, 1.0, 0.25);
   ASSERT_TRUE(Settle(h.host).new_frame);
   ASSERT_EQ(h->FrameWidth(), 200);

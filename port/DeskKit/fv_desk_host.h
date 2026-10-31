@@ -901,6 +901,9 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
 
   void Resize(double width_pt, double height_pt, double display_scale,
               double mm_per_point);
+  /// Replaces the monotonic clock, in seconds, that times pans and flings.
+  /// For tests: a frozen clock makes every drag instantaneous.
+  void SetClock(double (*clock)());
   void Hover(double x, double y);
   void HoverExit();
   /// The floating tip for what is under the pointer: an overlay's hit, else

@@ -2971,6 +2971,10 @@ void DeskHost::Resize(double width_pt, double height_pt, double display_scale,
   }
 }
 
+void DeskHost::SetClock(double (*clock)()) {
+  impl_->desk->map_view().SetClock(clock);
+}
+
 void DeskHost::Hover(double x, double y) {
   Impl& m = *impl_;
   m.desk->map_view().Hover(view::PointF{x, y});
