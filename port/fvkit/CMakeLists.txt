@@ -76,6 +76,7 @@ add_library(fv_fvkit STATIC
   nav/beach.cpp
   overlay/manager.cpp
   draw_interrupt.cpp
+  formats/scan_interrupt.cpp
   overlay/contour_overlay.cpp
   overlay/grid_overlay.cpp
   overlay/grid_spacing.cpp

@@ -8,6 +8,7 @@
 #include "fvkit/catalog/catalog.h"
 
 #include <cmath>
+#include <functional>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -17,6 +18,7 @@
 #include "fv_map_scale_util.h"            // fv::MapScaleUtil (denominator calc)
 #include "fv_map_series_string_converter.h"  // the map-type label, FalconView's
 #include "fvkit/formats/registry.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fv {
 
@@ -222,6 +224,11 @@ Status Catalog::InsertCoverage(int64_t data_source_id, int64_t series_id,
 }
 
 Status Catalog::Scan(int64_t data_source_id, int* frames_added) {
+  return Scan(data_source_id, frames_added, std::function<bool()>());
+}
+
+Status Catalog::Scan(int64_t data_source_id, int* frames_added,
+                     const std::function<bool()>& cancelled) {
   if (frames_added != nullptr) *frames_added = 0;
   if (!db_.IsOpen()) return Status::Error(kInvalidArg, "catalog not open");
 
@@ -242,9 +249,21 @@ Status Catalog::Scan(int64_t data_source_id, int* frames_added) {
   if (fmt == nullptr || !fmt->make_enumerator)
     return Status::Error(kUnsupported, "no enumerator registered: " + format);
 
-  auto e = fmt->make_enumerator();
-  s = e->Begin(src_path);
-  if (!s.ok()) return s;
+  // The whole tree is read before the write lock is taken: on a network share
+  // the walk takes minutes, and readers on other connections give up after
+  // the busy timeout.
+  std::vector<FrameInfo> frames;
+  {
+    const ScanInterruptScope scope(cancelled);
+    auto e = fmt->make_enumerator();
+    s = e->Begin(src_path);
+    if (!s.ok()) return s;
+    FrameInfo f;
+    while (e->Next(&f)) {
+      if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
+      frames.push_back(std::move(f));
+    }
+  }
 
   // Replaces this source's coverage atomically. IMMEDIATE takes the write lock
   // up front: the R-tree writes through its own statements under the outer
@@ -275,9 +294,14 @@ Status Catalog::Scan(int64_t data_source_id, int* frames_added) {
   // more loosely than the table it fronts would put the second scale's frames
   // in the first scale's series however the schema is written.
   std::map<std::tuple<std::string, double, int>, int64_t> series_cache;
-  FrameInfo f;
   int added = 0;
-  while (s.ok() && e->Next(&f)) {
+  for (const FrameInfo& f : frames) {
+    if (!s.ok()) break;
+    // Every 1024 rows, so a cancel during a large write is seen at once.
+    if ((added & 1023) == 1023 && cancelled && cancelled()) {
+      s = Status::Error(kInterrupted, "scan cancelled");
+      break;
+    }
     auto key = std::make_tuple(f.series_key, f.scale, f.scale_units);
     auto it = series_cache.find(key);
     int64_t series_id;

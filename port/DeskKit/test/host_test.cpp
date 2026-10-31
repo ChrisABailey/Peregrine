@@ -415,7 +415,7 @@ TEST(DeskHost, QuitIsRequestedOnceEverythingIsClosed) {
 TEST_F(DeskHostStub, ACatalogBuildReportsProgressThroughTick) {
   Scratch dir;
   const std::string root = dir.Path("data");
-  std::filesystem::create_directories(root);
+  std::filesystem::create_directories(root + "/rpf");
   HostRef h;
   h->Resize(400, 300, 1.0, 0.25);
   Answers a;

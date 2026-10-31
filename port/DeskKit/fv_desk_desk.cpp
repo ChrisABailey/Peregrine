@@ -1146,8 +1146,11 @@ Status Desk::GenerateCoverage() {
   if (!missing.empty())
     return Status::Error(kNotFound, "cannot reach " + missing +
                                         "; reconnect it or remove it from Map Data Sources");
-  if (!roots.empty() && steps.empty())
-    return Status::Error(kUnsupported, "no map format this app can scan is registered");
+  if (!roots.empty() && steps.empty()) {
+    std::string listed;
+    for (const std::string& root : roots) listed += (listed.empty() ? "" : ", ") + root;
+    return Status::Error(kNotFound, "found no map data folder (" + ScanFolderNames() + ") in " + listed);
+  }
   // A list derived from the old data sources becomes the saved list.
   const Status s = SaveScanRoots(roots);
   if (!s.ok()) return s;

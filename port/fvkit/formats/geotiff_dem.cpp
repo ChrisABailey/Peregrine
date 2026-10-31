@@ -24,6 +24,7 @@
 
 #include "fv_map_enums.h"
 #include "fvkit/log.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fs = std::filesystem;
 
@@ -803,6 +804,7 @@ Status GeoTiffDemEnumerator::Begin(const std::string& dir) {
   const std::vector<std::string> files = TiffsIn(dir, &ec);
   if (ec) return Status::Error(kNotFound, "DEM dir not readable: " + dir + " (" + ec.message() + ")");
   for (const std::string& path : files) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     std::unique_ptr<GeoTiffDem> dem;
     Status s = GeoTiffDem::Open(path, &dem);
     if (!s.ok()) {

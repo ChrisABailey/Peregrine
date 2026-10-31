@@ -15,6 +15,7 @@
 #include <system_error>
 
 #include "fv_geotiff_frame.h"
+#include "fvkit/formats/scan_interrupt.h"
 #include "fvkit/log.h"
 
 namespace fs = std::filesystem;
@@ -57,6 +58,7 @@ Status GeoTiffFrameEnumerator::Begin(const std::string& dir) {
 
   GeoTiffFrame frame;
   for (const auto& f : files) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     if (!f.is_regular_file(ec) || ec) continue;
     if (!HasTiffExtension(f.path())) continue;
     std::string name = f.path().filename().string();

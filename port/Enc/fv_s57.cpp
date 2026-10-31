@@ -15,6 +15,7 @@
 #include <filesystem>
 
 #include "fvkit/log.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fs = std::filesystem;
 
@@ -498,6 +499,7 @@ Status EnumerateEncCells(const std::string& root, std::vector<std::string>* out)
   fs::recursive_directory_iterator it(root, ec), end;
   if (ec) return Status::Error(kIoError, "fv_s57: cannot scan " + root);
   for (; it != end; it.increment(ec)) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     if (ec) return Status::Error(kIoError, "fv_s57: scan failed under " + root);
     if (!it->is_regular_file(ec)) continue;
     if (FileExtension(it->path()) == "000") out->push_back(it->path().string());
