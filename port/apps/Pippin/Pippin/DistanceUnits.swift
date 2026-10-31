@@ -17,6 +17,8 @@ import Foundation
 enum DistanceUnits: String, CaseIterable, Identifiable {
     case kilometres
     case miles
+    /// Nautical miles and knots, with feet for heights and short distances.
+    case nauticalMiles
 
     var id: String { rawValue }
 
@@ -24,6 +26,7 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
         switch self {
         case .kilometres: return "Kilometres"
         case .miles: return "Miles"
+        case .nauticalMiles: return "Nautical Miles"
         }
     }
 
@@ -42,10 +45,56 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
                 return String(format: "%.0f ft", feet)
             }
             return String(format: "%.1f mi", feet / Self.feetPerMile)
+        case .nauticalMiles:
+            if meters < Self.metersPerNauticalMile / 10 {
+                return String(format: "%.0f ft", meters / Self.metersPerFoot)
+            }
+            return String(format: "%.1f nm", meters / Self.metersPerNauticalMile)
         }
     }
 
-    /// Whole units per hour, which is all the precision a bicycle has.
+    /// A height or a climb in whole metres or feet; heights stay in the small
+    /// unit whatever their size.
+    func height(_ meters: Double) -> String {
+        switch self {
+        case .kilometres: return String(format: "%.0f m", meters)
+        case .miles, .nauticalMiles:
+            return String(format: "%.0f ft", meters / Self.metersPerFoot)
+        }
+    }
+
+    /// A route's climb and descent, "↑ 120 m ↓ 85 m".
+    func climbSummary(climb: Double, descent: Double) -> String {
+        "↑ \(height(climb)) ↓ \(height(descent))"
+    }
+
+    /// The planner status tail without the core's metric ", up N m, down N m";
+    /// the sheet shows the climb in the rider's units on its own line.
+    static func withoutMetricClimb(_ tail: String) -> String {
+        tail.replacingOccurrences(of: #", up -?\d+ m, down -?\d+ m"#, with: "",
+                                  options: .regularExpression)
+    }
+
+    /// `meters` in the unit `distance(_:)` uses for long distances, as a bare
+    /// number: what a chart axis plots.
+    func longUnits(_ meters: Double) -> Double {
+        switch self {
+        case .kilometres: return meters / 1000.0
+        case .miles: return meters / Self.metersPerFoot / Self.feetPerMile
+        case .nauticalMiles: return meters / Self.metersPerNauticalMile
+        }
+    }
+
+    /// `meters` in the unit `height(_:)` uses, as a bare number.
+    func heightUnits(_ meters: Double) -> Double {
+        switch self {
+        case .kilometres: return meters
+        case .miles, .nauticalMiles: return meters / Self.metersPerFoot
+        }
+    }
+
+    /// Whole units per hour for land speeds; knots keep one decimal, since a
+    /// boat's 4.5 kn and 5.4 kn are different passages.
     func speed(_ metersPerSecond: Double) -> String {
         switch self {
         case .kilometres:
@@ -54,6 +103,9 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
             let mph = metersPerSecond / Self.metersPerFoot / Self.feetPerMile
                 * 3600.0
             return String(format: "%.0f mph", mph)
+        case .nauticalMiles:
+            return String(format: "%.1f kn", metersPerSecond * 3600.0
+                          / Self.metersPerNauticalMile)
         }
     }
 
@@ -62,7 +114,8 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
     ///
     /// The small imperial unit is the YARD rather than the foot: a rider is
     /// told "in 200 yards, turn right", and "in 600 feet" is the same
-    /// distance in a unit nobody navigates in. Metric keeps the metre.
+    /// distance in a unit nobody navigates in. Metric keeps the metre, and
+    /// nautical miles count down in yards to the first nautical mile.
     ///
     /// The number is rounded to a step a rider can read at a glance — 10 below
     /// a hundred, 50 above — because the countdown redraws at the receiver's
@@ -89,6 +142,14 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
                 return String(format: "%.1f mi", yards / Self.yardsPerMile)
             }
             return "\(rounded) yd"
+        case .nauticalMiles:
+            let yards = meters / Self.metersPerYard
+            let rounded = Self.readableStep(yards)
+            let nmYards = Self.metersPerNauticalMile / Self.metersPerYard
+            if Double(rounded) >= nmYards || yards >= nmYards {
+                return String(format: "%.1f nm", meters / Self.metersPerNauticalMile)
+            }
+            return "\(rounded) yd"
         }
     }
 
@@ -111,5 +172,7 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
     private static let feetPerMile = 5280.0
     private static let metersPerYard = 0.9144
     private static let yardsPerMile = 1760.0
+    /// The international nautical mile, exact by definition.
+    static let metersPerNauticalMile = 1852.0
 }
 

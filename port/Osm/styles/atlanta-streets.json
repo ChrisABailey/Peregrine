@@ -5,7 +5,45 @@
   "metadata": {
     "peregrine:note": "A base map for riding in a city grid, against the peregrine tilemaker profile (OpenMapTiles). Every road's casing is coloured by how comfortable it is to ride, trails are the strongest line, interstates are drawn as landmarks that cannot be ridden, and sidewalks, parking and lodging wait for close zooms. Written inside the subset in style-readme.md.",
     "peregrine:bike-tiers": "Casing colour by tier: trail (path that admits bicycles) #0b8a8f, dashed where unpaved; signed route (road with bicycle=designated) #2e9e57; quiet (minor, service) #8fb89a, neutral grey below z14; moderate (tertiary) #e0a830; busy (secondary) #e07b39; avoid (primary, trunk) #c8413a; no bicycles (bicycle=no) #7d7884; interstate (motorway) #463f7a. The tiles carry no maxspeed or lanes tags, so the tier is the road class; on-road bike provision (`cycleway`) is drawn over it: track solid teal, lane dashed green, shared lane dotted.",
-    "peregrine:palette": "Land #f2efe9, water #a5cbe0, park #bfe0a5, golf #e3e8d3, wood #d3e0c0, building #e2ddd5, parking #e6e3dd, rail #9e9a93, state line #a39bb8."
+    "peregrine:palette": "Land #f2efe9, water #a5cbe0, park #bfe0a5, golf #e3e8d3, wood #d3e0c0, building #e2ddd5, parking #e6e3dd, rail #9e9a93, state line #a39bb8.",
+    "peregrine:legend": {
+      "groups": [
+        {"title": "Road colour", "subtitle": "The edge of the road",
+         "entries": [
+           {"id": "quiet", "label": "Quiet street", "detail": "Sage-green edge. OSM highway=residential, unclassified or living_street; grey below zoom 14.", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential"}}], "osm": {"highway": "residential"}},
+           {"id": "service", "label": "Service road", "detail": "Pale green edge, narrower than a street. OSM highway=service, other than driveways and parking aisles.", "specimen": [{"layer": "transportation", "tags": {"class": "service"}}], "osm": {"highway": "service"}},
+           {"id": "moderate", "label": "Moderate road", "detail": "Amber edge. OSM highway=tertiary.", "specimen": [{"layer": "transportation", "tags": {"class": "tertiary"}}], "osm": {"highway": "tertiary"}},
+           {"id": "busy", "label": "Busy road", "detail": "Orange edge. OSM highway=secondary.", "specimen": [{"layer": "transportation", "tags": {"class": "secondary"}}], "osm": {"highway": "secondary"}},
+           {"id": "arterial", "label": "Arterial", "detail": "Red edge. OSM highway=primary or trunk.", "specimen": [{"layer": "transportation", "tags": {"class": "primary"}}], "osm": {"highway": "primary"}},
+           {"id": "designated", "label": "Bikes designated", "detail": "Green edge on any road class. OSM bicycle=designated.", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential", "bicycle": "designated"}}]},
+           {"id": "no-bicycles", "label": "No bicycles", "detail": "Grey edge on any road class. OSM bicycle=no.", "specimen": [{"layer": "transportation", "tags": {"class": "primary", "bicycle": "no"}}], "osm": {"highway": "primary", "bicycle": "no"}},
+           {"id": "interstate", "label": "Interstate", "detail": "Wide purple edge, drawn from state scale as a landmark. OSM highway=motorway.", "specimen": [{"layer": "transportation", "tags": {"class": "motorway"}}], "osm": {"highway": "motorway"}},
+           {"id": "bridge", "label": "Bridge", "detail": "A dark outline outside the road's edge. OSM bridge=yes.", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential", "brunnel": "bridge"}}], "osm": {"highway": "residential", "bridge": "yes", "layer": "1"}}
+         ]},
+        {"title": "On-road markings", "subtitle": "A line along the road",
+         "entries": [
+           {"id": "bike-lane", "label": "Painted bike lane", "detail": "Dashed green. OSM cycleway=lane or share_busway, on either side.", "specimen": [{"layer": "transportation", "tags": {"class": "tertiary", "cycleway": "lane"}}], "osm": {"highway": "tertiary", "cycleway:right": "lane"}},
+           {"id": "shared-lane", "label": "Shared-lane marking", "detail": "Dotted green, from zoom 15. OSM cycleway=shared_lane (sharrows).", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential", "cycleway": "shared_lane"}}], "osm": {"highway": "residential", "cycleway": "shared_lane"}},
+           {"id": "bike-track", "label": "Protected track", "detail": "Solid teal. OSM cycleway=track, on either side.", "specimen": [{"layer": "transportation", "tags": {"class": "tertiary", "cycleway": "track"}}], "osm": {"highway": "tertiary", "cycleway:right": "track"}}
+         ]},
+        {"title": "Signed bike routes", "subtitle": "A solid line down the middle",
+         "entries": [
+           {"id": "route-national", "label": "National route", "detail": "Dark green. A way in an OSM route=bicycle relation with network=ncn or icn.", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential"}}, {"layer": "bike_route", "tags": {"network": "national"}}], "osm": {"highway": "residential", "peregrine:route_network": "national"}},
+           {"id": "route-regional", "label": "Regional route", "detail": "Green. A way in an OSM route=bicycle relation with network=rcn.", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential"}}, {"layer": "bike_route", "tags": {"network": "regional"}}], "osm": {"highway": "residential", "peregrine:route_network": "regional"}},
+           {"id": "route-local", "label": "Local route", "detail": "Pale green. A way in any other OSM route=bicycle relation.", "specimen": [{"layer": "transportation", "tags": {"class": "minor", "subclass": "residential"}}, {"layer": "bike_route", "tags": {"network": "local"}}], "osm": {"highway": "residential", "peregrine:route_network": "local"}}
+         ]},
+        {"title": "Trails and paths",
+         "entries": [
+           {"id": "trail", "label": "Paved trail", "detail": "Teal with a pale centre. OSM highway=cycleway, or a path or track with bicycle=yes, designated or permissive.", "specimen": [{"layer": "transportation", "tags": {"class": "path", "subclass": "cycleway"}}], "osm": {"highway": "cycleway"}},
+           {"id": "trail-unpaved", "label": "Unpaved trail", "detail": "Dashed teal. A trail with an unpaved surface: gravel, dirt, compacted and the like.", "specimen": [{"layer": "transportation", "tags": {"class": "path", "subclass": "cycleway", "surface": "unpaved"}}], "osm": {"highway": "cycleway", "surface": "gravel"}},
+           {"id": "walk", "label": "Walking path", "detail": "Dashed brown. OSM highway=path or bridleway that does not admit bicycles.", "specimen": [{"layer": "transportation", "tags": {"class": "path", "subclass": "path"}}], "osm": {"highway": "path"}},
+           {"id": "sidewalk", "label": "Sidewalk", "detail": "Fine dashed grey, from zoom 16.5. OSM highway=footway or pedestrian.", "specimen": [{"layer": "transportation", "tags": {"class": "path", "subclass": "footway"}}], "osm": {"highway": "footway", "footway": "sidewalk"}},
+           {"id": "track", "label": "Dirt track", "detail": "Dashed tan. OSM highway=track that does not admit bicycles.", "specimen": [{"layer": "transportation", "tags": {"class": "track"}}], "osm": {"highway": "track"}},
+           {"id": "steps", "label": "Steps", "detail": "Close-dotted brown, from zoom 15. OSM highway=steps.", "specimen": [{"layer": "transportation", "tags": {"class": "path", "subclass": "steps"}}], "osm": {"highway": "steps"}}
+         ]}
+      ],
+      "unlisted_layers": ["road-driveway*", "rail*", "tunnel-wash", "oneway-arrow"]
+    }
   },
   "sources": {"openmaptiles": {"type": "vector"}},
   "sprite": "symbols/osm-liberty-topo",

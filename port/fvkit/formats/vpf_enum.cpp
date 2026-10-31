@@ -22,6 +22,7 @@
 #include "fv_oledatetime.h"  // vpf_d.h needs COleDateTime defined
 #include "vpfdb.h"
 #include "vpf_d.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fs = std::filesystem;
 
@@ -103,6 +104,7 @@ Status VpfFrameEnumerator::Begin(const std::string& dir) {
   CStringList* mnames = const_cast<CStringList*>(names);
   POSITION pos = mnames->GetHeadPosition();
   while (pos != nullptr) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     CString cname = mnames->GetNext(pos);
     std::string lib = (LPCSTR)cname;
 

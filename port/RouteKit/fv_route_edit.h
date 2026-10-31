@@ -142,6 +142,9 @@ class RouteEditSession {
   // defines one, so a tuned weight applies; the flat boolean otherwise, which
   // is the same ride priced more crudely.
   RoutePlanOptions BicycleOptions() const;
+  /// "h": flips the route's "Avoid hills" setting and, when the route follows
+  /// roads, replans it the same way (bicycle or not).
+  void ToggleAvoidHills();
 
   // "g" — steps the uncalculated legs through the LineKind cycle and returns
   // the one now in force. A computed route is unaffected: road geometry IS the

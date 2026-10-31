@@ -171,7 +171,7 @@ TEST(VectorMapOptions, PagesFollowTheGroupTableAndRejectBadDepths) {
   auto model = fake.desk().MapOptions();
   std::vector<std::string> ids;
   for (const auto& p : model->pages()) ids.push_back(p->id());
-  EXPECT_EQ(ids, (std::vector<std::string>{"elevation", "osm", "enc", "dnc"}));
+  EXPECT_EQ(ids, (std::vector<std::string>{"elevation", "osm", "enc", "dnc", "data"}));
   fv::desk::OptionsPage* enc = model->Page("enc");
   ASSERT_NE(enc, nullptr);
   EXPECT_EQ(enc->Set("mariner.safety_contour", PropertyValue::String("deep")).code,

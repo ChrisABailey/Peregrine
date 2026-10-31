@@ -25,6 +25,7 @@
 #import <PippinKit/PPTide.h>
 #import <PippinKit/PPWind.h>
 #import <PippinKit/PPGuidance.h>
+#import <PippinKit/PPChartImport.h>
 #import <PippinKit/PPTrip.h>
 #import <PippinKit/PPViewport.h>
 

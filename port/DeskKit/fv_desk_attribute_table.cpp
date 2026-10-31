@@ -50,6 +50,8 @@ Status AttributeTableModel::Reload() {
   std::vector<Feature> features;
   Status s = layer_->All(&features);
   if (!s.ok()) return s;
+  if (keep_) features.erase(std::remove_if(features.begin(), features.end(), [this](const Feature& f) { return !keep_(f); }),
+                            features.end());
   const FeatureSchema& schema = layer_->Schema();
   columns_.clear();
   for (size_t i = 0; i < schema.fields.size(); ++i) {

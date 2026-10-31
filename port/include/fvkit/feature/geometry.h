@@ -36,6 +36,9 @@ enum class GeometryType : int {
 const char* GeometryTypeName(GeometryType type);
 /// Case-insensitive inverse of `GeometryTypeName`; false for an unknown name.
 bool GeometryTypeFromName(const char* name, GeometryType* out);
+/// "Point", "Line", "Area", "Multipoint", "Multiline", "Multi-area", else
+/// "Any geometry": the word a form or Get Info shows.
+const char* GeometryTypeTitle(GeometryType type);
 
 /// One vertex. `z` and `m` are meaningful only when the geometry's
 /// `has_z`/`has_m` says so.

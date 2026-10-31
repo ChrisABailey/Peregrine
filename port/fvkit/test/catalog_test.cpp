@@ -11,6 +11,7 @@
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/detail/sqlite.h"
 #include "fvkit/formats/registry.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 #include <gtest/gtest.h>
 
@@ -228,6 +229,102 @@ TEST(CatalogScan, WaitsForAnotherConnectionsWrite) {
   }
   fv::ClearFormatRegistryForTest();
   fs::remove(db);
+}
+
+/// Enumerator whose first Next writes through a second connection with no
+/// busy timeout, as a reader of a catalog being built would; `wrote` says
+/// whether it got through.
+class WritingStubEnumerator : public StubEnumerator {
+ public:
+  static std::string db_path;
+  static bool wrote;
+
+  bool Next(fv::FrameInfo* info) override {
+    if (!asked_) {
+      asked_ = true;
+      fv::detail::SqliteDb other;
+      wrote = other.Open(db_path).ok() && other.Exec("INSERT OR REPLACE INTO meta VALUES('other','1')").ok();
+    }
+    return StubEnumerator::Next(info);
+  }
+
+ private:
+  bool asked_ = false;
+};
+std::string WritingStubEnumerator::db_path;
+bool WritingStubEnumerator::wrote = false;
+
+// The tree is read before the write lock is taken, so another connection can
+// write while the enumerator works.
+TEST(CatalogScan, HoldsNoLockWhileTheEnumeratorReads) {
+  fs::path db = fs::temp_directory_path() / "fvkit_catalog_unlocked_test.sqlite";
+  fs::remove(db);
+  fv::ClearFormatRegistryForTest();
+  fv::FormatFactories f;
+  f.format_key = "writing";
+  f.make_enumerator = [] { return std::make_shared<WritingStubEnumerator>(); };
+  ASSERT_TRUE(fv::RegisterFormat(f).ok());
+  WritingStubEnumerator::db_path = db.string();
+  WritingStubEnumerator::wrote = false;
+  {
+    fv::Catalog cat;
+    ASSERT_TRUE(cat.Open(db.string()).ok());
+    int64_t src = 0;
+    int added = 0;
+    ASSERT_TRUE(cat.AddDataSource("/writing/root", "writing", 0, &src).ok());
+    ASSERT_TRUE(cat.Scan(src, &added).ok());
+    EXPECT_EQ(added, 3);
+    EXPECT_TRUE(WritingStubEnumerator::wrote);
+  }
+  fv::ClearFormatRegistryForTest();
+  fs::remove(db);
+}
+
+/// Enumerator that walks a long tree, polling `ScanInterrupted` per entry as
+/// the format enumerators do, once `walk` is set.
+class WalkingStubEnumerator : public StubEnumerator {
+ public:
+  static bool walk;
+  static int entries;
+
+  fv::Status Begin(const std::string& dir) override {
+    for (entries = 0; walk && entries < 100000; ++entries)
+      if (fv::ScanInterrupted()) return fv::Status::Error(fv::kInterrupted, "scan cancelled");
+    return StubEnumerator::Begin(dir);
+  }
+};
+bool WalkingStubEnumerator::walk = false;
+int WalkingStubEnumerator::entries = 0;
+
+// A cancel during the walk stops it and leaves the source's coverage as it was.
+TEST(CatalogScan, ACancelStopsTheWalkAndKeepsTheCoverage) {
+  fv::ClearFormatRegistryForTest();
+  fv::FormatFactories f;
+  f.format_key = "walking";
+  f.make_enumerator = [] { return std::make_shared<WalkingStubEnumerator>(); };
+  ASSERT_TRUE(fv::RegisterFormat(f).ok());
+  fv::Catalog cat;
+  ASSERT_TRUE(cat.Open(":memory:").ok());
+  int64_t src = 0;
+  int added = 0;
+  ASSERT_TRUE(cat.AddDataSource("/walking/root", "walking", 0, &src).ok());
+  WalkingStubEnumerator::walk = false;
+  ASSERT_TRUE(cat.Scan(src, &added).ok());
+  ASSERT_EQ(added, 3);
+
+  WalkingStubEnumerator::walk = true;
+  int polls = 0;
+  const fv::Status s = cat.Scan(src, &added, [&polls] { return ++polls > 10; });
+  EXPECT_EQ(s.code, fv::kInterrupted) << s.message;
+  EXPECT_EQ(WalkingStubEnumerator::entries, 10);
+  EXPECT_EQ(added, 0);
+  std::vector<fv::CoverageRow> rows;
+  ASSERT_TRUE(cat.SelectByGeoRect({{-90.0, -180.0}, {90.0, 180.0}}, &rows, 0).ok());
+  EXPECT_EQ(rows.size(), 3u);
+
+  // Outside a scan nothing is interrupted.
+  EXPECT_FALSE(fv::ScanInterrupted());
+  fv::ClearFormatRegistryForTest();
 }
 
 // A schema-1 catalog on disk is REBUILT, not converted: its map_series rows

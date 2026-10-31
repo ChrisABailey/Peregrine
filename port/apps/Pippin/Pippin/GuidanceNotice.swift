@@ -9,14 +9,16 @@
 // One notification per maneuver: its identifier is the maneuver's index, so
 // act-now replaces heads-up rather than stacking under it, and passing the
 // corner removes it. Off route has an identifier of its own that rejoining
-// removes. Arrival clears everything and leaves only itself.
+// removes. Arrival clears everything and leaves only itself. Course events
+// (straight-leg routes) use one waypoint identifier, so each route point
+// replaces the last, and an off-course identifier that back-on-course removes.
 //
 // Foundation-only, so the table is tested on the mac
 // (`ctest -R guidance_notice`). `TurnNotifications` applies the result.
 
 /// A guidance event with the PippinKit types replaced by Swift ones.
 struct GuidanceNoticeEvent: Equatable {
-    enum Kind { case approach, passed, offRoute, rejoined, arrived }
+    enum Kind { case approach, passed, offRoute, rejoined, arrived, waypoint, offCourse, backOnCourse }
     enum Ring { case none, headsUp, actNow, at }
     enum Turn {
         case depart, straight, slightLeft, left, sharpLeft
@@ -29,8 +31,13 @@ struct GuidanceNoticeEvent: Equatable {
     var turn: Turn = .straight
     /// Along-route metres to the maneuver when the event fired.
     var distanceMeters: Double = 0
-    /// The road being joined; empty for an unnamed way.
+    /// The road being joined; empty for an unnamed way. On a course event,
+    /// the route point's label.
     var road: String = ""
+    /// On a waypoint event, the label of the point now steered for.
+    var nextName: String = ""
+    /// Signed cross-track metres on a course event, positive right of track.
+    var crossTrackMeters: Double = 0
 }
 
 /// One change to the delivered notifications.
@@ -48,6 +55,8 @@ enum GuidanceNotice {
     static let prefix = "guidance."
     static let offRouteID = prefix + "offroute"
     static let arrivedID = prefix + "arrived"
+    static let waypointID = prefix + "waypoint"
+    static let offCourseID = prefix + "offcourse"
 
     static func turnID(_ index: Int) -> String { prefix + "turn.\(index)" }
 
@@ -76,6 +85,19 @@ enum GuidanceNotice {
                           timeSensitive: true)]
         case .rejoined:
             return [.remove(ids: [offRouteID])]
+        case .waypoint:
+            let reached = event.road.isEmpty ? "route point \(event.maneuverIndex)" : event.road
+            return [.post(id: waypointID, title: "Reached \(reached)",
+                          body: event.nextName.isEmpty ? "" : "Now steering for \(event.nextName).",
+                          timeSensitive: true)]
+        case .offCourse:
+            let side = event.crossTrackMeters > 0 ? "right" : "left"
+            let steer = event.crossTrackMeters > 0 ? "left" : "right"
+            return [.post(id: offCourseID, title: "Off course",
+                          body: "\(units.distance(abs(event.crossTrackMeters))) \(side) of the leg. Steer \(steer).",
+                          timeSensitive: true)]
+        case .backOnCourse:
+            return [.remove(ids: [offCourseID])]
         case .arrived:
             return [.removeAll,
                     .post(id: arrivedID, title: "Arrived",

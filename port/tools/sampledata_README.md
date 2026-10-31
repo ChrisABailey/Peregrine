@@ -24,6 +24,7 @@ copied byte for byte, except for the GeoTIFFs noted below.
 | `OSM/kiawah.mbtiles` | OpenMapTiles-schema vector tiles, z0–14, cut from a US-south build | © OpenStreetMap contributors | ODbL 1.0 |
 | `OSM/kiawah.fvroad` | Routing graph built from the same extract | © OpenStreetMap contributors | ODbL 1.0 |
 | `OSM/map-*.osm` | Overlapping OSM XML exports over Kiawah | © OpenStreetMap contributors | ODbL 1.0 |
+| `geotrans/` | GeoTrans 3.3 datum/ellipsoid tables (`ellips.dat`, `3_param.dat`, `7_param.dat`) and the EGM96 geoid grid; point `geotrans.data_dir` (Map ▸ Options ▸ Data) here | NGA | U.S. Government work |
 | `tides/8667062.json` | Tide predictions, Kiawah Bridge station | NOAA CO-OPS | public domain |
 | `kiawah_cycle.gpx` | A recorded bicycle ride on Kiawah Island | Chris Bailey | LGPL-3.0-or-later, as the rest of the repository |
 | `sim/kiawah_*.gpx` | Simulated-GPS feeds derived from that ride (1× and 2× speed) | as above | as above |

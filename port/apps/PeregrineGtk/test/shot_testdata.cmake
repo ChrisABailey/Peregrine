@@ -27,6 +27,8 @@ else()
   unset(ENV{MSPCCS_DATA})
 endif()
 set(ENV{GSK_RENDERER} cairo)
+# Under a Wayland session GTK would open on the desktop rather than on Xvfb.
+set(ENV{GDK_BACKEND} x11)
 
 execute_process(
   COMMAND ${BUILD_CATALOG} ${DATA} ${CATALOG}

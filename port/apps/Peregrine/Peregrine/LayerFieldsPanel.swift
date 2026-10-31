@@ -7,16 +7,18 @@ import AppKit
 import CxxStdlib
 import PeregrineCore
 
-/// The Layer Fields dialog over `DeskHost`'s fields model: the field list
-/// with add, delete and reorder, and an editor for the selected field. Edits
-/// go to the draft; Apply asks first when the change loses values, then
-/// changes the layer, and OK applies and closes.
+/// The Layer Fields editor over `DeskHost`'s fields model, the Fields tab of
+/// a layer's Properties: the field list with add, delete and reorder, and an
+/// editor for the selected field. Edits go to the draft as they are made; the
+/// dialog applies them.
 @MainActor
-final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource,
-    NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate {
+final class LayerFieldsPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate,
+    NSTextViewDelegate {
     let host: fv.desk.DeskHost
-    /// Called once the window has closed.
-    var onClose: (() -> Void)?
+    /// The panel's root view.
+    let view = NSView()
+    /// Receives each edit's error message, "" for success.
+    var onReport: ((String) -> Void)?
 
     private let table = NSTableView()
     private let addButton = NSButton(title: "+", target: nil, action: nil)
@@ -36,31 +38,22 @@ final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, N
     private let descriptionField = NSTextField(string: "")
     private let originLabel = NSTextField(labelWithString: "")
     private let editorGrid = NSGridView()
-    private let messageLabel = NSTextField(wrappingLabelWithString: "")
 
     private static let nameColumn = NSUserInterfaceItemIdentifier("name")
     private static let typeColumn = NSUserInterfaceItemIdentifier("type")
 
     init(host: fv.desk.DeskHost) {
         self.host = host
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
-                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
-        window.minSize = NSSize(width: 560, height: 420)
-        super.init(window: window)
-        window.delegate = self
-        buildLayout(in: window)
+        super.init()
+        buildLayout()
         reload()
     }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// The selected field's index, or -1.
     private var selected: Int32 { Int32(table.selectedRow) }
 
     /// Re-reads the field list, keeping the selection where it can.
     func reload() {
-        window?.title = String(host.LayerFieldsTitle())
         let row = table.selectedRow
         table.reloadData()
         let count = Int(host.LayerFieldCount())
@@ -108,7 +101,7 @@ final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, N
 
     // MARK: Layout
 
-    private func buildLayout(in window: NSWindow) {
+    private func buildLayout() {
         for (id, title, width) in [(Self.nameColumn, "Field", 150.0), (Self.typeColumn, "Type", 110.0)] {
             let column = NSTableColumn(identifier: id)
             column.title = title
@@ -172,36 +165,13 @@ final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, N
         middle.orientation = .horizontal
         middle.alignment = .top
 
-        messageLabel.textColor = .systemRed
-        messageLabel.isHidden = true
-        let revert = NSButton(title: "Revert", target: self, action: #selector(revertFields))
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelFields))
-        cancel.keyEquivalent = "\u{1b}"
-        let apply = NSButton(title: "Apply", target: self, action: #selector(applyFields))
-        let ok = NSButton(title: "OK", target: self, action: #selector(okFields))
-        ok.keyEquivalent = "\r"
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let buttons = NSStackView(views: [revert, spacer, cancel, apply, ok])
-        buttons.orientation = .horizontal
-
-        let stack = NSStackView(views: [middle, messageLabel, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 12, right: 16)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
-        window.contentView = content
+        middle.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(middle)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            middle.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            messageLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
-            buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32),
+            middle.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            middle.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
+            middle.topAnchor.constraint(equalTo: view.topAnchor),
+            middle.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             tableScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
             tableScroll.widthAnchor.constraint(equalToConstant: 270),
         ])
@@ -224,17 +194,15 @@ final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, N
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        messageLabel.isHidden = true
+        onReport?("")
         reloadEditor()
     }
 
     // MARK: Edits
 
-    /// Shows `error` (or clears the message) and re-reads the model.
+    /// Passes `error` on and re-reads the model.
     private func report(_ error: std.string) {
-        let text = String(error)
-        messageLabel.stringValue = text
-        messageLabel.isHidden = text.isEmpty
+        onReport?(String(error))
         reload()
     }
 
@@ -255,12 +223,12 @@ final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, N
     func textDidEndEditing(_ notification: Notification) { editorChanged() }
 
     @objc private func addField() {
-        window?.makeFirstResponder(nil)
+        view.window?.makeFirstResponder(nil)
         let i = Int(host.AddLayerField())
         table.reloadData()
         if i >= 0 { table.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }
         reload()
-        window?.makeFirstResponder(nameField)
+        view.window?.makeFirstResponder(nameField)
     }
 
     @objc private func removeField() {
@@ -280,42 +248,5 @@ final class LayerFieldsWindowController: NSWindowController, NSWindowDelegate, N
             table.selectRowIndexes(IndexSet(integer: Int(from + step)), byExtendingSelection: false)
         }
         report(error)
-    }
-
-    // MARK: Buttons
-
-    /// Applies the draft, asking first when values would be lost.
-    @discardableResult
-    private func apply() -> Bool {
-        window?.makeFirstResponder(nil)  // ends an edit in progress
-        if !messageLabel.isHidden { return false }
-        let loss = String(host.LayerFieldsLoss())
-        if !loss.isEmpty {
-            let alert = NSAlert()
-            alert.messageText = "Change the layer\u{2019}s fields?"
-            alert.informativeText = loss
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Change Fields")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() != .alertFirstButtonReturn { return false }
-        }
-        let error = String(host.ApplyLayerFields())
-        report(std.string(error))
-        return error.isEmpty
-    }
-
-    @objc private func applyFields() { apply() }
-
-    @objc private func okFields() {
-        if apply() { close() }
-    }
-
-    @objc private func cancelFields() { close() }
-
-    @objc private func revertFields() { report(host.RevertLayerFields()) }
-
-    func windowWillClose(_ notification: Notification) {
-        host.CloseLayerFields()
-        onClose?()
     }
 }

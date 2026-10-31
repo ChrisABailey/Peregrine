@@ -20,10 +20,12 @@ set(PEREGRINE_GTK_WINDOWS
   data_sources_window.cpp
   dialogs.cpp
   feature_form_window.cpp
+  find_window.cpp
   layer_fields_panel.cpp
   layer_style_window.cpp
   layers_window.cpp
   properties_window.cpp
+  query_builder_panel.cpp
   main_menu.cpp
   map_canvas.cpp
   map_window.cpp
@@ -97,6 +99,8 @@ if(FVW_BUILD_TESTS)
       ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
     set_property(TEST peregrine_gtk.dialogs APPEND PROPERTY
       ENVIRONMENT "MSPCCS_DATA=${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib")
+    # Under a Wayland session GTK would open on the desktop rather than on Xvfb.
+    set_property(TEST peregrine_gtk.dialogs APPEND PROPERTY ENVIRONMENT "GDK_BACKEND=x11")
 
     add_test(NAME peregrine_gtk.shot_empty_catalog
       COMMAND ${CMAKE_COMMAND}

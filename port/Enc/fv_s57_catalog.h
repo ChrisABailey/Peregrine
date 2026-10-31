@@ -111,6 +111,9 @@ class S57ObjectCatalog {
   // information, not noise.
   std::string DescribeValue(int attribute_code, const std::string& raw) const;
 
+  /// Every object-class acronym in the catalogue, sorted.
+  std::vector<std::string> ObjectClassAcronyms() const;
+
   size_t object_class_count() const { return classes_.size(); }
   size_t attribute_count() const { return attributes_.size(); }
   size_t enumerated_value_count() const { return enums_.size(); }

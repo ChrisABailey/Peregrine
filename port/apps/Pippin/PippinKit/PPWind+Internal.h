@@ -21,7 +21,7 @@ NS_ASSUME_NONNULL_BEGIN
                        longitude:(double)longitude
                beachFacesDegrees:(double)faces
       onshoreWarnMetersPerSecond:(double)onshoreWarn
-     headwindWarnMetersPerSecond:(double)headwindWarn NS_DESIGNATED_INITIALIZER;
+        alongWarnMetersPerSecond:(double)alongWarn NS_DESIGNATED_INITIALIZER;
 @end
 
 NS_ASSUME_NONNULL_END

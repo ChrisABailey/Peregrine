@@ -67,6 +67,20 @@ final class PointDraft: ObservableObject, Identifiable {
         self.sizePx = sizePx > 0 ? sizePx : 22
     }
 
+    /// A new point at a pressed coordinate, prefilled from the map feature
+    /// under the press: its name, if any, and its class as the remarks. Yellow with
+    /// the given badge icon, which is the look of a shared-in place.
+    convenience init(newAt coordinate: PPGeoPoint, feature: PPChartFeature?,
+                     symbolId: Int64, sizePx: Double = 22) {
+        self.init(newAt: coordinate, sizePx: sizePx)
+        colorHex = PointPalette.yellowHex
+        self.symbolId = symbolId
+        if let feature {
+            name = feature.name
+            remarks = feature.kind.prefix(1).uppercased() + feature.kind.dropFirst()
+        }
+    }
+
     init(editing point: PPMapPoint) {
         pointId = point.pointId
         name = point.name

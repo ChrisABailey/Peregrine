@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Selects Osprey's behaviour in the Swift sources it shares with
+	     Pippin; see AppFlavor.swift. -->
+	<key>PPAppFlavor</key>
+	<string>osprey</string>
+	<!-- Documents/ over the USB cable: points, routes and tracks. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<!-- Location continues while locked, only while following or
+	     recording (LocationPolicy). Authorization stays When In Use. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+	<!-- Only the operating system's HTTPS is used; see Pippin/Info.plist. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- The `.fvrte` route document, the same one Pippin shares. -->
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.peregrine.fvrte</string>
+			<key>UTTypeDescription</key>
+			<string>Peregrine Route</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>fvrte</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Peregrine Route</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.peregrine.fvrte</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Report a Problem's address, as in Pippin/Info.plist. -->
+	<key>PPReportAddress</key>
+	<string>$(PP_REPORT_ADDRESS)</string>
+</dict>
+</plist>

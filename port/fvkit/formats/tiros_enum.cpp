@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "fvkit/formats/scan_interrupt.h"
 #include "fv_tiros_frame.h"
 
 namespace fs = std::filesystem;
@@ -42,6 +43,7 @@ Status TirosFrameEnumerator::Begin(const std::string& dir) {
   fs::recursive_directory_iterator it(dir, ec), end;
   if (ec) return Status::Error(kNotFound, "TIROS dir not readable: " + dir);
   for (; it != end; it.increment(ec)) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     if (ec) break;
     if (!it->is_regular_file(ec) || ec) continue;
     if (!HasWldExtension(it->path())) continue;

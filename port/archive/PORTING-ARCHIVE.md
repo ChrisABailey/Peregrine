@@ -2773,3 +2773,9 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
 ### 2026-10-11 — CR6 decisions
 - In `process-peregrine.lua` the relation cursor `NextRelation` is shared with the admin-boundary code, so `BikeRouteOnWay` calls `RestartRelations` first.
 - Tiles write `maxspeed` only when posted (km/h, mirrors `ParseMaxSpeedKph`); Atlanta Streets: secondary reads busy, tertiary plus calm secondary (track/lane/share_busway or posted <= 56 km/h) reads moderate.
+
+### 2026-10-19 — lidar-shaded (929d503c)
+- Atlanta lidar did not show as a map (zoom stopped at DTED2): no raster product for lidar, and `build/pythonview.sqlite` (Peregrine's LastCatalog) predated Q16, so it had no lidar data source (contours and TA mask in the running app were DTED-only too).
+- Fix: `lidar-shaded` format. The catalog got `testdata/lidar` added as `lidar` and `lidar-shaded` via pyfvw; Generate Coverage also picks it up via the auto-detect table. Registry key count 8 -> 9.
+- Tests: DtedShadedRelief.ShadeGridMatchesTheCellRender, DtedShadedGrid.VoidPostsAreTransparent, GeoTiffDemTest.LidarShaded* (3), DeskData.ElevationMapsReachLidarAndItsOverlaysUseIt. ctest 2828 of 2835, the same 7 Boardwalk 29 failures. Fvrender 1200x900 lidar frame 0.76 s.
+- LX: additive; PeregrineGtk gets it via shared core and map-groups.json.

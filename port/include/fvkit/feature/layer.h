@@ -38,8 +38,22 @@ class IFeatureLayer {
   /// Features whose envelope intersects `box` (which may cross ±180), in id
   /// order. Features with no geometry are never returned.
   virtual Status Query(const GeoRect& box, std::vector<Feature>* out) const = 0;
+  /// `Query`, where a field `fields` marks false (by schema index) may come
+  /// back null, so a layer can skip reading it. Every field by default.
+  virtual Status QueryFields(const GeoRect& box, const std::vector<bool>& fields,
+                             std::vector<Feature>* out) const {
+    (void)fields;
+    return Query(box, out);
+  }
   /// kNotFound for an id the layer does not hold.
   virtual Status Get(int64_t id, Feature* out) const = 0;
+  /// A number that changes whenever the features or schema change, so a
+  /// reader can keep what it built from them. False for a layer that keeps
+  /// none, whose features may change at any time.
+  virtual bool Revision(uint64_t* out) const {
+    (void)out;
+    return false;
+  }
 
  protected:
   IFeatureLayer() = default;
@@ -89,6 +103,10 @@ class MemoryFeatureLayer : public IEditableFeatureLayer {
   /// Also used by a reader keeping the ids a file gives.
   Status InsertWithId(const Feature& feature) override;
   Status ChangeSchema(const SchemaChange& change) override;
+  bool Revision(uint64_t* out) const override {
+    *out = revision_;
+    return true;
+  }
 
  private:
   /// Pads `values` to the schema with nulls and checks each one.
@@ -98,6 +116,7 @@ class MemoryFeatureLayer : public IEditableFeatureLayer {
   FeatureSchema schema_;
   std::map<int64_t, Feature> features_;
   int64_t next_id_ = 1;
+  uint64_t revision_ = 0;
 };
 
 }  // namespace fv

@@ -1781,7 +1781,7 @@ upright symbols), no longer optional.
 
   The screen-off numbers are the first phone baseline for BG (release 1.3).
 
-#### BT4 — the night chart (M; approved by Chris 2026-09-25)
+#### BT4 — the night chart (M; approved by Chris 2026-09-25) — **DONE**, delivered as DM (the dark map, 2026-10-05)
 
 Chris wants it for its own sake and for the 2.5D view, so it is a feature rather than a
 battery experiment, and it does not wait on BT1's numbers.
@@ -1855,7 +1855,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   blank; the soft-frame count is recorded as DR2's baseline.
 - This underlay is also the two-tier far field PV5 needs for the 2.5D view.
 
-**Built 2026-09-25** (simulator; phone acceptance pending).
+**Built 2026-09-25; phone-accepted 2026-10-21** (Chris).
 
 - `PPBaseCoverage.h`: `kUnderlayZoomOut = 4`, `LayerReaches`, `ScreenCover
   {kSharp,kUnderlay,kBackground}`, `ScreenCoverage(base, underlay*, live)` (corner test, worst of
@@ -1883,9 +1883,8 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   the style background, drawn identically by the sharp base, so it is not a blank. Known trade:
   the render queue is serial, so a gesture that starts during an underlay build waits up to that
   build's time (~20–30 ms sim) for its first frame.
-- Still open: the acceptance screen recording of a fast wide drag and a two-finger turn (the
-  simulator's synthesized two-finger path registered as a pinch, not a rotate), a phone check, and
-  DR2's soft-frame baseline to be recorded on the phone.
+- **Phone-accepted 2026-10-21** (Chris, on his iPhone). The simulator could not drive a two-finger
+  turn (its synthesized path registers as a pinch).
 
 #### DR2 — the band ready before the finger moves, and ahead of it (M, sim + phone)
 
@@ -1908,7 +1907,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
 - Acceptance: DR1's soft-frame count reaches zero for drags and turns at riding zooms and is
   brief at the widest view; BT1's energy table shows no regression.
 
-**Built 2026-09-25** (simulator; phone acceptance pending).
+**Built 2026-09-25; phone-accepted 2026-10-21** (Chris).
 
 - `PPBaseCoverage.h`: `GrownSurfaceSize` replaced by `GrownSurfacePixels(w,h,margin,rotation_safe)`
   — grows by whole, equal device pixels per side (the old band was 1769 px wide, 1179×1.5
@@ -1947,8 +1946,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   97–112 ms at 1:28,538, 47 ms at 1:96,161). A ~80° two-finger turn in 0.5 s (the sim registered
   it as a rotate this time): 0 blank, 7 soft ticks; the rotation-safe band costs 232 ms per draw
   on the sim.
-- Still open: phone acceptance (soft-frame count to zero at riding zooms, BT1 energy table no
-  regression, the rotation-safe draw time on the phone); a pinch out from 1:1,614 to 1:28,538
+- **Phone-accepted 2026-10-21** (Chris). Noted on the simulator: a pinch out from 1:1,614 to 1:28,538
   produced 4 blank frames — the underlay (DR1) is stale during a fast pinch-out, DR1's layer, not
   the band; the held band is still retained by the displayed `PPFrame` after a memory-warning
   drop (pre-existing from P18).
@@ -1980,7 +1978,7 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
 - Acceptance on the phone: a flick coasts and eases to a stop like Maps; a tap stops it without
   selecting anything; the edges stay filled during a coast at riding zoom.
 
-**Built 2026-09-25** (simulator; phone acceptance pending).
+**Built 2026-09-25; phone-accepted 2026-10-21** (Chris).
 
 - `Momentum.swift` (CoreGraphics-only): `Momentum(velocity:decelerationRate:minSpeed:)` — nil
   below `minSpeed` (never below the 10 pt/s stop speed); τ = −0.001/ln(rate) (0.998/ms → τ ≈
@@ -2009,9 +2007,8 @@ fast drag and release should keep scrolling and slow to a stop, as Apple's own a
   after release) and was still afterwards; a tap during a coast stopped it (0 px change over 0.5 s
   after the tap, where an unstopped coast would still be at ~140 pt/s); a tap on a marker at rest
   still opens its sheet (Retts Bluff); three coasts at 1:96,161 counted 0 soft 0 blank.
-- Still open: phone acceptance — the flick eases to a stop like Maps; a tap stops it without
-  selecting anything (the tap-on-a-marker-during-a-coast case was not exercised on the sim); edges
-  stay filled during a coast at riding zoom.
+- **Phone-accepted 2026-10-21** (Chris): the flick eases to a stop, a tap stops it, edges stay
+  filled during a coast.
 
 ### TD — tides (item 2)
 
@@ -2492,7 +2489,7 @@ Still open: the ride on the phone (Chris).
   step with the wrong sign of slope. EL2 fixes it first, and the plain-Dijkstra reference
   (`bidirectional = false`) is the test that proves it.
 
-#### EL1 — elevation in the graph (M, mac)
+#### EL1 — elevation in the graph (M, mac) — **BUILT 2026-10-19** (75265e78)
 
 - A D6-style seam on the builder: `RoadGraphBuildOptions::elevation =
   std::function<bool(double lat, double lon, float* metres)>`. `fvgraph build --dem <dir>` wires
@@ -2513,7 +2510,11 @@ Still open: the ride on the phone (Chris).
   Atlanta cut over the Atlanta cells (dt2 once Chris has them, dt1 until then) has climbs
   plausible for its streets, spot-checked against two known hills.
 
-#### EL2 — elevation in the cost (M, mac)
+**As built (2026-10-19), departures from the above.** `fv::routing::AddElevation(ElevationSampler, ElevationOptions, RoadGraph*, ElevationStats*)` in `port/Routing/fv_road_graph_elevation.cpp` is a post-pass over a built graph, not `RoadGraphBuildOptions::elevation`; the sampler is the same `std::function<bool(lat, lon, float*)>`, `fv_routing` links no DEM, `fvgraph` links `fv_fvkit`. Each undirected edge is sampled once along its shape at `sample_step_m` (fvgraph: the DEM's north-south post spacing clamped 10-30 m), hysteresis 3 m, then the residual to the far node is counted so climb minus descent equals the node difference exactly; the twin gets the swapped pair. New arc flag `kArcStructure` (bit 14) for `bridge=*`/`tunnel=*` other than `no`; structure and ferry arcs interpolate between end nodes, and a node touching only those, or a DEM void, takes the 1/length-weighted mean of its neighbours (Gauss-Seidel). `layer` was not used. Format is version 4, not 3 (CR took v3): flags bit 0 = elevation, per arc `uint16 climb_dm, descent_dm`, per node `int32 elev_dm` (not int16: avoids the +-3276 m limit; about 1.2 MB on Atlanta); v1-v3 load without elevation. API: `RoadArc::climb_dm/descent_dm`, `climb_m()/descent_m()/structure()`, `RoadGraph::has_elevation()`, `node_elevation_m()`. `fvgraph build --dem DIR [--dem-open N] [--dem-close N]` prints a stats block; `info` prints elevation range, km climbed one way, steepest arc over 50 m.
+**Finding: the Atlanta DTED2 cells are a surface model** (SRTM-derived: towers add 60-100 m at Peachtree Center; the 14th St / Connector interchange has a ~120 m radar-shadow pit). Raw sampling gave 520 km one-way climb and a 194% arc. `GroundSampler(raw, box, lat_step, lon_step, open_window=11, close_window=5)` resamples to a post grid over the graph box, morphological opening (removes bumps narrower than ~330 m) then closing (fills pits narrower than ~150 m), bilinear read-back; a plane is exact; over 1e8 posts it falls back to raw. A 7x7 median only halved the error; opening 15/21 did not help downtown and cost 25-50 km of real climb. Residual: ~10 m of tower bulk downtown (steepest downtown arc 18%), and ridges/ravines narrower than the windows are trimmed. A bare-earth DTM (USGS 3DEP 1/3 arc-second) would be the real fix; open for Chris.
+Measured: Atlanta 310,173 nodes from the DEM, 748 interpolated, 0 no data, 3,486 bridge/tunnel/ferry edges, 469,250 samples with 0 missing, 189 km climbed one way, 217-467 m, steepest 28% (Chattahoochee bluffs: Northside Dr, Paces, Johnson Ferry; may include canopy), build 1.5 s. Kiawah (--beach): -3..11 m, 0.9 km climbed, steepest 8.5% (boardwalks over dunes). `testdata/OSM/atlanta.fvroad` regenerated with `--dem` (38 MB, was 33.7); BUILDING.md's Atlanta recipe passes `--dem testdata/dted`. The Atlanta pack is not restaged; no app or bridge change; the cost ignores elevation until EL2. Tests: `port/Routing/test/road_graph_elevation_test.cpp`, 8 `RoadGraphElevation.*` (plane exact, flat noise rejected, bridge over a valley with mid-span node and tunnel, missing DEM data, v4 round trip and truncation, GroundSampler tower/pit/plane, KiawahIsFlat, AtlantaDowntownIsNotItsTowers), all pass. LX: additive; PeregrineGtk must load v4 graphs (same library), no other change.
+
+#### EL2 — elevation in the cost (M, mac) — **BUILT 2026-10-19** (a8858b6c)
 
 - The direction fix first (landed with CR5: the reverse search prices the twin arc, so only the climb/descent swap remains): `ArcCost(arc, options, reversed)`, the reverse frontier passes `true`
   and the climb/descent pair swaps; `Materialize` uses the traversal direction. Test: on a hilly
@@ -2535,20 +2536,29 @@ Still open: the ride on the phone (Chris).
   zero or below would break Dijkstra.
 - A graph with no elevation behaves exactly as today: every pinned route unchanged.
 
-#### EL3 — the route's profile (S–M, mac then sim)
+**As built (2026-10-19), departures from the above.** No `reversed` argument on `ArcCost`: the reverse frontier already prices the twin arc (CR5). The bug was in `Materialize`, which clocked reverse-search steps with the arc's own climb/descent; it now calls `ProfileSeconds(arc, options, reversed, climb_weight)` with `!step.stored_order()`. With that reverted `BidirectionalMatchesDijkstraOnHills` fails 93 of 100 pairs. `RouteProfile::Hills` (rule-file `hills` object, sub-keys overlay on `extends`; unknown key, negative value, `steep_grade` 0, or `descent_s_per_m` without `max_kph` > 0 is a parse error); bicycle and foot profiles in the builtins and both rule files get 6.0/2.0/0.12/2.0 with `max_kph` 40 (bike) and 7 (foot); car has none. `RouteOptions::hill_penalty` 1.0, not seeded from the profile (EL4). Steep is judged on the arc's mean descent grade; seconds never below min(flat, length/`max_kph`). Profile-less queries ignore elevation; distance-metric profiles ignore it in the cost, not the clock.
+Measured (atlanta.fvroad, city rules, Chattahoochee -> Buckhead): bicycle 78.5 min / 15.07 km (flat 61.9 / 14.31), reverse 68.1 (61.5); foot 128.3 up, 122.3 down (flat 115.6/118.1). Tests: `port/Routing/test/router_elevation_test.cpp`, 8 `RouterElevation.*`. No app or bridge change.
+
+#### EL3 — the route's profile (S–M, mac then sim) — **BUILT 2026-10-19** (b15a1cd1)
 
 - `RoutePlan` gains `climb_m`, `descent_m` and an elevation series (distance along, elevation)
   from the node elevations.
 - The route sheet shows "↑ 120 m ↓ 85 m" and a small Swift Charts profile under the summary when
   the graph has elevation. On a flat pack it shows nothing, not a flat line.
 
-#### EL4 — "Avoid hills" (S, sim)
+**As built (2026-10-19).** `routing::ElevationPoint {along_m, elev_m}`; `Route::has_elevation/climb_m/descent_m/profile` are filled in `Router::Materialize`: climb and descent from the arcs' sampled `climb_dm`/`descent_dm` in the travel direction (a partial step counts its fraction), the profile from the start plus one point per step end, node elevations interpolated by t along the arc. It is coarser than `climb_m` (an intra-arc hill shows only at its end nodes); climb - descent equals its end-to-end change. `RoutePlan` copies the fields from the through route only. `RouteSnapshot`, `PPElevationSample` and `PPRoute.hasElevation/climbMeters/descentMeters/elevationProfile` carry them; `RouteSheet` shows "↑ 86 ft ↓ 100 ft" (`DistanceUnits.height`, `climbSummary`) and `ElevationProfileChart` (Swift Charts, 72 pt, y span at least 30 m) in the Stops footer only when calculated with at least 2 samples.
+Measured: Atlanta Paces Mill -> Buckhead bicycle 17.3 km, up 234 m, down 176 m, 243 -> 301 m. Tests: 5 `RouterElevation.*`, 2 `RoutePlanner.*`, height/climb/axis checks in `guidance_format_test.swift`. Sim: shipped Kiawah pack shows nothing; a temporary `--dem` Kiawah graph in the sim bundle shows both (`docs/el3-route-profile.png`). Atlanta pack restage is EL5. Not done: pyfvw bindings.
+
+#### EL4 — "Avoid hills" (S, sim) — **BUILT 2026-10-19** (c07ff5c7)
 
 - `options.hills: "avoid"` in `.fvrte` (BR3's object; absent is neutral) sets `hill_penalty` from
   `[routing] avoid_hills_penalty`. A toggle under "Use the beach", shown only when the graph has
   elevation.
 
-#### EL5 — the Atlanta pack (M, data + sim)
+**As built (2026-10-19).** RouteDoc `options.hills: "avoid"` (`kRouteHillsAvoid`, `avoid_hills()`/`set_avoid_hills`), written only when set, after `beach`; absent or unknown reads neutral. `RouteOverlay::SetAvoidHills`; `RoutePlanOptions::avoid_hills` (optional, unset = the document's) and `avoid_hills_penalty` (default 4.0) feed `RouteOptions::hill_penalty`. Router fix, a departure from EL2: the penalty was multiplied into the climb seconds inside the class weight, so a climb on a favoured class (cycleway 0.5) stayed cheap and avoid-hills climbed more (24.0 km / 267 m at penalty 4 vs 17.35 km / 234 m neutral). `ArcCost` now keeps the physics inside the class weight and adds `(hill_penalty - 1) * climb_m * climb_s_per_m` outside it (gated, time-metric profiles only, not ferries; < 1 reads as 1); neutral cost is unchanged, so the EL2 pins hold. `fvgraph route --hill-penalty X`; `[routing] avoid_hills_penalty` in `peregrine.ini.sample`, read in PPMap init. Pippin: `RouteStore::SetWaypoints(..., beach, avoid_hills)`, `ElevationAvailable()`, `PPRoute.avoidHills`, `PPMap.elevationAvailable`, `setRoute(...avoidHills:)`; RouteSheet "Avoid hills" Toggle under "Use beach", only when elevation is available, replans on change, remembered in UserDefaults `routeAvoidHills`.
+Measured: atlanta.fvroad Paces Mill -> Buckhead, default rules bicycle neutral 17.35 km / 104.3 min / 234 m up, avoid 16.51 km / 98.1 min / 204 m; city rules 17.23 km / 226 m -> 11.23 km / 62.9 min / 142 m (penalties 2..8 nearly the same, so 4); Downtown default bicycle 48 -> 24 m. Tests: 1 `RouterElevation.*`, 2 `RouteDoc.*`, 2 `RoutePlanner.*`, 2 `RouteStore.*`; full ctest 2799/2806, the same 7 Boardwalk 29 failures. Sim: shipped flat Kiawah pack shows no toggle; a temporary `--dem --beach` Kiawah graph shows it and writes `"hills": "avoid"` to current.fvrte (`docs/el4-avoid-hills.png`); the Kiawah route does not change. Not done: pyfvw and route.py do not expose `hills`.
+
+#### EL5 — the Atlanta pack (M, data + sim) — **BUILT 2026-10-19**
 
 Atlanta is where Pippin goes next, so this is the second region as well as the test of EL2's
 numbers.
@@ -2592,10 +2602,25 @@ installs beside the "Bike Kiawah" store build — verified with `-showBuildSetti
 targets. README gained "Another region" under "The data pack"; `BUILDING.md` has the Atlanta recipe
 under Step 2, "Another region". Still open: both apps claim the
 `pippin://` URL scheme, so share-from-Maps is ambiguous with both installed;
-`MapModel.swift:1134` still says "outside the Kiawah map"; the app has not been built or run on
-the Atlanta pack. Chris cleared the Atlanta box for the public Peregrine repo 2026-10-04.
+the app had not yet been built or run on
+the Atlanta pack (see below). Chris cleared the Atlanta box for the public Peregrine repo 2026-10-04.
 
-#### RG1 — more than one region in one app (optional; needs Chris)
+**Elevation half BUILT 2026-10-19.** `atlanta.fvroad` is the EL1 `--dem` graph (38 MB); the pack
+restaged with `--region atlanta --release` (61 MB, 17 files) and ran in the simulator as
+`PP_BUNDLE_ID=org.peregrine.Pippin.Atlanta`. No beach row, no tide card, hills toggle and
+elevation profile present. Paces Mill (33.8712,-84.4545) -> Buckhead (33.8480,-84.3732), bicycle,
+city rules: neutral 10.7 mi / 92 min / up 742 ft down 551 ft by a southern loop; "Avoid hills"
+7.0 mi / 63 min / up 468 ft down 279 ft straight across, matching `fvgraph route --hill-penalty 4`
+(11.23 km / 142 m). Here the flatter line is also the shorter one: the city rules' class weights
+send the neutral route 6 km round to quieter streets. A simulated ride along the avoid-hills
+route at a steady 3 m/s (`simctl location start --speed=3`, 190 points from `fvgraph --geojson`)
+held the guidance ETA at 1:58 PM from start to 5:17 elapsed, 0.6 mi covered. Images:
+`docs/el5-atlanta-avoid-hills-map.png`, `-sheet.png`, `docs/el5-atlanta-ride.png`. The
+off-pack point message no longer names Kiawah. Data/ restaged to Kiawah afterwards. Still open:
+both apps claim `pippin://`; the Atlanta `pippin.ini` keeps the Kiawah-specific comment above
+`[routing] graph`; not ridden for real.
+
+#### RG1 — more than one region in one app — **NOT PLANNED** (Chris, 2026-10-21: the app stays single-region)
 
 Once Atlanta exists, a phone that goes to both places wants both packs. Sketch only: the bundle
 (or `Documents/`, for a pack added later) holds several packs; the app opens the one whose bounds
@@ -2672,7 +2697,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - Acceptance: screenshots at 0, 30 and 45° following the demo feed; the cache hit rate in follow
   reported against P18's ~89%.
 
-**Built 2026-10-04** (simulator; phone acceptance pending).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - `PPViewport.pitchDegrees` + `pitched(_:)` (clamped 0–45; every derivation keeps it; bands and
   the underlay are flat, pitch 0). Anchor is the follow anchor: x centre, y = (h−1)(0.5 +
@@ -2732,7 +2757,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - **Reduced 2026-10-04:** for 1.3 only the toggle and the flatten-on-drag; free 3D pan, pinch and
   the pitch gesture wait until asked for.
 
-**Built 2026-10-04** (simulator; phone acceptance pending).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - `[display] follow_pitch_deg` pack key (default 45, the cap) in `pippin.ini`, read by
   `PPMap.followPitchDegrees` and snapshotted on the Swift `Renderer`. Decision: the key is the
@@ -2771,7 +2796,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
   `PointOverlay` gain a lines-only / markers-only draw switch, or the shell draws markers from the
   overlays' data.
 
-**Built 2026-10-04** (simulator; phone acceptance pending).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - Decision: the plan's first option, a draw switch on the overlays, plus a per-marker stamp
   (BT3's `DrawSymbolAt` pattern). fvkit `PointOverlay` and RouteKit `RouteOverlay` gain
@@ -2821,7 +2846,7 @@ the per-frame overlay must cover the tilted footprint too: at 4.7 frames/s while
 - Found in PV3: tilted follow at the Atlanta launch scale (1:240,401) shows blank frames with no
   touch at all (51 blank, 32 soft in 38 s; base z11 → z10). PV2's 0/8 was at 1:7,233.
 
-**Built 2026-10-04, partly** (simulator; the far-field and BT1 items wait for the phone).
+**Built 2026-10-04; phone-accepted 2026-10-21** (Chris).
 
 - Two causes behind both blank-frame findings. (1) The screen-sized underlay is too narrow for the
   tilted quad: at 45° the far corners sit 3,884 px ahead of the centre (3.44 screen widths) and
@@ -3070,26 +3095,623 @@ profile.
 `stage_data.py --region atlanta`, Atlanta build on Chris's phone, a ride on a route that uses a
 painted lane and passes a gate.
 
+### LG — the map legend (planned 2026-10-14)
+
+Chris, 2026-10-14: Atlanta Streets is hard to read without a key. Road edges are coloured by
+riding comfort, and three kinds of green line are drawn over them. A solid centre line is a
+signed route, with the shade giving the network (Defoors Ferry Rd NW). A dashed line is a
+painted lane (Collier Rd NW). A pale line is a local route on a path that admits no bikes. The
+legend should show each style as it is drawn, with a very short label. Tapping a row should
+explain what OSM data it encodes and how the router weights it, in words a rider uses:
+**Most preferred, Preferred, Acceptable, Avoided, Last resort, Never**.
+
+A mockup was built in the 2026-10-14 session; the layout below is the one Chris preferred.
+
+**The card is grouped by how a line is drawn, not by router tier.** One road can carry three
+encodings at once (amber edge, dashed lane, solid route), so the tier is a tag on each row, not
+the organising axis:
+
+| Group | Rows (Atlanta Streets) |
+|---|---|
+| Road colour — the edge of the road | Quiet street, Moderate road, Busy road, Arterial, Bikes designated, No bicycles |
+| On-road markings — a line along the road | Painted bike lane (dashed), Shared-lane marking (dotted, z15+), Protected track (solid teal) |
+| Signed bike routes — a solid line down the middle | National (#0b6b3a), Regional (#2e9e57), Local (#8fcfa6) |
+| Trails and paths | Paved trail, Unpaved trail, Walking path, Steps |
+
+Each row shows: a swatch drawn by the style engine at the map's current scale, a label of two to
+four words, and a tier tag. Expanded, it shows one or two sentences on the OSM tags behind the
+row and the router's factor in plain words. Rows the map does not draw at the current zoom are
+dimmed and say "From zoom 15".
+
+**Three rules shape the design:**
+
+1. **The swatch is rendered, never painted by hand.** A legend that copies colours and widths
+   drifts the first time the style is edited, and the dark style would need a second copy. Each
+   row is a *specimen*: a synthetic feature with the tags the row stands for. It is pushed
+   through `MapLibreStyleEngine::Style()` at the viewport's own `scaleDenominator` and drawn by
+   the same renderer as the map. The specimen therefore runs through the real filters as well as
+   the paint, so a filter edit that stops matching it shows as an empty swatch and fails a test.
+   The mockup showed why this matters: at z16 a quiet street's coloured edge is 0.85 pt per side
+   (casing 5.5, fill 3.8). Hand-drawn swatches got that ratio badly wrong.
+2. **Draw the swatch at 1:1 with the map.** An authored pixel is a point (P12), and the widest
+   line at z19 is the interstate casing at 30 pt, which fits a 36 pt row. So the swatch is
+   exactly what the rider sees on the map, with no magnification factor to explain. Revisit only
+   if riding shows that low-zoom rows are too thin to read.
+3. **The tier comes from the active rules file, not the style.** The style colours by tile
+   attributes. The router multiplies class × bike provision × posted speed × signed route ×
+   surface, and walked classes also pay `profile kph / class_kph`. Kiawah Rules and City Rules
+   rank the same colour differently, and the legend must say what *this* pack's router does.
+
+| # | Step | Size | Needs | Proved on |
+|---|---|---|---|---|
+| LG1 | Legend entries in the style metadata, and the specimen renderer | M | — | mac — **BUILT 2026-10-14** |
+| LG2 | The tier: a specimen's cost under the active rules, in words | M | CR2–CR5 | mac — **BUILT 2026-10-14** |
+| LG3 | PPMap facade and the legend sheet | M | LG1, LG2 | sim — **BUILT 2026-10-14** |
+| LG4 | Only what is on screen | S–M | LG3 | mac + sim — **BUILT 2026-10-15** |
+| LG5 | Tap a road: why this colour | M | LG2, LG3 | sim + phone |
+| LG6 | The route's breakdown by tier | S–M | LG2 | mac + sim |
+
+LG1–LG3 make a complete feature. LG4–LG6 are optional and independent of each other.
+
+#### LG1 — legend entries in the style, and the specimen renderer (M, mac)
+
+**Data.** A `peregrine:legend` object in the style's `metadata`, next to the existing
+`peregrine:note` and `peregrine:bike-tiers`. GL leaves `metadata` to the author, so the file
+stays valid MapLibre JSON:
+
+```json
+"peregrine:legend": {
+  "groups": [
+    {"title": "On-road markings", "subtitle": "A line along the road",
+     "entries": [
+       {"id": "bike-lane",
+        "label": "Painted bike lane",
+        "detail": "Dashed green. OSM cycleway=lane or share_busway, on either side.",
+        "specimen": [
+          {"layer": "transportation",
+           "tags": {"class": "tertiary", "cycleway": "lane"}}],
+        "osm": {"highway": "tertiary", "cycleway:right": "lane"}}
+     ]}
+  ]
+}
+```
+
+- `specimen` is one or more line features in **tile vocabulary**: `layer` is the source layer,
+  and `tags` are the attributes the tilemaker profile writes. A signed-route row needs two: the
+  road in `transportation` and the route in `bike_route`.
+- `osm` is the same thing in **raw OSM tags**, which LG2 feeds to the graph builder's way reader.
+  Tile `class=minor` merges residential and unclassified, so the tiles cannot stand in for the
+  router. `bike_tags_check.py` (CR6) gains a pass that runs each entry's `osm` tags through the
+  lua and checks that the output equals `tags`. That check is how the two vocabularies are kept
+  in agreement.
+- `detail` holds only what the style knows (the line and the OSM tags). The router sentence is
+  generated by LG2 and appended, so it cannot go stale when weights change.
+- Point and area rows (POIs, crossings, parks) use the same mechanism with a point or polygon
+  specimen. They come after the line rows, which are what Chris asked about.
+
+**Loading.** `MapLibreStyleEngine` parses the legend in `LoadText` into a
+`std::vector<MapLibreLegendGroup>`, exposed as `legend()`, beside `layers()`.
+**Recommendation (decision for Chris, see Open item 9):** a malformed legend does *not* fail the
+style load. That departs from the engine's all-or-nothing rule. A typo in a key should not cost
+the rider the map, and the legend is not part of what is drawn. Instead the legend comes back
+empty, with the error in `legend_error()`, and the tests below catch it before it ships.
+
+**Rendering.** A free function in `fvkit/style/legend.{h,cpp}`:
+
+```cpp
+/// Draws one legend entry's specimens through `engine` at `scale_denominator`, onto a
+/// `width_pt` × `height_pt` canvas cleared to the style's background.
+/// Returns the layer ids that drew; empty means the row is not shown at this scale.
+std::vector<std::string> RenderLegendSwatch(MapLibreStyleEngine& engine,
+                                            const MapLibreLegendEntry& entry,
+                                            double scale_denominator, double pixels_per_point,
+                                            int width_pt, int height_pt, ICanvas* canvas);
+```
+
+- Build each specimen as a `VectorFeature` (`type` line, `layer` = source layer, `attributes`
+  from `tags`) whose single part is a horizontal segment across the swatch. Place it in
+  geographic coordinates at the engine's reference latitude, sized from `scale_denominator`.
+- Build a one-off `VectorScene` from the specimens and render it with the map's own
+  `VectorRenderer::Render`.
+  The scene sorts by `StyleResult::priority`, so casing → fill → lane → route order comes from
+  the style, as on the map. Do not reimplement stroking.
+- Clear the canvas to `engine.background(scale)`, so the dark style's swatches sit on the dark
+  ground with no extra code.
+- **Minimum zoom for a dimmed row:** the smallest `minzoom` among the layers that draw the
+  specimen at z22, read from `layers()`.
+- The engine's diagnostics (`layers_that_drew`, `empty_labels`) must not count legend renders.
+  Snapshot them and restore after, or render with a separate engine loaded from the same file.
+  **Recommendation: a separate engine.** It also keeps the legend off the render queue's epoch,
+  so opening the legend never invalidates the retained scene.
+
+**Dark style.** `make_atlanta_dark_style.py` currently replaces `metadata` wholesale with its
+`METADATA` constant (line 157). Change it to copy `peregrine:legend` across from the light style
+unchanged, since the legend is all labels and tags with no colours.
+
+**Tests (gtest, mac):**
+- Parse: a good legend round-trips; each kind of malformed legend leaves the style loaded and
+  sets `legend_error()`.
+- **Every shipped style with a legend** (Atlanta Streets light and dark) loads with no
+  `legend_error()`, and every specimen draws at least one layer at z16.
+- **Coverage:** every `line` layer on `transportation` and `bike_route` is drawn by at least one
+  entry's specimen at some zoom. A deliberate exception is listed in
+  `peregrine:legend.unlisted_layers` (`road-driveway*`, `rail*`, `tunnel-wash`, `oneway-arrow`),
+  so a newly added layer cannot slip in without a row.
+- Golden PNGs of the Atlanta legend at z12, z14, z16 and z19, light and dark, using the existing
+  golden harness.
+
+**As built (2026-10-14).** `MapLibreStyleEngine::legend()`, `legend_error()` and
+`legend_unlisted_layers()`; `fvkit/style/legend.h` has `RenderLegendSwatch`,
+`LegendEntryLayers` and `LegendEntryMinZoom`. The swatch renders through a one-off source and
+the map's own `VectorRenderer`. Open item 9 was taken as recommended: a bad legend leaves the
+map loaded. The parser also rejects unknown keys, duplicate ids, a specimen on a source layer no
+style layer reads, and an `unlisted_layers` name that matches no layer. A specimen may set
+`"geometry": "point"` or `"area"`; Atlanta has only line rows. It has 21 entries, more than the
+table above lists: Service road, Interstate, Bridge, Sidewalk and Dirt track are there because
+the coverage test asks for a row for each of their lines. Minor-road specimens carry
+`subclass=residential`, because the profile writes it and the style reads `subclass`.
+`bike_tags_check.py --legend` runs the real Lua through `legend_way_harness.lua` and passes on
+both Atlanta files. `make_atlanta_dark_style.py` also gained the `bike-route` colours that CR6
+had added to the dark file by hand, so regenerating changes only the metadata.
+
+Found while building it, not fixed here:
+- **Layer minzooms become scale bands at load,** using the latitude and pitch set before
+  `LoadFile`. PPMap's first load runs at the defaults (equator, 0.25 mm), and
+  `prepareStyleForViewport` sets the phone's values afterwards. So in Atlanta the light map shows
+  each layer about 0.4 zoom after its `minzoom` until the first dark toggle, which reloads with
+  the phone's values. The legend tests set both before loading. The fix (recompute the bands in
+  the two setters) moves the OSM goldens and what the rider sees, so it is a session of its own.
+- **Every bike-route way also writes a `boundary` feature** (`admin_level` 11):
+  `way_function`'s boundary loop counts any relation, and `route=bicycle` relations are now
+  accepted. Nothing draws it; it only adds bytes to the tiles.
+
+#### LG2 — the tier: a specimen's cost under the active rules (M, mac)
+
+In `Routing/`:
+
+```cpp
+/// The routing cost of riding one metre of the way described by `osm_tags` under `profile`,
+/// relative to riding one metre at the profile's own speed. `excluded` is set when the way
+/// is not routable.
+struct LegendCost { double factor; bool excluded; std::vector<CostTerm> terms; };
+LegendCost CostOfTags(const RouteProfile& profile, const OsmTags& osm_tags);
+```
+
+- Run `osm_tags` through **the same way reader the graph builder uses** (class, bike provision,
+  posted speed, surface, access), then through the router's arc cost. Do not re-derive the
+  multipliers, because then the legend and the router could disagree, which is what CR set out
+  to prevent. Today both halves are internal: the tag readers are file-static helpers in
+  `fv_road_graph.cpp` (`RoadClassFromHighwayTag` is the only public one), and the cost lives in
+  `fv_router.cpp`. LG2 promotes them to two public functions, `ReadWayTags(tags) → arc
+  attributes` and `ArcCostFactor(profile, attributes)`. The builder and the router are then
+  switched to call them, so each has a single definition.
+- `terms` lists each factor that applied, e.g. `secondary 2.5`, `painted lane ×0.6`,
+  `walked at 5 km/h ×2.8`, `private ×25`. LG5 and the expanded row display them.
+- Signed-route membership is a relation, not a tag. Represent it as the pseudo-tag
+  `peregrine:route_network` in the entry's `osm` object. The reader takes it as the arc's
+  `BikeRoute` value.
+- Signal and crossing costs are per node, not per metre. They go in the row text ("crossing one
+  without a signal adds 45 s") rather than the factor.
+
+**Tier words** go in the rules file, so Kiawah Rules and City Rules can draw the lines
+differently:
+
+```json
+"legend_tiers": [[0.75, "Most preferred"], [1.0, "Preferred"], [2.0, "Acceptable"],
+                 [5.0, "Avoided"], [null, "Last resort"]],
+"legend_baseline": {"highway": "residential"}
+```
+
+`excluded` is always "Never". Add `legend_tiers` and `legend_baseline` to the parser's list of
+known keys in `fv_route_rules.cpp`, which today rejects any key it doesn't know.
+
+**The sentence a rider reads** compares the row with the baseline (a quiet residential street),
+because "×2.5" means nothing on a bike:
+- cheaper than the baseline: "Pippin will ride up to 33% further to use this."
+- dearer: "Pippin will ride up to 3 times as far to avoid this."
+- excluded: "Pippin never routes a bike here."
+
+**Tests:** a table test against City Rules that pins the numbers worked out on 2026-10-14:
+
+| Entry | Expected |
+|---|---|
+| Cycleway | 0.6, Most preferred |
+| Tertiary + track | 0.675, Most preferred |
+| Residential | 0.8, Preferred |
+| Tertiary + lane | 0.9, Preferred |
+| Unclassified | 1.2, Acceptable |
+| Service | 1.5, Acceptable |
+| Secondary + lane | 1.5, Acceptable |
+| Secondary | 2.5, Avoided |
+| Primary | 4.0, Avoided |
+| Footway | 1.2 × 14/5 = 3.36, Avoided |
+| Trunk | 8.0, Last resort |
+| Residential + access=private | 20, Last resort |
+| Motorway, steps, bicycle=no | Never |
+
+A second table pins the same entries under Kiawah Rules, to show that the tags are shared and
+the rules decide the words.
+
+**As built (2026-10-14).** `port/Routing/fv_route_legend.{h,cpp}`: `CostOfTags(profile, tags)`
+→ `LegendCost {factor, excluded, terms, crossing_seconds}`, `LegendTierWord`, `LegendSentence(profile,
+cost, app_name)` and `LegendTermsLine` ("secondary 2.5 × painted lane 0.6 = 1.5"). The builder's
+way reader is now the file-static `ReadWay` behind a public `ReadWayTags(way, options, &arc)`; the
+builder and the legend both go through it, and `ForwardArcOf` is the one place a kept way becomes
+an arc. The cost side needed no promotion: `ArcCost` and `ArcUsable` were already public, so the
+factor is `ArcCost` on a 1 km synthetic arc over the profile's own-speed time. `terms` is a named
+account of the same multipliers; the tests check their product equals the factor, so a new
+multiplier in `ArcCost` without a term fails. `SelectProfile` was split so `ApplyProfile(profile,
+options)` can be called without a rule set. Departures from the plan:
+- `legend_tiers` and `legend_baseline` are **profile** keys (inherited through `extends`), not
+  file-level, so foot can have its own words later. Both default to the plan's values; both
+  shipped rule files write them out in `bicycle`.
+- Sentences: below 2× the comparison is a percentage ("13% further to avoid this"); "1.1 times as
+  far" read badly. Equal to the baseline: "weighs this the same as a residential street". A
+  road busier than minor appends "Crossing it without a signal adds 45 s." The app name is a
+  parameter, since Peregrine shares the router.
+- The speed term reads "at 5 km/h", not "walked at": the clock comes from `class_kph`, and the
+  core does not know whether the rider walks.
+Tests `RouteLegend.*`: both tables above (all numbers as planned), the term lines and sentences,
+parser rejections, and every Atlanta Streets legend row's `osm` tags under City Rules with its
+tier pinned (21 rows; a new row fails until it is given one).
+
+#### LG3 — the PPMap facade and the legend sheet (M, sim)
+
+**PippinKit.** `PPLegendEntry` (group title, label, detail, router sentence, tier word, factor,
+`minZoom`, `shown`, swatch `CGImage`) and on `PPMap`:
+
+```objc
+/// The style's legend drawn at `scaleDenominator`, on the render queue. Empty when the
+/// active style has no legend.
+- (NSArray<PPLegendGroup *> *)legendAtScaleDenominator:(double)scaleDenominator
+                                         pixelsPerPoint:(double)scale;
+@property(nonatomic, readonly) BOOL hasLegend;
+```
+
+- The legend engine (LG1) is loaded beside the map's engine when the style loads, and again when
+  `darkStyle` flips. It follows the same reload path as DM, so dark swatches come for free.
+- The tier comes from the profile the route sheet would use by default (`bicycle`).
+  **Recommendation:** the legend speaks for cycling. A foot legend would need its own words and
+  is not asked for.
+- Swatches are cached by (entry, rounded zoom to 0.25, dark). There are about 20 entries, so the
+  cache is tiny.
+
+**Swift.** `LegendSheet.swift`, opened from a new **Map Key** item in `MapMenu` (beside Tides):
+- `.presentationDetents([.medium, .large])` with background interaction enabled at `.medium`,
+  so the map stays visible and pinchable above the sheet. The swatches re-render on each settled
+  zoom change (debounced, the same signal the render gate uses), which is the zoom-aware
+  behaviour Chris asked for.
+- One `Section` per group. Each row is a `DisclosureGroup`: swatch (`Image(decorative:)` at
+  1:1), label, tier capsule, then the detail and router sentence when expanded.
+- Tier capsule colours: the system semantic colours (green, blue, grey, orange, red) rather
+  than the map's colours, so the tag never looks like a line on the map.
+- Dimmed rows sit at the end of their group with "From zoom 15".
+- A header line names the style and the rules ("Atlanta Streets · City Rules"), so a rider can
+  see why Kiawah and Atlanta read differently.
+- VoiceOver: each row reads label, tier, then detail. Swatches are decorative.
+- No legend in the style → no menu item.
+
+**Proved:** sim screenshots of the sheet at z12, z14 and z16, light and dark. Pinch the map with
+the sheet at `.medium` and watch the swatches change. Compare a swatch against a crop of the map
+at the same zoom.
+
+**As built (2026-10-14).** PippinKit: `PPLegendEntry` (identifier, label, detail, routerSentence,
+termsLine, tierWord, tierRank, factor, minZoom, shown, swatch, swatchPixelsPerPoint) and
+`PPLegendGroup` live in `PPMap.h` beside `PPOwnship` (no new files, so no pbxproj churn for them).
+`PPMap.hasLegend` (a launch constant), `legendRulesName`, `legendForViewport:swatchSize:appName:`.
+Departure from the plan: it takes the whole viewport, not a bare scale, because the legend engine
+needs the latitude band and pixel pitch before `LoadFile` (minzooms become scale bands at load).
+The legend engine is therefore a separate `OsmStyleEngine`, reloaded when dark/light, the 0.5°
+latitude step or mm-per-point changes; the legend does not have the LG1-noted 0.4-zoom late-band
+defect on first load.
+- Swatches are drawn at the quantised quarter zoom (the scale is moved to it, so a cached swatch is
+  exactly that zoom). Cache key (row, quarter zoom); dropped on engine reload, on swatch size,
+  display scale or symbolZoom change, and when it exceeds 8 quarter-zooms of rows. Symbol zoom is
+  honoured: the same device dpi on a canvas shrunk by it, so the swatch stays its point size and
+  its lines match the map.
+- The tier comes from `routing.profile` (bicycle) in the pack's rule file. Rule files gained an
+  optional top-level `"name"` ("City Rules", "Kiawah Rules"), parsed by `RouteRules::name()`;
+  `RoutePlanner::rules()` and `pippin::RouteStore::rules()` expose the rules in force. The header
+  reads "Atlanta Streets · City Rules". Tests: RouteRules name assertions in
+  `ShippedRuleFileParses`, `CityRuleFileParses`, `RejectsWhatItCannotUnderstand`.
+- Swift: `LegendSheet.swift`; Map Key item in `MapMenu` after Tides (hidden when the style has no
+  legend); sheet at medium/large with background interaction through medium; re-fetched on a 250 ms
+  debounced change of quarter zoom and on colour-scheme change. Rows the map draws come first,
+  dimmed ones after with "From zoom N". Tier capsules: rank 0 green, 1 blue, 2 grey, 3 orange,
+  last resort and Never red. Swatch 56×36 pt.
+- Proved on sim (iPhone 17 Pro, Atlanta pack, dark): the menu shows Map Key and no Tides; the sheet
+  shows the header and the Road colour group with rendered swatches and tiers (Moderate road
+  Acceptable, Busy road Avoided, Arterial Avoided, No bicycles Never). Screenshot
+  `port/apps/Pippin/docs/lg3-map-key-dark.png`. **Not yet proved:** light mode, the z12/z14/z16
+  set, pinch-updates, expanded rows, swatch-vs-map crop. The headless simulator stopped repainting
+  after a tap or two (the app sampled idle; the panel lagged one input behind), so these wait for a
+  run in Simulator.app or on the phone.
+
+#### LG4 — only what is on screen (S–M, mac + sim, optional)
+
+A toggle at the top of the sheet, on by default: **On this map / All**. The engine already
+counts `layers_that_drew()`. Add `layer_ids_that_drew()`, a set reset by `ResetDiagnostics()`
+at each base render, and expose it from PPMap. A row is "on this map" when any layer its
+specimen draws with is in the set. When a frame was served from the base cache
+(`baseWasDrawn == NO`), keep the last set. This keeps a city legend down to the 6–10 rows the
+rider can actually see, which is how Gaia and Strava keep theirs short.
+
+**As built (2026-10-15).** `MapLibreStyleEngine::layer_ids_that_drew()` (style order; cleared by
+`ResetDiagnostics`). `fv::LegendEntryOnMap(entry_layers, map_layers)` in `fvkit/style/legend.h`
+is true when every swatch layer drew, not any as planned (a bike-lane specimen also draws the road
+under it). PPMap calls `_style->ResetDiagnostics()` before each base render and, when
+`!_renderer->scene_reused()`, snapshots `_mapLayerIds`. Frames from the base cache or a reused
+retained scene keep the last set (the plan named only the base cache; the retained scene styles
+nothing either). The set covers the guard band, not just the screen. `PPLegendEntry.onMap`
+(`isOnMap`); before the first render it falls back to `shown`.
+- Departure: a row whose swatch is pixel-identical (hash of the swatch buffer) to an earlier
+  on-map row is not on the map. At z11 the bike-lane/track specimens draw only the tertiary road
+  layer and would duplicate "Moderate road". Consequence: "No bicycles" is dropped at z11 because
+  its swatch equals "Arterial" (same layer, same red); the red is still explained.
+- `LegendSheet.swift`: segmented "On this map / All" picker at the top, default On this map; empty
+  groups dropped; "Nothing in the key is on this part of the map." when none. Reloads on any
+  settled camera move (250 ms debounce), not only a quarter-zoom change, since a pan changes the
+  set; swatches stay cached per quarter zoom.
+- Test `StyleLegend.RowIsOnTheMapWhenOneOfItsLayersDrew`. Full ctest 2756 passed, 0 failed.
+- Proved on sim (iPhone 17 Pro, Atlanta, dark, ~z11): On this map lists Moderate road, Busy road,
+  Arterial, Interstate; All lists every row as before. Screenshot
+  `port/apps/Pippin/docs/lg4-map-key-on-this-map.png`. **Not proved:** pan-driven change at high
+  zoom, light mode.
+
+#### LG5 — tap a road: why this colour (M, sim + phone, optional)
+
+The pick and info sheet gains a "How Pippin rides this" row for the road under the crosshair.
+`describePlaceAt:` already finds the nearest road arc. Pass that arc's attributes through LG2's
+cost function and show `terms`: "Secondary 2.5 × painted lane 0.6 = 1.5 · Acceptable". Add the
+legend row whose `osm` specimen matches the arc, with its swatch. Explaining a road the rider is
+looking at is the most direct answer to "what does this colour mean".
+
+#### LG6 — the route's breakdown by tier (S–M, mac + sim, optional)
+
+Komoot-style: in the route sheet, a single bar of distance by tier ("62% Most preferred, 25%
+Preferred, 8% Avoided") and the count of unsignalled arterial crossings. `PPRouteStore` sums arc
+lengths by LG2 tier. It answers "why did it go this way" without opening the legend.
+
+#### Style issues the legend exposed (not LG steps; for Chris)
+
+- **One green, four meanings.** #2e9e57 is the regional-route centre line, the bikes-designated
+  casing, the painted-lane dash and the shared-lane dot. Only the pattern separates them. A
+  distinct hue for "signed route" (centre line) and another for "on-road provision" (lane, dot)
+  would make the legend's job possible rather than just documented.
+- **A signed route hides a painted lane on the same road.** `bike-route` is drawn after
+  `bike-lane` and covers it. Possible fixes: offset the lane line, or draw the route as a
+  thinner line under the lane dash.
+- **Service roads** are drawn with the quiet-street casing from z15, but City Rules weights them
+  1.5, the same as tertiary (amber).
+- **Private ways** (×25) are not drawn differently from public ones.
+- **Stale text:** the Atlanta Streets `peregrine:bike-tiers` note and the `style-readme.md`
+  paragraph still say the tiles carry no `maxspeed`. CR6 added it, and `road-moderate*` already
+  filters on it.
+
+### WD — wind on the beach (planned 2026-10-18, release 1.4)
+
+Chris, 2026-10-18: a rider on the beach going into or with a wind should be told about it once
+the component of the wind along the direction of travel is greater than 4 mph. Ideally, show
+the wind direction on the map. Decisions taken the same day: the threshold applies to
+headwinds and tailwinds alike; arrows go along the route's beach stretches plus a badge, not
+across the whole map; GPS mode gets a banner on entering a beach stretch.
+
+**What 1.3 already has.** `WindFeed` fetches the NWS gridpoint forecast for the fixed `[wind]`
+point. `RouteSheet.windLines` takes each beach stretch's `headingDegrees` and the forecast hour
+at `enterTime`, computes `TailwindComponent` (fvkit/nav/wind.h), and names the worst headwind if
+it is ≥ `headwind_warn_mps` (5 m/s ≈ 11 mph), else the best tailwind. One line only; nothing on
+the map; nothing while riding. WD changes the threshold and adds three surfaces. There is no new
+data source, and the rider's position is still never sent.
+
+**WD1 — threshold and wording (mac, tests).** — **BUILT 2026-10-18**
+- `pippin.ini [wind]`: replace `headwind_warn_mps = 5` with `along_warn_mps = 1.8` (4.03 mph;
+  the setting stays in m/s like the other `[wind]` keys).
+  `loadWindSettings` still reads `headwind_warn_mps` when `along_warn_mps` is missing, so
+  existing packs keep working.
+- The comparison is `abs(component) > along_warn_mps`, strictly greater, as asked.
+- `WindText.beachRide` takes every stretch's `BeachWind` and names the strongest headwind and
+  the strongest tailwind over the threshold, headwind first: "Headwind heading east, 9 mph (NE
+  wind 15 mph, gusts 22)." / "Tailwind heading west, 8 mph (NE wind 15 mph)." The number is the
+  along-track component; the wind itself follows in brackets unless it rounds to the component
+  ("Headwind heading east, 15 mph, gusts 22."). The direction word is `cardinal(heading)`.
+- Tests: `wind_text_test.swift`, the three 1.3 `beachRide` checks replaced by 10 (threshold edge
+  4.0/4.1 mph, both directions and their order, strongest of one sign, crosswind silent, dropped
+  stretch, component equal to the wind, km/h). The setting is renamed `alongWarnMetersPerSecond`
+  on `PPWindSettings`.
+
+**WD2 — chevrons on the route (core + bridge).** — **BUILT 2026-10-18**
+- `fv::RouteOverlay::SetBeachWind(marks, warn_mps)`, additive. A `BeachWindMark` names a stretch
+  by its index in `plan().beach` and carries the blowing-towards bearing, the along-track
+  component (m/s, + tailwind) and the beach's seaward bearing. Marks are cleared by
+  `FollowRoads`/`ClearRoads`, since they index the plan. Peregrine/GTK never calls it.
+- `OnDraw` walks each marked stretch in surface pixels and stamps a filled chevron every 40 pt
+  (7 × 6 pt, white 0.75 pt outline), clear of the line and casing on the landward side. The
+  direction comes from projecting a point 10 m along the bearing, so it follows chart rotation.
+  Colours are overlay constants: headwind #d6480f, tailwind #0c966e, calm grey at alpha 150. They
+  are not style-sheet colours and have no dark variant; the white outline carries them on both.
+  No zoom gate: a stretch too short on screen for a 40 pt step gets one chevron or none.
+  `drawn_wind()` reports what the last frame placed, for tests.
+- Bridge: `PPBeachWindMark` (PPWind.h) and `-[PPMap setBeachWind:warnAt:]`, which bumps the
+  overlay epoch. `MapModel.updateBeachWind` builds marks from `route.beachStretches` and the
+  forecast hour at each `enterTime` (the sample the sheet uses). It runs on every route change
+  and on each new forecast (`WindFeed.$forecast`); a route with beach stretches also asks
+  `WindFeed` to refresh.
+- Tests: `route_beach_ride_test.cpp` +3 (`BeachWind.ChevronsLieAlongTheBeachOnTheLandwardSide`,
+  `TheThresholdIsStrictAndBothWays`, `AReplanDropsTheMarks`). Full ctest 2755/2762; the 7
+  failures are the known Boardwalk 29 data set (RoutePlanner/RouteStore), unchanged.
+- Simulator (iPhone 17 Pro, `-PPDepartAt` 2026-10-19 08:00, cached NWS forecast N 18 mph):
+  orange chevrons along the 5.6 mi beach stretch, north of the line, pointing SSW; the sheet
+  reads "Headwind heading east, 10 mph (N wind 18 mph, gusts 26)." Screenshot
+  `apps/Pippin/docs/wd2-beach-chevrons.png` (superseded; current is
+  `apps/Pippin/docs/wd2-beach-arrows.png`).
+- Gotcha: `Data/pippin.ini` is a staged copy (`stage_data.py`); WD1's key change did not reach
+  the app until it was copied, so the first sim run drew grey (old 5 m/s threshold).
+- Chevrons replaced by arrows 2026-10-18 (89130f20), Chris's choice from mock-ups: 14 pt tail to
+  tip (`RouteOverlay::kWindArrowLength`), 2 pt line, open V head, 5 pt barbs at 24 degrees, mitred,
+  butt ends, no white outline. Drawn as one filled polygon (`WindArrowOutline`) so the 45% colour
+  (alpha 115, RGB unchanged) composites once, with no darker overlap at the head. Clearance uses
+  half the length (7 pt). `DrawnChevron`/`drawn_wind()` names kept. Chris accepted that the orange
+  reads brownish on the light map and faint on the dark one, and the narrow V nearly solid.
+- Known approximation: `headingDegrees` is net start-to-end, fine for Kiawah's straight beach.
+
+**WD3 — the wind badge (app).** — **BUILT then WITHDRAWN 2026-10-18**
+- Withdrawn by Chris after seeing it: riders can feel the wind, and upcoming-turn guidance covers
+  the badge. Left in code: the unplaced `WindBadge` view and the `WindText` badge helpers with
+  their tests. Removed: the placement and the extra `WindFeed.refresh()` calls (pack load,
+  scene-active), so the freshness and network bullets below no longer apply. Chevrons stay.
+- Freshness is measured from `WindFeed.fetchedAt` (fetch time, or cache mtime for a cached
+  forecast; now `private(set)`), not NWS `updateTime`; strict `< 6 h`. `WindFeed.refresh()` now
+  also runs at pack load and on scene-active, still gated hourly, at the fixed pack point only.
+- Tests: `wind_text_test.swift` +13 checks, all passed. Simulator (iPhone 17 Pro, cached NWS
+  forecast N 21 mph gusts 28): badge in the compass slot north-up reading "21 mph", arrow SSW;
+  tap opened the Tides card; in GPS mode the badge sits under the compass, clear of the ride
+  bar. Screenshot `apps/Pippin/docs/wd3-wind-badge.png`.
+- A small capsule under the compass position: an arrow pointing where the wind blows plus
+  "9 mph", from the forecast hour that is now. It shows whenever the pack has `[wind]` and a
+  forecast less than 6 h old, with or without a route. Tap opens the Tides card (which already
+  has the wind lines).
+- When the compass is hidden (not GPS mode, chart north-up), the badge takes the compass slot.
+- Accessibility label: "Wind from the south-west, 9 miles per hour."
+
+**WD4 — GPS mode: entering a beach stretch.** — **BUILT then REMOVED** (Chris, 2026-10-21: clutter on the ride; the beach wind arrows (WD2) carry the information better)
+- When the matched route position passes a stretch's `startMeters`, and the component at the
+  current hour exceeds the threshold, show `noticeBanner` for ~6 s: "Headwind 9 mph for the
+  next 1.8 mi." / "Tailwind 8 mph on the beach." Once per stretch per ride; no sound (turn
+  alerts own the tone).
+- Uses the current forecast hour, not the `enterTime` estimate, since the rider is there now.
+- Tests: the trigger rule is in `WindText`/a small policy struct, tested on the mac with a
+  synthetic route position sequence.
+
+**Order:** WD1 → WD2 → (WD3 withdrawn) → (WD4 removed). Each is a commit with tests green on macOS; WD2 and WD4 were
+checked on the simulator with `kiawah_demo_2x.gpx` and a cached forecast file.
+
+**Docs:** TIDES_AND_WEATHER.md — the settings table (`along_warn_mps`), the "Wind" row's
+"Shown in" column (map arrows, ride banner), a screenshot of the arrows, and the Known
+limits line about net heading.
+
+### SC — the route coloured by slope (Chris, 2026-10-21) — **BUILT 2026-10-21**
+
+The calculated route can be drawn in colours by grade, so a rider sees where the climbs are.
+
+- Router: `ElevationPoint::geometry_index` (index into `Route::geometry`), set in `Router::Materialize`.
+- `RouteOverlay::SetSlopeColors` / property `slope_colors` (Bool, off by default, "Calculated route"
+  group). `SegmentGrades(profile, window_m = 50)`: grade per profile segment over at least 50 m
+  centred on it, kept within the route, rounded to 0.5% so neighbours merge.
+- Bands (`SlopeColor`): |grade| < 1.5% flat, no slope colour; climb 1.5-3% yellow {240,200,20} to red
+  {215,30,30} at 8%+; descent from -1.5% light green {100,200,90} to dark green {0,115,45} at -6%.
+  First guesses, to tune from riding.
+- The centre line keeps the line colour and its normal style (dashed for bicycle); the slope colour is a
+  halo in place of the casing: `RouteOverlay::kSlopeHaloPt` 2 pt each side, then `kSlopeFringePt` 1 pt
+  outer fringe (points x symbol DPI scale). The fringe is an opaque tint halfway between slope and casing
+  colour, not 50% alpha: CpuCanvas blends every square-nib stamp, so a translucent stroke overlaps itself
+  to near-opaque. Flat ground keeps the white casing (sand on beach), drawn at halo+fringe width so the
+  outline is one width; casing width 0 gives flat pieces no outline. `DrawSlopeHalo` draws the fringe
+  pass for the whole route, then the halo pass, then the centre line per leg, so no fringe covers a
+  neighbour's halo. No elevation in the plan: drawn as before.
+- Pippin: `PPMap.routeSlopeColors`; `MapModel.routeSlopeColors` (UserDefaults `routeSlopeColors`);
+  RouteSheet "Colour by slope" under "Avoid hills", only when the graph has elevation; no replan.
+  Help text: "A halo around the line by grade where the road graph has elevation: green downhill,
+  yellow to red uphill, the casing on the flat."
+- Tests: 6 `RouteOverlay.*` plus `geometry_index` checks in `RouterElevation.*`; `RouteOverlay|RouterElevation|BeachRide`
+  58/58 pass. Sim: Atlanta pack, Paces Mill -> Buckhead, screenshot `apps/Pippin/docs/route-slope-colours.png`;
+  iPad Pro 13" sim, Atlanta build: blue centre with halos stays readable over green bike-route lines.
+  Recolouring the line itself (first version) lost green pieces on green roads (Chris, iPad, 2026-10-21).
+- Open: thresholds from riding; short arcs make the line busy at overview zooms; true 50% fringe needs a CpuCanvas change. LX: additive;
+  PeregrineGtk gets the property only through the generic property sheet.
+
+### IP — iPad (7e669f00, 072c5750, 4a7c4405, c7045964) — **BUILT 2026-10-20**, tool card and route sharing built
+
+`TARGETED_DEVICE_FAMILY = 1,2`: iPhone stays portrait-only, iPad allows all four orientations. Verified on the iPad Pro 13" simulator
+in portrait and by Chris on a real iPad rotated. The Xcode script-phase stale-core check now runs `ninja -n pippin_core` (fallback: `find`
+skipping `port/apps` and `test/`); before, any edited test or DeskKit source failed the Xcode build.
+
+**Tool card (4a7c4405, replaced the 072c5750 inspector):** at regular width (both orientations) the route, point info, point editor and map
+key open in one floating card at the top leading corner, 360pt wide. iOS 18+: sized to content via `onScrollGeometryChange` (contentSize +
+insets; readings under 100pt ignored, since before first layout the form reports ~0 and the card would never lay out); iOS 17: max height.
+It stops above the bottom buttons and drops below the ride bar / guidance banner. The chevron collapses it to one line (route status / pin
+name / "Map key"); a different tool opens it expanded and re-measured. Route OK reads Apply and keeps the card up, Cancel reads Close; pin
+info over the route covers it and Done uncovers it; pick-on-map keeps the card up, disabled. Compact width (iPhone, narrow Split View) keeps
+the sheets. Long-press waypoint drag is allowed with the route card up (the iPhone sheet still refuses: it covers the map); after the drop the
+card's stops reload from the replanned route, discarding un-applied edits. User-visible "phone" wording replaced (location prompt "stays on
+this device", problem-report footer, recording notice "with the screen locked"). Card verified on the iPad Pro 13" simulator in portrait,
+on iPhone 18 Pro Max, and by Chris on an iPad in all four orientations (2026-10-21).
+
+**Gotchas:** the card content builder must be empty at compact width: building the route tool there too (even unpresented) shifted the
+iPhone map ~130pt under the sheet (found with the inspector, still applies). The full-height inspector (072c5750) was dropped because it took
+a full-height column and floated over the map controls on iPadOS 26.
+
+**Route sharing (c7045964):** the route tool's Share Route row shares a copy of `current.fvrte` (stops + settings, the PythonView JSON), not a GPX:
+a GPX is a fixed track that cannot be edited or guided. Info.plist exports UTI `org.peregrine.fvrte` (conforms `public.json`) and registers it as an Owner document type. Receive: `onOpenURL` -> `RouteShare.receive` copies out of the (security-scoped / Inbox) URL, asks "Replace your route?" if one exists, then `RouteStore::Import` reads into its own RouteDoc (unparseable or no-stops file refused, current route untouched) and `SetWaypoints` plans + writes; the route tool opens on the result. The receiver plans on its own graph, so the line can differ if the packs differ. Verified: iPad's file opened on the iPhone simulator via `simctl openurl` -> prompt -> planned on roads (2.5 mi, 20 min, beach kept); share sheet offers Route.fvrte with the app as a target. AirDrop/Messages untestable on the simulator.
+
+**Open:** Handoff of the same document between the user's own devices (optional, not started). Failing test, pre-existing (fails identically before c7045964): `RouteStore.ARouteSurvivesARelaunchWITHItsBeach` - on kiawah.fvroad rebuilt 2026-10-19 18:32 the two boardwalks do not connect with the beach off (`road.length_m == 0`).
+
+**Testing landscape:** this Xcode has no Simulator.app and no `simctl rotate`, and iPadOS refuses `requestGeometryUpdate` ("current windowing
+mode does not allow"). Rotate from the Claude simulator panel instead; screenshots stay in the device's portrait frame while taps are in
+interface (landscape) coordinates.
+
+### LP — long press on the map adds a pin, prefilled from the chart — **BUILT 2026-10-22** (1168ba46, 3b4abb1c)
+
+- A long press that does not grab a route waypoint opens the New Pin editor at the pressed coordinate; a waypoint grab still drags it.
+- Prefill: name = the topmost named feature the last base render drew under the press. `-[PPMap chartFeatureNear:inViewport:tolerance:]`
+  returns `PPChartFeature {name, kind}`: press mapped through the ground into the cached base band (`_baseViewport`), then
+  `VectorRenderer::pick_index()` (topmost first) described by `OsmVectorSource::Describe` (`name`, `name:latin`, `name:en`); unnamed ink
+  (building fill, landuse) is passed over for the name. Remarks = the feature's `class`, then `subclass`, then the style key,
+  capitalised ("Town"). Pack key `points.feature_hit_tolerance` (iOS points, default 12).
+- Unnamed (3b4abb1c): with nothing named under the press, `chartFeatureNear` returns the topmost hit with an empty name and its class,
+  not nil; nil only when nothing was drawn. `PPChartFeature.name` may be empty, `kind` never is. Remarks fill ("Wetland", "Minor"),
+  the name stays blank.
+- Fallback: road names live in a label layer the pick index does not hold, so with no named feature the name comes from `describePlace`
+  (road graph) when `isNamed` (still runs for an unnamed hit); an unnamed road leaves the name blank (Save disabled until typed).
+- Look: yellow (`PointPalette.yellowHex`) circle, `marker` teardrop, as a shared-in place (`MapModel.sharedPlaceSymbol`, now internal).
+  Save adds the point and opens its info sheet; Cancel discards.
+- **Decision:** the editor opens on finger release (`MapGestureView.onHoldReleased`, sent only when the grab was empty and the finger stayed
+  within `allowableMovement`), not at recognition. Presenting the sheet under a held finger left the long-press recognizer stuck: no
+  further long press after the first Cancel.
+- Sim (iPhone 18 Pro Max, Kiawah): "Kiawah Island" label -> prefilled "Kiawah Island" / "Town"; unnamed footway -> blank; Save adds the pin
+  and opens info; long press still works after Cancel; route start waypoint still grabs. 3b4abb1c: open marsh -> blank name,
+  Remarks "Wetland"; near an unnamed road -> Remarks "Minor". No unit tests (PippinKit/Swift, no target).
+- Open: long-pressing an existing pin to move it — built as LP2.
+
+### LP2 — long press on a pin drags it — **BUILT 2026-10-22** (83a15a7d)
+
+- A long press that grabs no route waypoint tries the pins next (`MapModel.grabPoint`, pack `points.hit_tolerance`); a hit captures the
+  touch like a waypoint grab (haptic, pan cancelled) and the pin follows the finger. A miss still opens the LP New Pin editor on release.
+- **Decision — precedence:** waypoint first, then pin. Waypoints snap onto pins (`pick.snap_tolerance`), so a pin under a stop is common
+  and the route is the thing being edited; such a pin is moved after moving the stop off it.
+- Core: `pippin::PointStore::BeginDrag/DragTo/EndDrag/CancelDrag`. Moves redraw through the overlay and write nothing; `EndDrag`
+  persists once; cancel restores the original row. `PPMap beginPointDrag:/dragPointTo:/endPointDragAt:/cancelPointDrag` keep the
+  press-to-anchor offset (no jump under the finger), draw the held pin selected and restore the prior selection on release. A release
+  within 3 points of the press writes nothing. Swift coalesces drag positions per render hop, as the waypoint drag does.
+- Refused with the points hidden (`grabPoint` checks `pointsVisible`) and, with the waypoint grab, during crosshair placement, an open
+  editor, or the route sheet.
+- Tests: `PointStore.ADragWritesOnceOnReleaseAndSurvivesARelaunch`, `PointStore.ACancelledDragPutsThePointBack` (18/18 PointStore green).
+- Sim (iPhone 18 Pro Max, Kiawah): Retts Bluff dragged into the ocean, document row changed, position survived relaunch, dragged back;
+  route Start waypoint still drags and replans; long press on empty map still opens the New Pin editor.
+
 ### Open for Chris
 
-1. **Which tide station stands for the beach.** The default is 8667062 Kiawah River Bridge —
-   NOAA's "Kiawah" station, but it sits in the river behind the island. The alternatives are
-   Charleston 8665530 itself or another subordinate station whose timing matches the ocean front
-   better. It is a pack key, so riding can change it.
+1. ~~Which tide station stands for the beach~~ — **answered 2026-10-21: 8667062 Kiawah River
+   Bridge stays**; it works as expected from riding. It remains a pack key.
 2. **The rideable threshold.** `[beach] rideable_below_m` starts as a guess — 0.8 m (2.5 ft) above
    MLLW, the lower half of Charleston's ~1.6 m mean range — to be set from riding.
-3. **More network.** SH2 sends a place name to Apple; WX would fetch wind. Pippin's only network
-   use today is following a short link. Both are optional, and both need a yes.
+3. ~~More network~~ — **closed 2026-10-21:** both were approved and built (SH2 sends a place
+   name to Apple, WX fetches wind from api.weather.gov); the rider's position is never sent.
 4. ~~A night chart~~ — **answered 2026-09-25: yes**, for its own sake and for the 2.5D view (BT4).
-5. **Where the beach choice lives** — decided here as an `options` object in `.fvrte` (a three-way value since 2026-09-26) that
-   route.py learns, rather than profile variants. Override if the format should not move.
+5. ~~Where the beach choice lives~~ — **closed 2026-10-21:** an `options` object in `.fvrte` (a
+   three-way value since 2026-09-26) that route.py learns, rather than profile variants.
 6. ~~The hilly pack~~ — **answered 2026-09-25: Atlanta**, the next place to map; Chris downloads
-   the DTED level 2 before EL starts. Still open: **the Atlanta box** (EL5), and whether one app
-   should carry both regions (RG1).
+   the DTED level 2 before EL starts. The Atlanta box was set in EL5; **the app stays
+   single-region** (Chris, 2026-10-21), so RG1 is not planned.
 7. ~~2.5D~~ — **answered 2026-10-04:** follow-only, capped at 45°, base-map labels lying on the
    plane, points of interest upright (PV4).
 8. ~~Keeping the band at rest~~ (DR2) — **answered by the build, 2026-09-25**: the band is held at
    rest (2.25× the screen), reversing P18's choice; the memory-warning drop is unchanged.
+9. ~~A malformed legend (LG1)~~ — **built as recommended, 2026-10-14:** the style stays loaded
+   with an empty legend and `legend_error()`; tests catch it before it ships. Override if a bad
+   legend should fail the load.
+10. **The style issues LG exposed** — one green with four meanings, a signed route hiding a
+   painted lane, service roads drawn as quiet streets, private ways not drawn. Whether to fix
+   them in Atlanta Streets before LG3, so the legend documents a clearer map.
 
 ## What is deliberately NOT in v1
 Server/gazetteer lookup, other areas of interest (the manifest is data-driven, so a second

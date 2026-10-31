@@ -54,6 +54,11 @@ typedef NS_ENUM(NSInteger, PPGuidanceEventKind) {
   PPGuidanceEventOffRoute,
   PPGuidanceEventRejoined,
   PPGuidanceEventArrived,
+  /// A route point was reached and the next leg is active (course deviation).
+  PPGuidanceEventWaypoint,
+  /// Cross-track error has stayed past the limit (course deviation).
+  PPGuidanceEventOffCourse,
+  PPGuidanceEventBackOnCourse,
 };
 
 /// One thing the guidance said, edge-triggered and exactly once.
@@ -77,9 +82,16 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) double distanceMeters;
 /// Position of the maneuver in the route's turn list. Every event about one
 /// corner carries the same index; meaningless on off route and rejoined.
+/// On a course event, the route point reached or steered for.
 @property(nonatomic, readonly) NSInteger maneuverIndex;
-/// The road being joined at that maneuver, or empty for an unnamed way.
+/// The road being joined at that maneuver, or empty for an unnamed way. On a
+/// course event, the route point's label.
 @property(nonatomic, readonly) NSString *road;
+/// Signed cross-track metres when a course event fired, positive right of
+/// track; 0 on turn events.
+@property(nonatomic, readonly) double crossTrackMeters;
+/// On `PPGuidanceEventWaypoint`, the label of the point now steered for.
+@property(nonatomic, readonly) NSString *nextName;
 
 @end
 
@@ -116,6 +128,47 @@ NS_SWIFT_SENDABLE
 /// say so at the end. Distinct from `PPTrip.remainingMeters`, which is the
 /// odometer's own projection and is absent on a ride with no route.
 @property(nonatomic, readonly) double remainingMeters;
+
+@end
+
+/// The course deviation indicator's readouts for a route of straight legs.
+/// Nil outside GPS mode, with no straight-leg route, and past the last point.
+NS_SWIFT_SENDABLE
+@interface PPCourseDeviation : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
+
+/// Desired track of the active leg, degrees true.
+@property(nonatomic, readonly) double legCourseDegrees;
+/// Signed metres from the leg, positive right of track (steer left).
+@property(nonatomic, readonly) double crossTrackMeters;
+/// The off-course alarm limit, metres; the indicator's full scale.
+@property(nonatomic, readonly) double offCourseLimitMeters;
+@property(nonatomic, readonly) BOOL offCourse;
+
+/// The point being steered for: its index in the route, label and count.
+@property(nonatomic, readonly) NSInteger waypointIndex;
+@property(nonatomic, readonly) NSInteger waypointCount;
+@property(nonatomic, readonly) NSString *waypointName;
+
+/// Rhumb bearing (degrees true) and distance from the boat to that point.
+@property(nonatomic, readonly) double bearingToWaypointDegrees;
+@property(nonatomic, readonly) double distanceToWaypointMeters;
+/// Distance to that point plus every later leg.
+@property(nonatomic, readonly) double distanceToEndMeters;
+
+/// Receiver COG, degrees true, when reported.
+@property(nonatomic, readonly) BOOL hasCourseOverGround;
+@property(nonatomic, readonly) double courseOverGroundDegrees;
+
+/// Time to go at SOG; NO when stopped or slower than 0.5 kn.
+@property(nonatomic, readonly) BOOL hasTimeToGo;
+@property(nonatomic, readonly) double secondsToWaypoint;
+@property(nonatomic, readonly) double secondsToEnd;
+/// Arrival times at SOG, epoch seconds; NO when the fix carried no time.
+@property(nonatomic, readonly) BOOL hasETA;
+@property(nonatomic, readonly) double etaWaypointEpochSeconds;
+@property(nonatomic, readonly) double etaEndEpochSeconds;
 
 @end
 

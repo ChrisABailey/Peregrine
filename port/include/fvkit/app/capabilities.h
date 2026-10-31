@@ -24,6 +24,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -98,6 +100,24 @@ class Persistence {
   // `format_index` indexes FileTypeDesc::save_filters; 0 = the default format.
   // Same contract as FalconView's nSaveFormat, minus the filter-string encoding.
   virtual Status FileSaveAs(const std::string& spec, int format_index) = 0;
+
+  // Names of the layers in the file at `spec` that FileSaveAs(spec,
+  // format_index) would replace besides the document itself, for a file that
+  // holds several. Empty when the save replaces nothing else; the session
+  // then saves without asking.
+  virtual std::vector<std::string> SaveAsWouldReplace(const std::string& spec, int format_index) {
+    (void)spec;
+    (void)format_index;
+    return {};
+  }
+  // Saves the document as a new layer of the file at `path`, keeping the
+  // file's other layers, and reopens it from there. `spec` receives the new
+  // file spec. Offered in place of a save SaveAsWouldReplace warns about.
+  virtual Status FileSaveAsAddedLayer(const std::string& path, std::string* spec) {
+    (void)path;
+    (void)spec;
+    return Status::Error(kUnsupported, "overlay cannot add itself to a file of layers");
+  }
 
   // Re-read from disk, discarding edits. Offered when the user opens a file
   // that is already open and dirty (plan §1.2).
@@ -202,6 +222,40 @@ class ContextMenu {
   // overlays top-down and each one appends its own section (A5).
   virtual void AppendMenuItems(const MapProjection& proj, PixelPoint p,
                                MenuNode& menu) = 0;
+};
+
+// ---------------------------------------------------------------------------
+// ItemInfo — Get Info and Edit on the map's context menu
+// ---------------------------------------------------------------------------
+
+/// One line of a Get Info sheet: a value under a section heading.
+struct InfoRow {
+  std::string section;  ///< "Point", "Attributes", "Legs"
+  std::string key;
+  std::string value;
+};
+
+/// What Get Info shows about one item on the map, and how to edit it.
+struct ItemInfoSheet {
+  std::string title;
+  /// In order; a row whose section differs from the one before starts a new section.
+  std::vector<InfoRow> rows;
+  /// "Edit Point…", "Edit Route…": the context menu item that puts the
+  /// overlay in its editor; empty when the item has none.
+  std::string edit_label;
+  /// Selects the item once its overlay has edit focus. May be null.
+  std::function<void()> select;
+};
+
+/// "32.61234° N, 79.98765° W", the form Get Info rows give a position in.
+std::string FormatInfoPosition(const GeoPoint& p);
+
+class ItemInfo {
+ public:
+  virtual ~ItemInfo() = default;
+  /// The topmost item within `tolerance_px` of `p`; nullopt when there is none.
+  virtual std::optional<ItemInfoSheet> InfoAt(const MapProjection& proj, PixelPoint p,
+                                              double tolerance_px) = 0;
 };
 
 // ---------------------------------------------------------------------------

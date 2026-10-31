@@ -140,6 +140,13 @@ simplify_pixels = 0.5
 # projection = equalarc
 
 
+[geotrans]
+# Directory holding the GeoTrans tables: ellips.dat, 3_param.dat, 7_param.dat
+# and egm96.grd (testdata/geotrans in the repo and the sample set). Peregrine
+# sets MSPCCS_DATA to it at launch; MGRS entry in Go To / Find needs it.
+# Default: unset, which leaves MSPCCS_DATA as the environment has it.
+# data_dir = "/path/to/testdata/geotrans"
+
 [geosym]
 # Directory that contains the GeoSymbol/ folder (GeoSymbol/SymAssign/ and
 # GeoSymbol/Graphics/ beneath it), not GeoSymbol/ itself. Needed to draw DNC.
@@ -252,6 +259,13 @@ simplify_pixels = 0.5
 # file's own `default` profile. Options > Route profile lists what the file
 # defines; "b" always rides the `bicycle` profile when there is one.
 # profile = "car"
+
+# How hard a route marked "Avoid hills" (Pippin's route sheet, Peregrine's
+# Avoid Hills route tool, `options.hills` in the .fvrte) works to avoid climbing, on a graph built with --dem: each
+# metre climbed costs this many times the profile's climb_s_per_m, priced the
+# same on every road class. Cost only; the reported time is unchanged. 1.0
+# turns it off; fvgraph route --hill-penalty X tries a value.
+# avoid_hills_penalty = 4.0
 
 
 [points]

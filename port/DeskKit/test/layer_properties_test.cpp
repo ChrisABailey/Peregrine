@@ -122,8 +122,9 @@ TEST_F(LayerPropertiesTest, AFeatureLayerShowsEveryTab) {
   ASSERT_TRUE(fd_.Run({"layers.properties"}).ok());
   EXPECT_EQ(fd_.shell().layer_properties_shown, 1);
   EXPECT_EQ(desk().PropertiesTabs(),
-            (std::vector<PropertiesTab>{PropertiesTab::kSource, PropertiesTab::kGeneral, PropertiesTab::kSymbology,
-                                        PropertiesTab::kLabels, PropertiesTab::kFields}));
+            (std::vector<PropertiesTab>{PropertiesTab::kSource, PropertiesTab::kGeneral, PropertiesTab::kDisplay,
+                                        PropertiesTab::kSymbology, PropertiesTab::kLabels, PropertiesTab::kFields,
+                                        PropertiesTab::kSelection, PropertiesTab::kDefinitionQuery}));
   EXPECT_EQ(desk().properties_tab(), PropertiesTab::kGeneral);
   ASSERT_TRUE(desk().layer_general());
   EXPECT_EQ(desk().layer_general()->general().name, rivers_->Name());
@@ -131,6 +132,22 @@ TEST_F(LayerPropertiesTest, AFeatureLayerShowsEveryTab) {
   EXPECT_EQ(desk().layer_style()->feature(), 0);
   ASSERT_TRUE(desk().layer_fields());
   EXPECT_FALSE(desk().LayerPropertiesDirty());
+}
+
+TEST_F(LayerPropertiesTest, AStaticOverlayOpensItsOverlayOptionsPage) {
+  const auto grid = desk().overlays().FirstOfType(fv::app::kGridTypeId);
+  ASSERT_TRUE(grid);
+  ASSERT_TRUE(desk().overlays().MakeCurrent(grid).ok());
+  ASSERT_TRUE(fd_.Run({"layers.properties"}).ok());
+  EXPECT_EQ(fd_.shell().layer_properties_shown, 0);
+  const auto& options = fd_.shell().options_shown;
+  ASSERT_TRUE(options);
+  ASSERT_GE(options->initial_page(), 0);
+  EXPECT_EQ(options->pages()[static_cast<size_t>(options->initial_page())]->id(), fv::app::kGridTypeId);
+
+  // Overlay ▸ Options states no page.
+  ASSERT_TRUE(fd_.Run({"overlay.options"}).ok());
+  EXPECT_EQ(fd_.shell().options_shown->initial_page(), -1);
 }
 
 TEST_F(LayerPropertiesTest, LayerStyleAndLayerFieldsOpenPropertiesAtTheirTab) {
@@ -153,14 +170,9 @@ TEST_F(LayerPropertiesTest, AShellWithoutTabsKeepsItsOwnDialogs) {
   EXPECT_FALSE(desk().layer_general());
 }
 
-TEST_F(LayerPropertiesTest, ALayerWithoutFeaturesHasSourceAndGeneral) {
+TEST_F(LayerPropertiesTest, ASourcesPropertiesIsTheSourceTabAlone) {
   ASSERT_TRUE(desk().SelectLayer(1).ok());  // the grid, below the rivers
   ASSERT_NE(desk().overlays().current(), rivers_.get());
-  ASSERT_TRUE(fd_.Run({"layers.properties"}).ok());
-  EXPECT_EQ(desk().PropertiesTabs(), (std::vector<PropertiesTab>{PropertiesTab::kSource, PropertiesTab::kGeneral}));
-  EXPECT_FALSE(desk().layer_style());
-
-  // A source's Properties is the Source tab alone.
   ASSERT_TRUE(fd_.Run({"layers.source.properties"}).ok());
   EXPECT_EQ(desk().PropertiesTabs(), (std::vector<PropertiesTab>{PropertiesTab::kSource}));
   EXPECT_EQ(desk().properties_tab(), PropertiesTab::kSource);
@@ -239,7 +251,7 @@ TEST_F(LayerPropertiesTest, StyleAndFieldsAreEditedThroughTheTabs) {
   // The style tab survives the change of fields, over the new schema.
   ASSERT_TRUE(desk().layer_style());
   EXPECT_NE(desk().layer_style(), style);
-  EXPECT_EQ(desk().PropertiesTabs().size(), 5u);
+  EXPECT_EQ(desk().PropertiesTabs().size(), 8u);
   EXPECT_FALSE(desk().LayerPropertiesDirty());
 
   // Revert drops unapplied edits on every tab.
@@ -256,7 +268,9 @@ TEST_F(LayerPropertiesTest, StylingOneFeatureTakesTheStyleTabsAway) {
   ASSERT_TRUE(fd_.Run({"overlay.style_feature"}).ok());
   EXPECT_EQ(fd_.shell().layer_style_shown, 1);
   EXPECT_EQ(desk().PropertiesTabs(),
-            (std::vector<PropertiesTab>{PropertiesTab::kSource, PropertiesTab::kGeneral, PropertiesTab::kFields}));
+            (std::vector<PropertiesTab>{PropertiesTab::kSource, PropertiesTab::kGeneral, PropertiesTab::kDisplay,
+                                        PropertiesTab::kFields, PropertiesTab::kSelection,
+                                        PropertiesTab::kDefinitionQuery}));
   // Closing Properties leaves the feature's style dialog open.
   desk().CloseLayerProperties();
   ASSERT_TRUE(desk().layer_style());
@@ -269,6 +283,144 @@ TEST_F(LayerPropertiesTest, ClosingTheLayerClosesItsProperties) {
   EXPECT_FALSE(desk().layer_general());
   EXPECT_FALSE(desk().layer_style());
   EXPECT_FALSE(desk().layer_fields());
+  EXPECT_FALSE(desk().layer_display());
+  EXPECT_FALSE(desk().layer_selection());
+  EXPECT_FALSE(desk().layer_query());
+}
+
+/// Pixels of `fd`'s frame in exactly `color`.
+int CountColor(FakeDesk& fd, fv::FvColor color) {
+  const std::vector<uint8_t> px = Pixels(fd);
+  int n = 0;
+  for (size_t i = 0; i + 3 < px.size(); i += 4)
+    if (px[i] == color.r && px[i + 1] == color.g && px[i + 2] == color.b) ++n;
+  return n;
+}
+
+TEST_F(LayerPropertiesTest, DisplaySetsTheMapTipAndOpacity) {
+  ASSERT_TRUE(fd_.Run({kGrid, "layers.properties"}).ok());
+  auto display = desk().layer_display();
+  ASSERT_TRUE(display);
+  EXPECT_TRUE(display->has_opacity());
+  EXPECT_EQ(display->fields().size(), 3u);
+  fv::desk::LayerDisplay d = display->display();
+  d.map_tip_field = "gone";
+  EXPECT_EQ(display->Set(d).code, fv::kInvalidArg);
+  d.map_tip_field = "flow";
+  d.opacity = 101;
+  EXPECT_EQ(display->Set(d).code, fv::kInvalidArg);
+
+  // Opacity alone is the workspace's, so the file stays clean.
+  d.map_tip_field.clear();
+  d.opacity = 60;
+  ASSERT_TRUE(display->Set(d).ok());
+  ASSERT_TRUE(desk().ApplyLayerProperties().ok());
+  EXPECT_EQ(rivers_->opacity(), 60);
+  EXPECT_FALSE(rivers_->AsPersistence()->is_dirty());
+
+  d.map_tip_field = "flow";
+  ASSERT_TRUE(display->Set(d).ok());
+  ASSERT_TRUE(desk().ApplyLayerProperties().ok());
+  EXPECT_TRUE(rivers_->AsPersistence()->is_dirty());
+  Pixels(fd_);
+  double x = 0, y = 0;
+  ASSERT_TRUE(rivers_->last_projection().GeoToSurface({32.85, -79.93}, &x, &y).ok());
+  desk().OverlayHover(x, y);
+  EXPECT_EQ(desk().HoverToolTip(), "130");
+}
+
+TEST_F(LayerPropertiesTest, SelectByAttributesSelectsAndTheLayersColourDrawsIt) {
+  ASSERT_TRUE(fd_.Run({kGrid}).ok());  // the rivers alone
+  EXPECT_FALSE(desk().commands().IsEnabled("layers.clear_selection"));
+  ASSERT_TRUE(fd_.Run({"layers.select_by_attributes"}).ok());
+  EXPECT_EQ(fd_.shell().select_by_attributes_shown, 1);
+  auto q = desk().select_query();
+  ASSERT_TRUE(q);
+  const size_t c = q->AddClause();
+  ASSERT_TRUE(q->SetClause(c, {"depth", fv::desk::QueryOp::kGreater, "7"}).ok());
+  size_t selected = 0;
+  ASSERT_TRUE(desk().ApplySelectByAttributes(fv::desk::SelectionMethod::kNew, &selected).ok());
+  EXPECT_EQ(selected, 2u);
+  EXPECT_EQ(rivers_->selection(), (std::vector<int64_t>{1, 3}));
+  EXPECT_TRUE(desk().commands().IsEnabled("layers.clear_selection"));
+
+  const fv::FvColor yellow{255, 200, 0, 255}, cyan{0, 200, 255, 255};
+  const int halo = CountColor(fd_, yellow);
+  EXPECT_GT(halo, 50);
+  EXPECT_EQ(CountColor(fd_, cyan), 0);
+
+  ASSERT_TRUE(fd_.Run({"layers.properties"}).ok());
+  auto sel = desk().layer_selection();
+  ASSERT_TRUE(sel);
+  EXPECT_EQ(sel->selected_count(), 2u);
+  fv::desk::LayerSelection s = sel->selection();
+  EXPECT_TRUE(s.use_default);
+  s.use_default = false;
+  s.style.color = cyan;
+  s.style.width_px = 100;
+  EXPECT_EQ(sel->Set(s).code, fv::kInvalidArg);
+  s.style.width_px = 4;
+  ASSERT_TRUE(sel->Set(s).ok());
+  ASSERT_TRUE(desk().ApplyLayerProperties().ok());
+  EXPECT_TRUE(rivers_->AsPersistence()->is_dirty());
+  EXPECT_EQ(CountColor(fd_, yellow), 0);
+  EXPECT_EQ(CountColor(fd_, cyan), halo);
+
+  // The other methods combine with the selection.
+  ASSERT_TRUE(q->SetClause(c, {"name", fv::desk::QueryOp::kEqual, "Ashley River"}).ok());
+  ASSERT_TRUE(desk().ApplySelectByAttributes(fv::desk::SelectionMethod::kAdd, &selected).ok());
+  EXPECT_EQ(selected, 3u);
+  ASSERT_TRUE(q->SetClause(c, {"flow", fv::desk::QueryOp::kLess, "100"}).ok());
+  ASSERT_TRUE(desk().ApplySelectByAttributes(fv::desk::SelectionMethod::kRemove, &selected).ok());
+  EXPECT_EQ(rivers_->selection(), (std::vector<int64_t>{1}));
+  ASSERT_TRUE(desk().ApplySelectByAttributes(fv::desk::SelectionMethod::kWithin, &selected).ok());
+  EXPECT_EQ(selected, 0u);
+  ASSERT_TRUE(desk().ApplySelectByAttributes(fv::desk::SelectionMethod::kNew).ok());
+  ASSERT_TRUE(fd_.Run({"layers.clear_selection"}).ok());
+  EXPECT_TRUE(rivers_->selection().empty());
+
+  ASSERT_TRUE(fd_.Run({"layers.close"}).ok());
+  EXPECT_FALSE(desk().select_query());
+}
+
+TEST_F(LayerPropertiesTest, ADefinitionQueryFiltersTheMapAndTableAndIsSavedInTheFile) {
+  ASSERT_TRUE(fd_.Run({kGrid}).ok());
+  const std::vector<uint8_t> all = Pixels(fd_);
+  ASSERT_TRUE(fd_.Run({"overlay.attribute_table", "layers.properties"}).ok());
+  ASSERT_EQ(desk().attribute_table()->RowCount(), 3u);
+  auto q = desk().layer_query();
+  ASSERT_TRUE(q);
+  EXPECT_TRUE(q->query().clauses.empty());
+  const size_t c = q->AddClause();
+  ASSERT_TRUE(q->SetClause(c, {"name", fv::desk::QueryOp::kNotEqual, "Cooper River"}).ok());
+  EXPECT_TRUE(desk().LayerPropertiesDirty());
+  ASSERT_TRUE(desk().ApplyLayerProperties().ok());
+  EXPECT_FALSE(desk().LayerPropertiesDirty());
+  EXPECT_EQ(rivers_->definition_query().text(), R"(["!=",["get","name"],"Cooper River"])");
+  EXPECT_TRUE(rivers_->AsPersistence()->is_dirty());
+  EXPECT_NE(Pixels(fd_), all);
+  EXPECT_EQ(rivers_->features_drawn(), 2u);
+  EXPECT_EQ(desk().attribute_table()->RowCount(), 2u);
+
+  // An incomplete clause stops Apply and leaves the layer's query.
+  ASSERT_TRUE(q->SetClause(c, {"depth", fv::desk::QueryOp::kLess, ""}).ok());
+  EXPECT_EQ(desk().ApplyLayerProperties().code, fv::kInvalidArg);
+  EXPECT_FALSE(rivers_->definition_query().empty());
+  ASSERT_TRUE(desk().RevertLayerProperties().ok());
+
+  ASSERT_TRUE(fd_.Run({"file.save"}).ok());
+  ASSERT_TRUE(fd_.shell().errors.empty()) << fd_.shell().errors[0].message;
+  FeatureOverlay reopened;
+  ASSERT_TRUE(reopened.FileOpen(path_).ok());
+  EXPECT_EQ(reopened.layer()->Count(), 3u);
+  EXPECT_EQ(reopened.definition_query().text(), rivers_->definition_query().text());
+
+  // Clearing the query shows every feature again.
+  ASSERT_TRUE(q->RemoveClause(0).ok());
+  ASSERT_TRUE(desk().ApplyLayerProperties().ok());
+  EXPECT_TRUE(rivers_->definition_query().empty());
+  EXPECT_EQ(Pixels(fd_), all);
+  EXPECT_EQ(desk().attribute_table()->RowCount(), 3u);
 }
 
 }  // namespace

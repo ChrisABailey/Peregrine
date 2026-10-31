@@ -100,6 +100,38 @@ bool PointStore::RemovePoint(int64_t id) {
   return true;
 }
 
+bool PointStore::BeginDrag(int64_t id) {
+  const fv::MapPoint* point = overlay_->Find(id);
+  if (point == nullptr) return false;
+  drag_original_ = *point;
+  return true;
+}
+
+bool PointStore::DragTo(const fv::GeoPoint& position) {
+  if (!drag_original_) return false;
+  fv::MapPoint moved = drag_original_.value();
+  moved.position = position;
+  return overlay_->UpdatePoint(moved);
+}
+
+bool PointStore::EndDrag(const fv::GeoPoint& position) {
+  if (!drag_original_) return false;
+  fv::MapPoint moved = drag_original_.value();
+  drag_original_.reset();
+  if (moved.position.lat == position.lat && moved.position.lon == position.lon) {
+    overlay_->UpdatePoint(moved);
+    return false;
+  }
+  moved.position = position;
+  return UpdatePoint(moved);
+}
+
+void PointStore::CancelDrag() {
+  if (!drag_original_) return;
+  overlay_->UpdatePoint(drag_original_.value());
+  drag_original_.reset();
+}
+
 int64_t PointStore::HitTest(const fv::MapProjection& proj, fv::PixelPoint p,
                             double tolerance_px) const {
   std::vector<fv::app::HitItem> hits;

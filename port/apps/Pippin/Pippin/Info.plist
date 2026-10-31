@@ -29,6 +29,46 @@
 	     the rides are written to `Documents/` as plain XML and plain text. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- The `.fvrte` route document, shared between devices: the stops and
+	     settings, which the receiving app plans on its own graph. The same
+	     JSON PythonView reads and writes. `MapScreen.receiveRoute(from:)`
+	     validates it before it replaces anything. -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.peregrine.fvrte</string>
+			<key>UTTypeDescription</key>
+			<string>Peregrine Route</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>fvrte</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Peregrine Route</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.peregrine.fvrte</string>
+			</array>
+		</dict>
+	</array>
 	<!-- `pippin://place?lat=…&lon=…&name=…&address=…` (P14).
 
 	     NOT a public interface anybody else is invited to call: it exists

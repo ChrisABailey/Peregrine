@@ -109,6 +109,14 @@ struct RoutePlan {
   double length_m = 0.0;
   double seconds = 0.0;
 
+  /// The through route's climb, descent and elevation profile
+  /// (`routing::Route`'s fields). Zero and empty on a graph without
+  /// elevation and on the per-pair fallback.
+  bool has_elevation = false;
+  double climb_m = 0.0;
+  double descent_m = 0.0;
+  std::vector<routing::ElevationPoint> elevation;
+
   // How many legs came back straight because the pair would not route. 0 for a
   // through route by construction.
   int straight_legs = 0;
@@ -148,6 +156,10 @@ struct RoutePlan {
   // `pippin::RouteStore::RoutePath()` produces.
   std::vector<nav::Maneuver> maneuvers;
 
+  /// The through route's runs of one road, in travel order, with their
+  /// lengths. Empty on the per-pair fallback.
+  std::vector<routing::RouteLeg> roads;
+
   /// The beach stretches, in travel order. Filled only on a through route,
   /// for the same reason as `maneuvers`.
   std::vector<RouteBeachStretch> beach;
@@ -167,6 +179,10 @@ struct RoutePlan {
 };
 
 // How a plan is asked for. Everything here has a default that routes.
+/// The climb-cost multiplier "Avoid hills" applies when `[routing]
+/// avoid_hills_penalty` is unset.
+constexpr double kDefaultAvoidHillsPenalty = 4.0;
+
 struct RoutePlanOptions {
   // Metres a stop may be from the nearest road before it is out of coverage.
   // route.py's own default, and much wider than the router's 500: a waypoint
@@ -192,9 +208,28 @@ struct RoutePlanOptions {
   /// says otherwise.
   routing::BeachUse beach = routing::BeachUse::kProfileDefault;
 
+  /// The "Avoid hills" choice; unset leaves the route document's own.
+  std::optional<bool> avoid_hills;
+
+  /// The rider's adjustments to `profile`, applied to a copy before the
+  /// query's own avoidances. Needs a profile; empty routes on the rule file
+  /// exactly.
+  routing::ProfileOverrides overrides;
+
+  /// `RouteOptions::hill_penalty` when hills are avoided (`[routing]
+  /// avoid_hills_penalty`); 1.0 otherwise.
+  double avoid_hills_penalty = kDefaultAvoidHillsPenalty;
+
   /// Drops the beach when the tide would cover it on the way.
   BeachTideGate tide;
 };
+
+/// The named road `after` rides least of what `before` rode: the road a
+/// re-plan now avoids. A candidate must lose at least half its metres and at
+/// least `min_drop_m`; the largest loss wins, ties to the first in `before`.
+/// Empty when no named road qualifies or either plan has no `roads`.
+std::string RoadDropped(const RoutePlan& before, const RoutePlan& after,
+                        double min_drop_m = 100.0);
 
 /// The router's reading of a document's beach setting.
 routing::BeachUse ToBeachUse(RouteBeach v);
@@ -248,6 +283,9 @@ class RoutePlanner {
 
   // The profiles the rule file defines, for a UI that offers them.
   std::vector<std::string> profile_names() const;
+
+  /// The rules in force (the file's, or the builtin ones), polled now.
+  std::shared_ptr<const routing::RouteRules> rules() const;
 
   // With `options.tide` enabled, a through route whose beach stretch the tide
   // judges poor (or unknown, when the gate does not keep unknown stretches) is

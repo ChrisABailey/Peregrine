@@ -13,6 +13,7 @@
 #include <system_error>
 
 #include "fv_mbtiles.h"
+#include "fvkit/formats/scan_interrupt.h"
 #include "fvkit/formats/registry.h"
 
 namespace fs = std::filesystem;
@@ -54,6 +55,7 @@ Status OsmFrameEnumerator::Begin(const std::string& dir) {
         end;
     if (ec) return Status::Error(kIoError, "cannot walk " + dir);
     for (; it != end; it.increment(ec)) {
+      if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
       if (ec) break;
       if (!it->is_regular_file(ec) || ec) continue;
       if (IsMbtiles(it->path())) files.push_back(it->path().string());
@@ -63,6 +65,7 @@ Status OsmFrameEnumerator::Begin(const std::string& dir) {
     return Status::Error(kUnsupported, "no .mbtiles files under " + dir);
 
   for (const std::string& path : files) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     // The file has to be opened: unlike a CADRG frame or an ENC cell, an
     // .mbtiles name says nothing about what is inside it — vector or raster,
     // and which zooms — and the coverage a catalog row needs is derived from

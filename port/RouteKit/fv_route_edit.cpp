@@ -163,6 +163,7 @@ bool RouteEditSession::MoveTo(const std::string& label,
 RoutePlanOptions RouteEditSession::BicycleOptions() const {
   RoutePlanOptions options;
   options.cycle_only = true;
+  options.avoid_hills_penalty = overlay_.avoid_hills_penalty();
   // The rule file's own bicycle profile when it defines one, so "b" follows
   // tuned weights; the pre-O5c boolean otherwise, which is the same ride
   // priced more crudely. route.py's `_bike_profile`, moved.
@@ -178,10 +179,24 @@ RoutePlanOptions RouteEditSession::BicycleOptions() const {
   return options;
 }
 
-bool RouteEditSession::FollowRoads() { return overlay_.FollowRoads(); }
+bool RouteEditSession::FollowRoads() {
+  RoutePlanOptions options;
+  options.avoid_hills_penalty = overlay_.avoid_hills_penalty();
+  return overlay_.FollowRoads(options);
+}
 
 bool RouteEditSession::FollowRoadsByBicycle() {
   return overlay_.FollowRoads(BicycleOptions());
+}
+
+void RouteEditSession::ToggleAvoidHills() {
+  overlay_.SetAvoidHills(!overlay_.avoid_hills());
+  if (!overlay_.has_plan()) return;
+  if (overlay_.plan().is_bicycle) {
+    FollowRoadsByBicycle();
+  } else {
+    FollowRoads();
+  }
 }
 
 LineKind RouteEditSession::CycleLegKind() {
@@ -430,6 +445,11 @@ bool RouteEditSession::OnKeyDown(const KeyEvent& e) {
   }
   if (e.key == 'B') {
     FollowRoadsByBicycle();
+    return true;
+  }
+  if (e.key == 'H') {
+    if (!overlay_.MayHaveElevation() && !overlay_.avoid_hills()) return false;
+    ToggleAvoidHills();
     return true;
   }
   if (e.key == 'U') {

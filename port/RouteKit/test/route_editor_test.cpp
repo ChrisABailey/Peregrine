@@ -38,6 +38,14 @@ TEST(RouteEditor, ToolsFollowTheEditedRoute) {
   EXPECT_TRUE(Find(tools, "Add Point")->enabled);
   EXPECT_FALSE(Find(tools, "Delete Point")->enabled);
   EXPECT_FALSE(Find(tools, "Follow Roads (R)")->enabled);
+  // No planner, so no elevation to avoid.
+  EXPECT_FALSE(Find(tools, "Avoid Hills (H)")->enabled);
+  route.SetAvoidHills(true);
+  EXPECT_TRUE(Find(editor.Tools(), "Avoid Hills (H)")->enabled);  // kept so it can be cleared
+  EXPECT_TRUE(Find(editor.Tools(), "Avoid Hills (H)")->checked);
+  Find(editor.Tools(), "Avoid Hills (H)")->action();
+  EXPECT_FALSE(route.avoid_hills());
+  route.set_dirty(false);
 
   Find(tools, "Add Point")->action();
   EXPECT_TRUE(route.edit().adding());

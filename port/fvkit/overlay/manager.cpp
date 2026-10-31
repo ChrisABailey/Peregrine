@@ -17,6 +17,7 @@
 #include "fvkit/app/capabilities.h"
 #include "fvkit/app/type_registry.h"
 #include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/draw_interrupt.h"
 
 namespace fv {
 
@@ -468,7 +469,13 @@ Status OverlayManager::DrawAll(const MapProjection& proj, ICanvas& canvas,
       layer->Clear({0, 0, 0, 0});
       if (!offscreen_font_.empty()) layer->SetDefaultFont(offscreen_font_);
     }
-    Status s = o->OnDraw(proj, dim ? static_cast<ICanvas&>(*layer) : canvas);
+    Status s;
+    {
+      // A long overlay polls `interrupted` inside its own loops as well.
+      DrawInterruptScope scope(interrupted);
+      s = o->OnDraw(proj, dim ? static_cast<ICanvas&>(*layer) : canvas);
+    }
+    if (s.code == kInterrupted) return s;
     if (!s.ok()) {
       s.message = "overlay '" + o->Name() + "': " + s.message;
       return s;

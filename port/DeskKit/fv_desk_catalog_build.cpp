@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <map>
 #include <system_error>
 
 #include "fvkit/catalog/catalog.h"
@@ -59,6 +60,30 @@ std::string Lower(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return s;
+}
+
+/// The folders directly inside `root`, keyed by their lower-case names. Read
+/// once per plan: on a network share each listing is slow.
+std::map<std::string, std::string> ChildDirs(const std::string& root) {
+  std::map<std::string, std::string> out;
+  std::error_code ec;
+  for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code dec;
+    if (it->is_directory(dec)) out.emplace(Lower(it->path().filename().string()), it->path().string());
+  }
+  return out;
+}
+
+/// The folder a format's data sits in under `root`: `root` itself when it is
+/// named `subdir`, else its child named `subdir` from `children`, either
+/// ignoring case. "" when there is neither, or `subdir` is empty.
+std::string FormatDir(const std::string& root, const std::map<std::string, std::string>& children,
+                      const std::string& subdir) {
+  if (subdir.empty()) return std::string();
+  const std::string want = Lower(subdir);
+  if (Lower(fs::path(root).filename().string()) == want) return root;
+  const auto it = children.find(want);
+  return it == children.end() ? std::string() : it->second;
 }
 
 std::string Thousands(int64_t n) {
@@ -132,10 +157,22 @@ std::vector<std::string> RootsFromSources(
 const std::vector<ScanFormat>& DefaultScanFormats() {
   static const std::vector<ScanFormat> table = {
       {"cadrg", "rpf"},        {"tiros", "tiros3"},     {"dted", "dted"},
-      {"dted-shaded", "dted"}, {"geotiff", "geotiff"},  {"gpkg", ""},
-      {"enc", "enc"},          {"osm", "OSM"},
+      {"dted-shaded", "dted"}, {"geotiff", "geotiff"},  {"gpkg", "gpkg"},
+      {"enc", "enc"},          {"osm", "OSM"},          {"lidar", "lidar"},
+      {"lidar-shaded", "lidar"},
   };
   return table;
+}
+
+std::string ScanFolderNames() {
+  std::vector<std::string> names;
+  for (const ScanFormat& f : DefaultScanFormats())
+    if (!f.subdir.empty() && std::find(names.begin(), names.end(), f.subdir) == names.end())
+      names.push_back(f.subdir);
+  names.push_back("vpf");
+  std::string out;
+  for (const std::string& n : names) out += (out.empty() ? "" : ", ") + n;
+  return out;
 }
 
 std::vector<std::string> FindVpfDatabases(const std::string& root, int max_depth) {
@@ -148,19 +185,16 @@ std::vector<std::string> FindVpfDatabases(const std::string& root, int max_depth
 std::vector<ScanStep> PlanScan(const std::string& root, const std::vector<ScanFormat>& formats) {
   std::vector<ScanStep> steps;
   if (!IsDir(root)) return steps;
+  const std::map<std::string, std::string> children = ChildDirs(root);
   for (const ScanFormat& f : formats) {
     if (!CanScan(f.format)) continue;
-    ScanStep s;
-    s.format = f.format;
-    s.dirs.push_back(root);
-    if (!f.subdir.empty()) {
-      const std::string sub = (fs::path(root) / f.subdir).string();
-      if (IsDir(sub)) s.dirs.push_back(sub);
-    }
-    steps.push_back(std::move(s));
+    const std::string dir = FormatDir(root, children, f.subdir);
+    if (!dir.empty()) steps.push_back(ScanStep{f.format, {dir}});
   }
   if (CanScan("vpf")) {
-    for (const std::string& db : FindVpfDatabases(root)) steps.push_back(ScanStep{"vpf", {db}});
+    const std::string dir = FormatDir(root, children, "vpf");
+    if (!dir.empty())
+      for (const std::string& db : FindVpfDatabases(dir)) steps.push_back(ScanStep{"vpf", {db}});
   }
   return steps;
 }
@@ -273,7 +307,11 @@ void CatalogBuild::Run() {
       int64_t id = 0;
       Status s = cat.AddDataSource(dir, step.format, 0, &id);
       int frames = 0;
-      if (s.ok()) s = cat.Scan(id, &frames);
+      if (s.ok()) s = cat.Scan(id, &frames, [this] { return cancel_.load(); });
+      if (s.code == kInterrupted) {
+        if (id != 0 && !step.keep_if_empty) cat.RemoveDataSource(id);
+        break;
+      }
       // ENC and OSM enumerators report a tree with none of their files as
       // kUnsupported; every format probes every root, so that is an empty result.
       if (s.code == kUnsupported && CanScan(step.format)) {

@@ -299,4 +299,42 @@ TEST(RouteDoc, TimeRoundTripsAndAnUnknownValueReadsAsNever) {
   EXPECT_EQ(fv::RouteBeach::kNever, back.beach());
 }
 
+// --- options.hills -----------------------------------------------------------
+
+TEST(RouteDoc, AvoidHillsRoundTripsAfterBeach) {
+  RouteDoc doc;
+  ASSERT_TRUE(doc.Read(FV_ROUTE_FIXTURE_FILE).ok());
+  doc.set_avoid_hills(true);
+  std::string text = doc.ToJson();
+  EXPECT_NE(std::string::npos, text.find("  \"options\": {\n    \"hills\": \"avoid\"\n  },\n"));
+  RouteDoc back;
+  ASSERT_TRUE(back.Parse(text, "x.fvrte").ok());
+  EXPECT_TRUE(back.avoid_hills());
+  EXPECT_EQ(text, back.ToJson());
+
+  // json.dump order: beach was inserted first.
+  doc.set_beach(fv::RouteBeach::kToSaveTime);
+  text = doc.ToJson();
+  EXPECT_NE(std::string::npos,
+            text.find("  \"options\": {\n    \"beach\": \"time\",\n    \"hills\": \"avoid\"\n  },\n"));
+  ASSERT_TRUE(back.Parse(text, "x.fvrte").ok());
+  EXPECT_TRUE(back.avoid_hills());
+  EXPECT_EQ(fv::RouteBeach::kToSaveTime, back.beach());
+  EXPECT_EQ(text, back.ToJson());
+}
+
+TEST(RouteDoc, AbsentOrUnknownHillsIsNeutral) {
+  RouteDoc doc;
+  doc.set_avoid_hills(true);
+  ASSERT_TRUE(doc.Read(FV_ROUTE_FIXTURE_FILE).ok());
+  EXPECT_FALSE(doc.avoid_hills());
+  EXPECT_EQ(std::string::npos, doc.ToJson().find("options"));
+
+  ASSERT_TRUE(doc.Parse(R"({"format": "peregrine-route", "version": 1,
+                             "options": {"hills": "prefer"}, "waypoints": []})",
+                        "x.fvrte")
+                  .ok());
+  EXPECT_FALSE(doc.avoid_hills());
+}
+
 }  // namespace

@@ -513,6 +513,16 @@ static CATransform3D IdentityTransform() {
                  rotationDegrees:0.0];
 }
 
+- (PPViewport *)viewportWithCenterBounds:(PPGeoBounds)bounds {
+  PPViewport *v = [self derivedWithCenter:_center
+                         scaleDenominator:_scaleDenominator
+                          rotationDegrees:_rotationDegrees];
+  v->_home = bounds;
+  if ([v hasSurface]) [v recomputeLimits];
+  [v setCamera:_center scaleDenominator:_scaleDenominator rotationDegrees:_rotationDegrees];
+  return v;
+}
+
 - (PPViewport *)viewportByPanningBy:(CGVector)deltaInPoints {
   if (![self hasSurface]) return self;
   // The content follows the finger, so the position that ends up under the

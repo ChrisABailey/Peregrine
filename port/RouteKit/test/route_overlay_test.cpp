@@ -701,3 +701,179 @@ TEST(RouteOverlay, DrawMarkerAtStampsWhatOnDrawStamps) {
 
   EXPECT_FALSE(ov.DrawMarkerAt(proj, stamped, 1, x, y).ok());
 }
+
+// --- slope colours -----------------------------------------------------------
+
+namespace {
+
+fv::routing::ElevationPoint At(double along, double elev) {
+  fv::routing::ElevationPoint e;
+  e.along_m = along;
+  e.elev_m = elev;
+  return e;
+}
+
+bool SameColour(const fv::FvColor& a, const fv::FvColor& b) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+size_t CountColour(const fv::PixelBuffer& buf, const fv::FvColor& c) {
+  size_t n = 0;
+  for (int y = 0; y < buf.Height(); ++y) {
+    const unsigned char* row = buf.Row(y);
+    for (int x = 0; x < buf.Width(); ++x) {
+      const unsigned char* p = row + 4 * x;
+      n += p[0] == c.r && p[1] == c.g && p[2] == c.b;
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
+TEST(RouteOverlay, SlopeColourBands) {
+  const fv::FvColor flat = RouteOverlay::kRoadColor;
+  EXPECT_TRUE(SameColour(flat, RouteOverlay::SlopeColor(0.0, flat)));
+  EXPECT_TRUE(SameColour(flat, RouteOverlay::SlopeColor(1.4, flat)));
+  EXPECT_TRUE(SameColour(flat, RouteOverlay::SlopeColor(-1.4, flat)));
+  EXPECT_TRUE(SameColour(RouteOverlay::kClimbEasyColor, RouteOverlay::SlopeColor(2.0, flat)));
+  EXPECT_TRUE(SameColour(RouteOverlay::kClimbEasyColor, RouteOverlay::SlopeColor(3.0, flat)));
+  EXPECT_TRUE(SameColour(RouteOverlay::kClimbSteepColor, RouteOverlay::SlopeColor(8.0, flat)));
+  EXPECT_TRUE(SameColour(RouteOverlay::kClimbSteepColor, RouteOverlay::SlopeColor(20.0, flat)));
+  EXPECT_TRUE(
+      SameColour(RouteOverlay::kDescentGentleColor, RouteOverlay::SlopeColor(-1.5, flat)));
+  EXPECT_TRUE(SameColour(RouteOverlay::kDescentSteepColor, RouteOverlay::SlopeColor(-6.0, flat)));
+  // Halfway up the climb ramp is between yellow and red: orange.
+  const fv::FvColor mid = RouteOverlay::SlopeColor(5.5, flat);
+  EXPECT_GT(mid.r, 200);
+  EXPECT_GT(mid.g, RouteOverlay::kClimbSteepColor.g);
+  EXPECT_LT(mid.g, RouteOverlay::kClimbEasyColor.g);
+}
+
+TEST(RouteOverlay, SegmentGradesOnAPlaneAreExact) {
+  // 5% for 300 m in 100 m segments, then 4% down.
+  const std::vector<fv::routing::ElevationPoint> p = {At(0, 10), At(100, 15), At(200, 20),
+                                                      At(300, 25), At(400, 21)};
+  const std::vector<double> g = RouteOverlay::SegmentGrades(p);
+  ASSERT_EQ(4u, g.size());
+  EXPECT_NEAR(5.0, g[0], 1e-9);
+  EXPECT_NEAR(5.0, g[2], 1e-9);
+  EXPECT_NEAR(-4.0, g[3], 1e-9);
+  EXPECT_TRUE(RouteOverlay::SegmentGrades({At(0, 0)}).empty());
+}
+
+TEST(RouteOverlay, AShortSegmentTakesTheGradeAroundIt) {
+  // A 4 m arc with a 0.4 m step (10%) inside 200 m of level road.
+  const std::vector<fv::routing::ElevationPoint> p = {At(0, 10), At(100, 10), At(104, 10.4),
+                                                      At(204, 10.4)};
+  const std::vector<double> g = RouteOverlay::SegmentGrades(p);
+  ASSERT_EQ(3u, g.size());
+  EXPECT_NEAR(0.8, g[1], 1e-9);  // 0.4 m over the 50 m window
+  EXPECT_LT(g[1], RouteOverlay::kSlopeFlatPercent);
+  // A route shorter than the window is measured end to end.
+  const std::vector<double> s = RouteOverlay::SegmentGrades({At(0, 0), At(10, 1), At(20, 1)});
+  EXPECT_NEAR(5.0, s[0], 1e-9);
+  EXPECT_NEAR(5.0, s[1], 1e-9);
+}
+
+TEST(RouteOverlay, SlopeColoursIsAPropertyAndOffByDefault) {
+  RouteOverlay ov;
+  EXPECT_FALSE(ov.slope_colors());
+  fv::app::PropertyValue v;
+  ASSERT_TRUE(ov.GetProperty("slope_colors", &v).ok());
+  EXPECT_FALSE(v.b);
+  ASSERT_TRUE(ov.SetProperty("slope_colors", fv::app::PropertyValue::Bool(true)).ok());
+  EXPECT_TRUE(ov.slope_colors());
+}
+
+// Paces Mill up to Buckhead climbs out of the river valley: with slope colours
+// on, the line shows steep climbs, easy climbs and descents; off, none of them.
+TEST(RouteOverlay, AnAtlantaClimbIsDrawnInSlopeColours) {
+  const std::filesystem::path p =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(p)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  RoutePlanner planner(p.string(), FV_ROUTE_RULES_FILE);
+  RouteOverlay ov("Climb");
+  ov.SetPlanner(&planner);
+  ov.SetShowLabels(false);
+  ov.SetShowStatus(false);
+  ov.SetDrawMarkers(false);
+  ov.SetWaypoints({{"Paces Mill", {33.8712, -84.4545}}, {"Buckhead", {33.8480, -84.3732}}});
+  ov.SetProfile("bicycle");
+  ASSERT_TRUE(ov.FollowRoads()) << ov.status();
+  ASSERT_TRUE(ov.plan().has_elevation);
+
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(1000, 600);
+  proj.SetCenter({33.8596, -84.4139});
+  proj.SetScale(60000.0);
+  auto count = [&](bool on, const fv::FvColor& c) {
+    ov.SetSlopeColors(on);
+    fv::CpuCanvas canvas(1000, 600);
+    EXPECT_TRUE(ov.OnDraw(proj, canvas).ok());
+    return CountColour(canvas.Buffer(), c);
+  };
+  EXPECT_GT(count(true, RouteOverlay::kClimbSteepColor), 50u);
+  EXPECT_GT(count(true, RouteOverlay::kClimbEasyColor), 50u);
+  EXPECT_GT(count(true, RouteOverlay::kDescentGentleColor) +
+                count(true, RouteOverlay::kDescentSteepColor),
+            50u);
+  EXPECT_GT(count(true, RouteOverlay::kRoadColor), 50u);
+  EXPECT_EQ(0u, count(false, RouteOverlay::kClimbSteepColor));
+  EXPECT_EQ(0u, count(false, RouteOverlay::kClimbEasyColor));
+}
+
+// A plan without elevation keeps the line colour with slope colours on.
+TEST(RouteOverlay, AFlatGraphIgnoresSlopeColours) {
+  const std::string graph = KiawahGraph();
+  if (graph.empty()) GTEST_SKIP() << "no TestData/OSM/kiawah.fvroad";
+  RoutePlanner planner(graph, FV_ROUTE_RULES_FILE);
+  RouteOverlay ov("Route1");
+  ov.SetPlanner(&planner);
+  ov.SetShowLabels(false);
+  ov.SetShowStatus(false);
+  ASSERT_TRUE(ov.FileOpen(FV_ROUTE_FIXTURE_FILE).ok());
+  RoutePlanOptions opts;
+  opts.profile = "bicycle";
+  ASSERT_TRUE(ov.FollowRoads(opts)) << ov.status();
+  if (ov.plan().has_elevation) GTEST_SKIP() << "kiawah.fvroad was built with --dem";
+  ov.SetSlopeColors(true);
+  fv::CpuCanvas canvas(800, 600);
+  ASSERT_TRUE(Draw(ov, KiawahProj(), canvas).ok());
+  EXPECT_GT(CountColour(canvas.Buffer(), RouteOverlay::kRoadColor), 50u);
+  EXPECT_EQ(0u, CountColour(canvas.Buffer(), RouteOverlay::kClimbEasyColor));
+}
+
+namespace {
+
+size_t CountInk(const fv::PixelBuffer& buf) {
+  size_t n = 0;
+  for (int y = 0; y < buf.Height(); ++y) {
+    const unsigned char* row = buf.Row(y);
+    for (int x = 0; x < buf.Width(); ++x) n += row[4 * x + 3] != 0;
+  }
+  return n;
+}
+
+}  // namespace
+
+// The previous line is drawn until an edit drops the plan, and is not saved.
+TEST(RouteOverlay, AGhostLineDrawsUntilTheRoadsAreCleared) {
+  RouteOverlay ov("Ghost");
+  ov.SetShowLabels(false);
+  ov.SetShowStatus(false);
+  ov.SetDrawMarkers(false);
+  ov.SetGhost({{{32.600, -80.115}, {32.600, -80.105}}});
+  ASSERT_EQ(1u, ov.ghost().size());
+
+  fv::CpuCanvas drawn(800, 600);
+  ASSERT_TRUE(Draw(ov, KiawahProj(), drawn).ok());
+  EXPECT_GT(CountInk(drawn.Buffer()), 50u);
+  EXPECT_FALSE(ov.is_dirty());
+
+  ov.SetWaypoints({{"Start", {32.6044, -80.1083}}});
+  EXPECT_TRUE(ov.ghost().empty());
+  ov.SetGhost({{{32.600, -80.115}, {32.600, -80.105}}});
+  ov.ClearGhost();
+  EXPECT_TRUE(ov.ghost().empty());
+}

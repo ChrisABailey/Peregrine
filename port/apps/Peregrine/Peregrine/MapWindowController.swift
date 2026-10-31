@@ -27,17 +27,24 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     private var optionsWindows: [Int32: OptionsWindowController] = [:]
     private var dataSourcesWindow: DataSourcesWindowController?
     private var profileWindow: ProfileWindowController?
-    private var layersWindow: LayersWindowController?
+    private var layersPanel: LayersPanelController?
+    private static let layersShownKey = "LayersPanelShown"
+    private var findWindow: FindWindowController?
     private var featureFormWindow: FeatureFormWindowController?
     private var attributeTableWindow: AttributeTableWindowController?
     private var layerStyleWindow: LayerStyleWindowController?
-    private var layerFieldsWindow: LayerFieldsWindowController?
+    private var propertiesWindow: PropertiesWindowController?
+    private var itemInfoWindow: ItemInfoWindowController?
+    private var selectWindow: SelectByAttributesWindowController?
+    private var ruleFilterWindow: RuleFilterWindowController?
+    private var ruleStyleWindow: RuleStyleWindowController?
     private var newLayerWindow: NewLayerWindowController?
     /// Called after the menu model changed; the app rebuilds the menu bar.
     var onMenusChanged: (() -> Void)?
 
     init() {
         host = fv.desk.DeskHost.Create()
+        host.SetPropertiesTabs(true)
         let settingsError = String(host.LoadSettings(std.string("")))
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "(unversioned)"
@@ -68,22 +75,33 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         bar.distribution = .fillEqually
         bar.spacing = 16
         bar.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        // The map and the layers panel docked at its right; the map takes the slack.
+        let split = NSSplitView()
+        split.isVertical = true
+        split.dividerStyle = .thin
+        split.addArrangedSubview(canvas)
+        split.setHoldingPriority(.defaultLow, forSubviewAt: 0)
         let content = NSView()
-        for v in [canvas, bar] as [NSView] {
+        for v in [split, bar] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            canvas.topAnchor.constraint(equalTo: content.topAnchor),
-            canvas.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: bar.topAnchor),
+            split.topAnchor.constraint(equalTo: content.topAnchor),
+            split.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            split.bottomAnchor.constraint(equalTo: bar.topAnchor),
             bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             bar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
         ])
         window.contentView = content
         window.initialFirstResponder = canvas
+        let layers = LayersPanelController(host: host) { [weak self] in self?.execute($0) }
+        layersPanel = layers
+        split.addArrangedSubview(layers.view)
+        split.setHoldingPriority(.defaultLow + 10, forSubviewAt: 1)
+        setLayersShown(UserDefaults.standard.bool(forKey: Self.layersShownKey))
         canvas.onStatusChange = { [weak self] in self?.refreshStatus() }
         canvas.onError = { [weak self] in self?.present(error: "Peregrine", detail: $0) }
         canvas.onTick = { [weak self] in self?.handle($0) }
@@ -181,13 +199,30 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         if t.sources_requested && host.TakeSourcesRequest() { showDataSources() }
         if t.profile_requested && host.TakeRouteProfileRequest() { showRouteProfile() }
         if t.profile_changed { profileWindow?.reload() }
-        if t.layers_requested && host.TakeLayersRequest() { showLayers() }
-        if t.layers_changed { layersWindow?.reload() }
+        if t.layers_requested && host.TakeLayersRequest() { setLayersShown(true) }
+        if t.layers_hide_requested && host.TakeLayersHideRequest() { setLayersShown(false) }
+        if t.layers_changed, let panel = layersPanel, !panel.view.isHidden { panel.reload() }
+        if t.find_requested && host.TakeFindRequest() { showFind() }
         if t.form_requested && host.TakeFeatureFormRequest() { showFeatureForm() }
         if t.table_requested && host.TakeAttributeTableRequest() { showAttributeTable() }
         if t.style_requested && host.TakeLayerStyleRequest() { showLayerStyle() }
-        if t.fields_requested && host.TakeLayerFieldsRequest() { showLayerFields() }
         if t.new_layer_requested && host.TakeNewLayerRequest() { showNewLayer() }
+        if t.properties_requested && host.TakeLayerPropertiesRequest() { showProperties() }
+        if t.info_requested && host.TakeItemInfoRequest() { showItemInfo() }
+        if t.select_requested && host.TakeSelectByAttributesRequest() { showSelectByAttributes() }
+        let afterRule: () -> Void = { [weak self] in self?.layersPanel?.reload() }
+        let ruleParent = window
+        if t.add_rule_requested && host.TakeAddRuleRequest() {
+            RulePrompts.addRule(host: host, window: ruleParent, done: afterRule)
+        }
+        if t.rule_rename_requested && host.TakeRuleRenameRequest() {
+            RulePrompts.rename(host: host, window: ruleParent, done: afterRule)
+        }
+        if t.rule_type_requested && host.TakeRuleTypeRequest() {
+            RulePrompts.changeType(host: host, window: ruleParent, done: afterRule)
+        }
+        if t.rule_filter_requested && host.TakeRuleFilterRequest() { showRuleFilter() }
+        if t.rule_style_requested && host.TakeRuleStyleRequest() { showRuleStyle() }
         if t.features_changed { featuresDidChange() }
         let notice = String(host.TakeNotice())
         if !notice.isEmpty { present(notice: notice) }
@@ -243,22 +278,33 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         controller.showWindow(nil)
     }
 
-    /// Brings up the layers panel, reusing it when it is showing.
-    private func showLayers() {
-        if let existing = layersWindow {
-            existing.reload()
+    /// Brings up the Find dialog, reusing it when it is showing.
+    private func showFind() {
+        if let existing = findWindow {
             existing.showWindow(nil)
+            existing.focusField()
             return
         }
-        let controller = LayersWindowController(host: host)
-        controller.onClose = { [weak self] in self?.layersWindow = nil }
-        layersWindow = controller
+        let controller = FindWindowController(host: host)
+        controller.onClose = { [weak self] in self?.findWindow = nil }
+        findWindow = controller
         if let panel = controller.window, let main = window {
-            // Beside the map window's top-right corner, inside the screen.
+            // Under the map window's top-left corner, inside the screen.
             let frame = main.frame
-            panel.setFrameTopLeftPoint(NSPoint(x: frame.maxX - panel.frame.width - 20, y: frame.maxY - 60))
+            panel.setFrameTopLeftPoint(NSPoint(x: frame.minX + 40, y: frame.maxY - 60))
         }
         controller.showWindow(nil)
+        controller.focusField()
+    }
+
+    /// Shows or hides the docked layers panel, tells the core (the toolbar
+    /// toggle's checked state) and remembers the choice for the next launch.
+    private func setLayersShown(_ shown: Bool) {
+        guard let panel = layersPanel else { return }
+        if shown { panel.reload() }
+        panel.view.isHidden = !shown
+        host.SetLayersShown(shown)
+        UserDefaults.standard.set(shown, forKey: Self.layersShownKey)
     }
 
     /// Brings up the feature form on the model the core just opened.
@@ -303,16 +349,73 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         controller.showWindow(nil)
     }
 
-    /// Brings up the Layer Fields dialog on the model the core just opened.
-    private func showLayerFields() {
-        if let existing = layerFieldsWindow {
+    /// Brings up the Properties dialog of a layer or source, rebuilt for the
+    /// tabs the core just opened.
+    private func showProperties() {
+        if let existing = propertiesWindow {
             existing.reload()
             existing.showWindow(nil)
             return
         }
-        let controller = LayerFieldsWindowController(host: host)
-        controller.onClose = { [weak self] in self?.layerFieldsWindow = nil }
-        layerFieldsWindow = controller
+        let controller = PropertiesWindowController(host: host)
+        controller.onClose = { [weak self] in self?.propertiesWindow = nil }
+        propertiesWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up Get Info on the sheet the map menu just asked for.
+    private func showItemInfo() {
+        if let existing = itemInfoWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = ItemInfoWindowController(host: host)
+        controller.onClose = { [weak self] in self?.itemInfoWindow = nil }
+        itemInfoWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up Select by Attributes on the query the core just opened.
+    private func showSelectByAttributes() {
+        if let existing = selectWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = SelectByAttributesWindowController(host: host)
+        controller.onClose = { [weak self] in self?.selectWindow = nil }
+        selectWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the rule filter builder the core just opened.
+    private func showRuleFilter() {
+        if let existing = ruleFilterWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = RuleFilterWindowController(host: host)
+        controller.onClose = { [weak self] in self?.ruleFilterWindow = nil }
+        ruleFilterWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
+    /// Brings up the style pages of the rule the core just opened.
+    private func showRuleStyle() {
+        if let existing = ruleStyleWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = RuleStyleWindowController(host: host)
+        controller.onClose = { [weak self] in self?.ruleStyleWindow = nil }
+        ruleStyleWindow = controller
         controller.window?.center()
         controller.showWindow(nil)
     }
@@ -331,13 +434,21 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         controller.showWindow(nil)
     }
 
-    /// Closes a form, table, style or fields dialog whose overlay closed, and
-    /// refreshes the table. The form and style dialog are not rebuilt here:
-    /// they hold the user's edits.
+    /// Closes a form, table or style dialog whose model closed, follows the
+    /// tabs of Properties, and refreshes the table. The form is not rebuilt
+    /// here: it holds the user's edits.
     private func featuresDidChange() {
         if !host.FeatureFormOpen() { featureFormWindow?.close() }
-        if !host.LayerStyleOpen() { layerStyleWindow?.close() }
-        if !host.LayerFieldsOpen() { layerFieldsWindow?.close() }
+        // The style dialog shows one feature's style; a layer's style is a tab of Properties.
+        if !(host.LayerStyleOpen() && host.LayerStyleIsFeature()) { layerStyleWindow?.dismiss() }
+        if let propertiesWindow, !propertiesWindow.refresh() { propertiesWindow.close() }
+        if let selectWindow, !selectWindow.refresh() { selectWindow.close() }
+        if let ruleFilterWindow, !ruleFilterWindow.refresh() { ruleFilterWindow.close() }
+        // Unedited pages follow undo and the rule menu; a draft with edits is left alone.
+        if let ruleStyleWindow {
+            if !ruleStyleWindow.refresh() { ruleStyleWindow.close() }
+            else if !host.RuleStyleDirty() { ruleStyleWindow.reload() }
+        }
         if host.AttributeTableOpen() { attributeTableWindow?.reload() } else { attributeTableWindow?.close() }
     }
 

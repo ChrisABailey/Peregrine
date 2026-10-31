@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -130,6 +131,8 @@ struct StyleLayer {
   TextFn fill_pattern;       // fill layers
   NumberFn icon_size;        // icon-size, a multiplier on the sprite
   NumberFn icon_rotate;      // icon-rotate, degrees clockwise
+  ColorFn icon_color;        // icon-color, the tint of an SDF sprite
+  NumberFn icon_opacity;     // icon-opacity
   ColorFn stroke_color;      // circle-stroke-color
   NumberFn stroke_width;     // circle-stroke-width, CSS px
   TextFn shape;              // fv-circle-shape: "circle" or "square"
@@ -247,6 +250,9 @@ struct MapLibreStyleEngine::Impl {
   bool sprite_base_is_explicit = false;  // SetSpriteBase, not derived
   bool prefer_high_dpi = false;
   std::shared_ptr<PngSymbolLibrary> sprites;
+  std::shared_ptr<PngSymbolLibrary> fallback_sprites;
+  // Tinted or faded copies of sprites, keyed by TintedSpriteId.
+  std::map<std::string, SymbolPixmap> tinted;
   // The directory of the file LoadFile is reading, so a relative `sprite`
   // resolves beside its style. Empty for LoadText, which has no location —
   // which is exactly why SetSpriteBase exists.
@@ -261,6 +267,10 @@ struct MapLibreStyleEngine::Impl {
   // feature only ever visits the style layers aimed at its own MVT layer.
   std::unordered_map<std::string, std::vector<size_t>> by_source_layer;
 
+  std::vector<MapLibreLegendGroup> legend;
+  std::string legend_error;
+  std::vector<std::string> legend_unlisted;
+
   void Clear() {
     name.clear();
     layers.clear();
@@ -273,8 +283,12 @@ struct MapLibreStyleEngine::Impl {
     empty_labels = 0;
     ignored_halo_blur = 0;
     by_source_layer.clear();
+    legend.clear();
+    legend_error.clear();
+    legend_unlisted.clear();
     sprite_url.clear();
     sprites.reset();
+    tinted.clear();
     // An EXPLICIT sprite base survives a reload: the caller set it against
     // this engine, not against the style that happens to be in it. A derived
     // one does not, because the next style resolves its own.
@@ -645,6 +659,16 @@ bool MapLibreStyleEngine::background(double scale_denominator, FvColor* out) con
   return true;
 }
 
+const std::vector<MapLibreLegendGroup>& MapLibreStyleEngine::legend() const {
+  return impl_->legend;
+}
+const std::string& MapLibreStyleEngine::legend_error() const {
+  return impl_->legend_error;
+}
+const std::vector<std::string>& MapLibreStyleEngine::legend_unlisted_layers() const {
+  return impl_->legend_unlisted;
+}
+
 const std::map<std::string, size_t>& MapLibreStyleEngine::ignored_icons() const {
   return impl_->ignored_icons;
 }
@@ -652,6 +676,12 @@ size_t MapLibreStyleEngine::layers_that_drew() const {
   size_t n = 0;
   for (bool b : impl_->layer_drew) if (b) ++n;
   return n;
+}
+std::vector<std::string> MapLibreStyleEngine::layer_ids_that_drew() const {
+  std::vector<std::string> ids;
+  for (size_t i = 0; i < impl_->layer_drew.size(); ++i)
+    if (impl_->layer_drew[i]) ids.push_back(impl_->layers[i].info.id);
+  return ids;
 }
 size_t MapLibreStyleEngine::empty_labels() const { return impl_->empty_labels; }
 size_t MapLibreStyleEngine::ignored_halo_blur() const {
@@ -705,7 +735,8 @@ const std::string& MapLibreStyleEngine::sprite_url() const {
 }
 
 std::vector<std::string> MapLibreStyleEngine::sprite_ids() const {
-  return impl_->sprites ? impl_->sprites->ids() : std::vector<std::string>();
+  PngSymbolLibrary* sheet = Sheet();
+  return sheet ? sheet->ids() : std::vector<std::string>();
 }
 
 namespace {
@@ -724,6 +755,151 @@ std::string ResolveSpriteBase(const std::string& url, const std::string& dir) {
   std::filesystem::path p(path);
   if (p.is_relative() && !dir.empty()) p = std::filesystem::path(dir) / p;
   return p.lexically_normal().string();
+}
+
+/// "" when every key of `obj` is in `allowed`, else a message naming the first
+/// one that is not. Legend keys are checked so a typo shows as an error rather
+/// than as a silently missing row.
+std::string UnknownKey(const Json& obj, std::initializer_list<const char*> allowed,
+                       const std::string& where) {
+  for (auto it = obj.begin(); it != obj.end(); ++it) {
+    bool known = false;
+    for (const char* a : allowed) known = known || it.key() == a;
+    if (!known) return where + ": unknown key '" + it.key() + "'";
+  }
+  return std::string();
+}
+
+/// Reads an object of scalar values into `out`, in key order. Numbers keep
+/// the text the engine compares tile attributes against.
+std::string ReadTags(const Json& obj, const std::string& where,
+                     std::vector<std::pair<std::string, std::string>>* out) {
+  if (!obj.is_object()) return where + " is not an object";
+  for (auto it = obj.begin(); it != obj.end(); ++it) {
+    const Json& v = it.value();
+    if (!(v.is_string() || v.is_number() || v.is_boolean()))
+      return where + "." + it.key() + " is not a string, number or boolean";
+    out->emplace_back(it.key(), JsonToString(v));
+  }
+  return std::string();
+}
+
+/// True when `pattern` names `id`; a trailing `*` matches any suffix.
+bool LayerIdMatches(const std::string& pattern, const std::string& id) {
+  if (!pattern.empty() && pattern.back() == '*')
+    return id.compare(0, pattern.size() - 1, pattern, 0, pattern.size() - 1) == 0;
+  return pattern == id;
+}
+
+/// Parses `metadata["peregrine:legend"]`. Returns "" on success, else the
+/// first problem found; `infos` are the style's loaded layers.
+std::string ParseLegend(const Json& j, const std::vector<MapLibreLayerInfo>& infos,
+                        std::vector<MapLibreLegendGroup>* groups,
+                        std::vector<std::string>* unlisted) {
+  const std::string root = "peregrine:legend";
+  if (!j.is_object()) return root + " is not an object";
+  std::string err = UnknownKey(j, {"groups", "unlisted_layers"}, root);
+  if (!err.empty()) return err;
+  if (!j.contains("groups") || !j["groups"].is_array())
+    return root + " has no 'groups' array";
+
+  auto reads_source_layer = [&infos](const std::string& layer) {
+    for (const MapLibreLayerInfo& i : infos)
+      if (i.source_layer == layer) return true;
+    return false;
+  };
+
+  std::vector<std::string> ids;
+  for (const Json& jg : j["groups"]) {
+    const std::string gwhere = root + " group " + std::to_string(groups->size());
+    if (!jg.is_object()) return gwhere + " is not an object";
+    err = UnknownKey(jg, {"title", "subtitle", "entries"}, gwhere);
+    if (!err.empty()) return err;
+    MapLibreLegendGroup g;
+    if (!jg.contains("title") || !jg["title"].is_string())
+      return gwhere + " has no 'title' string";
+    g.title = jg["title"].get<std::string>();
+    if (jg.contains("subtitle")) {
+      if (!jg["subtitle"].is_string()) return gwhere + ".subtitle is not a string";
+      g.subtitle = jg["subtitle"].get<std::string>();
+    }
+    if (!jg.contains("entries") || !jg["entries"].is_array())
+      return "group '" + g.title + "' has no 'entries' array";
+
+    for (const Json& je : jg["entries"]) {
+      const std::string ewhere =
+          "group '" + g.title + "' entry " + std::to_string(g.entries.size());
+      if (!je.is_object()) return ewhere + " is not an object";
+      err = UnknownKey(je, {"id", "label", "detail", "specimen", "osm"}, ewhere);
+      if (!err.empty()) return err;
+      MapLibreLegendEntry e;
+      if (!je.contains("id") || !je["id"].is_string() || je["id"].get<std::string>().empty())
+        return ewhere + " has no 'id' string";
+      e.id = je["id"].get<std::string>();
+      const std::string where = "legend entry '" + e.id + "'";
+      if (std::find(ids.begin(), ids.end(), e.id) != ids.end())
+        return where + " is listed twice";
+      ids.push_back(e.id);
+      if (!je.contains("label") || !je["label"].is_string())
+        return where + " has no 'label' string";
+      e.label = je["label"].get<std::string>();
+      if (je.contains("detail")) {
+        if (!je["detail"].is_string()) return where + ".detail is not a string";
+        e.detail = je["detail"].get<std::string>();
+      }
+      if (je.contains("osm")) {
+        err = ReadTags(je["osm"], where + ".osm", &e.osm);
+        if (!err.empty()) return err;
+      }
+      if (!je.contains("specimen") || !je["specimen"].is_array() ||
+          je["specimen"].empty())
+        return where + " has no 'specimen' array";
+      for (const Json& js : je["specimen"]) {
+        const std::string swhere =
+            where + " specimen " + std::to_string(e.specimen.size());
+        if (!js.is_object()) return swhere + " is not an object";
+        err = UnknownKey(js, {"layer", "geometry", "tags"}, swhere);
+        if (!err.empty()) return err;
+        MapLibreLegendSpecimen sp;
+        if (!js.contains("layer") || !js["layer"].is_string())
+          return swhere + " has no 'layer' string";
+        sp.layer = js["layer"].get<std::string>();
+        if (!reads_source_layer(sp.layer))
+          return swhere + ": no style layer reads source layer '" + sp.layer + "'";
+        if (js.contains("geometry")) {
+          const Json& jt = js["geometry"];
+          const std::string t = jt.is_string() ? jt.get<std::string>() : "";
+          if (t == "line") sp.type = VectorGeometryType::kLine;
+          else if (t == "point") sp.type = VectorGeometryType::kPoint;
+          else if (t == "area") sp.type = VectorGeometryType::kArea;
+          else return swhere + ".geometry is not line, point or area";
+        }
+        if (js.contains("tags")) {
+          err = ReadTags(js["tags"], swhere + ".tags", &sp.tags);
+          if (!err.empty()) return err;
+        }
+        e.specimen.push_back(std::move(sp));
+      }
+      g.entries.push_back(std::move(e));
+    }
+    groups->push_back(std::move(g));
+  }
+
+  if (j.contains("unlisted_layers")) {
+    if (!j["unlisted_layers"].is_array())
+      return root + ".unlisted_layers is not an array";
+    for (const Json& ju : j["unlisted_layers"]) {
+      if (!ju.is_string()) return root + ".unlisted_layers holds a non-string";
+      const std::string pattern = ju.get<std::string>();
+      const bool names_one = std::any_of(
+          infos.begin(), infos.end(),
+          [&](const MapLibreLayerInfo& i) { return LayerIdMatches(pattern, i.id); });
+      if (!names_one)
+        return root + ".unlisted_layers: '" + pattern + "' names no style layer";
+      unlisted->push_back(pattern);
+    }
+  }
+  return std::string();
 }
 
 }  // namespace
@@ -767,6 +943,7 @@ Status MapLibreStyleEngine::LoadText(const std::string& json_text,
   // its TILE'S OWN SIZE and the layer loop needs the sheet to ask.
   fresh.sprite_base_is_explicit = impl_->sprite_base_is_explicit;
   fresh.prefer_high_dpi = impl_->prefer_high_dpi;
+  fresh.fallback_sprites = impl_->fallback_sprites;
   if (root.contains("sprite") && root["sprite"].is_string())
     fresh.sprite_url = root["sprite"].get<std::string>();
   fresh.sprite_base =
@@ -973,6 +1150,9 @@ Status MapLibreStyleEngine::LoadText(const std::string& json_text,
         if (!(s = num(layout, "icon-size", &L.icon_size)).ok()) return fail(s);
         if (!(s = num(layout, "icon-rotate", &L.icon_rotate)).ok())
           return fail(s);
+        if (!(s = col(paint, "icon-color", &L.icon_color)).ok()) return fail(s);
+        if (!(s = num(paint, "icon-opacity", &L.icon_opacity)).ok())
+          return fail(s);
         if (layout.contains("text-field") &&
             !(s = ParseText(layout["text-field"], id, "text-field",
                             &L.text_field)).ok())
@@ -1064,6 +1244,19 @@ Status MapLibreStyleEngine::LoadText(const std::string& json_text,
   }
 
   fresh.layer_drew.assign(fresh.layers.size(), false);
+
+  // The legend is read after the layers so its specimens can be checked
+  // against them. A bad legend leaves the style loaded with no legend.
+  if (root.contains("metadata") && root["metadata"].is_object() &&
+      root["metadata"].contains("peregrine:legend")) {
+    fresh.legend_error =
+        ParseLegend(root["metadata"]["peregrine:legend"], fresh.infos,
+                    &fresh.legend, &fresh.legend_unlisted);
+    if (!fresh.legend_error.empty()) {
+      fresh.legend.clear();
+      fresh.legend_unlisted.clear();
+    }
+  }
   *impl_ = std::move(fresh);
   ClearSymbolCache();
   set_open(true);  // bumps the style epoch
@@ -1101,6 +1294,24 @@ std::string SpriteSymbolId(const std::string& name) {
   return std::string(kSpritePrefix) + name;
 }
 
+/// `c` as eight hex digits, r g b a, from `digits`. Called per styled
+/// feature, where snprintf is a measurable share of the time.
+std::string HexBytes(const FvColor& c, const char* digits) {
+  const unsigned char bytes[4] = {c.r, c.g, c.b, c.a};
+  std::string out(8, '0');
+  for (int i = 0; i < 4; ++i) {
+    out[2 * i] = digits[bytes[i] >> 4];
+    out[2 * i + 1] = digits[bytes[i] & 15];
+  }
+  return out;
+}
+
+/// "sprite:<name>#rrggbbaa": the sprite with its colour replaced (an SDF
+/// sprite) and its alpha scaled by `tint.a`.
+std::string TintedSpriteId(const std::string& name, FvColor tint) {
+  return SpriteSymbolId(name) + '#' + HexBytes(tint, "0123456789abcdef");
+}
+
 /// A generated circle or square marker, all sizes in HIMETRIC.
 struct CircleSymbol {
   int radius = 0;
@@ -1110,11 +1321,7 @@ struct CircleSymbol {
   bool square = false;
 };
 
-std::string ColorHex(const FvColor& c) {
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", c.r, c.g, c.b, c.a);
-  return buf;
-}
+std::string ColorHex(const FvColor& c) { return HexBytes(c, "0123456789ABCDEF"); }
 
 bool ColorFromHex(const std::string& hex, FvColor* c) {
   if (hex.size() != 8) return false;
@@ -1357,7 +1564,16 @@ Status MapLibreStyleEngine::StyleFeature(const VectorFeature& f,
             } else {
               PointSymbolStyle& sy = b.Symbol();
               sy.valid = true;
-              sy.symbol_id = SpriteSymbolId(name);
+              const double opacity = L.icon_opacity.set ? L.icon_opacity.At(in) : 1.0;
+              if (SpriteTile(name)->sdf || opacity < 1.0) {
+                // MapLibre tints only SDF sprites; icon-opacity fades any.
+                FvColor tint = L.icon_color.set ? L.icon_color.At(in) : FvColor{0, 0, 0, 255};
+                const double a = std::clamp(opacity, 0.0, 1.0) * tint.a;
+                tint.a = static_cast<unsigned char>(std::lround(a));
+                sy.symbol_id = TintedSpriteId(name, tint);
+              } else {
+                sy.symbol_id = SpriteSymbolId(name);
+              }
               // icon-size is a multiplier on the sprite's own size, and
               // dpi_scale is the same CSS-px-to-device conversion every other
               // value here goes through.
@@ -1431,14 +1647,45 @@ Status MapLibreStyleEngine::StyleFeature(const VectorFeature& f,
 // The sheet lookup both emission sites go through, by BARE name (no prefix).
 // nullptr = no sheet, or the sheet has no such sprite; the caller counts it.
 const SymbolPixmap* MapLibreStyleEngine::SpriteTile(const std::string& name) const {
-  if (!impl_->sprites || name.empty()) return nullptr;
-  return impl_->sprites->Pixmap(name);
+  PngSymbolLibrary* sheet = Sheet();
+  if (sheet == nullptr || name.empty()) return nullptr;
+  return sheet->Pixmap(name);
+}
+
+PngSymbolLibrary* MapLibreStyleEngine::Sheet() const {
+  if (impl_->sprites) return impl_->sprites.get();
+  return impl_->sprite_url.empty() ? impl_->fallback_sprites.get() : nullptr;
+}
+
+void MapLibreStyleEngine::SetFallbackSprites(std::shared_ptr<PngSymbolLibrary> sheet) {
+  impl_->fallback_sprites = std::move(sheet);
+  impl_->tinted.clear();
 }
 
 const SymbolPixmap* MapLibreStyleEngine::Pixmap(const std::string& symbol_id) {
   const size_t n = std::strlen(kSpritePrefix);
   if (symbol_id.compare(0, n, kSpritePrefix) != 0) return nullptr;
-  return SpriteTile(symbol_id.substr(n));
+  const size_t hash = symbol_id.rfind('#');
+  if (hash == std::string::npos || hash < n) return SpriteTile(symbol_id.substr(n));
+
+  auto hit = impl_->tinted.find(symbol_id);
+  if (hit != impl_->tinted.end()) return &hit->second;
+  const SymbolPixmap* src = SpriteTile(symbol_id.substr(n, hash - n));
+  FvColor tint;
+  if (src == nullptr || !ColorFromHex(symbol_id.substr(hash + 1), &tint)) return nullptr;
+  SymbolPixmap out = *src;
+  for (int y = 0; y < out.tile.Height(); ++y) {
+    unsigned char* px = out.tile.Row(y);
+    for (int x = 0; x < out.tile.Width(); ++x, px += 4) {
+      if (src->sdf) {
+        px[0] = tint.r;
+        px[1] = tint.g;
+        px[2] = tint.b;
+      }
+      px[3] = static_cast<unsigned char>((px[3] * tint.a + 127) / 255);
+    }
+  }
+  return &impl_->tinted.emplace(symbol_id, std::move(out)).first->second;
 }
 
 const VectorSymbol* MapLibreStyleEngine::Symbol(const std::string& symbol_id) {
@@ -1500,6 +1747,11 @@ bool MapLibreStyleEngine::LoadSymbol(const std::string& symbol_id,
 
 void MapLibreStyleEngine::SetLabelFont(const std::string& path) {
   impl_->label_font = path;
+}
+
+bool IsMapLibreExpressionFilter(const std::string& filter_json) {
+  const Json j = Json::parse(filter_json, nullptr, /*allow_exceptions=*/false);
+  return !j.is_discarded() && IsExpressionFilter(j);
 }
 
 }  // namespace fv

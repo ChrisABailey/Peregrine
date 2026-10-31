@@ -83,6 +83,8 @@ PALETTE = {
  "tunnel-wash": {"line-color": "#2b2d30"},
  "bike-track": {"line-color": "#2cc4c9"},
  "bike-lane": {"line-color": "#3fb56a"},
+ "bike-route": {"line-color": ["match", ["get", "network"],
+                               "national", "#7fe0a4", "regional", "#3fb56a", "#2e7d4f"]},
  "bike-shared": {"line-color": "#3fb56a"},
  "track": {"line-color": "#97805a"},
  "sidewalk": {"line-color": "#7a7067"},
@@ -154,7 +156,11 @@ def recolor(style):
         sys.exit("make_atlanta_dark_style: no dark colour for " + ", ".join(missing))
     style["name"] = "Atlanta Streets Dark"
     style["id"] = "atlanta-streets-dark"
-    style["metadata"] = METADATA
+    # The legend is labels and tags with no colours, so it is shared as is.
+    legend = style.get("metadata", {}).get("peregrine:legend")
+    style["metadata"] = dict(METADATA)
+    if legend is not None:
+        style["metadata"]["peregrine:legend"] = legend
 
 
 def write_style(style, path):

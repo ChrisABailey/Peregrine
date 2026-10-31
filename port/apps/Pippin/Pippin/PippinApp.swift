@@ -46,5 +46,9 @@ struct PippinApp: App {
             MapScreen()
             #endif
         }
+        // A chart download that finished or failed while the app was suspended.
+        .backgroundTask(.urlSession(ChartDownloader.sessionIdentifier)) {
+            await ChartDownloader.shared.handleBackgroundEvents()
+        }
     }
 }

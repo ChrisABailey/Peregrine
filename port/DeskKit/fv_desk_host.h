@@ -62,13 +62,22 @@ struct HostTick {
   bool profile_requested = false;  ///< show the route profile; see TakeRouteProfileRequest
   bool profile_changed = false;    ///< the route profile was re-sampled; lay it out again
   bool layers_requested = false;   ///< show the layers panel; see TakeLayersRequest
+  bool layers_hide_requested = false;  ///< hide the layers panel; see TakeLayersHideRequest
   bool layers_changed = false;     ///< the layer rows changed; reload the panel
+  bool find_requested = false;     ///< show the Find dialog; see TakeFindRequest
   bool form_requested = false;     ///< show the feature form; see TakeFeatureFormRequest
   bool table_requested = false;    ///< show the attribute table; see TakeAttributeTableRequest
   bool style_requested = false;    ///< show the style dialog; see TakeLayerStyleRequest
   bool fields_requested = false;   ///< show Layer Fields; see TakeLayerFieldsRequest
   bool new_layer_requested = false;  ///< show New Layer; see TakeNewLayerRequest
   bool properties_requested = false;  ///< show Properties; see TakeLayerPropertiesRequest
+  bool info_requested = false;  ///< show Get Info; see TakeItemInfoRequest
+  bool select_requested = false;  ///< show Select by Attributes; see TakeSelectByAttributesRequest
+  bool add_rule_requested = false;     ///< ask for a new rule; see TakeAddRuleRequest
+  bool rule_rename_requested = false;  ///< edit the current rule's name; see TakeRuleRenameRequest
+  bool rule_type_requested = false;    ///< ask for a rule type; see TakeRuleTypeRequest
+  bool rule_filter_requested = false;  ///< show the rule filter builder; see TakeRuleFilterRequest
+  bool rule_style_requested = false;   ///< show the rule style pages; see TakeRuleStyleRequest
   /// A feature dialog (form, table, style, fields, new layer) opened, closed
   /// or reloaded, or the table's selection moved; re-read them (a closed one
   /// reads as not open).
@@ -250,6 +259,8 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// False until the dialog of `kind` was requested, and after it closed.
   bool OptionsOpen(int kind) const;
   int OptionsPageCount(int kind) const;
+  /// The page the dialog should open on, or -1 for no preference.
+  int OptionsInitialPage(int kind) const;
   std::string OptionsPageTitle(int kind, int page) const;
   std::string OptionsPageIcon(int kind, int page) const;
   /// The page's fields in section order.
@@ -288,10 +299,44 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// Removes all coverage and rescans every listed directory as a background job.
   std::string GenerateCoverage();
 
+  // MARK: Find
+
+  /// True once after the core asked to show the Find dialog (Map ▸ Go To / Find…).
+  bool TakeFindRequest();
+  /// Runs the search (`Desk::Search`) and keeps its rows; returns their count.
+  /// A coordinate is the only row when the text parses as one.
+  int Search(const std::string& text, bool map_view_only);
+  /// Rows of the last `Search`, grouped Location, Overlays, Roads, Map.
+  /// Out-of-range rows read as empty.
+  int SearchRowCount() const;
+  /// `SearchGroup` as an int: 0 Location, 1 Overlays, 2 Roads, 3 Map.
+  int SearchRowGroup(int row) const;
+  /// The group's heading ("Overlays").
+  std::string SearchRowGroupTitle(int row) const;
+  std::string SearchRowTitle(int row) const;
+  /// The provider's description, e.g. "transportation_name · residential".
+  std::string SearchRowDetail(int row) const;
+  /// The overlay's name or the base map's series.
+  std::string SearchRowSource(int row) const;
+  /// Metres from the view centre at the time of the search.
+  double SearchRowDistance(int row) const;
+  /// `SearchRowDistance` as the dialog shows it (`FormatSearchDistance`).
+  std::string SearchRowDistanceText(int row) const;
+  double SearchRowLatitude(int row) const;
+  double SearchRowLongitude(int row) const;
+  /// One line for under the list: the count, and what could not be searched.
+  std::string SearchStatus() const;
+  /// Moves the map to a row of the last search (`Desk::GoToSearchRow`).
+  void GoToSearchRow(int row);
+
   // MARK: Layers panel
 
   /// True once after the core asked to show the layers panel (Overlay ▸ Layers…).
   bool TakeLayersRequest();
+  /// True once after the core asked to hide the layers panel (the toolbar toggle).
+  bool TakeLayersHideRequest();
+  /// The shell reports whether the layers panel is showing (`Desk::SetLayersShown`).
+  void SetLayersShown(bool shown);
   /// Rows top of the stack first, as of the last `Tick` or layer change
   /// (`Desk::layers()`). Out-of-range rows read as empty.
   int LayerCount() const;
@@ -338,6 +383,116 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   int SourceMenuEntryCount() const;
   HostMenuEntry SourceMenuEntryAt(int index) const;
 
+  // MARK: Style rules
+
+  /// Layer row `row`'s style rules, top-drawn first, from the same snapshot
+  /// as the layer rows. Out-of-range rules read as empty.
+  int RuleCount(int row) const;
+  std::string RuleName(int row, int rule) const;
+  std::string RuleType(int row, int rule) const;  ///< "fill", "line", "circle", "symbol"
+  bool RuleShown(int row, int rule) const;
+  std::string RuleFilter(int row, int rule) const;  ///< the filter expression; "" for none
+  std::string RuleLegend(int row, int rule) const;  ///< "" shows the name
+  /// The current rule, as a rule of the current layer's row; -1 for none.
+  int CurrentRule() const;
+  /// The types a rule can be made with or changed to.
+  int RuleTypeCount() const;
+  std::string RuleTypeName(int i) const;
+  /// Each returns the error message, or "", and repaints. Every edit is undoable.
+  std::string SelectRule(int row, int rule);
+  std::string AddRule(int row, const std::string& name, const std::string& type);
+  std::string DuplicateRule(int row, int rule);
+  std::string RenameRule(int row, int rule, const std::string& name);
+  std::string SetRuleType(int row, int rule, const std::string& type);
+  std::string SetRuleShown(int row, int rule, bool shown);
+  std::string MoveRule(int row, int from, int to);
+  std::string DeleteRule(int row, int rule);
+  /// The rule right-click menu (`Desk::RuleMenu`); it acts on the current
+  /// rule, so the shell selects the rule first.
+  int RuleMenuEntryCount() const;
+  HostMenuEntry RuleMenuEntryAt(int index) const;
+  /// True once after the rule menu asked for Add Rule…, Rename or Change Type….
+  /// The shell then calls `AddRule`, `RenameRule` or `SetRuleType` on the current rule.
+  bool TakeAddRuleRequest();
+  bool TakeRuleRenameRequest();
+  bool TakeRuleTypeRequest();
+  /// True once after Edit Filter… opened the rule filter builder, `kQueryRule`.
+  bool TakeRuleFilterRequest();
+  std::string RuleFilterTitle() const;
+  std::string ApplyRuleFilter();
+  void CloseRuleFilter();
+
+  // MARK: Rule style pages
+
+  /// True once after Edit Style… on a rule opened its style pages.
+  bool TakeRuleStyleRequest();
+  bool RuleStyleOpen() const;
+  std::string RuleStyleTitle() const;
+  std::string RuleStyleType() const;  ///< the rule's type, which decides the properties
+  bool RuleStyleDirty() const;
+  /// The rule's properties in page order; `k` below indexes this list.
+  int RuleStylePropertyCount() const;
+  std::string RuleStylePropertyKey(int k) const;
+  std::string RuleStylePropertyPage(int k) const;
+  std::string RuleStylePropertyTitle(int k) const;
+  /// A `fv::desk::RulePropertyKind`: 0 colour, 1 number, 2 choice, 3 sprite name, 4 field, 5 dash, 6 offset "x y".
+  int RuleStylePropertyKind(int k) const;
+  double RuleStylePropertyMin(int k) const;
+  double RuleStylePropertyMax(int k) const;
+  int RuleStylePropertyChoiceCount(int k) const;
+  std::string RuleStylePropertyChoice(int k, int i) const;
+  /// True when property `k`'s choices are builtin icons, shown as `CopyRuleIcon` previews.
+  bool RuleStylePropertyIcons(int k) const;
+  /// The builtin icons, sorted by name; the same list an icon property's choices hold.
+  int RuleIconCount() const;
+  std::string RuleIconName(int i) const;
+  /// Copies icon `name` fitted to a `size` x `size` square, premultiplied
+  /// RGBA8 on transparent, rows of `size * 4` bytes; a single-colour icon is
+  /// drawn in `rgba` (0xRRGGBBAA). False for an unknown name or when it does not fit.
+  bool CopyRuleIcon(const std::string& name, int size, uint32_t rgba, uint8_t* out, size_t capacity) const;
+  /// The modes property `k` offers, each a `fv::desk::RuleValueMode`: 0 default,
+  /// 1 constant, 2 by field value, 3 by numeric class, 4 by zoom, 5 expression.
+  int RuleStyleModeCount(int k) const;
+  int RuleStyleModeAt(int k, int i) const;
+  int RuleStyleMode(int k) const;
+  /// The constant; the other value of a field table; the base of a class table.
+  std::string RuleStyleConstant(int k) const;
+  std::string RuleStyleField(int k) const;
+  std::string RuleStyleExpression(int k) const;
+  /// Rows of a field, class or zoom table: the key (field value, lower bound, zoom) and the constant.
+  int RuleStyleStopCount(int k) const;
+  std::string RuleStyleStopKey(int k, int i) const;
+  std::string RuleStyleStopValue(int k, int i) const;
+  /// Each setter returns the error message, or "", and leaves the value unchanged on error.
+  std::string SetRuleStyleMode(int k, int mode);
+  std::string SetRuleStyleConstant(int k, const std::string& value);
+  std::string SetRuleStyleField(int k, const std::string& field);
+  std::string SetRuleStyleStop(int k, int i, const std::string& key, const std::string& value);
+  /// Appends a row copying the last one (a zoom table's next level, a field's "value N").
+  std::string AddRuleStyleStop(int k);
+  std::string RemoveRuleStyleStop(int k, int i);
+  /// Fills a field table with the field's distinct values.
+  std::string FillRuleStyleValues(int k);
+  std::string SetRuleStyleExpression(int k, const std::string& json);
+  /// The engine's complaint about `json` as property `k`'s value; "" when it evaluates.
+  std::string VerifyRuleStyleExpression(int k, const std::string& json) const;
+  /// Fields a value can vary by; `numeric` keeps the integer and real ones (class tables).
+  int RuleStyleFieldCount(bool numeric) const;
+  std::string RuleStyleFieldName(bool numeric, int i) const;
+  std::string RuleStyleLegend() const;
+  void SetRuleStyleLegend(const std::string& legend);
+  double RuleStyleMinZoom() const;
+  double RuleStyleMaxZoom() const;
+  std::string SetRuleStyleZoomRange(double min_zoom, double max_zoom);
+  /// Writes the draft to the rule as one undoable edit and repaints; the pages stay open.
+  std::string ApplyRuleStyle();
+  std::string RevertRuleStyle();
+  void CloseRuleStyle();
+  /// A CSS colour as 0xRRGGBBAA; `fallback` when it does not parse.
+  static uint32_t RuleColorRGBA(const std::string& css, uint32_t fallback);
+  /// 0xRRGGBBAA as "#rrggbb", or "rgba(r, g, b, a)" when not opaque.
+  static std::string RuleColorText(uint32_t rgba);
+
   // MARK: Properties sheet
 
   /// True once after the core asked to show the Properties sheet.
@@ -383,6 +538,88 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// "" for no limit). Returns the error message, or "".
   std::string SetLayerGeneral(const std::string& name, const std::string& description, const std::string& credits,
                               const std::string& min_scale, const std::string& max_scale);
+  /// The Display tab: opacity (when `LayerDisplayHasOpacity`) and, for a
+  /// feature layer, the map tip and hyperlink fields ("" for none) chosen
+  /// from `LayerDisplayField*`.
+  bool LayerDisplayOpen() const;
+  bool LayerDisplayHasOpacity() const;
+  int LayerDisplayOpacity() const;
+  int LayerDisplayFieldCount() const;
+  std::string LayerDisplayFieldName(int i) const;
+  std::string LayerDisplayFieldTitle(int i) const;
+  std::string LayerDisplayMapTipField() const;
+  std::string LayerDisplayHyperlinkField() const;
+  /// Replaces the Display draft. Returns the error message, or "".
+  std::string SetLayerDisplay(int opacity, const std::string& map_tip_field, const std::string& hyperlink_field);
+  /// The Selection tab: the default halo, or a colour (0xRRGGBBAA) and width
+  /// in pixels of the layer's own.
+  bool LayerSelectionOpen() const;
+  bool LayerSelectionUsesDefault() const;
+  uint32_t LayerSelectionColor() const;
+  double LayerSelectionWidth() const;
+  /// Features selected in the layer now.
+  int LayerSelectionCount() const;
+  std::string SetLayerSelection(bool use_default, uint32_t rgba, double width_px);
+
+  // MARK: Query builder
+
+  /// The query builders: 0 is the Definition Query tab of Properties, 1 is
+  /// Select by Attributes, 2 a style rule's filter. Every accessor below takes one as `which`.
+  static constexpr int kQueryDefinition = 0;
+  static constexpr int kQuerySelect = 1;
+  static constexpr int kQueryRule = 2;  ///< a style rule's filter
+  bool QueryOpen(int which) const;
+  /// The fields a clause can test.
+  int QueryFieldCount(int which) const;
+  std::string QueryFieldName(int which, int i) const;
+  std::string QueryFieldTitle(int which, int i) const;
+  /// The comparisons, each a `fv::desk::QueryOp`.
+  int QueryOpCount() const;
+  std::string QueryOpTitle(int op) const;
+  bool QueryOpTakesValue(int op) const;
+  /// False: every clause must hold ("and"); true: any clause ("or").
+  bool QueryMatchAny(int which) const;
+  void SetQueryMatchAny(int which, bool any);
+  int QueryClauseCount(int which) const;
+  std::string QueryClauseField(int which, int i) const;
+  int QueryClauseOp(int which, int i) const;
+  std::string QueryClauseValue(int which, int i) const;
+  /// The new clause's index; -1 when no builder is open.
+  int AddQueryClause(int which);
+  /// Each returns the error message, or "".
+  std::string RemoveQueryClause(int which, int i);
+  std::string SetQueryClause(int which, int i, const std::string& field, int op, const std::string& value);
+  /// True while the query is an expression typed by hand rather than clauses.
+  bool QueryIsCustom(int which) const;
+  /// The query as a filter expression (JSON); "" for none or when a clause is
+  /// incomplete (`QueryExpressionError` says why).
+  std::string QueryExpression(int which) const;
+  std::string QueryExpressionError(int which) const;
+  /// Replaces the query with an expression typed by hand; clauses when it has
+  /// the builder's shape. Returns the error message, or "".
+  std::string SetQueryExpression(int which, const std::string& json);
+  /// The query as a sentence: `depth > 7 and name contains “ash”`.
+  std::string QueryText(int which) const;
+  /// "2 of 3 features match", or the error.
+  std::string VerifyQuery(int which) const;
+  /// Up to 200 distinct values of `field`, sorted, one per line.
+  std::string QuerySampleValues(int which, const std::string& field) const;
+
+  // MARK: Select by Attributes
+
+  /// True once after the core asked to show Select by Attributes.
+  bool TakeSelectByAttributesRequest();
+  /// "Select by Attributes — <layer>"; "" when it is not open.
+  std::string SelectByAttributesTitle() const;
+  /// The ways to combine with the selection, each a `fv::desk::SelectionMethod`.
+  int SelectionMethodCount() const;
+  std::string SelectionMethodTitle(int method) const;
+  /// Selects the matching features and repaints; the dialog stays open.
+  /// Returns the error message, or "".
+  std::string ApplySelectByAttributes(int method);
+  /// Features selected in the dialog's layer now.
+  int SelectByAttributesSelectedCount() const;
+  void CloseSelectByAttributes();
 
   // MARK: Feature form
 
@@ -455,10 +692,13 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// True when the dialog styles one feature: one entry, no renderer controls.
   bool LayerStyleIsFeature() const;
   bool LayerStyleDirty() const;
-  /// 0 single, 1 categorised, 2 graduated.
+  /// 0 single, 1 categorised, 2 graduated, 3 rules.
   int StyleRenderer() const;
-  /// Each setter returns the error message, or "".
+  /// Each setter returns the error message, or "". From rules to 0–2 is
+  /// Regenerate…, which replaces the rules; to 3 turns the style into rules.
   std::string SetStyleRenderer(int renderer);
+  /// A categorised style as one rule per value (`LayerStyleModel::CategoriseIntoRules`).
+  std::string CategoriseStyleIntoRules();
   /// The fields the current renderer can classify by.
   int StyleFieldCount() const;
   std::string StyleFieldName(int i) const;
@@ -472,7 +712,8 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   int StyleClassVary() const;
   /// Sets the graduated options (ignored for categorised) and reclassifies.
   std::string ClassifyStyle(int classes, int mode, int vary);
-  /// Legend rows: the classes, then "Other"; or the one symbol.
+  /// Legend rows: the classes, then "Other"; the one symbol; or under rules
+  /// one row per legend title (`RuleLegend`), whose label sets that title.
   int StyleEntryCount() const;
   bool StyleEntryIsOther(int i) const;
   std::string StyleEntryLabel(int i) const;
@@ -558,8 +799,8 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
                             const std::string& description, const std::string& unit, bool required,
                             const std::string& default_text, const std::string& min_text,
                             const std::string& max_text, const std::string& choices);
-  /// What applying would lose, as sentences; "" when nothing. Ask before
-  /// `ApplyLayerFields` when it is not empty.
+  /// What applying would lose or break in the layer's style, as sentences;
+  /// "" when nothing. Ask before `ApplyLayerFields` when it is not empty.
   std::string LayerFieldsLoss() const;
   std::string ApplyLayerFields();
   std::string RevertLayerFields();
@@ -580,6 +821,9 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string SetNewLayerGeometry(int k);
   std::string NewLayerName() const;
   void SetNewLayerName(const std::string& name);
+  /// 0 a new file, 1 a table added to an existing GeoPackage, 2 not saved yet.
+  int NewLayerTarget() const;
+  std::string SetNewLayerTarget(int target);
   /// 0 GeoPackage, 1 GeoJSON.
   int NewLayerFormat() const;
   std::string SetNewLayerFormat(int format);
@@ -673,6 +917,30 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// A press that pans the map whatever overlay is being edited (the space
   /// bar held); the drag and release follow it.
   void PanPointerDown(double x, double y);
+
+  // MARK: Map context menu
+
+  /// Builds the map's right-click menu at `x, y` (`Desk::MapContextMenu`) and
+  /// keeps it until the next call; the number of entries, 0 for no menu.
+  /// Flattened in preorder like `MenuEntryAt`: a submenu's entries follow it
+  /// at `depth + 1`. Entries have no command id; run them by index.
+  int OpenMapMenu(double x, double y);
+  HostMenuEntry MapMenuEntryAt(int index) const;
+  bool MapMenuEntryEnabled(int index) const;
+  bool MapMenuEntryChecked(int index) const;
+  /// Runs entry `index` of the kept menu and forgets the menu.
+  void RunMapMenuEntry(int index);
+
+  // MARK: Get Info
+
+  /// True once after a map menu's Get Info… asked to show the sheet.
+  bool TakeItemInfoRequest();
+  std::string ItemInfoTitle() const;
+  /// Rows in order; a row whose section differs from the one before starts a new section.
+  int ItemInfoCount() const;
+  std::string ItemInfoSection(int i) const;
+  std::string ItemInfoKey(int i) const;
+  std::string ItemInfoValue(int i) const;
   void PointerDrag(double x, double y);
   void PointerUp(double x, double y);
   /// A key press for the overlay being edited. `key` is an fv::Key value

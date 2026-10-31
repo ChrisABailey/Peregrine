@@ -31,6 +31,7 @@ set(FVW_ZLIB_VERSION  "1.3.2" CACHE STRING "zlib release to build against")
 set(FVW_PROTOZERO_VERSION "1.8.2" CACHE STRING "protozero release to build against")
 set(FVW_VTZERO_VERSION    "1.2.0" CACHE STRING "vtzero release to build against")
 set(FVW_JSON_VERSION      "3.12.0" CACHE STRING "nlohmann/json release to build against")
+set(FVW_TIFF_VERSION      "4.7.2" CACHE STRING "libtiff release to build against")
 
 # --- expat (MIT) ------------------------------------------------------------
 # Replaces third_party/Expat 2.0.1 (expat.h reports 2.1.0, released 2012) for
@@ -112,6 +113,45 @@ FetchContent_MakeAvailable(vtzero)
 add_library(fv_vtzero INTERFACE)
 target_include_directories(fv_vtzero INTERFACE ${vtzero_SOURCE_DIR}/include)
 target_link_libraries(fv_vtzero INTERFACE fv_protozero)
+
+# --- libtiff (libtiff licence, BSD-style) -----------------------------------
+# Replaces fvw_core/ImageLib/tiff (3.9.4, 2010) for port code. First consumer:
+# fv::GeoTiffDemSource (tiled/compressed float DEMs such as USGS 3DEP).
+# Built with LZW, PackBits and Deflate only; the codecs that need another
+# library (JPEG, WebP, ZSTD, LERC, LZMA, JBIG) are off.
+set(tiff-tools   OFF CACHE BOOL "" FORCE)
+set(tiff-tests   OFF CACHE BOOL "" FORCE)
+set(tiff-contrib OFF CACHE BOOL "" FORCE)
+set(tiff-docs    OFF CACHE BOOL "" FORCE)
+set(tiff-install OFF CACHE BOOL "" FORCE)
+set(tiff-cxx     OFF CACHE BOOL "" FORCE)
+set(tiff-opengl  OFF CACHE BOOL "" FORCE)
+set(tiff-framework OFF CACHE BOOL "" FORCE)
+foreach(codec jpeg old-jpeg jpeg12 jbig lerc lzma zstd webp libdeflate pixarlog)
+  set(${codec} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(zlib ON CACHE BOOL "" FORCE)
+# libtiff calls find_package(ZLIB); the redirect points it at the zlib built
+# above instead of whatever the system provides.
+if(NOT TARGET ZLIB::ZLIB)
+  add_library(ZLIB::ZLIB ALIAS ${FVW_ZLIB_TARGET})
+endif()
+file(WRITE ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/zlib-config.cmake
+  "set(ZLIB_INCLUDE_DIRS \"${zlib_SOURCE_DIR};${zlib_BINARY_DIR}\")\n"
+  "set(ZLIB_LIBRARIES ZLIB::ZLIB)\n")
+file(WRITE ${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}/zlib-config-version.cmake
+  "set(PACKAGE_VERSION ${FVW_ZLIB_VERSION})\nset(PACKAGE_VERSION_COMPATIBLE TRUE)\n")
+# BUILD_SHARED_LIBS is libtiff's switch for static vs shared; scope it to this call.
+set(FVW_SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+FetchContent_Declare(libtiff
+  URL https://download.osgeo.org/libtiff/tiff-${FVW_TIFF_VERSION}.tar.gz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(libtiff)
+set(BUILD_SHARED_LIBS ${FVW_SAVED_BUILD_SHARED_LIBS})
+add_library(fv_libtiff INTERFACE)
+target_link_libraries(fv_libtiff INTERFACE TIFF::tiff)
 
 # --- nlohmann/json (MIT) ----------------------------------------------------
 # The port had no JSON reader: preferences are INI (fv::Settings, deliberately

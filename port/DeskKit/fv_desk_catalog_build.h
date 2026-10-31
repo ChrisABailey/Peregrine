@@ -38,9 +38,14 @@ struct ScanFormat {
 };
 
 /// The auto-detect table: cadrg/rpf, tiros/tiros3, dted/dted, dted-shaded/dted,
-/// geotiff/geotiff, gpkg, enc/enc, osm/OSM. DTED appears twice on purpose:
-/// once as elevation, once as the shaded-relief raster.
+/// geotiff/geotiff, gpkg/gpkg, enc/enc, osm/OSM, lidar/lidar, lidar-shaded/lidar.
+/// DTED and lidar each appear twice on purpose: once as elevation, once as
+/// the shaded-relief raster.
 const std::vector<ScanFormat>& DefaultScanFormats();
+
+/// The folders `PlanScan` looks for, for a message: "rpf, tiros3, dted, …, vpf",
+/// each once, in table order.
+std::string ScanFolderNames();
 
 /// Directories under `root` holding a VPF database header table (`dht`), at
 /// most `max_depth` levels down. Hidden directories are skipped and a
@@ -48,8 +53,11 @@ const std::vector<ScanFormat>& DefaultScanFormats();
 std::vector<std::string> FindVpfDatabases(const std::string& root, int max_depth = 4);
 
 /// The steps of an auto-detect scan of `root`, in `formats` order, then one
-/// "vpf" step per VPF database. A format with no registered enumerator is
-/// left out; a subdirectory that does not exist is not listed.
+/// "vpf" step per VPF database under its "vpf" folder. Each format scans only
+/// its own folder: `root` itself when `root` is named after it, else the child
+/// of that name (either ignoring case), so a large data tree is not walked
+/// once per format. A format with no registered enumerator, or no folder, is
+/// left out.
 std::vector<ScanStep> PlanScan(const std::string& root,
                                const std::vector<ScanFormat>& formats = DefaultScanFormats());
 

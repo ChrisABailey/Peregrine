@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <set>
 #include <utility>
 
@@ -224,6 +225,12 @@ Status LayerFieldsModel::Assess(SchemaChangeImpact* out) const {
   return AssessSchemaChange(*o->layer(), draft_, out);
 }
 
+std::vector<std::string> LayerFieldsModel::StyleBreaks() const {
+  const auto o = overlay_.lock();
+  if (!o || !o->layer()) return {};
+  return StyleBreaksFromSchemaChange(o->style(), o->layer()->Schema(), draft_);
+}
+
 Status LayerFieldsModel::Apply() {
   const auto o = overlay_.lock();
   if (!o || !o->layer()) return Status::Error(kNotFound, "the layer has closed");
@@ -252,17 +259,7 @@ const std::vector<GeometryType>& NewLayerGeometries() {
   return kTypes;
 }
 
-std::string GeometryTitle(GeometryType type) {
-  switch (type) {
-    case GeometryType::kPoint: return "Point";
-    case GeometryType::kLineString: return "Line";
-    case GeometryType::kPolygon: return "Area";
-    case GeometryType::kMultiPoint: return "Multipoint";
-    case GeometryType::kMultiLineString: return "Multiline";
-    case GeometryType::kMultiPolygon: return "Multi-area";
-    default: return "Any geometry";
-  }
-}
+std::string GeometryTitle(GeometryType type) { return GeometryTypeTitle(type); }
 
 NewLayerModel::NewLayerModel() { SetTemplate(0); }
 
@@ -296,9 +293,19 @@ void NewLayerModel::SetName(std::string name) {
   name_by_hand_ = true;
 }
 
+void NewLayerModel::SetTarget(NewLayerTarget target) {
+  target_ = target;
+  if (target == NewLayerTarget::kPackage) {
+    if (format_ != FeatureOverlay::kFormatGeoPackage) path_.clear();
+    format_ = FeatureOverlay::kFormatGeoPackage;
+  }
+}
+
 Status NewLayerModel::SetFormat(int format) {
   if (format != FeatureOverlay::kFormatGeoPackage && format != FeatureOverlay::kFormatGeoJson)
     return Bad("format is 0 (GeoPackage) or 1 (GeoJSON)");
+  if (target_ == NewLayerTarget::kPackage && format != FeatureOverlay::kFormatGeoPackage)
+    return Bad("a layer added to a GeoPackage is a GeoPackage table");
   format_ = format;
   if (!path_.empty()) {
     const std::string ext = Extension(path_);
@@ -320,14 +327,29 @@ void NewLayerModel::SetPath(std::string path) {
 
 Status NewLayerModel::Validate() const {
   if (name_.empty()) return Bad("the layer needs a name");
-  if (path_.empty()) return Bad("choose where to save the layer");
+  if (target_ != NewLayerTarget::kUnsaved && path_.empty()) return Bad("choose where to save the layer");
+  if (target_ == NewLayerTarget::kPackage) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path_, ec))
+      return Status::Error(kNotFound, "choose an existing GeoPackage to add the layer to");
+  }
   return schema_.Validate();
 }
 
-Status NewLayerModel::Create() const {
+Status NewLayerModel::Create(std::string* spec) const {
+  if (spec == nullptr) return Bad("Create: null spec");
   Status s = Validate();
   if (!s.ok()) return s;
-  return CreateFeatureLayerFile(path_, format_, name_, schema_);
+  switch (target_) {
+    case NewLayerTarget::kPackage:
+      return AddFeatureLayerToPackage(path_, name_, schema_, spec);
+    case NewLayerTarget::kUnsaved:
+      return Bad("an unsaved layer has no file to create");
+    default:
+      s = CreateFeatureLayerFile(path_, format_, name_, schema_);
+      if (s.ok()) *spec = path_;
+      return s;
+  }
 }
 
 }  // namespace desk

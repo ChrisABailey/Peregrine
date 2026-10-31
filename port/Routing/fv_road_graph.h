@@ -155,6 +155,9 @@ enum ArcFlags : uint16_t {
   kArcBicycleDesignated = 1 << 12,
   /// The speed came from a posted `maxspeed`, not the class default.
   kArcSpeedPosted = 1 << 13,
+  /// `bridge=*` or `tunnel=*` other than `no`: the DEM under the arc is not
+  /// the road, so its elevation is interpolated between its end nodes.
+  kArcStructure = 1 << 14,
 };
 
 /// On-road bike provision for one direction of travel, weakest to strongest.
@@ -223,6 +226,10 @@ struct RoadArc {
   /// The unsignalled busier road at its source: its twin's `crossing`.
   /// Bits 14-15.
   RoadCrossing crossing_from = RoadCrossing::kNone;
+  /// Metres climbed and descended in this arc's direction of travel, in
+  /// decimetres; zero when the graph has no elevation (see AddElevation).
+  uint16_t climb_dm = 0;
+  uint16_t descent_dm = 0;
 
   bool forward() const { return (flags & kArcForward) != 0; }
   bool backward() const { return (flags & kArcBackward) != 0; }
@@ -238,6 +245,9 @@ struct RoadArc {
   bool golf_path() const { return (flags & kArcGolfPath) != 0; }
   bool bicycle_designated() const { return (flags & kArcBicycleDesignated) != 0; }
   bool speed_posted() const { return (flags & kArcSpeedPosted) != 0; }
+  bool structure() const { return (flags & kArcStructure) != 0; }
+  double climb_m() const { return climb_dm * 0.1; }
+  double descent_m() const { return descent_dm * 0.1; }
   /// Either beach class: the run along the water or a crossing onto it.
   bool is_beach() const {
     return klass == RoadClass::kBeach || klass == RoadClass::kBeachAccess;
@@ -484,6 +494,15 @@ class RoadGraph {
   void NodesInRect(const GeoRect& rect,
                    const std::function<void(uint32_t)>& visit) const;
 
+  // --- elevation --------------------------------------------------------
+  /// True when AddElevation has run (or the file carried elevation): every
+  /// node has an elevation and every arc its climb and descent.
+  bool has_elevation() const { return !node_elev_dm_.empty(); }
+  /// Ground elevation of `node` in metres; 0 when the graph has none.
+  double node_elevation_m(uint32_t node) const {
+    return node_elev_dm_.empty() ? 0.0 : node_elev_dm_[node] * 0.1;
+  }
+
   // --- persistence ------------------------------------------------------
   Status Save(const std::string& path) const;
   static Status Load(const std::string& path, RoadGraph* out);
@@ -499,6 +518,8 @@ class RoadGraph {
   std::vector<int32_t>& mutable_geometry() { return geometry_; }
   std::vector<std::string>& mutable_names() { return names_; }
   std::vector<TurnRestriction>& mutable_restrictions() { return restrictions_; }
+  /// One entry per node in decimetres, or empty for a graph without elevation.
+  std::vector<int32_t>& mutable_node_elevation_dm() { return node_elev_dm_; }
 
  private:
   // Drops restrictions that name an arc this graph does not have, sorts what
@@ -513,6 +534,7 @@ class RoadGraph {
   std::vector<RoadArc> arcs_;
   std::vector<int32_t> geometry_;    // lat,lon interleaved, degrees x 1e7
   std::vector<std::string> names_;   // names_[0] is always ""
+  std::vector<int32_t> node_elev_dm_;  // empty, or one per node
 
   // Sorted by (via_node, from_arc) in Finalize; restriction_at_ maps a via
   // node to its half-open range. A hash map rather than a per-node array
@@ -700,6 +722,69 @@ struct RoadGraphBuildStats {
 Status BuildRoadGraph(const std::vector<std::string>& inputs,
                       const RoadGraphBuildOptions& options, RoadGraph* out,
                       RoadGraphBuildStats* stats = nullptr);
+
+struct OsmWay;
+
+// ---------------------------------------------------------------------------
+// Elevation
+// ---------------------------------------------------------------------------
+
+/// Ground elevation in metres at a point; false where the DEM has no data.
+/// A seam so fv_routing need not link a DEM reader (fvgraph wires DTED in).
+using ElevationSampler = std::function<bool(double lat, double lon, float* metres)>;
+
+struct ElevationOptions {
+  /// Spacing of the samples along an arc, normally the DEM's post spacing;
+  /// clamped to 10-30 m.
+  double sample_step_m = 20.0;
+  /// A change smaller than this between counted samples is DEM noise, not
+  /// climb (the rule GPS apps use for total ascent).
+  double hysteresis_m = 3.0;
+};
+
+struct ElevationStats {
+  int64_t nodes_sampled = 0;       // elevation read from the DEM
+  int64_t nodes_interpolated = 0;  // on bridges/tunnels only, or a DEM void
+  int64_t nodes_no_data = 0;       // nothing to interpolate from; set to 0 m
+  int64_t edges_structure = 0;     // undirected bridge, tunnel and ferry edges
+  int64_t samples = 0;             // interior samples requested
+  int64_t samples_missing = 0;     // of which the DEM had no data
+  double climb_m = 0.0;            // summed over undirected edges, one direction
+};
+
+/// A sampler over `raw` resampled onto a `lat_step` x `lon_step` grid
+/// covering `box`, filtered, and read back bilinearly. A morphological
+/// opening `open_window` posts square removes anything standing up narrower
+/// than the window (buildings in an SRTM-derived surface model), then a
+/// closing `close_window` posts square fills pits narrower than it (their
+/// radar shadows). A constant slope passes through unchanged; ridges and
+/// ravines narrower than the windows are trimmed. A window of 1 or less skips
+/// that step. Outside `box`, or next to a post without data, `raw` answers.
+/// Returns `raw` itself when the grid would exceed 1e8 posts.
+ElevationSampler GroundSampler(const ElevationSampler& raw, const GeoRect& box, double lat_step,
+                               double lon_step, int open_window = 11, int close_window = 5);
+
+/// Gives every node an elevation and every arc its climb and descent.
+/// Each undirected edge is sampled once along its shape; climb and descent
+/// are counted with hysteresis, then the residual to the far node is added so
+/// that climb minus descent equals the difference of the end nodes. Bridges,
+/// tunnels and ferries are interpolated between their ends, and a node that
+/// touches only those (a junction on a viaduct) or a DEM void takes the
+/// length-weighted average of its neighbours, i.e. a linear profile along a
+/// chain. Replaces any elevation the graph already had.
+Status AddElevation(const ElevationSampler& sample, const ElevationOptions& options,
+                    RoadGraph* graph, ElevationStats* stats = nullptr);
+
+/// Reads one way's own tags as the builder does and returns, in `forward`, the
+/// arc it makes in the way's direction: class, access and golf bits, speed,
+/// one-way flags, lanes, surface and bike provision. Returns false when the
+/// builder would not keep the way. Refs are not read. Signed routes, signals and
+/// crossings come from relations and nodes, so those fields are left clear.
+bool ReadWayTags(const OsmWay& way, const RoadGraphBuildOptions& options, RoadArc* forward);
+
+/// What crossing a road of class `met` counts as at an unsignalled junction;
+/// links count as nothing.
+RoadCrossing CrossingClassOf(RoadClass met);
 
 }  // namespace routing
 }  // namespace fv

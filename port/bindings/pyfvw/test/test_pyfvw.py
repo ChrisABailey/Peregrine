@@ -1262,9 +1262,8 @@ def test_enc_source_open_layers_bounds():
     b = s.bounds
     assert b.ll.lat <= 32.70 and b.ur.lat >= 32.85
     assert b.ll.lon <= -80.025 and b.ur.lon >= -79.875
-    # These cells ship update files the reader does not apply, and saying so
-    # is a navigational duty, not a diagnostic nicety.
-    assert "BASE EDITION" in s.staleness_warning
+    # These cells ship update files and every one applies, so nothing is stale.
+    assert s.staleness_warning == ""
 
 
 def test_enc_open_cells_is_one_usage_band():
@@ -2636,7 +2635,9 @@ def test_contour_draws_real_terrain_and_smoothing_only_changes_the_ink():
     proj = pyfvw.engine.MapProjection()
     proj.set_surface_size(400, 400)
     proj.set_center(pyfvw.geo.GeoPoint(34.75, -83.75))
-    proj.set_scale(50000)
+    # 1:25k keeps DTED2 posts (W084/n34.dt2) above Chaikin's 4 px floor; at
+    # 1:50k they are ~2 px apart and smoothing correctly does nothing.
+    proj.set_scale(25000)
     cv = pyfvw.canvas.CpuCanvas(400, 400)
 
     o = pyfvw.overlay.ContourOverlay()

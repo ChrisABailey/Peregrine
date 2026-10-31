@@ -60,6 +60,12 @@ VectorMapConfig CurrentVectorMapConfig();
 /// Replaces the process-wide configuration. Thread-safe.
 void SetVectorMapConfig(const VectorMapConfig& config);
 
+/// Opens the vector source of one OSM, ENC or VPF ladder product from its
+/// catalog coverage rows. `enc_dir` is the S-52 library ENC cells are read with.
+Status OpenVectorProductSource(const Catalog& catalog, const view::LadderProduct& product,
+                               const std::string& enc_dir,
+                               std::shared_ptr<IVectorSource>* out);
+
 class VectorBaseMap {
  public:
   VectorBaseMap();

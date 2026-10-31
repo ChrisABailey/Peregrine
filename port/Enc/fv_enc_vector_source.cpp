@@ -17,6 +17,7 @@
 
 #include "fv_s57.h"
 #include "fv_s57_catalog.h"
+#include "fvkit/log.h"
 
 namespace fs = std::filesystem;
 
@@ -58,10 +59,25 @@ VectorGeometryType TypeFor(S57Primitive p) {
 // ---------------------------------------------------------------------------
 
 struct EncVectorSource::Impl {
+  /** One cell of the set: parsed now, parsed on demand, or unreadable. */
+  struct Slot {
+    std::string path;
+    GeoRect bounds;
+    std::unique_ptr<S57Cell> cell;  // null while not resident
+    bool unreadable = false;
+    uint64_t last_use = 0;
+    // record_id -> feature index, built on first Describe of this cell.
+    std::unordered_map<int32_t, size_t> feature_index;
+  };
+
   bool open = false;
+  bool lazy = false;
   std::string path;
-  std::vector<std::unique_ptr<S57Cell>> cells;
+  std::vector<Slot> slots;
+  std::vector<std::string> unreadable;  // "path: reason"
   S57ObjectCatalog catalog;
+  size_t max_resident = 0;
+  uint64_t use_clock = 0;
 
   // Layer names (object-class acronyms) present across the set, sorted, plus
   // the reverse map a FeatureRef needs.
@@ -74,10 +90,6 @@ struct EncVectorSource::Impl {
   // 133 in the delivered Appendix A, but a number spelled out here would be
   // exactly the kind of from-memory constant E1 refused to write.
   int scamin_code = -1;
-  // record_id -> index, per cell, built on first Describe. A pick is a single
-  // click, but an identify-heavy caller (or a test sweeping every feature)
-  // would otherwise pay a linear scan per call.
-  mutable std::vector<std::unordered_map<int32_t, size_t>> feature_index;
 
   // Acronym for an OBJL, or the number as text when the producer emitted a
   // code outside Appendix A. A visible "OBJL 17999" beats an invented acronym
@@ -99,6 +111,60 @@ struct EncVectorSource::Impl {
     bounds.ll.lon = (std::min)(bounds.ll.lon, r.ll.lon);
     bounds.ur.lat = (std::max)(bounds.ur.lat, r.ur.lat);
     bounds.ur.lon = (std::max)(bounds.ur.lon, r.ur.lon);
+  }
+
+  Status LoadCatalog(const std::string& catalog_dir, const std::string& near) {
+    const std::string cat_dir =
+        catalog_dir.empty() ? FindCatalogDir(near) : catalog_dir;
+    if (cat_dir.empty()) {
+      return Status::Error(kNotFound,
+                           "S-57 Appendix A catalogue (s57objectclasses.csv) "
+                           "not found near " + near + "; pass catalog_dir");
+    }
+    Status s = catalog.Load(cat_dir);
+    if (!s.ok()) return s;
+    const S57AttributeDef* scamin = catalog.AttributeByAcronym("SCAMIN");
+    if (scamin != nullptr) scamin_code = scamin->code;
+    return Status::Ok();
+  }
+
+  /** Parses `slot` if it is not resident. False when the cell cannot be read;
+   *  the failure is logged once and the cell is skipped from then on. */
+  bool Ensure(Slot* slot) {
+    slot->last_use = ++use_clock;
+    if (slot->cell) return true;
+    if (slot->unreadable) return false;
+    std::unique_ptr<S57Cell> cell(new S57Cell);
+    const Status s = cell->Open(slot->path);
+    if (!s.ok()) {
+      slot->unreadable = true;
+      unreadable.push_back(slot->path + ": " + s.message);
+      FV_LOG_WARNING("S-57: skipping unreadable cell " << slot->path << ": "
+                                                        << s.message);
+      return false;
+    }
+    slot->cell = std::move(cell);
+    return true;
+  }
+
+  /** Drops the least recently used cells beyond `max_resident`, keeping any
+   *  used at or after `keep_from` (the query in progress needed them). */
+  void Trim(uint64_t keep_from) {
+    if (max_resident == 0) return;
+    std::vector<Slot*> resident;
+    for (Slot& s : slots)
+      if (s.cell) resident.push_back(&s);
+    if (resident.size() <= max_resident) return;
+    std::sort(resident.begin(), resident.end(), [](const Slot* a, const Slot* b) {
+      return a->last_use < b->last_use;
+    });
+    size_t excess = resident.size() - max_resident;
+    for (Slot* s : resident) {
+      if (excess == 0 || s->last_use >= keep_from) break;
+      s->cell.reset();
+      s->feature_index.clear();
+      --excess;
+    }
   }
 };
 
@@ -135,32 +201,30 @@ Status EncVectorSource::OpenCells(const std::vector<std::string>& cell_paths,
   impl_.reset(new Impl);
   if (cell_paths.empty())
     return Status::Error(kInvalidArg, "no S-57 base cells given");
-
-  const std::string cat_dir =
-      catalog_dir.empty() ? FindCatalogDir(cell_paths.front()) : catalog_dir;
-  if (cat_dir.empty()) {
-    return Status::Error(kNotFound,
-                         "S-57 Appendix A catalogue (s57objectclasses.csv) not "
-                         "found near " + cell_paths.front() +
-                         "; pass catalog_dir");
-  }
-  Status s = impl_->catalog.Load(cat_dir);
+  Status s = impl_->LoadCatalog(catalog_dir, cell_paths.front());
   if (!s.ok()) return s;
-  const S57AttributeDef* scamin = impl_->catalog.AttributeByAcronym("SCAMIN");
-  if (scamin != nullptr) impl_->scamin_code = scamin->code;
 
   std::map<std::string, int> seen_layers;
+  std::string first_error;
   for (const std::string& p : cell_paths) {
-    std::unique_ptr<S57Cell> cell(new S57Cell);
-    Status cs = cell->Open(p);
-    if (!cs.ok()) return cs;
-    impl_->Grow(cell->bounds());
-    for (const S57Feature& f : cell->features()) {
+    Impl::Slot slot;
+    slot.path = p;
+    impl_->slots.push_back(std::move(slot));
+    Impl::Slot& added = impl_->slots.back();
+    // An unreadable cell keeps its slot (and so its tile id) but is skipped.
+    if (!impl_->Ensure(&added)) {
+      if (first_error.empty()) first_error = impl_->unreadable.back();
+      continue;
+    }
+    added.bounds = added.cell->bounds();
+    impl_->Grow(added.bounds);
+    for (const S57Feature& f : added.cell->features()) {
       if (f.geometry.parts.empty()) continue;
       seen_layers[impl_->Acronym(f.object_class)] = 0;
     }
-    impl_->cells.push_back(std::move(cell));
   }
+  if (impl_->unreadable.size() == cell_paths.size())
+    return Status::Error(kIoError, "no readable S-57 cell; " + first_error);
 
   impl_->layers.reserve(seen_layers.size());
   for (const auto& kv : seen_layers) {
@@ -175,6 +239,60 @@ Status EncVectorSource::OpenCells(const std::vector<std::string>& cell_paths,
   return Status::Ok();
 }
 
+Status EncVectorSource::OpenIndexed(const std::vector<EncCellEntry>& cells,
+                                    const std::string& catalog_dir) {
+  const size_t max_resident = impl_->max_resident;
+  impl_.reset(new Impl);
+  impl_->max_resident = max_resident;
+  if (cells.empty())
+    return Status::Error(kInvalidArg, "no S-57 base cells given");
+  Status s = impl_->LoadCatalog(catalog_dir, cells.front().path);
+  if (!s.ok()) return s;
+
+  impl_->lazy = true;
+  impl_->slots.reserve(cells.size());
+  for (const EncCellEntry& e : cells) {
+    Impl::Slot slot;
+    slot.path = e.path;
+    slot.bounds = e.bounds;
+    impl_->Grow(e.bounds);
+    impl_->slots.push_back(std::move(slot));
+  }
+  // Which classes occur is unknown until every cell is read, so the layer
+  // list is the whole catalogue; tile and layer ids then never shift.
+  impl_->layers = impl_->catalog.ObjectClassAcronyms();
+  for (size_t i = 0; i < impl_->layers.size(); ++i)
+    impl_->layer_index[impl_->layers[i]] = static_cast<int>(i);
+
+  impl_->path = cells.front().path;
+  impl_->open = true;
+  return Status::Ok();
+}
+
+void EncVectorSource::SetMaxResidentCells(size_t n) {
+  impl_->max_resident = n;
+  impl_->Trim(impl_->use_clock + 1);
+}
+
+size_t EncVectorSource::resident_cell_count() const {
+  size_t n = 0;
+  for (const Impl::Slot& s : impl_->slots)
+    if (s.cell) ++n;
+  return n;
+}
+
+void EncVectorSource::ReleaseCells() {
+  if (!impl_->lazy) return;
+  for (Impl::Slot& s : impl_->slots) {
+    s.cell.reset();
+    s.feature_index.clear();
+  }
+}
+
+const std::vector<std::string>& EncVectorSource::unreadable_cells() const {
+  return impl_->unreadable;
+}
+
 bool EncVectorSource::IsOpen() const { return impl_->open; }
 
 GeoRect EncVectorSource::Bounds() const { return impl_->bounds; }
@@ -183,18 +301,19 @@ std::vector<std::string> EncVectorSource::Layers() const {
   return impl_->layers;
 }
 
-size_t EncVectorSource::cell_count() const { return impl_->cells.size(); }
+size_t EncVectorSource::cell_count() const { return impl_->slots.size(); }
 
 const std::string& EncVectorSource::cell_path(size_t index) const {
   static const std::string kEmpty;
-  if (index >= impl_->cells.size()) return kEmpty;
-  return impl_->cells[index]->path();
+  if (index >= impl_->slots.size()) return kEmpty;
+  return impl_->slots[index].path;
 }
 
 std::string EncVectorSource::StalenessWarning() const {
   std::string all;
-  for (const auto& c : impl_->cells) {
-    const std::string w = c->StalenessWarning();
+  for (const Impl::Slot& s : impl_->slots) {
+    if (!s.cell) continue;
+    const std::string w = s.cell->StalenessWarning();
     if (w.empty()) continue;
     if (!all.empty()) all.push_back('\n');
     all += w;
@@ -211,9 +330,19 @@ Status EncVectorSource::Query(const VectorQuery& q,
   if (out == nullptr) return Status::Error(kInvalidArg, "null out");
   if (!impl_->open) return Status::Error(kNotFound, "source not open");
   impl_->scamin_skipped = 0;
+  const uint64_t query_start = impl_->use_clock + 1;
+  Status result = QueryCells(q, out);
+  impl_->Trim(query_start);
+  return result;
+}
 
-  for (size_t ci = 0; ci < impl_->cells.size(); ++ci) {
-    const S57Cell& cell = *impl_->cells[ci];
+Status EncVectorSource::QueryCells(const VectorQuery& q,
+                                   std::vector<VectorFeature>* out) {
+  for (size_t ci = 0; ci < impl_->slots.size(); ++ci) {
+    Impl::Slot& slot = impl_->slots[ci];
+    if (slot.unreadable || !slot.bounds.Intersects(q.area)) continue;
+    if (!impl_->Ensure(&slot)) continue;
+    const S57Cell& cell = *slot.cell;
     if (!cell.bounds().Intersects(q.area)) continue;
 
     for (const S57Feature& f : cell.features()) {
@@ -245,28 +374,45 @@ Status EncVectorSource::Query(const VectorQuery& q,
       vf.ref.tile = static_cast<int32_t>(ci);
       vf.ref.feature = f.record_id;
 
+      vf.attributes.reserve(f.attributes.size() + 1);
+      for (const S57Attribute& a : f.attributes)
+        vf.attributes.emplace_back(impl_->AttributeAcronym(a.code), a.value);
+
+      // A sounding feature is a cloud of 3-D vertices, each its own depth.
+      // Each becomes one point feature carrying its value as the
+      // pseudo-attribute DEPTH (Appendix A has no attribute for it), so every
+      // sounding is drawn and symbolized, not only the first. All keep the
+      // record's ref, so a tap on any of them describes the same record.
+      bool sounding = false;
+      for (const std::vector<S57Vertex>& part : f.geometry.parts)
+        for (const S57Vertex& v : part) sounding = sounding || v.has_depth;
+      if (sounding) {
+        for (const std::vector<S57Vertex>& part : f.geometry.parts) {
+          for (const S57Vertex& v : part) {
+            if (!v.has_depth) continue;
+            const GeoPoint g{v.lat, v.lon};
+            if (!q.area.Contains(g)) continue;
+            VectorFeature one = vf;
+            one.type = VectorGeometryType::kPoint;
+            one.bounds = GeoRect{g, g};
+            one.parts.assign(1, std::vector<GeoPoint>{g});
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.1f", v.depth);
+            one.attributes.emplace_back("DEPTH", buf);
+            out->push_back(std::move(one));
+            if (q.max_features != 0 && out->size() >= q.max_features)
+              return Status::Ok();
+          }
+        }
+        continue;
+      }
+
       vf.parts.reserve(f.geometry.parts.size());
       for (const std::vector<S57Vertex>& part : f.geometry.parts) {
         std::vector<GeoPoint> run;
         run.reserve(part.size());
         for (const S57Vertex& v : part) run.push_back(GeoPoint{v.lat, v.lon});
         vf.parts.push_back(std::move(run));
-      }
-
-      vf.attributes.reserve(f.attributes.size() + 1);
-      for (const S57Attribute& a : f.attributes)
-        vf.attributes.emplace_back(impl_->AttributeAcronym(a.code), a.value);
-
-      // Soundings carry their value in the geometry (3-D vertices), not in an
-      // attribute, and S-52's SOUNDG procedure needs a number to symbolize.
-      // Publishing the first vertex's depth as a pseudo-attribute keeps the
-      // seam honest: it is named DEPTH, not an S-57 acronym, precisely because
-      // Appendix A has no such attribute and a reader must not pretend it does.
-      if (!f.geometry.parts.empty() && !f.geometry.parts[0].empty() &&
-          f.geometry.parts[0][0].has_depth) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%.1f", f.geometry.parts[0][0].depth);
-        vf.attributes.emplace_back("DEPTH", buf);
       }
 
       out->push_back(std::move(vf));
@@ -281,13 +427,14 @@ Status EncVectorSource::Describe(const FeatureRef& ref,
                                  FeatureDescription* out) {
   if (out == nullptr) return Status::Error(kInvalidArg, "null out");
   if (!impl_->open) return Status::Error(kNotFound, "source not open");
-  if (ref.tile < 0 || static_cast<size_t>(ref.tile) >= impl_->cells.size())
+  if (ref.tile < 0 || static_cast<size_t>(ref.tile) >= impl_->slots.size())
     return Status::Error(kNotFound, "no such cell in this source");
 
-  const S57Cell& cell = *impl_->cells[ref.tile];
-  if (impl_->feature_index.empty())
-    impl_->feature_index.resize(impl_->cells.size());
-  std::unordered_map<int32_t, size_t>& index = impl_->feature_index[ref.tile];
+  Impl::Slot& slot = impl_->slots[ref.tile];
+  if (!impl_->Ensure(&slot))
+    return Status::Error(kIoError, "cell unreadable: " + slot.path);
+  const S57Cell& cell = *slot.cell;
+  std::unordered_map<int32_t, size_t>& index = slot.feature_index;
   if (index.empty()) {
     const std::vector<S57Feature>& all = cell.features();
     index.reserve(all.size());

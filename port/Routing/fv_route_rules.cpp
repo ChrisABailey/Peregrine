@@ -8,6 +8,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <limits>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -74,8 +76,12 @@ const char* const kBuiltinRules = R"JSON({
         "beach": 0.65, "beach_access": 1.5
       },
       "class_kph": { "beach": 10.0, "beach_access": 4.0 },
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 40.0 },
       "beach_penalty": "exclude",
-      "beach_prefer_factor": 0.5
+      "beach_prefer_factor": 0.5,
+      "key_locks": { "classes.motorway": "Interstates are closed to bicycles.",
+                     "classes.motorway_link": "Interstate ramps are closed to bicycles." }
     },
     "foot": {
       "description": "Walking at a flat speed; anything on foot, no class preference.",
@@ -87,8 +93,12 @@ const char* const kBuiltinRules = R"JSON({
       "unlisted_classes": 1.0,
       "classes": {},
       "class_kph": { "beach": 5.0, "beach_access": 3.0 },
+      "hills": { "climb_s_per_m": 6.0, "descent_s_per_m": 2.0, "steep_grade": 0.12,
+                 "steep_descent_s_per_m": 2.0, "max_kph": 7.0 },
       "beach_penalty": "exclude",
-      "beach_prefer_factor": 0.5
+      "beach_prefer_factor": 0.5,
+      "key_locks": { "classes.motorway": "Interstates are closed to pedestrians.",
+                     "classes.motorway_link": "Interstate ramps are closed to pedestrians." }
     },
     "car_shortest": {
       "description": "Driving, minimising distance instead of time.",
@@ -110,6 +120,8 @@ int64_t NowMs() {
 // Every key each object level understands. An unknown key is an error rather
 // than something skipped: the whole value of a hand-edited rule file is that a
 // typo tells you, instead of quietly leaving the old weight in place.
+// `legend_baseline` is accepted and ignored so packs written before the legend
+// measured against factor 1.0 still load.
 bool KnownProfileKey(const std::string& k) {
   return k == "description" || k == "extends" || k == "mode" || k == "speed" ||
          k == "metric" || k == "turn_restrictions" || k == "private_penalty" ||
@@ -118,7 +130,8 @@ bool KnownProfileKey(const std::string& k) {
          k == "beach_prefer_factor" || k == "unlisted_classes" || k == "classes" ||
          k == "class_kph" || k == "bike_lane_factor" || k == "speed_factor" ||
          k == "bike_route_factor" || k == "surface_factor" || k == "signal_seconds" ||
-         k == "crossing_seconds";
+         k == "crossing_seconds" || k == "legend_tiers" || k == "legend_baseline" ||
+         k == "hills" || k == "key_locks";
 }
 
 Status ParseMode(const Json& v, const std::string& where, TravelMode* out) {
@@ -182,6 +195,34 @@ Status ParseWeight(const Json& v, const std::string& where, const std::string& w
   const double w = v.get<double>();
   if (!(w > 0.0)) return Fail(where, what + ": weight must be greater than zero");
   *out = w;
+  return Status::Ok();
+}
+
+/// `legend_tiers`: [[bound, "word"], ...] with ascending positive bounds, the
+/// last of which is null (no upper bound).
+Status ParseLegendTiers(const Json& v, const std::string& where,
+                        std::vector<std::pair<double, std::string>>* out) {
+  const char* kShape = "'legend_tiers' must be a list of [bound, \"word\"] pairs ending in [null, \"word\"]";
+  if (!v.is_array() || v.empty()) return Fail(where, kShape);
+  std::vector<std::pair<double, std::string>> tiers;
+  for (size_t i = 0; i < v.size(); ++i) {
+    const Json& t = v[i];
+    if (!t.is_array() || t.size() != 2 || !t[1].is_string() || t[1].get<std::string>().empty())
+      return Fail(where, kShape);
+    const bool last = i + 1 == v.size();
+    double bound = std::numeric_limits<double>::infinity();
+    if (last) {
+      if (!t[0].is_null()) return Fail(where, kShape);
+    } else {
+      if (!t[0].is_number()) return Fail(where, kShape);
+      bound = t[0].get<double>();
+      const double floor = tiers.empty() ? 0.0 : tiers.back().first;
+      if (!(bound > floor))
+        return Fail(where, "'legend_tiers' bounds must be positive and ascending");
+    }
+    tiers.emplace_back(bound, t[1].get<std::string>());
+  }
+  *out = std::move(tiers);
   return Status::Ok();
 }
 
@@ -282,6 +323,24 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
     }
   }
 
+  if (obj.contains("legend_tiers")) {
+    const Status s = ParseLegendTiers(obj["legend_tiers"], where, &p.legend_tiers);
+    if (!s.ok()) return s;
+  }
+
+  if (obj.contains("key_locks")) {
+    const Json& o = obj["key_locks"];
+    if (!o.is_object()) return Fail(where, "'key_locks' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      double unused = 0.0;
+      if (!ProfileSetting(p, it.key(), &unused))
+        return Fail(where, "'key_locks' names no adjustable setting '" + it.key() + "'");
+      if (!it.value().is_string() || it.value().get<std::string>().empty())
+        return Fail(where, "'key_locks." + it.key() + "' must be a non-empty reason");
+      p.key_locks[it.key()] = it.value().get<std::string>();
+    }
+  }
+
   // Overlays key by key, like "class_kph".
   if (obj.contains("bike_lane_factor")) {
     const Json& o = obj["bike_lane_factor"];
@@ -348,6 +407,28 @@ Status ParseProfile(const std::string& name, const Json& obj, const std::string&
         return Fail(where, "'crossing_seconds." + it.key() + "' must be zero or more seconds");
       p.crossing_seconds[static_cast<size_t>(level)] = it.value().get<double>();
     }
+  }
+
+  // Each key overrides the base's value on its own, like a class weight.
+  if (obj.contains("hills")) {
+    const Json& o = obj["hills"];
+    if (!o.is_object()) return Fail(where, "'hills' must be an object");
+    for (auto it = o.begin(); it != o.end(); ++it) {
+      double* field = nullptr;
+      if (it.key() == "climb_s_per_m") field = &p.hills.climb_s_per_m;
+      else if (it.key() == "descent_s_per_m") field = &p.hills.descent_s_per_m;
+      else if (it.key() == "steep_grade") field = &p.hills.steep_grade;
+      else if (it.key() == "steep_descent_s_per_m") field = &p.hills.steep_descent_s_per_m;
+      else if (it.key() == "max_kph") field = &p.hills.max_kph;
+      else return Fail(where, "unknown key 'hills." + it.key() + "'");
+      if (!it.value().is_number() || !(it.value().get<double>() >= 0.0))
+        return Fail(where, "'hills." + it.key() + "' must be a number, zero or more");
+      *field = it.value().get<double>();
+    }
+    if (!(p.hills.steep_grade > 0.0))
+      return Fail(where, "'hills.steep_grade' must be greater than zero");
+    if (p.hills.descent_s_per_m > 0.0 && !(p.hills.max_kph > 0.0))
+      return Fail(where, "'hills.descent_s_per_m' needs 'hills.max_kph' greater than zero");
   }
 
   // Replaces the base's bands whole: bands only make sense as a set.
@@ -435,7 +516,8 @@ Status RouteRules::Parse(const std::string& text, const std::string& origin,
   }
   if (!root.is_object()) return Fail(origin, "root is not an object");
   for (auto it = root.begin(); it != root.end(); ++it) {
-    if (it.key() != "version" && it.key() != "default_profile" && it.key() != "profiles")
+    if (it.key() != "version" && it.key() != "name" && it.key() != "default_profile" &&
+        it.key() != "profiles")
       return Fail(origin, "unknown key '" + it.key() + "'");
   }
   if (!root.contains("version") || !root["version"].is_number_integer())
@@ -486,6 +568,11 @@ Status RouteRules::Parse(const std::string& text, const std::string& origin,
   }
 
   if (rules->profiles_.empty()) return Fail(origin, "'profiles' is empty");
+
+  if (root.contains("name")) {
+    if (!root["name"].is_string()) return Fail(origin, "'name' must be a string");
+    rules->name_ = root["name"].get<std::string>();
+  }
 
   rules->default_profile_name_ = rules->profiles_.front().name;
   if (root.contains("default_profile")) {
@@ -633,7 +720,13 @@ Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::
                                         rules->origin());
   // Aliasing constructor: the profile keeps the whole rule set alive, so a
   // reload cannot free the profile a route is running on.
-  options->profile = std::shared_ptr<const RouteProfile>(rules, p);
+  ApplyProfile(std::shared_ptr<const RouteProfile>(rules, p), options);
+  return Status::Ok();
+}
+
+void ApplyProfile(std::shared_ptr<const RouteProfile> profile, RouteOptions* options) {
+  const RouteProfile* p = profile.get();
+  options->profile = std::move(profile);
   options->driving = p->mode == TravelMode::kMotorVehicle;
   options->cycle_only = p->mode == TravelMode::kBicycle;
   options->metric = p->metric;
@@ -644,7 +737,84 @@ Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::
   options->golf_path_penalty = p->golf_path_penalty;
   options->beach_penalty = p->beach_penalty;
   options->beach_prefer_factor = p->beach_prefer_factor;
+}
+
+namespace {
+
+/// The index `key` names among `names`, or -1.
+int IndexOf(const std::string& key, std::initializer_list<const char*> names) {
+  int i = 0;
+  for (const char* n : names) {
+    if (key == n) return i;
+    ++i;
+  }
+  return -1;
+}
+
+/// The value `id` names in `p`, and whether it may be kClassExcluded; null
+/// for an id that is not an adjustable setting.
+double* SettingSlot(RouteProfile* p, const std::string& id, bool* can_exclude) {
+  const size_t dot = id.find('.');
+  const std::string group = id.substr(0, dot);
+  const std::string key = dot == std::string::npos ? std::string() : id.substr(dot + 1);
+  *can_exclude = false;
+  // Index 0 of each factor array is "none" and is not a setting.
+  if (group == "classes") {
+    const RoadClass klass = RoadClassFromName(key);
+    if (klass == RoadClass::kNone) return nullptr;
+    *can_exclude = true;
+    return &p->class_weight[static_cast<size_t>(klass)];
+  }
+  if (group == "bike_lane_factor") {
+    const int i = IndexOf(key, {"", "shared_lane", "lane", "track"});
+    return i > 0 ? &p->bike_lane_factor[i] : nullptr;
+  }
+  if (group == "bike_route_factor") {
+    const int i = IndexOf(key, {"", "local", "regional", "national"});
+    return i > 0 ? &p->bike_route_factor[i] : nullptr;
+  }
+  if (group == "surface_factor") {
+    const int i = IndexOf(key, {"", "paved", "compacted", "rough"});
+    return i > 0 ? &p->surface_factor[i] : nullptr;
+  }
+  if (!key.empty()) return nullptr;
+  // private_penalty has no exclude in the rule file grammar either.
+  if (id == "private_penalty") return &p->private_penalty;
+  *can_exclude = true;
+  if (id == "golf_cartpath_penalty") return &p->golf_cartpath_penalty;
+  if (id == "golf_path_penalty") return &p->golf_path_penalty;
+  if (id == "toll_penalty") return &p->toll_penalty;
+  if (id == "ferry_penalty") return &p->ferry_penalty;
+  return nullptr;
+}
+
+}  // namespace
+
+Status ApplyOverrides(const RouteProfile& base, const ProfileOverrides& overrides,
+                      RouteProfile* out) {
+  RouteProfile p = base;
+  for (const auto& [id, value] : overrides) {
+    const bool excluded = value == kClassExcluded;
+    if (!excluded && !(value > 0.0))
+      return Status::Error(kInvalidArg, "override '" + id + "' must be greater than zero");
+    bool can_exclude = false;
+    double* slot = SettingSlot(&p, id, &can_exclude);
+    if (slot == nullptr) return Status::Error(kInvalidArg, "no adjustable setting '" + id + "'");
+    if (excluded && !can_exclude)
+      return Status::Error(kInvalidArg, "override '" + id + "' cannot exclude");
+    *slot = value;
+  }
+  *out = std::move(p);
   return Status::Ok();
+}
+
+bool ProfileSetting(const RouteProfile& profile, const std::string& id, double* value) {
+  bool can_exclude = false;
+  // SettingSlot only locates; nothing is written through the pointer.
+  const double* slot = SettingSlot(const_cast<RouteProfile*>(&profile), id, &can_exclude);
+  if (slot == nullptr) return false;
+  *value = *slot;
+  return true;
 }
 
 }  // namespace routing

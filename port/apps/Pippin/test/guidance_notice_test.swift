@@ -110,7 +110,32 @@ do {
 
 // --- identifiers share the prefix -------------------------------------------
 
-for id in [GuidanceNotice.turnID(0), GuidanceNotice.offRouteID, GuidanceNotice.arrivedID] {
+// --- course events ------------------------------------------------------
+
+do {
+    var reached = GuidanceNoticeEvent(kind: .waypoint, maneuverIndex: 2)
+    reached.road = "G \"5\""
+    reached.nextName = "Fort Sumter"
+    check(actions(reached) == [.post(id: GuidanceNotice.waypointID, title: "Reached G \"5\"",
+                                     body: "Now steering for Fort Sumter.", timeSensitive: true)],
+          "waypoint names the point reached and the next")
+    let unnamed = GuidanceNoticeEvent(kind: .waypoint, maneuverIndex: 2)
+    check(actions(unnamed) == [.post(id: GuidanceNotice.waypointID, title: "Reached route point 2",
+                                     body: "", timeSensitive: true)],
+          "an unlabelled point is numbered")
+
+    var off = GuidanceNoticeEvent(kind: .offCourse)
+    off.crossTrackMeters = -400
+    check(actions(off, .nauticalMiles) == [.post(id: GuidanceNotice.offCourseID, title: "Off course",
+                                                        body: "0.2 nm left of the leg. Steer right.",
+                                                        timeSensitive: true)],
+          "off course gives the side and the steer")
+    check(actions(GuidanceNoticeEvent(kind: .backOnCourse)) == [.remove(ids: [GuidanceNotice.offCourseID])],
+          "back on course withdraws the off-course notice")
+}
+
+for id in [GuidanceNotice.turnID(0), GuidanceNotice.offRouteID, GuidanceNotice.arrivedID,
+           GuidanceNotice.waypointID, GuidanceNotice.offCourseID] {
     check(id.hasPrefix(GuidanceNotice.prefix), "\(id) carries the prefix")
 }
 

@@ -180,12 +180,26 @@ OptionsModel::OptionsModel(const MapGroups& groups,
       if (src.group_id == g.id)
         if (auto page = OptionsPage::ForMapGroup(g.title, src, settings))
           pages_.push_back(std::move(page));
+  // App-wide pages follow the map groups.
+  for (const MapOptionsSource& src : sources)
+    if (!src.title.empty() && groups.Find(src.group_id) == nullptr)
+      if (auto page = OptionsPage::ForMapGroup(src.title, src, settings))
+        pages_.push_back(std::move(page));
 }
 
 OptionsPage* OptionsModel::Page(const app::TypeId& id) {
   for (const auto& p : pages_)
     if (p->id() == id) return p.get();
   return nullptr;
+}
+
+bool OptionsModel::SelectPage(const app::TypeId& id) {
+  for (size_t i = 0; i < pages_.size(); ++i) {
+    if (pages_[i]->id() != id) continue;
+    initial_page_ = static_cast<int>(i);
+    return true;
+  }
+  return false;
 }
 
 bool OptionsModel::dirty() const {

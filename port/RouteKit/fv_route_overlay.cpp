@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <optional>
 
 #include "fv_route_edit.h"
 
@@ -19,8 +21,51 @@ const char RouteOverlay::kExtension[] = "fvrte";
 const FvColor RouteOverlay::kRoadColor{40, 90, 210, 255};
 const FvColor RouteOverlay::kCasingColor{255, 255, 255, 255};
 const FvColor RouteOverlay::kBeachCasingColor{200, 155, 70, 255};
+const FvColor RouteOverlay::kGhostColor{120, 120, 120, 150};
+// The wind arrows are drawn opaque.
+const FvColor RouteOverlay::kHeadwindColor{214, 72, 15, 255};
+const FvColor RouteOverlay::kTailwindColor{12, 150, 110, 255};
+const FvColor RouteOverlay::kCalmWindColor{120, 128, 136, 255};
+const FvColor RouteOverlay::kClimbEasyColor{240, 200, 20, 255};
+const FvColor RouteOverlay::kClimbSteepColor{215, 30, 30, 255};
+const FvColor RouteOverlay::kDescentGentleColor{100, 200, 90, 255};
+const FvColor RouteOverlay::kDescentSteepColor{0, 115, 45, 255};
 
 namespace {
+
+// The beach wind arrow, in points: a shaft with an open V head.
+constexpr double kWindArrowLineWidth = 2.0;
+constexpr double kWindArrowHead = 5.0;        // length of each barb
+constexpr double kWindArrowHeadAngle = 24.0;  // between a barb and the shaft, degrees
+
+/// The outline of the wind arrow as one polygon, in pixels at `scale`:
+/// (along, across) pairs, the tip at +half the length on the along axis.
+/// The barbs meet in a mitred point, butt ends elsewhere.
+std::vector<std::pair<double, double>> WindArrowOutline(double scale) {
+  const double half_len = 0.5 * RouteOverlay::kWindArrowLength * scale;
+  const double h = 0.5 * kWindArrowLineWidth * scale;
+  const double barb = kWindArrowHead * scale;
+  const double a = kWindArrowHeadAngle * 3.14159265358979323846 / 180.0;
+  const double sa = std::sin(a), ca = std::cos(a);
+  // The barbs' centre lines meet behind the mitre so the point lands on the tip.
+  const double tip = half_len - h / sa;
+  // Where a barb's inner edge meets the shaft's edge, measured along the barb.
+  const double join = std::min(barb, h * (1.0 + ca) / sa);
+  const double join_along = tip - h * sa - join * ca;
+  auto barb_end = [&](double sign, double offset) {
+    return std::pair<double, double>{tip - barb * ca + offset * sa,
+                                     sign * (barb * sa + offset * ca)};
+  };
+  return {{half_len, 0.0},
+          barb_end(1.0, h),
+          barb_end(1.0, -h),
+          {join_along, h},
+          {-half_len, h},
+          {-half_len, -h},
+          {join_along, -h},
+          barb_end(-1.0, -h),
+          barb_end(-1.0, h)};
+}
 
 // The diamond, in nominal symbol pixels. route.py stamps `fv.diamond` at
 // scale 1.6 over a 9-pixel builtin, so this is 14.4 px across and its half is
@@ -84,6 +129,10 @@ const std::vector<app::PropertySpec>& RouteSpecs() {
     v.push_back(spec("beach_casing_color", "Beach casing colour", "Calculated route",
                      PropertyValue::Color(RouteOverlay::kBeachCasingColor),
                      "The casing under stretches ridden on the beach."));
+    v.push_back(spec("slope_colors", "Colour by slope", "Calculated route",
+                     PropertyValue::Bool(false),
+                     "A halo around the line by grade where the road graph has elevation: green "
+                     "downhill, yellow to red uphill, the casing on the flat."));
     v.push_back(spec("show_labels", "Waypoint names", "Labels", PropertyValue::Bool(true), ""));
     v.push_back(spec("show_status", "Route status line", "Labels", PropertyValue::Bool(true),
                      "The line of text at the top left that describes the calculated route."));
@@ -116,6 +165,63 @@ std::vector<BeachPiece> SplitAtBeach(const std::vector<GeoPoint>& leg, uint32_t 
     out.back().points.push_back(leg[j + 1]);
   }
   return out;
+}
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+
+bool SameColor(const FvColor& a, const FvColor& b) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+/// `a` moved toward `b` by `t` in [0, 1], channel by channel.
+FvColor Blend(const FvColor& a, const FvColor& b, double t) {
+  t = std::clamp(t, 0.0, 1.0);
+  auto mix = [t](uint8_t x, uint8_t y) {
+    return static_cast<uint8_t>(std::lround(x + t * (static_cast<double>(y) - x)));
+  };
+  return FvColor{mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), mix(a.a, b.a)};
+}
+
+/// The slope colour of every segment of the plan's joined line (the legs end
+/// to end with the shared joint dropped), empty on the flat and where the
+/// profile says nothing. Grades are rounded to half a percent so neighbouring
+/// arcs of nearly the same slope share a colour and draw as one piece.
+std::vector<std::optional<FvColor>> SegmentSlopeColors(const RoutePlan& plan) {
+  constexpr FvColor kFlat{0, 0, 0, 0};
+  size_t segments = 0;
+  for (const std::vector<GeoPoint>& leg : plan.legs)
+    if (!leg.empty()) segments += leg.size() - 1;
+  std::vector<std::optional<FvColor>> out(segments);
+  const std::vector<routing::ElevationPoint>& p = plan.elevation;
+  const std::vector<double> grades = RouteOverlay::SegmentGrades(p);
+  for (size_t i = 0; i < grades.size(); ++i) {
+    const FvColor c = RouteOverlay::SlopeColor(std::round(grades[i] * 2.0) / 2.0, kFlat);
+    if (c.a == 0) continue;
+    const size_t end = std::min<size_t>(p[i + 1].geometry_index, segments);
+    for (size_t k = p[i].geometry_index; k < end; ++k) out[k] = c;
+  }
+  return out;
+}
+
+/// The unit vector in surface pixels pointing along `bearing_deg` (true) at
+/// `p`, from a point 10 m away on a local flat earth. Follows the chart's
+/// rotation and projection. False when either point will not project.
+bool SurfaceDirection(const MapProjection& proj, const GeoPoint& p, double bearing_deg,
+                      double* dx, double* dy) {
+  constexpr double kEarthRadiusM = 6371008.8;
+  constexpr double kStepM = 10.0;
+  const double b = bearing_deg * kDegToRad;
+  const double coslat = std::max(std::cos(p.lat * kDegToRad), 1e-6);
+  const GeoPoint q{p.lat + kStepM * std::cos(b) / kEarthRadiusM / kDegToRad,
+                   p.lon + kStepM * std::sin(b) / (kEarthRadiusM * coslat) / kDegToRad};
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!proj.GeoToSurface(p, &x0, &y0).ok() || !proj.GeoToSurface(q, &x1, &y1).ok())
+    return false;
+  const double len = std::hypot(x1 - x0, y1 - y0);
+  if (!(len > 0.0)) return false;
+  *dx = (x1 - x0) / len;
+  *dy = (y1 - y0) / len;
+  return true;
 }
 
 }  // namespace
@@ -162,6 +268,17 @@ void RouteOverlay::SetBeach(RouteBeach beach) {
   set_dirty(true);
 }
 
+void RouteOverlay::SetAvoidHills(bool avoid) {
+  doc_.set_avoid_hills(avoid);
+  set_dirty(true);
+}
+
+bool RouteOverlay::MayHaveElevation() const {
+  if (planner_ == nullptr) return false;
+  const std::shared_ptr<const routing::RoadGraph> g = planner_->graph();
+  return g == nullptr || g->has_elevation();
+}
+
 void RouteOverlay::SetSelected(std::string label) {
   selected_ = std::move(label);
 }
@@ -171,6 +288,7 @@ void RouteOverlay::SetSelected(std::string label) {
 // ---------------------------------------------------------------------------
 
 bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
+  wind_marks_.clear();
   if (planner_ == nullptr) {
     plan_ = RoutePlan{};
     plan_.status = "no road graph configured";
@@ -185,6 +303,7 @@ bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
   if (options.beach == routing::BeachUse::kProfileDefault) {
     options.beach = ToBeachUse(doc_.beach());
   }
+  if (!options.avoid_hills.has_value()) options.avoid_hills = doc_.avoid_hills();
 
   std::vector<GeoPoint> stops;
   stops.reserve(doc_.waypoints().size());
@@ -200,6 +319,13 @@ bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
 void RouteOverlay::ClearRoads() {
   plan_ = RoutePlan{};
   has_plan_ = false;
+  wind_marks_.clear();
+  ghost_.clear();
+}
+
+void RouteOverlay::SetBeachWind(std::vector<BeachWindMark> marks, double warn_mps) {
+  wind_marks_ = std::move(marks);
+  wind_warn_mps_ = warn_mps;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +344,102 @@ BuiltinSymbolLibrary* RouteOverlay::LibraryFor(const FvColor& c) {
   return raw;
 }
 
+Status RouteOverlay::DrawSlopeHalo(GeoDraw& draw) {
+  const std::vector<std::optional<FvColor>> slope = SegmentSlopeColors(plan_);
+  const int halo = std::max(1, static_cast<int>(std::lround(kSlopeHaloPt * dpi_scale_)));
+  const int fringe = std::max(1, static_cast<int>(std::lround(kSlopeFringePt * dpi_scale_)));
+  auto on_beach = [this](size_t k) {
+    for (const RouteBeachStretch& b : plan_.beach)
+      if (b.geometry_begin <= k && k < b.geometry_end) return true;
+    return false;
+  };
+  // The outer pass first, everywhere, so no piece's fringe covers the halo
+  // of the piece before it. Flat ground keeps the casing colour.
+  for (const bool outer : {true, false}) {
+    GeoLineStyle line = SolidGeoLine(road_color_, road_width_ + 2 * (halo + (outer ? fringe : 0)));
+    std::vector<GeoPoint> piece;
+    bool inked = false;
+    auto flush = [&]() {
+      Status st = Status::Ok();
+      if (inked && piece.size() >= 2) st = draw.DrawGeoPolyline(piece, LineKind::kSimple, line);
+      piece.clear();
+      return st;
+    };
+    size_t offset = 0;
+    for (const std::vector<GeoPoint>& leg : plan_.legs) {
+      for (size_t j = 0; j + 1 < leg.size(); ++j) {
+        const size_t k = offset + j;
+        FvColor c = on_beach(k) ? beach_casing_color_ : casing_color_;
+        bool ink = casing_width_ > 0;
+        if (slope[k]) {
+          // The canvas blends every nib stamp, so a translucent stroke would
+          // overlap itself to near-opaque: the fringe is a tint instead.
+          c = outer ? Blend(*slope[k], casing_color_, 0.5) : *slope[k];
+          ink = true;
+        }
+        if (!piece.empty() && (ink != inked || !SameColor(c, line.stroke.pen.color))) {
+          Status st = flush();
+          if (!st.ok()) return st;
+        }
+        if (piece.empty()) {
+          line.stroke.pen.color = c;
+          inked = ink;
+          piece.push_back(leg[j]);
+        }
+        piece.push_back(leg[j + 1]);
+      }
+      Status st = flush();
+      if (!st.ok()) return st;
+      if (!leg.empty()) offset += leg.size() - 1;
+    }
+  }
+  return Status::Ok();
+}
+
+FvColor RouteOverlay::SlopeColor(double grade_percent, FvColor flat) {
+  const double g = grade_percent;
+  if (std::fabs(g) < kSlopeFlatPercent) return flat;
+  if (g > 0.0) {
+    return Blend(kClimbEasyColor, kClimbSteepColor,
+                 (g - kSlopeEasyPercent) / (kSlopeSteepPercent - kSlopeEasyPercent));
+  }
+  return Blend(kDescentGentleColor, kDescentSteepColor,
+               (-g - kSlopeFlatPercent) / (kSlopeSteepDescentPercent - kSlopeFlatPercent));
+}
+
+std::vector<double> RouteOverlay::SegmentGrades(
+    const std::vector<routing::ElevationPoint>& profile, double window_m) {
+  std::vector<double> out;
+  if (profile.size() < 2) return out;
+  out.resize(profile.size() - 1, 0.0);
+  const double begin = profile.front().along_m;
+  const double end = profile.back().along_m;
+  // The profile is piecewise linear in distance between its points.
+  auto elev_at = [&profile](double a) {
+    auto it = std::lower_bound(
+        profile.begin(), profile.end(), a,
+        [](const routing::ElevationPoint& e, double v) { return e.along_m < v; });
+    if (it == profile.begin()) return profile.front().elev_m;
+    if (it == profile.end()) return profile.back().elev_m;
+    const routing::ElevationPoint& lo = *(it - 1);
+    const double span = it->along_m - lo.along_m;
+    return span > 0.0 ? lo.elev_m + (a - lo.along_m) / span * (it->elev_m - lo.elev_m)
+                      : it->elev_m;
+  };
+  for (size_t i = 0; i + 1 < profile.size(); ++i) {
+    double a0 = profile[i].along_m, a1 = profile[i + 1].along_m;
+    if (a1 - a0 < window_m) {
+      const double mid = 0.5 * (a0 + a1);
+      a0 = mid - 0.5 * window_m;
+      a1 = mid + 0.5 * window_m;
+      if (a0 < begin) { a1 += begin - a0; a0 = begin; }
+      if (a1 > end) { a0 = std::max(begin, a0 - (a1 - end)); a1 = end; }
+    }
+    if (a1 > a0) out[i] = 100.0 * (elev_at(a1) - elev_at(a0)) / (a1 - a0);
+  }
+  return out;
+}
+
 Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   if (!proj.Ready()) return Status::Error(kInvalidArg, "projection not ready");
 
@@ -231,6 +453,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   have_proj_ = true;
 
   drawn_.clear();
+  drawn_wind_.clear();
   drawn_.reserve(doc_.waypoints().size());
   const std::vector<RouteWaypoint>& wps = doc_.waypoints();
   for (size_t i = 0; i < wps.size(); ++i) {
@@ -242,6 +465,11 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   }
 
   Status s = Status::Ok();
+  for (const std::vector<GeoPoint>& leg : ghost_) {
+    if (leg.size() < 2) continue;
+    s = draw.DrawGeoPolyline(leg, LineKind::kSimple, SolidGeoLine(kGhostColor, road_width_));
+    if (!s.ok()) return s;
+  }
   if (has_plan_) {
     // A CALCULATED route: blue over a white casing, dashed when it was priced
     // as a bicycle route. The road geometry IS the road, so kSimple — there is
@@ -252,6 +480,7 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     // it disappears under the map it is drawn over — Chris rode with it and
     // asked for twice the width (2026-08-19). Doubled together with the
     // casing, so the white still shows the same share of itself past the blue.
+    const bool by_slope = slope_colors_ && plan_.has_elevation && plan_.elevation.size() >= 2;
     const char* preset = kRoadStyles[road_style_].preset;
     if (preset == nullptr) preset = plan_.is_bicycle ? line_preset::kDash : line_preset::kSolid;
     GeoLineStyle style = PresetGeoLine(preset, road_color_, road_width_);
@@ -260,16 +489,35 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
       AddCasing(&style, casing_color_, casing_width_);
       AddCasing(&sand, beach_casing_color_, casing_width_);
     }
-    uint32_t offset = 0;  // index of each leg's first vertex in the joined line
-    for (const std::vector<GeoPoint>& leg : plan_.legs) {
-      if (leg.size() >= 2) {
-        for (const BeachPiece& piece : SplitAtBeach(leg, offset, plan_.beach)) {
-          s = draw.DrawGeoPolyline(piece.points, LineKind::kSimple,
-                                   piece.on_beach ? sand : style);
-          if (!s.ok()) return s;
-        }
+    if (by_slope) {
+      s = DrawSlopeHalo(draw);
+      if (!s.ok()) return s;
+      GeoLineStyle centre = PresetGeoLine(preset, road_color_, road_width_);
+      for (const std::vector<GeoPoint>& leg : plan_.legs) {
+        if (leg.size() < 2) continue;
+        s = draw.DrawGeoPolyline(leg, LineKind::kSimple, centre);
+        if (!s.ok()) return s;
       }
-      if (!leg.empty()) offset += static_cast<uint32_t>(leg.size() - 1);
+    } else {
+      uint32_t offset = 0;  // index of each leg's first vertex in the joined line
+      for (const std::vector<GeoPoint>& leg : plan_.legs) {
+        if (leg.size() >= 2) {
+          for (const BeachPiece& piece : SplitAtBeach(leg, offset, plan_.beach)) {
+            s = draw.DrawGeoPolyline(piece.points, LineKind::kSimple,
+                                     piece.on_beach ? sand : style);
+            if (!s.ok()) return s;
+          }
+        }
+        if (!leg.empty()) offset += static_cast<uint32_t>(leg.size() - 1);
+      }
+    }
+    if (!wind_marks_.empty()) {
+      // The stretches index the legs joined with the shared joint dropped.
+      std::vector<GeoPoint> line;
+      for (const std::vector<GeoPoint>& leg : plan_.legs)
+        line.insert(line.end(), leg.begin() + (line.empty() || leg.empty() ? 0 : 1), leg.end());
+      s = DrawBeachWind(proj, canvas, line);
+      if (!s.ok()) return s;
     }
   } else if (doc_.waypoints().size() >= 2) {
     // An UNCALCULATED route: the overlay's own colour, no casing, and GREAT
@@ -309,6 +557,85 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
   return Status::Ok();
 }
 
+Status RouteOverlay::DrawBeachWind(const MapProjection& proj, ICanvas& canvas,
+                                   const std::vector<GeoPoint>& line) {
+  const double unit = dpi_scale_ * wind_scale_;
+  const double spacing = 40.0 * unit;
+  const std::vector<std::pair<double, double>> shape = WindArrowOutline(unit);
+  const double half_extent = 0.5 * kWindArrowLength * unit;
+  const PixelSize size = canvas.Size();
+
+  for (const BeachWindMark& m : wind_marks_) {
+    if (m.stretch >= plan_.beach.size() || !std::isfinite(m.toward_deg)) continue;
+    const RouteBeachStretch& b = plan_.beach[m.stretch];
+    const size_t first = b.geometry_begin;
+    const size_t last = std::min<size_t>(b.geometry_end, line.empty() ? 0 : line.size() - 1);
+    if (first >= last) continue;
+
+    struct Point { double x, y; };
+    std::vector<Point> px;
+    px.reserve(last - first + 1);
+    bool projected = true;
+    for (size_t k = first; k <= last && projected; ++k) {
+      double x = 0, y = 0;
+      projected = proj.GeoToSurface(line[k], &x, &y).ok();
+      px.push_back(Point{x, y});
+    }
+    const GeoPoint& mid = line[(first + last) / 2];
+    double wx = 0, wy = 0;
+    if (!projected || !SurfaceDirection(proj, mid, m.toward_deg, &wx, &wy)) continue;
+    double lx = 0, ly = 0;
+    const bool sided = std::isfinite(m.seaward_deg) &&
+                       SurfaceDirection(proj, mid, m.seaward_deg + 180.0, &lx, &ly);
+
+    WindClass kind = WindClass::kCalm;
+    if (m.along_mps < -wind_warn_mps_) kind = WindClass::kHead;
+    if (m.along_mps > wind_warn_mps_) kind = WindClass::kTail;
+    Brush fill;
+    fill.color = kind == WindClass::kHead   ? kHeadwindColor
+                 : kind == WindClass::kTail ? kTailwindColor
+                                            : kCalmWindColor;
+    // Clear of the line and its casing, so the route stays readable.
+    const double clearance = 0.5 * road_width_ + casing_width_ + half_extent + 3.0 * unit;
+
+    double next = 0.5 * spacing;  // distance along the stretch of the next arrow
+    double walked = 0.0;
+    for (size_t j = 0; j + 1 < px.size(); ++j) {
+      const double ex = px[j + 1].x - px[j].x;
+      const double ey = px[j + 1].y - px[j].y;
+      const double len = std::hypot(ex, ey);
+      if (!(len > 0.0)) continue;
+      const double ux = ex / len, uy = ey / len;
+      double side = 0.0;
+      if (sided) side = (-uy * lx + ux * ly) >= 0.0 ? 1.0 : -1.0;
+      for (; next <= walked + len; next += spacing) {
+        const double t = next - walked;
+        const double cx = px[j].x + ux * t + side * -uy * clearance;
+        const double cy = px[j].y + uy * t + side * ux * clearance;
+        if (cx < -spacing || cy < -spacing || cx > size.width + spacing ||
+            cy > size.height + spacing)
+          continue;
+        drawn_wind_.push_back(DrawnChevron{cx, cy, wx, wy, kind});
+        const double nx = -wy, ny = wx;
+        std::vector<PixelPoint> ring;
+        ring.reserve(shape.size());
+        for (const auto& [along, across] : shape) {
+          ring.push_back(PixelPoint{
+              static_cast<int>(std::lround(cx + wx * along + nx * across)),
+              static_cast<int>(std::lround(cy + wy * along + ny * across))});
+        }
+        // One filled outline rather than three strokes, so a translucent
+        // colour is laid down once and the head does not darken where the
+        // strokes would overlap.
+        Status s = canvas.DrawPolyPolygon({ring}, &fill, nullptr);
+        if (!s.ok()) return s;
+      }
+      walked += len;
+    }
+  }
+  return Status::Ok();
+}
+
 Status RouteOverlay::DrawMarkerAt(const MapProjection& proj, ICanvas& canvas,
                                   size_t index, double x, double y) {
   const std::vector<RouteWaypoint>& wps = doc_.waypoints();
@@ -341,12 +668,15 @@ Status RouteOverlay::DrawMarker(GeoDraw& draw, const DrawnPoint& d) {
     // The NAME is not highlighted; the marker is. Same rule PointOverlay
     // follows, for the same reason.
     draw.SetState(RenderState::kNormal);
+    // Type and offset scale with the marker, as PointOverlay's names do; an
+    // unscaled 12-px label is a 4-pt caption on a 3x screen.
+    const double half = kMarkerScale * kBuiltinSymbolNominalPx * dpi_scale_ / 2.0;
     LabelStyle ls;
     ls.valid = true;
-    ls.style.size = 12.0;
+    ls.style.size = 12.0 * dpi_scale_;
     ls.style.color = FvColor{0, 0, 0, 255};
-    ls.dx = 10;
-    ls.dy = -10;
+    ls.dx = static_cast<int>(std::lround(half + 2.0 * dpi_scale_));
+    ls.dy = -static_cast<int>(std::lround(half));
     ls.halo_width = 1.0;
     ls.halo_color = FvColor{255, 255, 255, 255};
     s = draw.DrawLabelAtPixel(d.x, d.y, d.label, ls);
@@ -455,6 +785,105 @@ void RouteOverlay::HitTestPoint(const MapProjection& proj, PixelPoint p,
     item.cursor = app::CursorId::kMove;
     out.push_back(std::move(item));
   }
+}
+
+namespace {
+
+/// Screen distance from `p` to the polyline `line` under `proj`; infinity when
+/// no segment projects.
+double LineDistancePx(const MapProjection& proj, const std::vector<GeoPoint>& line, PixelPoint p) {
+  double best = HUGE_VAL;
+  double px = 0, py = 0;
+  bool have = false;
+  for (const GeoPoint& g : line) {
+    double x = 0, y = 0;
+    if (!proj.GeoToSurface(g, &x, &y).ok()) {
+      have = false;
+      continue;
+    }
+    if (have) {
+      const double dx = x - px, dy = y - py;
+      const double len2 = dx * dx + dy * dy;
+      double t = len2 > 0 ? ((p.x - px) * dx + (p.y - py) * dy) / len2 : 0.0;
+      t = std::clamp(t, 0.0, 1.0);
+      best = std::min(best, std::hypot(px + t * dx - p.x, py + t * dy - p.y));
+    }
+    px = x;
+    py = y;
+    have = true;
+  }
+  return best;
+}
+
+/// "1.24 km (0.77 mi)".
+std::string FormatInfoLength(double meters) {
+  char buf[64];
+  std::snprintf(buf, sizeof buf, "%.2f km (%.2f mi)", meters / 1000.0, meters / 1609.344);
+  return buf;
+}
+
+}  // namespace
+
+std::optional<app::ItemInfoSheet> RouteOverlay::InfoAt(const MapProjection& proj, PixelPoint p,
+                                                       double tolerance_px) {
+  const std::vector<RouteWaypoint>& wps = doc_.waypoints();
+  if (wps.empty() || !proj.Ready()) return std::nullopt;
+  std::vector<app::HitItem> hits;
+  HitTestPoint(proj, p, tolerance_px, hits);
+  std::vector<std::vector<GeoPoint>> legs;
+  if (has_plan_) {
+    legs = plan_.legs;
+  } else {
+    for (size_t i = 1; i < wps.size(); ++i) legs.push_back({wps[i - 1].position, wps[i].position});
+  }
+  // The line is drawn about 4 pt wide with its casing.
+  const double reach = tolerance_px + 4.0 * dpi_scale_;
+  const bool on_line = std::any_of(legs.begin(), legs.end(), [&](const std::vector<GeoPoint>& leg) {
+    return LineDistancePx(proj, leg, p) <= reach;
+  });
+  if (hits.empty() && !on_line) return std::nullopt;
+
+  app::ItemInfoSheet sheet;
+  sheet.title = Name();
+  double total = 0.0;
+  std::vector<double> leg_m;
+  for (const std::vector<GeoPoint>& leg : legs) {
+    double m = 0.0;
+    for (size_t i = 1; i < leg.size(); ++i) m += app::SearchDistanceMeters(leg[i - 1], leg[i]);
+    leg_m.push_back(m);
+    total += m;
+  }
+  if (has_plan_ && plan_.length_m > 0) total = plan_.length_m;
+  sheet.rows.push_back({"Route", "Name", Name()});
+  sheet.rows.push_back({"Route", "Length", FormatInfoLength(total)});
+  sheet.rows.push_back({"Route", "Waypoints", std::to_string(wps.size())});
+  if (!doc_.profile().empty()) sheet.rows.push_back({"Route", "Profile", doc_.profile()});
+  if (has_plan_ && plan_.seconds > 0) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.0f min", plan_.seconds / 60.0);
+    sheet.rows.push_back({"Route", "Time", buf});
+  }
+  if (has_plan_ && plan_.has_elevation) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.0f m up, %.0f m down", plan_.climb_m, plan_.descent_m);
+    sheet.rows.push_back({"Route", "Climb", buf});
+  }
+  if (!has_plan_) sheet.rows.push_back({"Route", "Legs", "straight (not calculated)"});
+  for (size_t i = 0; i < leg_m.size() && i + 1 < wps.size(); ++i) {
+    sheet.rows.push_back({"Legs", wps[i].label + " \xE2\x86\x92 " + wps[i + 1].label,
+                          FormatInfoLength(leg_m[i])});
+  }
+  for (const RouteWaypoint& w : wps) {
+    sheet.rows.push_back({"Waypoints", w.label, app::FormatInfoPosition(w.position)});
+  }
+  sheet.edit_label = "Edit Route\xE2\x80\xA6";
+  if (!hits.empty()) {
+    const auto nearest = std::min_element(hits.begin(), hits.end(),
+        [](const app::HitItem& a, const app::HitItem& b) { return a.distance_px < b.distance_px; });
+    std::string label = nearest->hint.tool_tip;
+    sheet.select = [this, label] { SetSelected(label); };
+  }
+  return sheet;
 }
 
 namespace {
@@ -634,6 +1063,7 @@ Status RouteOverlay::GetProperty(const std::string& key, app::PropertyValue* out
   else if (key == "casing_color") v = PropertyValue::Color(casing_color_);
   else if (key == "casing_width") v = PropertyValue::Int(casing_width_);
   else if (key == "beach_casing_color") v = PropertyValue::Color(beach_casing_color_);
+  else if (key == "slope_colors") v = PropertyValue::Bool(slope_colors_);
   else if (key == "show_labels") v = PropertyValue::Bool(show_labels_);
   else if (key == "show_status") v = PropertyValue::Bool(show_status_);
   else return Status::Error(kNotFound, "no route property '" + key + "'");
@@ -657,6 +1087,7 @@ Status RouteOverlay::SetProperty(const std::string& key, const app::PropertyValu
   else if (key == "casing_color") casing_color_ = value.color;
   else if (key == "casing_width") casing_width_ = static_cast<int>(value.i);
   else if (key == "beach_casing_color") beach_casing_color_ = value.color;
+  else if (key == "slope_colors") slope_colors_ = value.b;
   else if (key == "show_labels") show_labels_ = value.b;
   else if (key == "show_status") show_status_ = value.b;
   return Status::Ok();

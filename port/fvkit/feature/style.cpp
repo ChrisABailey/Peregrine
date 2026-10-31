@@ -75,10 +75,16 @@ bool FeatureLabel::operator==(const FeatureLabel& o) const {
          SameColor(halo_color, o.halo_color) && halo_px == o.halo_px;
 }
 
+bool StyleRule::operator==(const StyleRule& o) const {
+  return id == o.id && type == o.type && filter == o.filter && paint == o.paint && layout == o.layout &&
+         min_zoom == o.min_zoom && max_zoom == o.max_zoom && shown == o.shown && legend == o.legend &&
+         facet == o.facet && extra == o.extra;
+}
+
 bool FeatureStyle::operator==(const FeatureStyle& o) const {
   return renderer == o.renderer && symbol == o.symbol && field == o.field &&
          categories == o.categories && classes == o.classes && overrides == o.overrides &&
-         label == o.label;
+         label == o.label && rules == o.rules;
 }
 
 const FeatureSymbol& FeatureStyle::SymbolFor(const Feature& f, int field_index) const {
@@ -112,13 +118,14 @@ const char* ToString(FeatureRenderer renderer) {
     case FeatureRenderer::kSingle: return "single";
     case FeatureRenderer::kCategorised: return "categorised";
     case FeatureRenderer::kGraduated: return "graduated";
+    case FeatureRenderer::kRules: return "rules";
   }
   return "single";
 }
 
 bool FeatureRendererFromString(const std::string& name, FeatureRenderer* out) {
   for (FeatureRenderer r : {FeatureRenderer::kSingle, FeatureRenderer::kCategorised,
-                            FeatureRenderer::kGraduated}) {
+                            FeatureRenderer::kGraduated, FeatureRenderer::kRules}) {
     if (name == ToString(r)) {
       *out = r;
       return true;
@@ -150,7 +157,7 @@ std::string FeatureClassLabel(const FeatureStyle& style, size_t i) {
 }
 
 Status ClassifyCategories(const IFeatureLayer& layer, int field_index, const FeatureSymbol& base,
-                          std::vector<FeatureCategory>* out) {
+                          std::vector<FeatureCategory>* out, const std::function<bool(const Feature&)>& keep) {
   if (out == nullptr) return Status::Error(kInvalidArg, "ClassifyCategories: null out");
   const FeatureSchema& schema = layer.Schema();
   if (field_index < 0 || static_cast<size_t>(field_index) >= schema.fields.size())
@@ -165,6 +172,7 @@ Status ClassifyCategories(const IFeatureLayer& layer, int field_index, const Fea
   std::set<std::string> seen;
   std::vector<std::pair<FieldValue, std::string>> values;  // value, key
   for (const Feature& f : features) {
+    if (keep && !keep(f)) continue;
     if (static_cast<size_t>(field_index) >= f.values.size() || IsNull(f.values[field_index])) continue;
     std::string key = FeatureCategoryKey(f.values[field_index]);
     if (seen.insert(key).second) values.emplace_back(f.values[field_index], std::move(key));
@@ -197,7 +205,8 @@ Status ClassifyCategories(const IFeatureLayer& layer, int field_index, const Fea
 }
 
 Status ClassifyGraduated(const IFeatureLayer& layer, int field_index, const FeatureSymbol& base,
-                         const GraduatedOptions& options, std::vector<FeatureClass>* out) {
+                         const GraduatedOptions& options, std::vector<FeatureClass>* out,
+                         const std::function<bool(const Feature&)>& keep) {
   if (out == nullptr) return Status::Error(kInvalidArg, "ClassifyGraduated: null out");
   const FeatureSchema& schema = layer.Schema();
   if (field_index < 0 || static_cast<size_t>(field_index) >= schema.fields.size())
@@ -210,6 +219,7 @@ Status ClassifyGraduated(const IFeatureLayer& layer, int field_index, const Feat
   if (!s.ok()) return s;
   std::vector<double> xs;
   for (const Feature& f : features) {
+    if (keep && !keep(f)) continue;
     double x = 0;
     if (static_cast<size_t>(field_index) < f.values.size() && NumericValue(f.values[field_index], &x))
       xs.push_back(x);

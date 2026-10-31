@@ -41,6 +41,8 @@ if(NOT FVW_IOS)
     add_executable(fv_pippin_test
       test/base_coverage_test.cpp
       test/camera_fit_test.cpp
+      test/chart_store_test.cpp
+      test/enc_chart_test.cpp
       test/follow_cadence_test.cpp
       test/location_fix_test.cpp
       test/perspective_test.cpp
@@ -48,15 +50,18 @@ if(NOT FVW_IOS)
       test/route_store_test.cpp
       test/search_rules_test.cpp
       test/sprite_test.cpp
+      PippinKit/PPChartStore.cpp
+      PippinKit/PPEncChart.cpp
       PippinKit/PPPointStore.cpp
       PippinKit/PPRouteStore.cpp)
     target_include_directories(fv_pippin_test PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/PippinKit)
+      ${CMAKE_CURRENT_SOURCE_DIR}/PippinKit
+      ${CMAKE_SOURCE_DIR}/port/Enc/test)
     # RouteKit is linked BESIDE fvkit for the invariant this directory's iOS
     # half already states: fvkit does not link port/Routing, and a route needs
     # both.
-    target_link_libraries(fv_pippin_test PRIVATE fv_fvkit fv_routekit
-      GTest::gtest_main)
+    target_link_libraries(fv_pippin_test PRIVATE fv_fvkit fv_enc fv_routekit
+      fv_zlib GTest::gtest_main)
     # The shipped cost rules, as a fixture — the same file the pack stages, kept
     # where its own module keeps it rather than copied here.
     target_compile_definitions(fv_pippin_test PRIVATE
@@ -92,8 +97,23 @@ if(NOT FVW_IOS)
         add_test(NAME pippin_alert_tone
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_alert_tone_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_app_flavor
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_app_flavor_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_chart_settings
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_chart_settings_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_chart_regions
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_chart_regions_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_course
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_course_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_guidance_format
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_guidance_format_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_replan_notice
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_replan_notice_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_place_link
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_place_link_test.sh
@@ -143,7 +163,7 @@ endif()
 # have both — and P5's RouteKit is exactly that: it links fvkit AND Routing,
 # which is why it is a module of its own and why it belongs on this line.
 add_library(pippin_core_deps INTERFACE)
-target_link_libraries(pippin_core_deps INTERFACE fv_fvkit fv_osm fv_routing fv_routekit)
+target_link_libraries(pippin_core_deps INTERFACE fv_fvkit fv_enc fv_osm fv_routing fv_routekit)
 
 include(${CMAKE_SOURCE_DIR}/port/cmake/FvwStaticClosure.cmake)
 

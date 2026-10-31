@@ -71,6 +71,10 @@ struct MapGestureView: UIViewRepresentable {
     let onHoldEnded: (CGPoint) -> Void
     /// The touch went away without a release: a call, a system gesture.
     let onHoldCancelled: () -> Void
+    /// A press that grabbed nothing lifted near where it landed. Carries the
+    /// landing point. Sent on release rather than at recognition so anything
+    /// it presents does not arrive under a finger still on the map.
+    let onHoldReleased: (CGPoint) -> Void
     /// How long the press is held before `onHoldBegan`. Applied in
     /// `updateUIView` because it comes from the pack, which is read by a
     /// renderer that does not exist on the first pass through `body`.
@@ -258,6 +262,10 @@ struct MapGestureView: UIViewRepresentable {
         private var holdLive = false
         /// Something was grabbed: every remaining touch belongs to it.
         private var holdCapturing = false
+        /// The grab came back empty, so a release is `onHoldReleased`.
+        private var holdMissed = false
+        /// Where the press landed.
+        private var holdStart: CGPoint = .zero
 
         @objc func handleHold(_ g: UILongPressGestureRecognizer) {
             // Not routed through `track`: a press that grabs nothing must not
@@ -269,7 +277,9 @@ struct MapGestureView: UIViewRepresentable {
             case .began:
                 holdLive = true
                 holdCapturing = false
-                owner.onHoldBegan(g.location(in: view)) { [weak self] grabbed in
+                holdMissed = false
+                holdStart = g.location(in: view)
+                owner.onHoldBegan(holdStart) { [weak self] grabbed in
                     guard let self else { return }
                     guard self.holdLive else {
                         // Press and lift faster than a render-queue hop.
@@ -278,7 +288,10 @@ struct MapGestureView: UIViewRepresentable {
                         if grabbed { self.owner.onHoldCancelled() }
                         return
                     }
-                    guard grabbed else { return }
+                    guard grabbed else {
+                        self.holdMissed = true
+                        return
+                    }
                     self.holdCapturing = true
                     // A gesture with no button needs to acknowledge itself;
                     // the halo the map draws is the visible half.
@@ -296,13 +309,24 @@ struct MapGestureView: UIViewRepresentable {
             case .changed:
                 if holdCapturing { owner.onHoldMoved(g.location(in: view)) }
             case .ended:
-                if holdCapturing { owner.onHoldEnded(g.location(in: view)) }
+                let end = g.location(in: view)
+                if holdCapturing {
+                    owner.onHoldEnded(end)
+                } else if holdMissed,
+                          hypot(end.x - holdStart.x, end.y - holdStart.y)
+                              <= g.allowableMovement {
+                    // A press that wandered off became a pan; only a still
+                    // one is a request.
+                    owner.onHoldReleased(holdStart)
+                }
                 holdLive = false
                 holdCapturing = false
+                holdMissed = false
             case .cancelled, .failed:
                 if holdCapturing { owner.onHoldCancelled() }
                 holdLive = false
                 holdCapturing = false
+                holdMissed = false
             default:
                 break
             }

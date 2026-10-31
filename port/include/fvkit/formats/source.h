@@ -76,6 +76,22 @@ struct IElevationSource {
     return false;
   }
 
+  /// Fills a `width` x `height` post grid over `bounds`, row 0 at the south
+  /// edge (post (r, c) at ll + (r * dlat, c * dlon)), as GetElevation would
+  /// per post: NaN where the source has no answer, and `covered` (optional)
+  /// 1 where it answered. A source with reduced-resolution data may answer
+  /// from the coarsest level no coarser than the grid step. Returns false
+  /// when not implemented; the caller then samples post by post.
+  virtual bool SampleGrid(const GeoRect& bounds, int width, int height,
+                          float* meters, unsigned char* covered) {
+    (void)bounds;
+    (void)width;
+    (void)height;
+    (void)meters;
+    (void)covered;
+    return false;
+  }
+
  protected:
   IElevationSource() = default;
 };

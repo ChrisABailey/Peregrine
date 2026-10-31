@@ -326,3 +326,151 @@ TEST(BeachRide, TheBeachStretchIsDrawnWithASandCasing) {
   EXPECT_GT(SandPixels(planner, fv::RouteBeach::kWheneverPossible), 1000u);
   EXPECT_EQ(0u, SandPixels(planner, fv::RouteBeach::kNever));
 }
+
+// --- the wind arrows ---------------------------------------------------------
+
+namespace {
+
+/// The BW29 to BW41 ride (east along the beach), planned and ready to draw.
+struct WindRide {
+  RoutePlanner planner;
+  fv::RouteOverlay ov{"beach"};
+  fv::MapProjection proj;
+  explicit WindRide(const std::string& graph) : planner(graph, FV_ROUTE_RULES_FILE) {
+    ov.SetPlanner(&planner);
+    ov.SetWaypoints({{"BW29", kBoardwalk29}, {"BW41", kBoardwalk41}});
+    ov.SetProfile("bicycle");
+    ov.SetBeach(fv::RouteBeach::kWheneverPossible);
+    ov.SetShowLabels(false);
+    ov.SetShowStatus(false);
+    proj.SetSurfaceSize(800, 400);
+    proj.SetCenter({32.6062, -80.0645});
+    proj.SetScale(25000.0);
+  }
+  /// One mark on stretch 0: a NE wind (blowing towards 225), facing 167.
+  void Mark(double along_mps, size_t stretch = 0) {
+    ov.SetBeachWind({{stretch, 225.0, along_mps, 167.0}}, 1.8);
+  }
+};
+
+/// Distance from (x, y) to the nearest segment of `line`, and the cross
+/// product with that segment's direction: negative is left of travel on a
+/// y-down surface.
+std::pair<double, double> NearestSide(const std::vector<std::pair<double, double>>& line,
+                                      double x, double y) {
+  double best = 1e18, cross = 0.0;
+  for (size_t i = 0; i + 1 < line.size(); ++i) {
+    const double ax = line[i].first, ay = line[i].second;
+    const double ex = line[i + 1].first - ax, ey = line[i + 1].second - ay;
+    const double len2 = ex * ex + ey * ey;
+    if (len2 <= 0) continue;
+    const double t = std::clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.0, 1.0);
+    const double d = std::hypot(x - (ax + t * ex), y - (ay + t * ey));
+    if (d < best) {
+      best = d;
+      cross = (ex * (y - ay) - ey * (x - ax)) / std::sqrt(len2);
+    }
+  }
+  return {best, cross};
+}
+
+const fv::FvColor kWhite{255, 255, 255, 255};
+
+}  // namespace
+
+// A headwind on the eastbound ride: arrows along the beach stretch only, on
+// its landward (north) side, pointing south-west, in the headwind colour.
+TEST(BeachWind, ChevronsLieAlongTheBeachOnTheLandwardSide) {
+  SKIP_WITHOUT_GRAPH();
+  WindRide r(graph_path);
+  ASSERT_TRUE(r.ov.FollowRoads()) << r.ov.status();
+  ASSERT_FALSE(r.ov.plan().beach.empty());
+  r.Mark(-4.0);
+  fv::CpuCanvas canvas(800, 400);
+  canvas.Clear(kWhite);
+  ASSERT_TRUE(r.ov.OnDraw(r.proj, canvas).ok());
+
+  const std::vector<GeoPoint> line = JoinedLine(r.ov.plan());
+  const fv::RouteBeachStretch& b = r.ov.plan().beach[0];
+  std::vector<std::pair<double, double>> px;
+  for (uint32_t k = b.geometry_begin; k <= b.geometry_end && k < line.size(); ++k) {
+    double x = 0, y = 0;
+    ASSERT_TRUE(r.proj.GeoToSurface(line[k], &x, &y).ok());
+    px.emplace_back(x, y);
+  }
+
+  const auto& drawn = r.ov.drawn_wind();
+  ASSERT_GE(drawn.size(), 5u);
+  for (const auto& c : drawn) {
+    EXPECT_EQ(fv::RouteOverlay::WindClass::kHead, c.kind);
+    EXPECT_LT(c.dx, 0.0);  // towards the west
+    EXPECT_GT(c.dy, 0.0);  // and the south, y down
+    const auto [dist, cross] = NearestSide(px, c.x, c.y);
+    EXPECT_LT(dist, 25.0);
+    EXPECT_GT(dist, 5.0);
+    EXPECT_LT(cross, 0.0) << "arrow on the sea side at " << c.x << "," << c.y;
+  }
+  // Opaque: the arrow's own colour, with nothing of the map through it.
+  EXPECT_GT(CountColour(canvas.Buffer(), fv::RouteOverlay::kHeadwindColor), 100u);
+}
+
+// The symbol size grows each arrow by its square and spaces them out by the
+// same factor, so each arrow covers about 1.75^2 = 3.1 times the pixels.
+TEST(BeachWind, ArrowsGrowWithTheSymbolSize) {
+  SKIP_WITHOUT_GRAPH();
+  WindRide r(graph_path);
+  ASSERT_TRUE(r.ov.FollowRoads()) << r.ov.status();
+  r.Mark(-4.0);
+  auto per_arrow = [&](double scale) {
+    r.ov.SetWindArrowScale(scale);
+    fv::CpuCanvas canvas(800, 400);
+    canvas.Clear(kWhite);
+    EXPECT_TRUE(r.ov.OnDraw(r.proj, canvas).ok());
+    EXPECT_FALSE(r.ov.drawn_wind().empty());
+    return double(CountColour(canvas.Buffer(), fv::RouteOverlay::kHeadwindColor)) /
+           std::max<size_t>(1, r.ov.drawn_wind().size());
+  };
+  const double small = per_arrow(1.0);
+  const double large = per_arrow(1.75);
+  EXPECT_GT(large, 2.5 * small);
+  EXPECT_LT(large, 3.8 * small);
+}
+
+// Over the threshold either way is coloured; at it or under is calm.
+TEST(BeachWind, TheThresholdIsStrictAndBothWays) {
+  SKIP_WITHOUT_GRAPH();
+  WindRide r(graph_path);
+  ASSERT_TRUE(r.ov.FollowRoads()) << r.ov.status();
+  fv::CpuCanvas canvas(800, 400);
+  const std::pair<double, fv::RouteOverlay::WindClass> cases[] = {
+      {3.0, fv::RouteOverlay::WindClass::kTail},
+      {1.8, fv::RouteOverlay::WindClass::kCalm},
+      {-1.0, fv::RouteOverlay::WindClass::kCalm},
+      {-1.9, fv::RouteOverlay::WindClass::kHead}};
+  for (const auto& [along, want] : cases) {
+    r.Mark(along);
+    ASSERT_TRUE(r.ov.OnDraw(r.proj, canvas).ok());
+    ASSERT_FALSE(r.ov.drawn_wind().empty());
+    EXPECT_EQ(want, r.ov.drawn_wind().front().kind) << along;
+  }
+}
+
+// The marks index the plan's stretches, so a new plan drops them, and a mark
+// for a stretch the plan does not have draws nothing.
+TEST(BeachWind, AReplanDropsTheMarks) {
+  SKIP_WITHOUT_GRAPH();
+  WindRide r(graph_path);
+  ASSERT_TRUE(r.ov.FollowRoads()) << r.ov.status();
+  fv::CpuCanvas canvas(800, 400);
+  canvas.Clear(kWhite);
+  r.Mark(-4.0, r.ov.plan().beach.size());
+  ASSERT_TRUE(r.ov.OnDraw(r.proj, canvas).ok());
+  EXPECT_TRUE(r.ov.drawn_wind().empty());
+
+  r.Mark(-4.0);
+  ASSERT_TRUE(r.ov.FollowRoads());
+  EXPECT_TRUE(r.ov.beach_wind().empty());
+  ASSERT_TRUE(r.ov.OnDraw(r.proj, canvas).ok());
+  EXPECT_TRUE(r.ov.drawn_wind().empty());
+  EXPECT_EQ(0u, CountColour(canvas.Buffer(), fv::RouteOverlay::kHeadwindColor));
+}

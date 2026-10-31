@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <set>
@@ -60,6 +61,14 @@ std::string CellPath(const std::string& stem) {
   if (var##_path.empty()) GTEST_SKIP() << "no " stem " test data"; \
   fv::S57Cell var;                                                 \
   ASSERT_TRUE(var.Open(var##_path).ok()) << var.Open(var##_path).message
+
+// The base edition with no updates applied: DSSI's declared counts and the
+// pins taken before CH10 describe it, not the updated cell.
+#define OPEN_BASE_CELL(var, stem)                                            \
+  const std::string var##_path = CellPath(stem);                             \
+  if (var##_path.empty()) GTEST_SKIP() << "no " stem " test data";           \
+  fv::S57Cell var;                                                           \
+  ASSERT_TRUE(var.Open(var##_path, fv::S57Updates::kBaseOnly).ok())
 
 // The four cells, and the box each one's CATALOG.031 declares.
 struct CellSpec {
@@ -96,7 +105,7 @@ const fv::S57Feature* ById(const fv::S57Cell& cell, int32_t rcid) {
 // --- dataset metadata -------------------------------------------------------
 
 TEST(S57Cell, ReadsDatasetIdentification) {
-  OPEN_CELL(cell, "US5CHSDC");
+  OPEN_BASE_CELL(cell, "US5CHSDC");
   const fv::S57DatasetInfo& i = cell.info();
   EXPECT_EQ("US5CHSDC.000", i.name);
   EXPECT_EQ("2", i.edition);
@@ -140,7 +149,8 @@ TEST(S57Cell, ParsedRecordCountsMatchTheDeclaredOnes) {
     if (path.empty()) continue;
     ++cells_checked;
     fv::S57Cell cell;
-    ASSERT_TRUE(cell.Open(path).ok()) << spec.stem;
+    // DSSI declares the base edition's records; updates change the counts.
+    ASSERT_TRUE(cell.Open(path, fv::S57Updates::kBaseOnly).ok()) << spec.stem;
     const fv::S57DatasetInfo& i = cell.info();
     const fv::S57ParseCounts& c = cell.counts();
     EXPECT_EQ(i.declared_isolated_nodes, c.isolated_nodes) << spec.stem;
@@ -221,7 +231,7 @@ TEST(S57Cell, EveryAreaRingCloses) {
 }
 
 TEST(S57Cell, LineAndPointFeaturesHaveUsableGeometry) {
-  OPEN_CELL(cell, "US5CHSDC");
+  OPEN_BASE_CELL(cell, "US5CHSDC");
   int lines = 0, points = 0;
   for (const fv::S57Feature& f : cell.features()) {
     if (f.primitive == fv::S57Primitive::kLine) {
@@ -320,8 +330,9 @@ TEST(S57Cell, PinnedSingleRingArea) {
 
 TEST(S57Cell, PinnedAreaWithHoles) {
   // USAG on this feature's FSPT pointers is 12x exterior, 3x interior, 1x
-  // exterior-truncated-by-data-limit: three rings, two of them holes.
-  OPEN_CELL(cell, "US5CHSDC");
+  // exterior-truncated-by-data-limit: three rings, two of them holes. An
+  // update deletes this M_QUAL, so the pin is on the base edition.
+  OPEN_BASE_CELL(cell, "US5CHSDC");
   const fv::S57Feature* f = ById(cell, 448);
   ASSERT_NE(nullptr, f);
   EXPECT_EQ(fv::S57Primitive::kArea, f->primitive);
@@ -400,7 +411,7 @@ TEST(S57Cell, PerCellTotalsArePinned) {
     const std::string path = CellPath(e.stem);
     if (path.empty()) continue;
     fv::S57Cell cell;
-    ASSERT_TRUE(cell.Open(path).ok()) << e.stem;
+    ASSERT_TRUE(cell.Open(path, fv::S57Updates::kBaseOnly).ok()) << e.stem;
     EXPECT_EQ(e.points, CountPrimitive(cell, fv::S57Primitive::kPoint)) << e.stem;
     EXPECT_EQ(e.lines, CountPrimitive(cell, fv::S57Primitive::kLine)) << e.stem;
     EXPECT_EQ(e.areas, CountPrimitive(cell, fv::S57Primitive::kArea)) << e.stem;
@@ -425,31 +436,142 @@ TEST(S57Cell, RereadingACellGivesTheSameResult) {
   }
 }
 
-// --- staleness: the base edition is not the current chart -------------------
+TEST(S57Cell, PerCellTotalsAfterUpdatesArePinned) {
+  const struct {
+    const char* stem;
+    const char* update;
+    int points, lines, areas, meta;
+    size_t vertices;
+  } kExpect[] = {
+      {"US5CHSDC", "3", 105, 294, 202, 0, 32553},
+      {"US5CHSDD", "1", 204, 576, 468, 5, 60029},
+      {"US5CHSEC", "1", 166, 389, 299, 0, 48671},
+      {"US5CHSED", "2", 457, 762, 549, 12, 64846},
+  };
+  for (const auto& e : kExpect) {
+    const std::string path = CellPath(e.stem);
+    if (path.empty()) continue;
+    fv::S57Cell cell;
+    ASSERT_TRUE(cell.Open(path).ok()) << e.stem;
+    EXPECT_EQ(e.update, cell.info().update_number) << e.stem;
+    EXPECT_EQ(e.points, CountPrimitive(cell, fv::S57Primitive::kPoint)) << e.stem;
+    EXPECT_EQ(e.lines, CountPrimitive(cell, fv::S57Primitive::kLine)) << e.stem;
+    EXPECT_EQ(e.areas, CountPrimitive(cell, fv::S57Primitive::kArea)) << e.stem;
+    EXPECT_EQ(e.meta, CountPrimitive(cell, fv::S57Primitive::kNone)) << e.stem;
+    EXPECT_EQ(e.vertices, VertexCount(cell)) << e.stem;
+  }
+}
 
-TEST(S57Cell, UnappliedUpdateFilesAreReportedLoudly) {
+// --- updates ------------------------------------------------------------
+
+/** FNV-1a over every feature's FOID, OBJL, attributes and vertices (1e-7 deg). */
+uint64_t ContentDigest(const fv::S57Cell& cell) {
+  uint64_t h = 14695981039346656037ull;
+  auto mix = [&h](int64_t v) {
+    for (int i = 0; i < 8; ++i) {
+      h ^= static_cast<uint8_t>(v >> (8 * i));
+      h *= 1099511628211ull;
+    }
+  };
+  for (const fv::S57Feature& f : cell.features()) {
+    mix(f.object_id.agency);
+    mix(f.object_id.feature_id);
+    mix(f.object_id.subdivision);
+    mix(f.object_class);
+    for (const fv::S57Attribute& a : f.attributes) {
+      mix(a.code);
+      for (char c : a.value) mix(c);
+    }
+    for (const auto& part : f.geometry.parts)
+      for (const fv::S57Vertex& v : part) {
+        mix(static_cast<int64_t>(std::llround(v.lat * 1e7)));
+        mix(static_cast<int64_t>(std::llround(v.lon * 1e7)));
+      }
+  }
+  return h;
+}
+
+// Florida cells with the most update changes, matched feature for feature
+// against GDAL's S-57 driver (UPDATES=APPLY) by port/tools/enc_update_diff.py.
+// GDAL keeps a cancelled cell's features; here US1GC09M opens empty.
+TEST(S57Update, PinnedFloridaCells) {
+  const char* d = getenv("FVW_TESTDATA_DIR");
+  const std::string root = d ? std::string(d) + "/enc-regions/FL/ENC_ROOT" : std::string();
+  if (root.empty() || !fs::is_directory(root)) GTEST_SKIP() << "no Florida ENC set";
+  const struct {
+    const char* stem;
+    const char* update;
+    size_t features, vertices;
+    uint64_t digest;
+    bool cancelled;
+  } kExpect[] = {
+      {"US5JAXEC", "1", 1743, 78403, 0x324265c093d43ab8ull, false},
+      {"US5JAXFF", "3", 1856, 160836, 0xf64f3805d38e2fa1ull, false},
+      {"US4FL1YB", "4", 4596, 87994, 0x08971759d2862d0dull, false},
+      {"US4FL2DJ", "1", 652, 21531, 0x5a79e67d52fd4717ull, false},
+      {"US1GC09M", "6", 0, 0, 0xcbf29ce484222325ull, true}  // FNV basis: no features,
+  };
+  for (const auto& e : kExpect) {
+    const std::string path = root + "/" + e.stem + "/" + e.stem + ".000";
+    fv::S57Cell cell;
+    ASSERT_TRUE(cell.Open(path).ok()) << e.stem;
+    EXPECT_TRUE(cell.unapplied_updates().empty()) << cell.StalenessWarning();
+    EXPECT_EQ(e.update, cell.info().update_number) << e.stem;
+    EXPECT_EQ(e.cancelled, cell.cancelled()) << e.stem;
+    EXPECT_EQ(e.features, cell.features().size()) << e.stem;
+    EXPECT_EQ(e.vertices, VertexCount(cell)) << e.stem;
+    EXPECT_EQ(e.digest, ContentDigest(cell)) << e.stem << std::hex << " 0x" << ContentDigest(cell);
+  }
+}
+
+TEST(S57Cell, DeliveredUpdatesAreApplied) {
   OPEN_CELL(cell, "US5CHSDC");
+  EXPECT_TRUE(cell.unapplied_updates().empty()) << cell.StalenessWarning();
+  EXPECT_TRUE(cell.StalenessWarning().empty());
+  EXPECT_EQ("3", cell.info().update_number) << "US5CHSDC ships .001 through .003";
+  EXPECT_EQ("2", cell.info().edition);
+  EXPECT_EQ("20260618", cell.info().issue_date) << "the issue date of .003";
+  EXPECT_FALSE(cell.cancelled());
+}
+
+TEST(S57Cell, UpdatesDeleteAndReviseQualityZones) {
+  // The US5CHSDC updates redraw the M_QUAL (308) zones: six deleted, one
+  // revised twice.
+  OPEN_CELL(cell, "US5CHSDC");
+  for (int32_t rcid : {448, 449, 450, 453, 457, 461})
+    EXPECT_EQ(nullptr, ById(cell, rcid)) << rcid;
+  const fv::S57Feature* revised = ById(cell, 460);
+  ASSERT_NE(nullptr, revised);
+  EXPECT_EQ(308, revised->object_class);
+  EXPECT_EQ(3, revised->version);
+  EXPECT_TRUE(revised->geometry_complete);
+}
+
+TEST(S57Cell, BaseOnlyReportsEveryUpdateAsUnapplied) {
+  OPEN_BASE_CELL(cell, "US5CHSDC");
   const std::vector<std::string>& updates = cell.unapplied_updates();
-  ASSERT_EQ(3u, updates.size()) << "US5CHSDC ships .001 through .003";
+  ASSERT_EQ(3u, updates.size());
   EXPECT_NE(std::string::npos, updates[0].find("US5CHSDC.001"));
   EXPECT_NE(std::string::npos, updates[2].find("US5CHSDC.003"));
   const std::string warning = cell.StalenessWarning();
-  EXPECT_NE(std::string::npos, warning.find("BASE EDITION"));
+  EXPECT_NE(std::string::npos, warning.find("at update 0"));
   EXPECT_NE(std::string::npos, warning.find("out of date"));
   EXPECT_NE(std::string::npos, warning.find("US5CHSDC.003"));
 }
 
-TEST(S57Cell, EveryDeliveredCellHasUnappliedUpdates) {
-  // True of all four NOAA cells as delivered, and the reason E1 must be loud:
-  // there is no "base cell is fine" case in this data set.
+TEST(S57Cell, EveryDeliveredUpdateApplies) {
   SKIP_WITHOUT_ENC();
   for (const CellSpec& spec : kCells) {
     const std::string path = CellPath(spec.stem);
     if (path.empty()) continue;
+    fv::S57Cell base;
+    ASSERT_TRUE(base.Open(path, fv::S57Updates::kBaseOnly).ok()) << spec.stem;
+    EXPECT_FALSE(base.unapplied_updates().empty()) << spec.stem << " ships updates";
     fv::S57Cell cell;
     ASSERT_TRUE(cell.Open(path).ok()) << spec.stem;
-    EXPECT_FALSE(cell.unapplied_updates().empty()) << spec.stem;
-    EXPECT_FALSE(cell.StalenessWarning().empty()) << spec.stem;
+    EXPECT_TRUE(cell.unapplied_updates().empty()) << cell.StalenessWarning();
+    for (const fv::S57Feature& f : cell.features())
+      EXPECT_TRUE(f.geometry_complete) << spec.stem << " feature " << f.record_id;
   }
 }
 

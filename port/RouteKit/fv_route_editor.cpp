@@ -63,6 +63,11 @@ std::vector<app::MenuNode> RouteEditor::Tools() const {
                        on_route([](RouteOverlay& o) { o.edit().FollowRoads(); })));
   tools.push_back(node("Follow Roads by Bicycle (B)", "follow_roads_bicycle", routable,
                        on_route([](RouteOverlay& o) { o.edit().FollowRoadsByBicycle(); })));
+  // Offered on a graph with elevation; kept while set so it can be cleared.
+  const bool hills = r != nullptr && r->avoid_hills();
+  tools.push_back(node("Avoid Hills (H)", "avoid_hills",
+                       r != nullptr && (hills || r->MayHaveElevation()),
+                       on_route([](RouteOverlay& o) { o.edit().ToggleAvoidHills(); }), hills));
   tools.push_back(node("Straight Legs", "straight_legs", r != nullptr && r->has_plan(),
                        on_route([](RouteOverlay& o) { o.ClearRoads(); })));
   tools.push_back(app::MenuNode{});

@@ -16,10 +16,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -304,6 +307,86 @@ TEST_F(DtedShadedRelief, ShadingVariesAcrossSlopesWithinABand) {
   EXPECT_GT(max_lum - min_lum, 60)
       << "shaded relief is nearly uniform (min " << min_lum << ", max "
       << max_lum << ")";
+}
+
+/// The posts of a DTED cell, top-down (row 0 = north), as float metres.
+/// Reads the UHL counts and the signed-magnitude big-endian data records.
+bool ReadPosts(const std::string& path, int* nlon, int* nlat, double* lon_sec,
+               double* lat_sec, std::vector<float>* posts) {
+  std::FILE* f = std::fopen(path.c_str(), "rb");
+  if (f == nullptr) return false;
+  std::vector<unsigned char> bytes;
+  unsigned char buf[65536];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+  std::fclose(f);
+  auto num = [&](size_t at, size_t len) {
+    return std::stoi(std::string(bytes.begin() + at, bytes.begin() + at + len));
+  };
+  *lon_sec = num(20, 4) / 10.0;
+  *lat_sec = num(24, 4) / 10.0;
+  *nlon = num(47, 4);
+  *nlat = num(51, 4);
+  posts->assign(static_cast<size_t>(*nlon) * *nlat, 0.0f);
+  for (int c = 0; c < *nlon; ++c) {
+    const size_t col = 80 + 648 + 2700 + static_cast<size_t>(c) * (12 + 2 * *nlat) + 8;
+    for (int r = 0; r < *nlat; ++r) {  // r = 0 is the south post
+      const unsigned char hi = bytes[col + 2 * r], lo = bytes[col + 2 * r + 1];
+      int v = ((hi & 0x7f) << 8) | lo;
+      if (hi & 0x80) v = -v;
+      (*posts)[static_cast<size_t>(*nlat - 1 - r) * *nlon + c] = static_cast<float>(v);
+    }
+  }
+  return true;
+}
+
+TEST_F(DtedShadedRelief, ShadeGridMatchesTheCellRender) {
+  // The cell's own posts through ShadeGrid reproduce Render, bands and all.
+  fv::DtedShadedRenderer r;
+  ASSERT_TRUE(r.Open(path_).ok());
+  r.SetElevationBands({1000, 2000, 3000, 4000, 5000});
+  fv::PixelBuffer cell;
+  ASSERT_TRUE(r.Render(&cell).ok());
+
+  int nlon = 0, nlat = 0;
+  double lon_sec = 0, lat_sec = 0;
+  std::vector<float> posts;
+  ASSERT_TRUE(ReadPosts(path_, &nlon, &nlat, &lon_sec, &lat_sec, &posts));
+  ASSERT_EQ(nlon - 1, cell.Width());
+  ASSERT_EQ(nlat - 1, cell.Height());
+
+  const double kPi = 4.0 * std::atan(1.0), kR = 6378137.0;
+  fv::GeoPoint nw;
+  ASSERT_TRUE(r.PixelToGeo(0, -1, &nw));
+  const double mid_lat = nw.lat - (nlat - 1) * (lat_sec / 3600.0) / 2;
+  const double m_lat = lat_sec / 3600.0 * kR * kPi / 180.0;
+  const double m_lon = lon_sec / 3600.0 * kR * std::cos(mid_lat * kPi / 180.0) * kPi / 180;
+  fv::PixelBuffer grid;
+  ASSERT_TRUE(r.ShadeGrid(posts.data(), nlon - 1, nlat - 1, m_lat, m_lon, {mid_lat, nw.lon},
+                          &grid).ok());
+  ASSERT_EQ(grid.Width(), cell.Width());
+  ASSERT_EQ(grid.Height(), cell.Height());
+
+  size_t same = 0, total = 0;
+  for (int y = 0; y < cell.Height(); ++y) {
+    for (int x = 0; x < cell.Width(); ++x, ++total) {
+      if (std::memcmp(cell.Row(y) + 4 * x, grid.Row(y) + 4 * x, 4) == 0) ++same;
+    }
+  }
+  EXPECT_EQ(same, total) << (total - same) << " pixels differ";
+}
+
+TEST(DtedShadedGrid, VoidPostsAreTransparent) {
+  fv::DtedShadedRenderer r;
+  const float nan = std::nanf("");
+  // 2x2 pixels from 3x3 posts; the north-west post is void.
+  const std::vector<float> posts = {nan, 300, 310, 305, 300, 320, 310, 315, 330};
+  fv::PixelBuffer out;
+  ASSERT_TRUE(r.ShadeGrid(posts.data(), 2, 2, 30.0, 25.0, {34.0, -84.0}, &out).ok());
+  EXPECT_EQ(out.Row(0)[3], 0);
+  EXPECT_EQ(out.Row(0)[7], 255);
+  EXPECT_EQ(out.Row(1)[3], 255);
+  EXPECT_EQ(out.Row(1)[7], 255);
 }
 
 }  // namespace

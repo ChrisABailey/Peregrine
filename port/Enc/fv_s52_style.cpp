@@ -113,6 +113,7 @@ struct S52StyleEngine::Impl {
   // (fvkit/vector/mariner.h). S-52's defaults ARE the struct's defaults, so
   // nothing this engine draws moved with them.
   bool show_meta = false;
+  bool show_buoy_names = true;
 
   std::map<std::string, size_t> unhandled_cs;
   size_t placeholders = 0;
@@ -672,6 +673,13 @@ void S52StyleEngine::SetShowMetaObjects(bool on) {
 }
 bool S52StyleEngine::show_meta_objects() const { return impl_->show_meta; }
 
+void S52StyleEngine::SetShowBuoyNames(bool on) {
+  if (impl_->show_buoy_names == on) return;
+  impl_->show_buoy_names = on;
+  BumpStyleEpoch();
+}
+bool S52StyleEngine::show_buoy_names() const { return impl_->show_buoy_names; }
+
 void S52StyleEngine::SetPointStyle(S52PointStyle s) {
   impl_->point_style = s;
   BumpStyleEpoch();
@@ -743,15 +751,16 @@ namespace {
 // fvkit/vector/lookup_engine.h as of E3c — it names no product's instructions,
 // only style.h's slots, so it belongs to the shared core.
 
-// S-52 pen styles. Run lengths are in pixels, matching Pen::dash, and are the
-// spec's nominal 3.6 mm / 0.6 mm patterns rounded at a nominal 96 dpi — the
-// renderer scales nothing, so a dash stays legible at any zoom.
-void ApplyPenStyle(const std::string& style, Pen* pen) {
+/// Sets `pen`'s dash for an S-52 pen style. Run lengths are the spec's
+/// patterns rounded at 96 dpi and scaled to `dpi` like the pen width, so a
+/// wide pen on a dense screen keeps its gaps; they do not grow with zoom.
+void ApplyPenStyle(const std::string& style, double dpi, Pen* pen) {
   const std::string s = Clean(style);
+  const double k = dpi > 0.0 ? dpi / 96.0 : 1.0;
   if (s == "DASH") {
-    pen->dash = {12, 6};
+    pen->dash = {12 * k, 6 * k};
   } else if (s == "DOTT") {
-    pen->dash = {2, 4};
+    pen->dash = {2 * k, 4 * k};
   } else {
     pen->dash.clear();  // SOLD, and anything a future table adds
   }
@@ -776,6 +785,12 @@ double PxPerHimetric(const StyleContext& ctx) {
 // catalogued classes, so the shortcut cannot drift from the data.
 bool IsMetaAcronym(const std::string& acronym) {
   return acronym.size() > 2 && acronym[0] == 'M' && acronym[1] == '_';
+}
+
+/// True for the six S-57 buoy classes (BOYCAR, BOYINB, BOYISD, BOYLAT, BOYSAW,
+/// BOYSPP).
+bool IsBuoyAcronym(const std::string& acronym) {
+  return acronym.size() == 6 && acronym.compare(0, 3, "BOY") == 0;
 }
 
 // The first ink colour a display list puts down, for the fallbacks.
@@ -927,7 +942,7 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       s.valid = true;
       s.pen.color = impl_->Color(ins.params[2]);
       s.pen.width = PenWidthPx(ToDouble(ins.params[1], 1.0), ctx.device_dpi);
-      ApplyPenStyle(ins.params[0], &s.pen);
+      ApplyPenStyle(ins.params[0], ctx.device_dpi, &s.pen);
       continue;
     }
 
@@ -1065,6 +1080,7 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
     }
 
     if ((ins.op == "TX" || ins.op == "TE") && draw_labels) {
+      if (!impl_->show_buoy_names && IsBuoyAcronym(f.style_key)) continue;
       const bool is_te = ins.op == "TE";
       const size_t attr_index = is_te ? 1 : 0;
       if (ins.params.size() <= attr_index) continue;

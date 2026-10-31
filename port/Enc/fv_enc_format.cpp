@@ -15,6 +15,7 @@
 
 #include "fv_s57.h"
 #include "fvkit/formats/registry.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fs = std::filesystem;
 
@@ -59,6 +60,8 @@ std::map<std::string, GeoRect> CatalogBounds(const std::string& root) {
       end;
   if (ec) return out;
   for (; it != end; it.increment(ec)) {
+    // The caller checks again and reports the stop.
+    if (ScanInterrupted()) break;
     if (ec) break;
     if (!it->is_regular_file(ec) || ec) continue;
     if (Upper(it->path().filename().string()) != "CATALOG.031") continue;
@@ -117,8 +120,10 @@ Status EncFrameEnumerator::Begin(const std::string& dir) {
 
   // Cheap bounds first; a cell missing from every catalogue is opened.
   const std::map<std::string, GeoRect> catalogued = CatalogBounds(dir);
+  if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
 
   for (const std::string& cell_path : cells) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     const S57CellName name = ParseCellName(cell_path);
 
     FrameInfo f;
@@ -138,9 +143,11 @@ Status EncFrameEnumerator::Begin(const std::string& dir) {
       f.bounds = hit->second;
     } else {
       // No catalogue row: parse the cell for its own extent. Correct but
-      // expensive, which is exactly why the catalogue is tried first.
+      // expensive, which is exactly why the catalogue is tried first. The
+      // base edition's extent, as a catalogue gives, so a cell an update
+      // cancelled is still listed.
       S57Cell cell;
-      if (!cell.Open(cell_path).ok()) continue;  // unreadable cell: skip
+      if (!cell.Open(cell_path, S57Updates::kBaseOnly).ok()) continue;  // unreadable: skip
       f.bounds = cell.bounds();
       f.edition = cell.info().edition;
       if (!RectIsUsable(f.bounds)) continue;  // a cell with no geometry

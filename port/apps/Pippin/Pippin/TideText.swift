@@ -33,19 +33,19 @@ enum TideText {
     /// hundredth. A tide table's own precision is about a tenth of a foot.
     static func height(_ meters: Double, units: DistanceUnits) -> String {
         switch units {
-        case .miles: return String(format: "%.1f ft", meters / metersPerFoot)
+        case .miles, .nauticalMiles: return String(format: "%.1f ft", meters / metersPerFoot)
         case .kilometres: return String(format: "%.2f m", meters)
         }
     }
 
     /// A height converted for the chart's y axis, in feet or metres.
     static func chartValue(_ meters: Double, units: DistanceUnits) -> Double {
-        units == .miles ? meters / metersPerFoot : meters
+        units == .kilometres ? meters : meters / metersPerFoot
     }
 
     /// The chart's y-axis unit label.
     static func unitName(_ units: DistanceUnits) -> String {
-        units == .miles ? "ft" : "m"
+        units == .kilometres ? "m" : "ft"
     }
 
     /// A clock time, "2:14 pm", or "14:14" where the locale uses a 24-hour

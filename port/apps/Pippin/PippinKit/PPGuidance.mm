@@ -42,9 +42,22 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::GuidanceEventType type) {
   return PPGuidanceEventPassed;
 }
 
+static PPGuidanceEventKind PPKindFrom(fv::nav::CourseEventType type) {
+  switch (type) {
+    case fv::nav::CourseEventType::kWaypoint: return PPGuidanceEventWaypoint;
+    case fv::nav::CourseEventType::kArrived: return PPGuidanceEventArrived;
+    case fv::nav::CourseEventType::kOffCourse: return PPGuidanceEventOffCourse;
+    case fv::nav::CourseEventType::kBackOnCourse: return PPGuidanceEventBackOnCourse;
+  }
+  return PPGuidanceEventWaypoint;
+}
+
 @implementation PPGuidanceEvent {
   fv::nav::GuidanceEvent _event;
+  PPGuidanceEventKind _kind;
   NSString* _road;
+  NSString* _nextName;
+  double _crossTrack;
 }
 
 - (instancetype)initWithEvent:(const fv::nav::GuidanceEvent&)event
@@ -52,12 +65,30 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::GuidanceEventType type) {
   self = [super init];
   if (self != nil) {
     _event = event;
+    _kind = PPKindFrom(event.type);
     _road = [road copy];
+    _nextName = @"";
   }
   return self;
 }
 
-- (PPGuidanceEventKind)kind { return PPKindFrom(_event.type); }
+- (instancetype)initWithCourseEvent:(const fv::nav::CourseEvent&)event
+                               name:(NSString*)name
+                           nextName:(NSString*)nextName {
+  self = [super init];
+  if (self != nil) {
+    _event.maneuver_index = event.waypoint_index;
+    _kind = PPKindFrom(event.type);
+    _road = [name copy];
+    _nextName = [nextName copy];
+    _crossTrack = event.cross_track_m;
+  }
+  return self;
+}
+
+- (PPGuidanceEventKind)kind { return _kind; }
+- (double)crossTrackMeters { return _crossTrack; }
+- (NSString*)nextName { return _nextName; }
 - (PPGuidanceRing)ring { return PPRingFrom(_event.ring); }
 - (PPManeuver)maneuver { return PPManeuverFrom(_event.maneuver_type); }
 - (double)distanceMeters { return _event.distance_m; }
@@ -65,8 +96,8 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::GuidanceEventType type) {
 - (NSString*)road { return _road; }
 
 - (NSString*)description {
-  return [NSString stringWithFormat:@"<PPGuidanceEvent %s %s %.0f m>",
-                                    fv::nav::GuidanceEventTypeName(_event.type),
+  return [NSString stringWithFormat:@"<PPGuidanceEvent %ld %s %.0f m>",
+                                    static_cast<long>(_kind),
                                     fv::nav::GuidanceRingName(_event.ring),
                                     _event.distance_m];
 }
@@ -105,6 +136,55 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::GuidanceEventType type) {
                                         ? [@" onto " stringByAppendingString:_road]
                                         : @"",
                                     _state.has_then ? @" (+then)" : @""];
+}
+
+@end
+
+@implementation PPCourseDeviation {
+  fv::nav::CourseState _state;
+  double _limit;
+  NSInteger _count;
+  NSString* _name;
+}
+
+- (instancetype)initWithState:(const fv::nav::CourseState&)state
+                        limit:(double)offCourseLimitMeters
+                waypointCount:(NSInteger)count
+                         name:(NSString*)name {
+  self = [super init];
+  if (self != nil) {
+    _state = state;
+    _limit = offCourseLimitMeters;
+    _count = count;
+    _name = [name copy];
+  }
+  return self;
+}
+
+- (double)legCourseDegrees { return _state.leg_course_deg; }
+- (double)crossTrackMeters { return _state.cross_track_m; }
+- (double)offCourseLimitMeters { return _limit; }
+- (BOOL)offCourse { return _state.off_course ? YES : NO; }
+- (NSInteger)waypointIndex { return static_cast<NSInteger>(_state.waypoint_index); }
+- (NSInteger)waypointCount { return _count; }
+- (NSString*)waypointName { return _name; }
+- (double)bearingToWaypointDegrees { return _state.bearing_to_waypoint_deg; }
+- (double)distanceToWaypointMeters { return _state.distance_to_waypoint_m; }
+- (double)distanceToEndMeters { return _state.distance_to_end_m; }
+- (BOOL)hasCourseOverGround { return _state.has_course_over_ground ? YES : NO; }
+- (double)courseOverGroundDegrees { return _state.course_over_ground_deg; }
+- (BOOL)hasTimeToGo { return _state.has_time_to_go ? YES : NO; }
+- (double)secondsToWaypoint { return _state.time_to_waypoint_s; }
+- (double)secondsToEnd { return _state.time_to_end_s; }
+- (BOOL)hasETA { return _state.has_eta ? YES : NO; }
+- (double)etaWaypointEpochSeconds { return _state.eta_waypoint_s; }
+- (double)etaEndEpochSeconds { return _state.eta_end_s; }
+
+- (NSString*)description {
+  return [NSString stringWithFormat:@"<PPCourseDeviation wp %ld %.0f°T %.0f m xte %.0f m>",
+                                    static_cast<long>(_state.waypoint_index),
+                                    _state.bearing_to_waypoint_deg,
+                                    _state.distance_to_waypoint_m, _state.cross_track_m];
 }
 
 @end

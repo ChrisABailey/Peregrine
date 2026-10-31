@@ -16,13 +16,15 @@
 #include "fv_desk_host.h"
 #include "layer_fields_panel.h"
 #include "layer_style_window.h"
+#include "query_builder_panel.h"
 
 namespace peregrine {
 
 /// One page per tab `DeskHost` lists: Source (a heading per section and one
 /// selectable line per property), General (name, description, credits, scale
-/// range), Symbology and Labels (the style panel) and Fields (the fields
-/// panel). Apply writes every tab, OK applies and closes, Revert drops the
+/// range), Display (opacity, map tip and hyperlink fields), Symbology and
+/// Labels (the style panel), Fields (the fields panel), Selection (the
+/// selection colour) and Definition Query (the query builder). Apply writes every tab, OK applies and closes, Revert drops the
 /// edits; a source's sheet has the Source page alone and no buttons. Closing
 /// the window closes the tabs' models.
 class PropertiesWindow : public Gtk::Window {
@@ -63,13 +65,35 @@ class PropertiesWindow : public Gtk::Window {
   LayerStylePanel* symbology() { return symbology_; }
   LayerStylePanel* labels() { return labels_; }
   LayerFieldsPanel* fields() { return fields_; }
+  QueryBuilderPanel* definition_query() { return definition_query_; }
+  Gtk::Scale& opacity_scale() { return opacity_; }
+  /// "80%" beside the opacity slider.
+  std::string opacity_text() const { return opacity_label_.get_text(); }
+  Gtk::DropDown& map_tip_drop_down() { return map_tip_; }
+  Gtk::DropDown& hyperlink_drop_down() { return hyperlink_; }
+  Gtk::CheckButton& default_selection_button() { return default_selection_; }
+  Gtk::CheckButton& own_selection_button() { return own_selection_; }
+  Gtk::ColorDialogButton& selection_color_button() { return *selection_color_; }
+  Gtk::Entry& selection_width_entry() { return selection_width_; }
+  /// "1 feature is selected."
+  std::string selection_count_text() const { return selection_count_.get_text(); }
   /// The message under the pages; "" when hidden.
   std::string message() const;
 
  private:
   void BuildGeneral();
+  void BuildDisplay();
+  void BuildSelection();
   void ReloadSource();
   void ReloadGeneral();
+  void ReloadDisplay();
+  void ReloadSelection();
+  /// Writes the Display page to the draft.
+  void CommitDisplay();
+  /// Writes the Selection page to the draft; false, with the message shown, when refused.
+  bool CommitSelection();
+  /// Re-reads every page's controls from the drafts, keeping the pages.
+  void ReloadPages();
   /// Writes the General page to the draft; false, with the message shown, when refused.
   bool CommitGeneral();
   void Report(const std::string& error);
@@ -92,7 +116,25 @@ class PropertiesWindow : public Gtk::Window {
   LayerStylePanel* symbology_ = nullptr;
   LayerStylePanel* labels_ = nullptr;
   LayerFieldsPanel* fields_ = nullptr;
-  /// The tabs the pages were built for.
+  QueryBuilderPanel* definition_query_ = nullptr;
+  Gtk::Box display_page_{Gtk::Orientation::VERTICAL, 16};
+  Gtk::Box opacity_row_{Gtk::Orientation::HORIZONTAL, 8};
+  Gtk::Scale opacity_;
+  Gtk::Label opacity_label_;
+  Gtk::Grid display_fields_;
+  Gtk::DropDown map_tip_;
+  Gtk::DropDown hyperlink_;
+  /// The field names behind the map tip and hyperlink items; item 0 is "".
+  std::vector<std::string> display_field_names_;
+  Gtk::Box selection_page_{Gtk::Orientation::VERTICAL, 10};
+  Gtk::CheckButton default_selection_{"Use the default selection colour"};
+  Gtk::CheckButton own_selection_{"Use this colour:"};
+  Gtk::ColorDialogButton* selection_color_ = nullptr;
+  Gtk::Entry selection_width_;
+  Gtk::Label selection_count_;
+  Gtk::Button select_by_attributes_{"Select by Attributes…"};  /// The tabs the host offered when the pages were built.
+  std::vector<int> host_tabs_;
+  /// The tab of each page, in page order; a tab without a page here is left out.
   std::vector<int> tabs_;
   Gtk::Label message_;
   Gtk::Box* buttons_ = nullptr;
@@ -101,7 +143,7 @@ class PropertiesWindow : public Gtk::Window {
   Gtk::Button apply_{"Apply"};
   Gtk::Button ok_{"OK"};
   ConfirmFn confirm_;
-  /// Set while the General page is filled from the model, so its signals are not edits.
+  /// Set while a page is filled from the model, so its signals are not edits.
   bool loading_ = false;
   /// A General control changed since the page was last written to the draft.
   bool general_dirty_ = false;

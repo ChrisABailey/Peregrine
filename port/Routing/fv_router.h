@@ -150,6 +150,12 @@ struct RouteOptions {
   // not for crossing dry sand to reach it.
   double beach_prefer_factor = 0.5;
 
+  /// A preference multiplier on the profile's climb seconds, in the cost only;
+  /// reported times use the unscaled climb. 1.0 is neutral, above 1.0 avoids
+  /// hills; values below 1.0 are treated as 1.0. The part above 1.0 is added
+  /// outside the class weights. Not seeded from the profile.
+  double hill_penalty = 1.0;
+
   // How far an endpoint may be from the road network before the request is
   // refused. Applies to Router::Route (geographic endpoints) only.
   double snap_meters = 500.0;
@@ -203,11 +209,30 @@ struct RouteLeg {
   uint32_t geometry_begin = 0;
 };
 
+/// One point of a route's elevation profile.
+struct ElevationPoint {
+  double along_m = 0.0;  ///< Distance from the route's start.
+  double elev_m = 0.0;   ///< Ground elevation, metres.
+  uint32_t geometry_index = 0;  ///< The same point's index in `Route::geometry`.
+};
+
 struct Route {
   bool found = false;
 
   double length_m = 0.0;
   double seconds = 0.0;
+
+  /// Set when the graph carries elevation; the three fields below are zero
+  /// and empty otherwise.
+  bool has_elevation = false;
+  /// Metres climbed and descended in the direction of travel, from the arcs'
+  /// sampled climb and descent (a partial arc counts its fraction).
+  double climb_m = 0.0;
+  double descent_m = 0.0;
+  /// Elevation at the route's start and at the end of every step, from the
+  /// node elevations (interpolated along an arc at a mid-road end). Coarser
+  /// than `climb_m`: a hill inside one arc shows only as its end nodes.
+  std::vector<ElevationPoint> profile;
 
   // The full drawn line, road geometry included, from the snapped start node
   // to the snapped end node. This is what goes onto the route overlay.
@@ -297,8 +322,11 @@ struct Route {
 bool ArcUsable(const RoadArc& arc, const RouteOptions& options);
 
 /// What relaxing `arc` costs under `options`: its time (or length) times the
-/// class weight and the private, toll, ferry and beach factors. The router's
-/// own cost, public so a view of the graph can show what the router sees.
+/// class weight and the private, toll, ferry and beach factors. The time
+/// includes the profile's hills in the arc's stored direction; on a time
+/// profile, `options.hill_penalty` above 1.0 adds its excess of the climb
+/// seconds, unweighted by class. The router's own cost, public so a view of
+/// the graph can show what the router sees.
 double ArcCost(const RoadArc& arc, const RouteOptions& options);
 
 /// What the junctions at either end of `arc` cost on top of ArcCost: the

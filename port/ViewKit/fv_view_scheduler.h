@@ -58,6 +58,9 @@ class RenderScheduler {
   /// Blocks until no request is waiting or rendering.
   void WaitIdle();
 
+  /// True while a request is waiting or rendering.
+  bool Busy() const;
+
   /// The most recently delivered frame, or null.
   std::shared_ptr<const Frame> LastFrame() const;
 

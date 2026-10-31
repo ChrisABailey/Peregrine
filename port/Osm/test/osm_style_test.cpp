@@ -28,12 +28,15 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "fv_osm_vector_source.h"
 #include "fvkit/tools/png_write.h"
 #include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/style/legend.h"
+#include "fvkit/symbol/builtin_icons.h"
 #include "fvkit/vector/renderer.h"
 #include "fv_web_mercator.h"
 
@@ -851,6 +854,56 @@ TEST(OsmStyleSymbol, IconsAreRecordedNotDrawn) {
   EXPECT_EQ(e.ignored_icons().begin()->second, 1u);
 }
 
+/// One point feature in source-layer `poi`.
+fv::VectorFeature Poi() {
+  fv::VectorFeature poi;
+  poi.type = fv::VectorGeometryType::kPoint;
+  poi.layer = "poi";
+  poi.parts.push_back({{33.75, -84.39}});
+  return poi;
+}
+
+TEST(OsmStyleSymbol, TheFallbackSheetAnswersAStyleWithNoSprite) {
+  fv::OsmStyleEngine e;
+  e.SetFallbackSprites(fv::BuiltinIconSheet());
+  ASSERT_TRUE(e.LoadText(Wrap(R"({"id":"poi","type":"symbol","source-layer":"poi",
+                                  "layout":{"icon-image":"restaurant"},
+                                  "paint":{"icon-color":"#00ff00","icon-opacity":0.5}})"))
+                  .ok());
+  EXPECT_GT(e.sprite_ids().size(), 200u);
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi(), fv::StyleContext(), &out).ok());
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].symbol.symbol_id, "sprite:restaurant#00ff0080");
+  const fv::SymbolPixmap* px = e.Pixmap(out[0].symbol.symbol_id);
+  ASSERT_NE(px, nullptr);
+  EXPECT_EQ(px->pixel_ratio, 2.0);
+  int opaque = 0;
+  for (int y = 0; y < px->tile.Height(); ++y)
+    for (int x = 0; x < px->tile.Width(); ++x) {
+      const unsigned char* p = px->tile.Row(y) + 4 * x;
+      if (p[3] == 0) continue;
+      EXPECT_EQ(p[1], 255);
+      EXPECT_LE(p[3], 128);
+      ++opaque;
+    }
+  EXPECT_GT(opaque, 100);
+  EXPECT_TRUE(e.ignored_icons().empty());
+}
+
+TEST(OsmStyleSymbol, AStyleThatNamesASpriteNeverFallsBack) {
+  fv::OsmStyleEngine e;
+  e.SetFallbackSprites(fv::BuiltinIconSheet());
+  ASSERT_TRUE(e.LoadText(R"({"version":8,"sprite":"https://example.invalid/sprite","layers":[
+                             {"id":"poi","type":"symbol","source-layer":"poi",
+                              "layout":{"icon-image":"restaurant"}}]})")
+                  .ok());
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e.Style(Poi(), fv::StyleContext(), &out).ok());
+  EXPECT_TRUE(out.empty());
+  EXPECT_EQ(e.ignored_icons().count("restaurant"), 1u);
+}
+
 TEST(OsmStyleCircle, BecomesAGeneratedEllipseDisplayList) {
   fv::OsmStyleEngine e;
   ASSERT_TRUE(e
@@ -1572,4 +1625,118 @@ TEST(OsmSprite, ASpriteReachesTheCanvasThroughTheRenderer) {
   EXPECT_EQ(r.draws_emitted(), 1u);
   EXPECT_TRUE(style->unresolved_symbols().empty());
   EXPECT_TRUE(style->ignored_icons().empty());
+}
+
+namespace {
+
+/// The style `name` at a phone's point pitch and `latitude`. Pitch and
+/// latitude are set before the load, which is when layer minzooms become
+/// scale bands.
+std::unique_ptr<fv::OsmStyleEngine> LoadForLegend(const std::string& dir, const char* name,
+                                                  double latitude) {
+  auto e = std::make_unique<fv::OsmStyleEngine>();
+  e->SetDisplayMmPerPixel(25.4 / 163.0);
+  e->SetReferenceLatitude(latitude);
+  std::string err;
+  if (!e->LoadFile(dir + "/" + name, &err).ok()) {
+    ADD_FAILURE() << name << ": " << err;
+    return nullptr;
+  }
+  return e;
+}
+
+/// The scale at which `e` styles at zoom `z`.
+double ScaleAtZoom(const fv::OsmStyleEngine& e, double z) {
+  return fv::webmerc::ScaleForZoomExact(z, e.reference_latitude(),
+                                        e.display_mm_per_pixel());
+}
+
+/// Both sheets of a light/dark pair carry the same legend, it parses, and
+/// every row draws: at z16, or from its own first zoom when that is later.
+void ExpectLegendLoadsAndEveryRowDraws(const char* dir, const char* light, const char* dark,
+                                       double latitude) {
+  std::vector<std::string> light_ids;
+  for (const char* name : {light, dark}) {
+    auto e = LoadForLegend(dir, name, latitude);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->legend_error(), "") << name;
+    ASSERT_FALSE(e->legend().empty()) << name;
+    std::vector<std::string> ids;
+    for (const fv::MapLibreLegendGroup& g : e->legend()) {
+      for (const fv::MapLibreLegendEntry& entry : g.entries) {
+        ids.push_back(entry.id);
+        // "designated" explains a map colour but is not a routing row in the key.
+        EXPECT_EQ(entry.osm.empty(), entry.id == "designated") << name << ": " << entry.id;
+        const double from = fv::LegendEntryMinZoom(*e, entry);
+        ASSERT_GE(from, 0.0) << name << ": " << entry.id << " draws at no zoom";
+        const double z = std::max(16.0, from);
+        EXPECT_FALSE(fv::LegendEntryLayers(*e, entry, ScaleAtZoom(*e, z)).empty())
+            << name << ": " << entry.id << " at z" << z;
+      }
+    }
+    if (light_ids.empty()) light_ids = ids;
+    else EXPECT_EQ(ids, light_ids) << name << "'s legend has drifted from the light style";
+  }
+}
+
+/// Every line the style draws on a road or a bike route has a legend row, or
+/// is listed as deliberately unlisted, so a new layer cannot ship without one.
+void ExpectLegendCoversEveryRoadLine(fv::OsmStyleEngine& e) {
+  std::set<std::string> covered;
+  for (const fv::MapLibreLegendGroup& g : e.legend())
+    for (const fv::MapLibreLegendEntry& entry : g.entries)
+      for (double z = 0.0; z <= 22.0; z += 0.5)
+        for (const std::string& id : fv::LegendEntryLayers(e, entry, ScaleAtZoom(e, z)))
+          covered.insert(id);
+  auto unlisted = [&e](const std::string& id) {
+    for (const std::string& p : e.legend_unlisted_layers()) {
+      if (!p.empty() && p.back() == '*' ? id.rfind(p.substr(0, p.size() - 1), 0) == 0
+                                        : id == p)
+        return true;
+    }
+    return false;
+  };
+  for (const fv::MapLibreLayerInfo& info : e.layers()) {
+    if (info.type != fv::MapLibreLayerType::kLine || !info.visible) continue;
+    if (info.source_layer != "transportation" && info.source_layer != "bike_route") continue;
+    EXPECT_TRUE(covered.count(info.id) || unlisted(info.id))
+        << info.id << " has no legend row and is not in unlisted_layers";
+    EXPECT_FALSE(covered.count(info.id) && unlisted(info.id))
+        << info.id << " has a legend row and is also listed as unlisted";
+  }
+}
+
+constexpr double kAtlantaLatitude = 33.75;
+constexpr double kKiawahLatitude = 32.61;
+
+}  // namespace
+
+TEST(OsmLegend, AtlantaLegendLoadsAndEveryRowDraws) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+  ExpectLegendLoadsAndEveryRowDraws(dir, "atlanta-streets.json", "atlanta-streets-dark.json",
+                                    kAtlantaLatitude);
+}
+
+TEST(OsmLegend, AtlantaLegendCoversEveryRoadLine) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+  auto e = LoadForLegend(dir, "atlanta-streets.json", kAtlantaLatitude);
+  ASSERT_NE(e, nullptr);
+  ExpectLegendCoversEveryRoadLine(*e);
+}
+
+TEST(OsmLegend, KiawahLegendLoadsAndEveryRowDraws) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+  ExpectLegendLoadsAndEveryRowDraws(dir, "kiawah-trails.json", "kiawah-trails-dark.json",
+                                    kKiawahLatitude);
+}
+
+TEST(OsmLegend, KiawahLegendCoversEveryRoadLine) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+  auto e = LoadForLegend(dir, "kiawah-trails.json", kKiawahLatitude);
+  ASSERT_NE(e, nullptr);
+  ExpectLegendCoversEveryRoadLine(*e);
 }

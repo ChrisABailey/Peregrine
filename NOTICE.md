@@ -81,6 +81,7 @@ a whole can be distributed under a single one.
 | `fvw_core/ImageLib/png/` | libpng | libpng license — full text in `png.h` |
 | `fvw_core/ImageLib/tiff/` | libtiff (Sam Leffler, Silicon Graphics) | libtiff/MIT-style permission notice in each source file |
 | `fvw_core/ImageLib/jpeg/`, `jpeg12/` | Independent JPEG Group libjpeg, forked by FalconView | IJG license — see note below |
+| `port/fvkit/symbol/maki_sheet.inc` | Maki icon set (Mapbox), packed into one sprite sheet by `port/tools/make_maki_sheet.py` | CC0 1.0 Universal (public domain dedication) |
 
 These are unmodified except where a port change is marked in place, and each
 retains its own copyright headers.

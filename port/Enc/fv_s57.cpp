@@ -7,26 +7,27 @@
 
 #include "fv_s57.h"
 
+#include "fv_s57_records.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
 
 #include "fvkit/log.h"
+#include "fvkit/formats/scan_interrupt.h"
 
 namespace fs = std::filesystem;
 
 namespace fv {
 namespace {
 
-// S-57 record names (RCNM).
 constexpr int kRcnmDataSetId = 10;
 constexpr int kRcnmDataSetParam = 20;
-constexpr int kRcnmFeature = 100;
-constexpr int kRcnmIsolatedNode = 110;
-constexpr int kRcnmConnectedNode = 120;
-constexpr int kRcnmEdge = 130;
-constexpr int kRcnmFace = 140;
+constexpr int kRcnmIsolatedNode = kS57RcnmIsolatedNode;
+constexpr int kRcnmConnectedNode = kS57RcnmConnectedNode;
+constexpr int kRcnmEdge = kS57RcnmEdge;
+constexpr int kRcnmFace = kS57RcnmFace;
 
 // VRPT.TOPI — which end of an edge a pointer refers to.
 constexpr int kTopiBeginNode = 1;
@@ -37,36 +38,6 @@ constexpr int kUsageInterior = 2;
 
 // FSPT/VRPT.ORNT — 2 means the referenced edge runs against the feature.
 constexpr int kOrientationReverse = 2;
-
-// A spatial record's key: RCNM in the high byte, RCID below. This is exactly
-// what an S-57 NAME subfield (B(40), 5 bytes) encodes.
-uint64_t SpatialKey(int rcnm, uint32_t rcid) {
-  return (static_cast<uint64_t>(rcnm) << 32) | rcid;
-}
-
-uint64_t DecodeName(const iso8211::Value* v) {
-  if (v == nullptr || v->kind != iso8211::ValueKind::kBytes || v->bytes.size() < 5)
-    return 0;
-  const uint32_t rcid = static_cast<uint32_t>(v->bytes[1]) |
-                        (static_cast<uint32_t>(v->bytes[2]) << 8) |
-                        (static_cast<uint32_t>(v->bytes[3]) << 16) |
-                        (static_cast<uint32_t>(v->bytes[4]) << 24);
-  return SpatialKey(v->bytes[0], rcid);
-}
-
-// LNAM is B(64): AGEN (2) + FIDN (4) + FIDS (2), all LSB first.
-S57ObjectId DecodeLnam(const iso8211::Value* v) {
-  S57ObjectId id;
-  if (v == nullptr || v->kind != iso8211::ValueKind::kBytes || v->bytes.size() < 8)
-    return id;
-  const uint8_t* b = v->bytes.data();
-  id.agency = b[0] | (b[1] << 8);
-  id.feature_id = static_cast<uint32_t>(b[2]) | (static_cast<uint32_t>(b[3]) << 8) |
-                  (static_cast<uint32_t>(b[4]) << 16) |
-                  (static_cast<uint32_t>(b[5]) << 24);
-  id.subdivision = b[6] | (b[7] << 8);
-  return id;
-}
 
 void Grow(GeoRect* r, const S57Vertex& v) {
   r->ll.lat = std::min(r->ll.lat, v.lat);
@@ -88,6 +59,94 @@ std::string FileExtension(const fs::path& p) {
   return ext;
 }
 
+// Copies the DSID, DSSI and DSPM fields of `rec`, when present, into `info`.
+Status ReadDatasetFields(const iso8211::Record& rec, const std::string& path,
+                         S57DatasetInfo* info) {
+  if (const iso8211::Field* f = rec.Find("DSID")) {
+    info->name = f->Text(0, "DSNM");
+    info->edition = f->Text(0, "EDTN");
+    info->update_number = f->Text(0, "UPDN");
+    info->update_date = f->Text(0, "UADT");
+    info->issue_date = f->Text(0, "ISDT");
+    info->standard_edition = f->Text(0, "STED");
+    info->product_edition = f->Text(0, "PRED");
+    info->comment = f->Text(0, "COMT");
+    info->producer_agency = static_cast<int>(f->Int(0, "AGEN"));
+    info->intended_usage = static_cast<int>(f->Int(0, "INTU"));
+    if (f->Int(0, "RCNM", kRcnmDataSetId) != kRcnmDataSetId)
+      return Status::Error(kIoError, "fv_s57: DSID with wrong RCNM in " + path);
+  }
+  if (const iso8211::Field* f = rec.Find("DSSI")) {
+    info->data_structure = static_cast<int>(f->Int(0, "DSTR"));
+    info->attribute_lexical_level = static_cast<int>(f->Int(0, "AALL"));
+    info->national_lexical_level = static_cast<int>(f->Int(0, "NALL"));
+    info->declared_meta_records = static_cast<int>(f->Int(0, "NOMR"));
+    info->declared_cartographic_records = static_cast<int>(f->Int(0, "NOCR"));
+    info->declared_geo_records = static_cast<int>(f->Int(0, "NOGR"));
+    info->declared_collection_records = static_cast<int>(f->Int(0, "NOLR"));
+    info->declared_isolated_nodes = static_cast<int>(f->Int(0, "NOIN"));
+    info->declared_connected_nodes = static_cast<int>(f->Int(0, "NOCN"));
+    info->declared_edges = static_cast<int>(f->Int(0, "NOED"));
+    info->declared_faces = static_cast<int>(f->Int(0, "NOFA"));
+  }
+  if (const iso8211::Field* f = rec.Find("DSPM")) {
+    info->compilation_scale = static_cast<int32_t>(f->Int(0, "CSCL"));
+    info->coordinate_multiplier = f->Real(0, "COMF", 1.0);
+    info->sounding_multiplier = f->Real(0, "SOMF", 1.0);
+    info->horizontal_datum = static_cast<int>(f->Int(0, "HDAT"));
+    info->vertical_datum = static_cast<int>(f->Int(0, "VDAT"));
+    info->sounding_datum = static_cast<int>(f->Int(0, "SDAT"));
+    info->depth_units = static_cast<int>(f->Int(0, "DUNI"));
+    info->height_units = static_cast<int>(f->Int(0, "HUNI"));
+    info->position_units = static_cast<int>(f->Int(0, "PUNI"));
+    info->coordinate_units = static_cast<int>(f->Int(0, "COUN"));
+    if (info->coordinate_multiplier == 0.0 || info->sounding_multiplier == 0.0)
+      return Status::Error(kIoError, "fv_s57: zero COMF/SOMF in " + path);
+    if (f->Int(0, "RCNM", kRcnmDataSetParam) != kRcnmDataSetParam)
+      return Status::Error(kIoError, "fv_s57: DSPM with wrong RCNM in " + path);
+  }
+  return Status::Ok();
+}
+
+// Reads every record of the cell at `path`: dataset fields into `info`,
+// feature and spatial records into `records`.
+Status ReadBaseRecords(const std::string& path, S57DatasetInfo* info,
+                       S57RecordSet* records) {
+  iso8211::Reader reader;
+  Status s = reader.Open(path);
+  if (!s.ok()) return s;
+
+  // All records are collected before any geometry is built: S-57 writes
+  // spatial records before the features that use them, but nothing in the
+  // standard guarantees it, and updates edit both kinds.
+  iso8211::Record rec;
+  while (true) {
+    s = reader.Next(&rec);
+    if (s.code == kNotFound) break;
+    if (!s.ok()) return s;
+    s = ReadDatasetFields(rec, path, info);
+    if (!s.ok()) return s;
+    s = records->AddBaseRecord(rec, path);
+    if (!s.ok()) return s;
+  }
+  return Status::Ok();
+}
+
+// Applies `files` in order until one fails or the cell is cancelled. Returns
+// how many applied; `*error` gets the failing file's reason.
+size_t ApplyUpdateFiles(const std::vector<std::string>& files, S57DatasetInfo* info,
+                        S57RecordSet* records, std::string* error) {
+  size_t applied = 0;
+  for (; applied < files.size() && !info->cancelled; ++applied) {
+    const Status s = ApplyS57Update(files[applied], info, records);
+    if (!s.ok()) {
+      *error = s.message;
+      break;
+    }
+  }
+  return applied;
+}
+
 }  // namespace
 
 const S57Attribute* S57Feature::FindAttribute(int code) const {
@@ -97,19 +156,24 @@ const S57Attribute* S57Feature::FindAttribute(int code) const {
 }
 
 std::string S57Cell::StalenessWarning() const {
+  const std::string cell = fs::path(path_).filename().string();
+  if (info_.cancelled)
+    return "S-57 cell " + cell + " was cancelled by update " + info_.update_number +
+           " and is not drawn.";
   if (updates_.empty()) return {};
   std::string names;
   for (const std::string& u : updates_) {
     if (!names.empty()) names += ", ";
     names += fs::path(u).filename().string();
   }
-  return "S-57 cell " + fs::path(path_).filename().string() +
-         " is the BASE EDITION only: " + std::to_string(updates_.size()) +
-         " update file(s) on disk were not applied (" + names +
-         "). The chart shown is out of date.";
+  std::string w = "S-57 cell " + cell + " is at update " + info_.update_number + ": " +
+                  std::to_string(updates_.size()) + " update file(s) were not applied (" +
+                  names + ")";
+  if (!update_error_.empty()) w += "; " + update_error_;
+  return w + ". The chart shown is out of date.";
 }
 
-Status S57Cell::Open(const std::string& path) {
+Status S57Cell::Open(const std::string& path, S57Updates updates) {
   is_open_ = false;
   path_ = path;
   info_ = S57DatasetInfo();
@@ -118,190 +182,83 @@ Status S57Cell::Open(const std::string& path) {
   nodes_.clear();
   edges_.clear();
   updates_.clear();
+  update_error_.clear();
   bounds_ = GeoRect{{90.0, 180.0}, {-90.0, -180.0}};
 
-  Status s = ReadRecords();
+  S57RecordSet records;
+  Status s = ReadRecords(&records);
   if (!s.ok()) return s;
 
-  // Update files: <stem>.001, .002, … next to the base cell, in sequence. Stop
-  // at the first gap — updates after a missing one cannot be applied anyway.
-  const fs::path p(path);
-  if (FileExtension(p) == "000") {
-    for (int n = 1; n <= 999; ++n) {
-      char ext[8];
-      snprintf(ext, sizeof(ext), ".%03d", n);
-      fs::path candidate = p;
-      candidate.replace_extension(ext);
-      std::error_code ec;
-      if (!fs::is_regular_file(candidate, ec)) break;
-      updates_.push_back(candidate.string());
-    }
+  updates_ = FindS57UpdateFiles(path);
+  if (updates == S57Updates::kApply) {
+    const size_t applied = ApplyUpdateFiles(updates_, &info_, &records, &update_error_);
+    updates_.erase(updates_.begin(), updates_.begin() + applied);
   }
-  if (!updates_.empty())
+  if (!info_.cancelled) BuildFeatures(records);
+  // Spatial records are only read through by geometry assembly; a whole
+  // exchange set held open would otherwise keep every edge twice.
+  decltype(nodes_)().swap(nodes_);
+  decltype(edges_)().swap(edges_);
+
+  if (!updates_.empty() || info_.cancelled)
     FV_LOG_WARNING("S-57: " << StalenessWarning());
 
   is_open_ = true;
   return Status::Ok();
 }
 
-Status S57Cell::ReadRecords() {
-  iso8211::Reader reader;
-  Status s = reader.Open(path_);
-  if (!s.ok()) return s;
+Status S57Cell::ReadRecords(S57RecordSet* records) {
+  return ReadBaseRecords(path_, &info_, records);
+}
 
-  // Pass 1: dataset records and the vector (spatial) records, which features
-  // point at. S-57 writes spatial records before the features that use them,
-  // but nothing in the standard guarantees it, so features are collected in
-  // this pass and their geometry assembled in pass 2.
-  std::vector<iso8211::Record> feature_records;
-  iso8211::Record rec;
-  while (true) {
-    s = reader.Next(&rec);
-    if (s.code == kNotFound) break;
-    if (!s.ok()) return s;
-
-    if (const iso8211::Field* f = rec.Find("DSID")) {
-      info_.name = f->Text(0, "DSNM");
-      info_.edition = f->Text(0, "EDTN");
-      info_.update_number = f->Text(0, "UPDN");
-      info_.update_date = f->Text(0, "UADT");
-      info_.issue_date = f->Text(0, "ISDT");
-      info_.standard_edition = f->Text(0, "STED");
-      info_.product_edition = f->Text(0, "PRED");
-      info_.comment = f->Text(0, "COMT");
-      info_.producer_agency = static_cast<int>(f->Int(0, "AGEN"));
-      info_.intended_usage = static_cast<int>(f->Int(0, "INTU"));
-      if (f->Int(0, "RCNM", kRcnmDataSetId) != kRcnmDataSetId)
-        return Status::Error(kIoError, "fv_s57: DSID with wrong RCNM in " + path_);
-    }
-    if (const iso8211::Field* f = rec.Find("DSSI")) {
-      info_.data_structure = static_cast<int>(f->Int(0, "DSTR"));
-      info_.attribute_lexical_level = static_cast<int>(f->Int(0, "AALL"));
-      info_.national_lexical_level = static_cast<int>(f->Int(0, "NALL"));
-      info_.declared_meta_records = static_cast<int>(f->Int(0, "NOMR"));
-      info_.declared_cartographic_records = static_cast<int>(f->Int(0, "NOCR"));
-      info_.declared_geo_records = static_cast<int>(f->Int(0, "NOGR"));
-      info_.declared_collection_records = static_cast<int>(f->Int(0, "NOLR"));
-      info_.declared_isolated_nodes = static_cast<int>(f->Int(0, "NOIN"));
-      info_.declared_connected_nodes = static_cast<int>(f->Int(0, "NOCN"));
-      info_.declared_edges = static_cast<int>(f->Int(0, "NOED"));
-      info_.declared_faces = static_cast<int>(f->Int(0, "NOFA"));
-    }
-    if (const iso8211::Field* f = rec.Find("DSPM")) {
-      info_.compilation_scale = static_cast<int32_t>(f->Int(0, "CSCL"));
-      info_.coordinate_multiplier = f->Real(0, "COMF", 1.0);
-      info_.sounding_multiplier = f->Real(0, "SOMF", 1.0);
-      info_.horizontal_datum = static_cast<int>(f->Int(0, "HDAT"));
-      info_.vertical_datum = static_cast<int>(f->Int(0, "VDAT"));
-      info_.sounding_datum = static_cast<int>(f->Int(0, "SDAT"));
-      info_.depth_units = static_cast<int>(f->Int(0, "DUNI"));
-      info_.height_units = static_cast<int>(f->Int(0, "HUNI"));
-      info_.position_units = static_cast<int>(f->Int(0, "PUNI"));
-      info_.coordinate_units = static_cast<int>(f->Int(0, "COUN"));
-      if (info_.coordinate_multiplier == 0.0 || info_.sounding_multiplier == 0.0)
-        return Status::Error(kIoError, "fv_s57: zero COMF/SOMF in " + path_);
-      if (f->Int(0, "RCNM", kRcnmDataSetParam) != kRcnmDataSetParam)
-        return Status::Error(kIoError, "fv_s57: DSPM with wrong RCNM in " + path_);
-    }
-
-    const iso8211::Field* vrid = rec.Find("VRID");
-    if (vrid != nullptr) {
-      const int rcnm = static_cast<int>(vrid->Int(0, "RCNM"));
-      const uint64_t key =
-          SpatialKey(rcnm, static_cast<uint32_t>(vrid->Int(0, "RCID")));
-      const double comf = info_.coordinate_multiplier;
-      const double somf = info_.sounding_multiplier;
-
-      std::vector<S57Vertex> pts;
-      for (const iso8211::Field* f : rec.FindAll("SG2D")) {
-        for (size_t r = 0; r < f->row_count(); ++r) {
-          S57Vertex v;
-          v.lat = static_cast<double>(f->Int(r, "YCOO")) / comf;
-          v.lon = static_cast<double>(f->Int(r, "XCOO")) / comf;
-          pts.push_back(v);
-        }
+void S57Cell::BuildFeatures(const S57RecordSet& records) {
+  const double comf = info_.coordinate_multiplier;
+  const double somf = info_.sounding_multiplier;
+  for (const auto& [key, v] : records.vectors) {
+    std::vector<S57Vertex> pts;
+    pts.reserve(v.coordinates.size());
+    for (const S57RawCoordinate& c : v.coordinates) {
+      S57Vertex vx;
+      vx.lat = static_cast<double>(c.y) / comf;
+      vx.lon = static_cast<double>(c.x) / comf;
+      if (c.has_z) {
+        vx.depth = static_cast<double>(c.z) / somf;
+        vx.has_depth = true;
       }
-      for (const iso8211::Field* f : rec.FindAll("SG3D")) {
-        for (size_t r = 0; r < f->row_count(); ++r) {
-          S57Vertex v;
-          v.lat = static_cast<double>(f->Int(r, "YCOO")) / comf;
-          v.lon = static_cast<double>(f->Int(r, "XCOO")) / comf;
-          v.depth = static_cast<double>(f->Int(r, "VE3D")) / somf;
-          v.has_depth = true;
-          pts.push_back(v);
-        }
-      }
-
-      if (rcnm == kRcnmIsolatedNode || rcnm == kRcnmConnectedNode) {
-        nodes_[key] = std::move(pts);
-        if (rcnm == kRcnmIsolatedNode)
-          ++counts_.isolated_nodes;
-        else
-          ++counts_.connected_nodes;
-      } else if (rcnm == kRcnmEdge) {
-        Edge e;
-        e.interior = std::move(pts);
-        for (const iso8211::Field* f : rec.FindAll("VRPT")) {
-          for (size_t r = 0; r < f->row_count(); ++r) {
-            const uint64_t target = DecodeName(f->Get(r, "NAME"));
-            const int topi = static_cast<int>(f->Int(r, "TOPI"));
-            if (topi == kTopiBeginNode) e.begin = target;
-            else if (topi == kTopiEndNode) e.end = target;
-          }
-        }
-        edges_[key] = std::move(e);
-        ++counts_.edges;
-      } else if (rcnm == kRcnmFace) {
-        ++counts_.faces;  // ENC is chain-node (DSTR 2); faces carry no geometry
-      }
-      continue;
+      pts.push_back(vx);
     }
-
-    if (rec.Has("FRID")) feature_records.push_back(std::move(rec));
+    if (v.rcnm == kRcnmIsolatedNode || v.rcnm == kRcnmConnectedNode) {
+      nodes_[key] = std::move(pts);
+      if (v.rcnm == kRcnmIsolatedNode)
+        ++counts_.isolated_nodes;
+      else
+        ++counts_.connected_nodes;
+    } else if (v.rcnm == kRcnmEdge) {
+      Edge e;
+      e.interior = std::move(pts);
+      for (const S57SpatialPointer& p : v.pointers) {
+        if (p.topology == kTopiBeginNode) e.begin = p.name;
+        else if (p.topology == kTopiEndNode) e.end = p.name;
+      }
+      edges_[key] = std::move(e);
+      ++counts_.edges;
+    } else if (v.rcnm == kRcnmFace) {
+      ++counts_.faces;  // ENC is chain-node (DSTR 2); faces carry no geometry
+    }
   }
 
-  // Pass 2: features.
-  features_.reserve(feature_records.size());
-  for (const iso8211::Record& r : feature_records) {
-    const iso8211::Field* frid = r.Find("FRID");
+  features_.reserve(records.features.size());
+  for (const S57FeatureRecord& r : records.features) {
+    if (r.deleted) continue;
     S57Feature feat;
-    feat.record_id = static_cast<int32_t>(frid->Int(0, "RCID"));
-    feat.primitive = static_cast<S57Primitive>(frid->Int(0, "PRIM", 255));
-    feat.object_class = static_cast<int>(frid->Int(0, "OBJL"));
-    feat.group = static_cast<int>(frid->Int(0, "GRUP"));
-    feat.version = static_cast<int>(frid->Int(0, "RVER"));
-    if (frid->Int(0, "RCNM", kRcnmFeature) != kRcnmFeature)
-      return Status::Error(kIoError, "fv_s57: FRID with wrong RCNM in " + path_);
-
-    if (const iso8211::Field* foid = r.Find("FOID")) {
-      feat.object_id.agency = static_cast<int>(foid->Int(0, "AGEN"));
-      feat.object_id.feature_id = static_cast<uint32_t>(foid->Int(0, "FIDN"));
-      feat.object_id.subdivision = static_cast<int>(foid->Int(0, "FIDS"));
-    }
-
-    for (const char* tag : {"ATTF", "NATF"}) {
-      const bool national = tag[0] == 'N';
-      for (const iso8211::Field* f : r.FindAll(tag)) {
-        for (size_t row = 0; row < f->row_count(); ++row) {
-          S57Attribute a;
-          a.code = static_cast<int>(f->Int(row, "ATTL"));
-          a.value = f->Text(row, "ATVL");
-          a.national = national;
-          if (a.code != 0) feat.attributes.push_back(std::move(a));
-        }
-      }
-    }
-
-    for (const iso8211::Field* f : r.FindAll("FFPT")) {
-      for (size_t row = 0; row < f->row_count(); ++row) {
-        S57FeatureRelation rel;
-        rel.target = DecodeLnam(f->Get(row, "LNAM"));
-        rel.relation = static_cast<int>(f->Int(row, "RIND"));
-        rel.comment = f->Text(row, "COMT");
-        feat.relations.push_back(std::move(rel));
-      }
-    }
-
+    feat.record_id = static_cast<int32_t>(r.rcid);
+    feat.primitive = static_cast<S57Primitive>(r.primitive);
+    feat.object_class = r.object_class;
+    feat.group = r.group;
+    feat.version = r.version;
+    feat.object_id = r.object_id;
+    feat.attributes = r.attributes;
+    feat.relations = r.relations;
     AssembleGeometry(r, &feat);
 
     ++counts_.feature_records;
@@ -310,8 +267,6 @@ Status S57Cell::ReadRecords() {
       for (const S57Vertex& v : part) Grow(&bounds_, v);
     features_.push_back(std::move(feat));
   }
-
-  return Status::Ok();
 }
 
 bool S57Cell::EdgePoints(uint64_t key, bool reverse,
@@ -334,27 +289,19 @@ bool S57Cell::EdgePoints(uint64_t key, bool reverse,
   return !out->empty();
 }
 
-void S57Cell::AssembleGeometry(const iso8211::Record& record,
+void S57Cell::AssembleGeometry(const S57FeatureRecord& record,
                                S57Feature* feature) const {
-  // Every spatial pointer of the feature, flattened across FSPT occurrences.
   struct Pointer {
     uint64_t key;
     bool reverse;
     int usage;
   };
   std::vector<Pointer> pointers;
-  for (const iso8211::Field* f : record.FindAll("FSPT")) {
-    for (size_t r = 0; r < f->row_count(); ++r) {
-      Pointer p;
-      p.key = DecodeName(f->Get(r, "NAME"));
-      p.reverse = f->Int(r, "ORNT") == kOrientationReverse;
-      p.usage = static_cast<int>(f->Int(r, "USAG", 255));
-      // MASK (1 = masked) is deliberately ignored: masking says which parts of
-      // a boundary S-52 draws, not which parts exist. A renderer that wants it
-      // must read FSPT itself.
-      pointers.push_back(p);
-    }
-  }
+  pointers.reserve(record.pointers.size());
+  // MASK (1 = masked) is ignored: masking says which parts of a boundary
+  // S-52 draws, not which parts exist.
+  for (const S57SpatialPointer& sp : record.pointers)
+    pointers.push_back({sp.name, sp.orientation == kOrientationReverse, sp.usage});
 
   S57Geometry& geom = feature->geometry;
   switch (feature->primitive) {
@@ -450,6 +397,57 @@ void S57Cell::AssembleGeometry(const iso8211::Record& record,
 
 // ---------------------------------------------------------------------------
 
+std::vector<std::string> FindS57UpdateFiles(const std::string& base_cell) {
+  // <stem>.001, .002, … in sequence; stop at the first gap, since updates
+  // after a missing one cannot be applied anyway.
+  std::vector<std::string> out;
+  const fs::path p(base_cell);
+  if (FileExtension(p) != "000") return out;
+  for (int n = 1; n <= 999; ++n) {
+    char ext[8];
+    snprintf(ext, sizeof(ext), ".%03d", n);
+    fs::path candidate = p;
+    candidate.replace_extension(ext);
+    std::error_code ec;
+    if (!fs::is_regular_file(candidate, ec)) break;
+    out.push_back(candidate.string());
+  }
+  return out;
+}
+
+Status ReadS57DatasetInfo(const std::string& path, S57DatasetInfo* out) {
+  *out = S57DatasetInfo();
+  iso8211::Reader reader;
+  Status s = reader.Open(path);
+  if (!s.ok()) return s;
+  iso8211::Record rec;
+  bool have_dsid = false;
+  while (true) {
+    s = reader.Next(&rec);
+    if (s.code == kNotFound) break;
+    if (!s.ok()) return s;
+    have_dsid = have_dsid || rec.Has("DSID");
+    s = ReadDatasetFields(rec, path, out);
+    if (!s.ok()) return s;
+    // DSPM follows DSID; anything after it is spatial or feature data.
+    if (rec.Has("DSPM")) break;
+  }
+  if (!have_dsid) return Status::Error(kIoError, "fv_s57: no DSID record in " + path);
+  return Status::Ok();
+}
+
+Status ReadS57UpdateState(const std::string& base_cell, S57UpdateState* out) {
+  *out = S57UpdateState();
+  S57RecordSet records;
+  Status s = ReadBaseRecords(base_cell, &out->info, &records);
+  if (!s.ok()) return s;
+  const std::vector<std::string> files = FindS57UpdateFiles(base_cell);
+  out->update_files = static_cast<int>(files.size());
+  out->applied =
+      static_cast<int>(ApplyUpdateFiles(files, &out->info, &records, &out->error));
+  return Status::Ok();
+}
+
 Status ReadS57Catalog(const std::string& path, std::vector<S57CatalogEntry>* out) {
   out->clear();
   iso8211::Reader reader;
@@ -501,6 +499,7 @@ Status EnumerateEncCells(const std::string& root, std::vector<std::string>* out)
   fs::recursive_directory_iterator it(root, ec), end;
   if (ec) return Status::Error(kIoError, "fv_s57: cannot scan " + root);
   for (; it != end; it.increment(ec)) {
+    if (ScanInterrupted()) return Status::Error(kInterrupted, "scan cancelled");
     if (ec) return Status::Error(kIoError, "fv_s57: scan failed under " + root);
     if (!it->is_regular_file(ec)) continue;
     if (FileExtension(it->path()) == "000") out->push_back(it->path().string());

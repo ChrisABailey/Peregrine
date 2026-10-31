@@ -87,6 +87,32 @@ removes all of the catalog's coverage and rescans every folder in the
 background, with a progress sheet and a Cancel button that stops after the
 current data source. It refuses while a listed folder is unreachable.
 
+Overlay ▸ Layers… (`LayersWindow.swift`) is the layer manager
+(`port/layer-manager-plan.md`) in two views. *Sources* is an outline of each
+data source with its layers (each table of a GeoPackage is a layer); a
+source's check box is mixed while only some of its layers show, and Move
+Up/Down or a drag moves a source, or a layer within its source. *Layers* is
+the drawing order, ungrouped. A right click on a row makes it current and shows
+DeskKit's layer or source menu (`LayerMenuEntryAt`, `SourceMenuEntryAt`).
+
+Properties… (`PropertiesWindow.swift`) has one tab per tab DeskKit lists. A
+source has the read-only *Source* sheet alone. A layer adds *General* (name,
+description, credits and the scale range it draws in, Current filling a scale
+from the map) and, for a feature layer, *Symbology* and *Labels*
+(`LayerStylePanel`) and *Fields* (`LayerFieldsPanel`). The app declares the
+tabs (`SetPropertiesTabs`), so Layer Style… and Layer Fields… open Properties
+at their tab. One Apply writes every tab, asking first when a change of fields
+loses values. Style This Feature… keeps its own dialog over the same style
+panel. *Display* sets opacity and, for a feature layer, the map tip and
+hyperlink fields; *Selection* the layer's own halo colour and width;
+*Definition Query* the features the layer shows, in the query builder.
+
+The query builder (`QueryBuilderPanel.swift`) edits clauses of field,
+comparison and value joined by all or any, or the filter expression typed by
+hand, with Verify. Select by Attributes… on the layer menu
+(`SelectByAttributesWindow.swift`) uses it to make a new selection, add to,
+remove from or select within the current one.
+
 ## Options and settings
 
 Map ▸ Options… and Overlay ▸ Options… open a window with one page per map

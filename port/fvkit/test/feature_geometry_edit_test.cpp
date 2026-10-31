@@ -76,10 +76,15 @@ fv::KeyEvent Key(int key) {
   return e;
 }
 
+fv::FeatureSchema SchemaOf(GeometryType type) {
+  fv::FeatureSchema schema;
+  schema.geometry_type = type;
+  return schema;
+}
+
 struct Fixture {
-  explicit Fixture(GeometryType type = GeometryType::kGeometry) {
-    fv::FeatureSchema schema;
-    schema.geometry_type = type;
+  explicit Fixture(GeometryType type = GeometryType::kGeometry) : Fixture(SchemaOf(type)) {}
+  explicit Fixture(const fv::FeatureSchema& schema) {
     layer = std::make_shared<fv::MemoryFeatureLayer>("Edits", schema);
     overlay = std::make_shared<FeatureOverlay>();
     overlay->SetLayer(layer);
@@ -135,6 +140,26 @@ TEST(FeatureGeometryEdit, DrawsAnAreaAndALine) {
   // The tool stays armed for the next line.
   EXPECT_EQ(fx.overlay->edit().tool(), FeatureTool::kDrawLine);
   EXPECT_EQ(fx.layer->Count(), 2u);
+}
+
+TEST(FeatureGeometryEdit, NewFeaturesTakeFieldDefaults) {
+  fv::FeatureSchema schema = SchemaOf(GeometryType::kPoint);
+  fv::FieldDef name;
+  name.name = "name";
+  name.required = true;
+  name.default_value = std::string("Unnamed");
+  fv::FieldDef rating;
+  rating.name = "rating";
+  rating.type = fv::FieldType::kInteger;
+  schema.fields = {name, rating};
+  Fixture fx(schema);
+  fx.overlay->edit().SetTool(FeatureTool::kAddPoint);
+  Click(*fx.overlay, 200, 200);
+  ASSERT_EQ(fx.layer->Count(), 1u);
+  const Feature f = fx.Get(fx.overlay->selected());
+  ASSERT_EQ(f.values.size(), 2u);
+  EXPECT_EQ(std::get<std::string>(f.values[0]), "Unnamed");
+  EXPECT_TRUE(fv::IsNull(f.values[1]));
 }
 
 TEST(FeatureGeometryEdit, ClickOnFirstVertexClosesAnArea) {

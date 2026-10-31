@@ -123,6 +123,10 @@ class S52StyleEngine : public LookupTableStyleEngine {
   // that hides the quality overlay also hides half the chart.
   void SetShowMetaObjects(bool on);
   bool show_meta_objects() const;
+  /// Draws the OBJNAM text of buoys (BOYxxx classes). On by default, as S-52
+  /// specifies; the buoy symbol and its identify record are unaffected.
+  void SetShowBuoyNames(bool on);
+  bool show_buoy_names() const;
 
   void SetPointStyle(S52PointStyle s);
   void SetAreaStyle(S52AreaStyle s);

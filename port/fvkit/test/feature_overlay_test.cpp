@@ -3,9 +3,11 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 #include "fvkit/overlay/feature_overlay.h"
+#include "fvkit/feature/templates.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -496,14 +498,44 @@ TEST(FeatureOverlay, OpensTheTableTheSpecNames) {
     EXPECT_EQ(creeks.FileSaveAs(path, FeatureOverlay::kFormatGeoPackage).code, fv::kInvalidArg);
     const fv::Status s = creeks.FileSaveAs(fv::app::JoinSourceSpec(path, "creeks"), FeatureOverlay::kFormatGeoPackage);
     ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_EQ(rivers.layer()->Count(), 2u);  // the rivers edit is still pending
+
+    // Reverting one layer keeps the other's pending edit.
+    ASSERT_TRUE(creeks.layer()->Delete(2).ok());
+    ASSERT_TRUE(creeks.Revert(fv::app::JoinSourceSpec(path, "creeks")).ok());
+    EXPECT_EQ(creeks.layer()->Count(), 2u);
+    EXPECT_EQ(rivers.layer()->Count(), 2u);
   }
   {
     FeatureOverlay creeks, rivers;
     ASSERT_TRUE(creeks.FileOpen(fv::app::JoinSourceSpec(path, "creeks")).ok());
     ASSERT_TRUE(rivers.FileOpen(fv::app::JoinSourceSpec(path, "rivers")).ok());
     EXPECT_EQ(creeks.layer()->Count(), 2u);
-    EXPECT_EQ(rivers.layer()->Count(), 2u);  // the package commits every table's edits
+    EXPECT_EQ(rivers.layer()->Count(), 3u);  // saving creeks did not save the rivers edit
   }
+  fs::remove(path);
+}
+
+TEST(FeatureOverlay, AddingATableKeepsAnotherLayersEditsUnsaved) {
+  const std::string path = Temp("add.gpkg");
+  WriteTwoTables(path);
+  {
+    FeatureOverlay creeks;
+    ASSERT_TRUE(creeks.FileOpen(fv::app::JoinSourceSpec(path, "creeks")).ok());
+    ASSERT_TRUE(creeks.layer()->Delete(1).ok());
+
+    fv::FeatureSchema schema;
+    schema.geometry_type = fv::GeometryType::kPoint;
+    std::string spec;
+    const fv::Status s = fv::AddFeatureLayerToPackage(path, "Bridges", schema, &spec);
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_EQ(spec, fv::app::JoinSourceSpec(path, "bridges"));
+    EXPECT_EQ(creeks.layer()->Count(), 2u);  // the delete is still pending
+  }
+  FeatureOverlay creeks, bridges;
+  ASSERT_TRUE(creeks.FileOpen(fv::app::JoinSourceSpec(path, "creeks")).ok());
+  EXPECT_EQ(creeks.layer()->Count(), 3u);  // and was never written
+  ASSERT_TRUE(bridges.FileOpen(fv::app::JoinSourceSpec(path, "bridges")).ok());
   fs::remove(path);
 }
 
@@ -516,6 +548,402 @@ TEST(SourceSpec, SplitsAndJoinsTheLayerName) {
   EXPECT_EQ(one.layer, "rivers");
   EXPECT_EQ(fv::app::JoinSourceSpec("/data/a.gpkg", "rivers"), "/data/a.gpkg|layername=rivers");
   EXPECT_EQ(fv::app::JoinSourceSpec("/data/a.gpkg", ""), "/data/a.gpkg");
+}
+
+}  // namespace
+
+namespace {
+
+/// Where `p` lands on the surface, rounded to a pixel.
+fv::PixelPoint SurfaceAt(const fv::MapProjection& proj, GeoPoint p) {
+  double x = 0, y = 0;
+  EXPECT_TRUE(proj.GeoToSurface(p, &x, &y).ok());
+  return fv::PixelPoint{static_cast<int>(std::lround(x)), static_cast<int>(std::lround(y))};
+}
+
+std::vector<std::string> SearchTitles(FeatureOverlay& overlay) {
+  fv::app::SearchQuery q;
+  std::atomic<bool> cancel{false};
+  std::vector<fv::app::SearchResult> results;
+  overlay.Search(q, cancel, results);
+  std::vector<std::string> titles;
+  for (const auto& r : results) titles.push_back(r.title);
+  return titles;
+}
+
+TEST(FeatureFilter, EvaluatesOverTheFeaturesFieldsAsTheRendererSeesThem) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  std::vector<fv::Feature> all;
+  ASSERT_TRUE(overlay.layer()->All(&all).ok());
+  const fv::FeatureSchema& schema = overlay.layer()->Schema();
+  auto names = [&](const std::string& json) {
+    fv::FeatureFilter filter;
+    const fv::Status s = fv::FeatureFilter::Parse(json, &filter);
+    EXPECT_TRUE(s.ok()) << s.message;
+    std::string out;
+    for (const fv::Feature& f : all)
+      if (filter.Accepts(f, schema)) out += overlay.FeatureTitle(f) + ";";
+    return out;
+  };
+  EXPECT_EQ(names(""), "Cooper River;Ashley River;Wando River;");
+  // Field text compares numerically, so 12 > 7 although "12" < "7".
+  EXPECT_EQ(names(R"([">", ["get", "depth"], 7])"), "Cooper River;Wando River;");
+  EXPECT_EQ(names(R"(["==", ["get", "name"], "Ashley River"])"), "Ashley River;");
+  EXPECT_EQ(names(R"(["in", "wando", ["downcase", ["get", "name"]]])"), "Wando River;");
+  EXPECT_EQ(names(R"(["has", "missing"])"), "");
+  EXPECT_EQ(names(R"(["get", "name"])"), "");  // not a boolean: rejected
+  fv::FeatureFilter bad;
+  EXPECT_FALSE(fv::FeatureFilter::Parse("[\"nope\", 1]", &bad).ok());
+  EXPECT_FALSE(fv::FeatureFilter::Parse("[", &bad).ok());
+}
+
+TEST(FeatureOverlay, ADefinitionQueryLimitsDrawingSearchAndHits) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  const fv::MapProjection proj = Harbour();
+  overlay.SetSelection({1, 2});
+  ASSERT_TRUE(overlay.SetDefinitionQuery(R"([">", ["get", "depth"], 7])").ok());
+  EXPECT_EQ(overlay.selection(), std::vector<int64_t>{1});  // the Ashley is hidden, so deselected
+
+  fv::CpuCanvas canvas(400, 400);
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(overlay.OnDraw(proj, canvas).ok());
+  EXPECT_EQ(overlay.features_drawn(), 2u);
+  // The Ashley's middle is not drawn, the Cooper's is.
+  const fv::PixelPoint ashley = SurfaceAt(proj, {32.80, -79.97});
+  const fv::PixelPoint cooper = SurfaceAt(proj, {32.85, -79.93});
+  EXPECT_EQ(Px(canvas, static_cast<int>(ashley.x), static_cast<int>(ashley.y))[0], 255);
+
+  EXPECT_EQ(SearchTitles(overlay), (std::vector<std::string>{"Cooper River", "Wando River"}));
+  std::vector<fv::app::HitItem> hits;
+  overlay.HitTestPoint(proj, ashley, 4, hits);
+  EXPECT_TRUE(hits.empty());
+  overlay.HitTestPoint(proj, cooper, 4, hits);
+  ASSERT_EQ(hits.size(), 1u);
+  EXPECT_EQ(hits[0].feature, 1u);
+  std::vector<fv::app::SnapToItem> snaps;
+  overlay.SnapToPoint(proj, ashley, 6, snaps);
+  EXPECT_TRUE(snaps.empty());
+
+  // A bad query leaves the old one; clearing it shows every feature.
+  EXPECT_FALSE(overlay.SetDefinitionQuery("[\"nope\"]").ok());
+  EXPECT_FALSE(overlay.definition_query().empty());
+  ASSERT_TRUE(overlay.SetDefinitionQuery("").ok());
+  EXPECT_EQ(SearchTitles(overlay).size(), 3u);
+}
+
+// A redraw of the same view reuses the styled scene, unless the features or
+// the definition query changed since it was built.
+TEST(FeatureOverlay, ARedrawShowsEditsAndQueryChanges) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  const fv::MapProjection proj = Harbour();
+  const fv::PixelPoint cooper = SurfaceAt(proj, {32.85, -79.93});
+  auto draw = [&](fv::CpuCanvas* canvas) {
+    canvas->Clear({255, 255, 255, 255});
+    ASSERT_TRUE(overlay.OnDraw(proj, *canvas).ok());
+  };
+  fv::CpuCanvas canvas(400, 400);
+  draw(&canvas);
+  EXPECT_NE(Px(canvas, static_cast<int>(cooper.x), static_cast<int>(cooper.y))[0], 255);
+  draw(&canvas);
+  EXPECT_NE(Px(canvas, static_cast<int>(cooper.x), static_cast<int>(cooper.y))[0], 255);
+
+  ASSERT_TRUE(overlay.layer()->Delete(1).ok());
+  draw(&canvas);
+  EXPECT_EQ(Px(canvas, static_cast<int>(cooper.x), static_cast<int>(cooper.y))[0], 255);
+  const int two = Inked(canvas);
+  EXPECT_GT(two, 0);
+
+  ASSERT_TRUE(overlay.SetDefinitionQuery(R"([">", ["get", "depth"], 1000])").ok());
+  draw(&canvas);
+  EXPECT_EQ(Inked(canvas), 0);
+  ASSERT_TRUE(overlay.SetDefinitionQuery("").ok());
+  draw(&canvas);
+  EXPECT_EQ(Inked(canvas), two);
+}
+
+// A GeoPackage layer reads only the columns the style and the definition
+// query name; a query on a field the style never draws still filters.
+TEST(FeatureOverlay, AQueryOnAnUnstyledFieldFiltersAGeoPackage) {
+  const std::string gpkg = Temp("rivers.gpkg");
+  fs::remove(gpkg);
+  {
+    FeatureOverlay overlay;
+    ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+    ASSERT_TRUE(overlay.FileSaveAs(gpkg, FeatureOverlay::kFormatGeoPackage).ok());
+  }
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(gpkg).ok());
+  fv::CpuCanvas canvas(400, 400);
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(overlay.OnDraw(Harbour(), canvas).ok());
+  EXPECT_EQ(overlay.features_drawn(), 3u);
+  ASSERT_TRUE(overlay.SetDefinitionQuery(R"([">", ["get", "depth"], 7])").ok());
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(overlay.OnDraw(Harbour(), canvas).ok());
+  EXPECT_EQ(overlay.features_drawn(), 2u);
+  fs::remove(gpkg);
+}
+
+TEST(FeatureOverlay, TheDefinitionQuerySurvivesSaveAndReopenWithEveryFeature) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  ASSERT_TRUE(overlay.SetDefinitionQuery(R"(["<", ["get", "flow"], 100])").ok());
+  overlay.SetMapTipField("depth");
+  overlay.SetHyperlinkField("name");
+  fv::FeatureSelectionStyle sel;
+  sel.color = {0, 200, 255, 255};
+  sel.width_px = 6;
+  overlay.SetSelectionStyle(sel);
+  for (int format : {FeatureOverlay::kFormatGeoPackage, FeatureOverlay::kFormatGeoJson}) {
+    const std::string path = Temp(format == FeatureOverlay::kFormatGeoJson ? "q.geojson" : "q.gpkg");
+    fs::remove(path);
+    ASSERT_TRUE(overlay.FileSaveAs(path, format).ok());
+    FeatureOverlay reopened;
+    ASSERT_TRUE(reopened.FileOpen(path).ok());
+    EXPECT_EQ(reopened.layer()->Count(), 3u);  // the file keeps the hidden feature
+    EXPECT_EQ(SearchTitles(reopened), (std::vector<std::string>{"Ashley River", "Wando River"}));
+    EXPECT_EQ(reopened.map_tip_field(), "depth");
+    EXPECT_EQ(reopened.hyperlink_field(), "name");
+    ASSERT_TRUE(reopened.has_selection_style());
+    EXPECT_EQ(reopened.selection_style(), sel);
+    fs::remove(path);
+  }
+}
+
+TEST(FeatureOverlay, TheMapTipShowsTheChosenField) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  const fv::MapProjection proj = Harbour();
+  fv::CpuCanvas canvas(400, 400);
+  ASSERT_TRUE(overlay.OnDraw(proj, canvas).ok());
+  const fv::PixelPoint cooper = SurfaceAt(proj, {32.85, -79.93});
+  auto tip = [&] {
+    std::vector<fv::app::HitItem> hits;
+    overlay.HitTestPoint(proj, cooper, 4, hits);
+    return hits.empty() ? std::string("(none)") : hits[0].hint.tool_tip;
+  };
+  EXPECT_EQ(tip(), "Cooper River");
+  overlay.SetMapTipField("flow");
+  EXPECT_EQ(tip(), "130");
+  overlay.SetMapTipField("gone");  // a field that is not there falls back to the title
+  EXPECT_EQ(tip(), "Cooper River");
+  overlay.SetHyperlinkField("name");
+  fv::Feature f;
+  ASSERT_TRUE(overlay.layer()->Get(1, &f).ok());
+  EXPECT_EQ(overlay.FeatureHyperlink(f), "Cooper River");
+}
+
+TEST(FeatureOverlay, ALayersSelectionColourOverridesTheDefaultHalo) {
+  auto layer = std::make_shared<fv::MemoryFeatureLayer>("pins", fv::FeatureSchema{});
+  fv::Feature f;
+  f.geometry = Geometry::Point({32.86, -79.95});
+  ASSERT_TRUE(layer->Insert(&f).ok());
+  FeatureOverlay overlay;
+  overlay.SetLayer(layer);
+  overlay.SetSelected(f.id);
+  auto count = [&](unsigned char r, unsigned char g, unsigned char b) {
+    fv::CpuCanvas c(400, 400);
+    c.Clear({255, 255, 255, 255});
+    EXPECT_TRUE(overlay.OnDraw(Harbour(), c).ok());
+    int n = 0;
+    for (int y = 170; y < 230; ++y)
+      for (int x = 170; x < 230; ++x)
+        if (Px(c, x, y)[0] == r && Px(c, x, y)[1] == g && Px(c, x, y)[2] == b) ++n;
+    return n;
+  };
+  const int yellow = count(255, 200, 0);
+  EXPECT_GT(yellow, 20);
+  fv::FeatureSelectionStyle sel;
+  sel.color = {0, 200, 255, 255};
+  overlay.SetSelectionStyle(sel);
+  EXPECT_EQ(count(255, 200, 0), 0);
+  const int cyan = count(0, 200, 255);
+  EXPECT_EQ(cyan, yellow);
+  sel.width_px = 10;
+  overlay.SetSelectionStyle(sel);
+  EXPECT_GT(count(0, 200, 255), cyan);
+  overlay.ClearSelectionStyle();
+  EXPECT_EQ(count(255, 200, 0), yellow);
+}
+
+TEST(FeatureLayerInfo, CarriesDisplaySelectionAndDefinitionQuery) {
+  std::string json;
+  ASSERT_TRUE(fv::WriteFeatureStyleJson(fv::FeatureStyle{}, &json).ok());
+  fv::FeatureLayerInfo info;
+  info.map_tip_field = "flow";
+  info.has_selection_style = true;
+  info.selection.color = {10, 20, 30, 128};
+  info.selection.width_px = 2.5;
+  info.definition_query = R"(["==", ["get", "name"], "x"])";
+  ASSERT_TRUE(fv::WriteFeatureLayerInfoJson(info, &json).ok());
+  fv::FeatureLayerInfo back;
+  ASSERT_TRUE(fv::ReadFeatureLayerInfoJson(json, &back).ok());
+  EXPECT_EQ(back.map_tip_field, "flow");
+  EXPECT_EQ(back.hyperlink_field, "");
+  EXPECT_TRUE(back.has_selection_style);
+  EXPECT_EQ(back.selection.color.b, 30);
+  EXPECT_NEAR(back.selection.color.a, 128, 1);
+  EXPECT_EQ(back.selection.width_px, 2.5);
+  EXPECT_EQ(back.definition_query, R"(["==",["get","name"],"x"])");
+  info.definition_query = "[not json";
+  EXPECT_EQ(fv::WriteFeatureLayerInfoJson(info, &json).code, fv::kInvalidArg);
+}
+
+}  // namespace
+
+/// The rivers under one rule: deep rivers only, drawn from `min_zoom`.
+fv::FeatureStyle DeepRiversRule(double min_zoom = 0) {
+  fv::FeatureStyle style;
+  style.renderer = fv::FeatureRenderer::kRules;
+  fv::StyleRule deep;
+  deep.id = "deep";
+  deep.type = "line";
+  deep.filter = R"([">", ["to-number", ["get", "depth"]], 7])";
+  deep.paint = R"({"line-color": "#0040c0", "line-width": 4})";
+  deep.min_zoom = min_zoom;
+  style.rules = {deep};
+  return style;
+}
+
+TEST(FeatureOverlay, HitsSnapsAndRubberBandsFollowTheRules) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  overlay.SetStyle(DeepRiversRule());
+  const fv::MapProjection proj = Harbour(1000000.0);
+  fv::CpuCanvas canvas(400, 400);
+  canvas.Clear({255, 255, 255, 255});
+  ASSERT_TRUE(overlay.OnDraw(proj, canvas).ok());
+
+  // The Ashley (depth 6) is in the layer but no rule draws it.
+  const fv::PixelPoint ashley = SurfaceAt(proj, {32.875, -80.065});
+  const fv::PixelPoint cooper = SurfaceAt(proj, {32.945, -79.935});
+  EXPECT_EQ(Px(canvas, static_cast<int>(ashley.x), static_cast<int>(ashley.y))[0], 255);
+  std::vector<fv::app::HitItem> hits;
+  overlay.HitTestPoint(proj, ashley, 4, hits);
+  EXPECT_TRUE(hits.empty());
+  overlay.HitTestPoint(proj, cooper, 4, hits);
+  ASSERT_EQ(hits.size(), 1u);
+  EXPECT_EQ(hits[0].feature, 1u);
+  std::vector<fv::app::SnapToItem> snaps;
+  overlay.SnapToPoint(proj, SurfaceAt(proj, {32.85, -80.03}), 6, snaps);  // the Ashley's end
+  EXPECT_TRUE(snaps.empty());
+  overlay.SnapToPoint(proj, SurfaceAt(proj, {32.90, -79.94}), 6, snaps);  // the Cooper's end
+  EXPECT_EQ(snaps.size(), 1u);
+  const std::vector<int64_t> boxed = overlay.edit().FeaturesInRect(fv::PixelRect{0, 0, 400, 400});
+  EXPECT_EQ(boxed.size(), 2u);
+
+  // Search and the table still see every feature the definition query shows.
+  EXPECT_EQ(SearchTitles(overlay).size(), 3u);
+
+  // Under the single style the Ashley is drawn, and hit.
+  overlay.SetStyle(fv::FeatureStyle{});
+  hits.clear();
+  overlay.HitTestPoint(proj, ashley, 4, hits);
+  ASSERT_EQ(hits.size(), 1u);
+  EXPECT_EQ(hits[0].feature, 2u);
+
+  // Out of the rule's zoom range nothing draws, so nothing is hit.
+  overlay.SetStyle(DeepRiversRule(20));
+  hits.clear();
+  overlay.HitTestPoint(proj, cooper, 4, hits);
+  EXPECT_TRUE(hits.empty());
+}
+
+TEST(FeatureOverlay, ASelectedFeatureUnderARuleHasAHalo) {
+  FeatureOverlay overlay;
+  ASSERT_TRUE(overlay.FileOpen(kRivers).ok());
+  overlay.SetStyle(DeepRiversRule());
+  const fv::MapProjection proj = Harbour(1000000.0);
+  auto yellow = [&] {
+    fv::CpuCanvas c(400, 400);
+    c.Clear({255, 255, 255, 255});
+    EXPECT_TRUE(overlay.OnDraw(proj, c).ok());
+    int n = 0;
+    for (int y = 0; y < 400; ++y)
+      for (int x = 0; x < 400; ++x)
+        if (Px(c, x, y)[0] == 255 && Px(c, x, y)[1] == 200 && Px(c, x, y)[2] == 0) ++n;
+    return n;
+  };
+  EXPECT_EQ(yellow(), 0);
+  overlay.SetSelected(1);
+  EXPECT_GT(yellow(), 20);
+}
+
+namespace {
+
+/// Two Restaurants points drawn by one `restaurant` icon rule with `paint`.
+std::unique_ptr<fv::CpuCanvas> DrawRestaurantIcons(const std::string& paint, fv::PixelPoint* a,
+                                                   fv::PixelPoint* b) {
+  const fv::FeatureLayerTemplate* t = fv::FindFeatureLayerTemplate("restaurants");
+  EXPECT_NE(t, nullptr);
+  auto layer = std::make_shared<fv::MemoryFeatureLayer>("restaurants", t->schema);
+  for (GeoPoint p : {GeoPoint{32.80, -79.98}, GeoPoint{32.90, -79.90}}) {
+    fv::Feature f;
+    f.geometry = Geometry::Point(p);
+    f.values.resize(t->schema.fields.size());
+    f.values[0] = std::string("Pizzeria");
+    EXPECT_TRUE(layer->Insert(&f).ok());
+  }
+  FeatureOverlay overlay;
+  overlay.SetLayer(layer);
+  fv::FeatureStyle style;
+  style.renderer = fv::FeatureRenderer::kRules;
+  fv::StyleRule icon;
+  icon.id = "pizza";
+  icon.type = "symbol";
+  icon.layout = R"({"icon-image": "restaurant", "icon-size": 2})";
+  icon.paint = paint;
+  style.rules = {icon};
+  overlay.SetStyle(style);
+  const fv::MapProjection proj = Harbour();
+  *a = SurfaceAt(proj, {32.80, -79.98});
+  *b = SurfaceAt(proj, {32.90, -79.90});
+  auto canvas = std::make_unique<fv::CpuCanvas>(400, 400);
+  canvas->Clear({255, 255, 255, 255});
+  EXPECT_TRUE(overlay.OnDraw(proj, *canvas).ok());
+  return canvas;
+}
+
+/// Pixels within `r` of `c` matching `pred`.
+template <typename Pred>
+int CountNear(const fv::CpuCanvas& canvas, fv::PixelPoint c, int r, Pred pred) {
+  int n = 0;
+  for (int y = c.y - r; y <= c.y + r; ++y)
+    for (int x = c.x - r; x <= c.x + r; ++x)
+      if (pred(Px(canvas, x, y))) ++n;
+  return n;
+}
+
+TEST(FeatureOverlay, AnIconRuleDrawsTheBuiltinIconTinted) {
+  fv::PixelPoint a, b;
+  const auto canvas = DrawRestaurantIcons(R"({"icon-color": "#ff0000"})", &a, &b);
+  auto red = [](const unsigned char* p) { return p[0] > 200 && p[1] < 60 && p[2] < 60; };
+  auto inked = [](const unsigned char* p) { return p[0] != 255 || p[1] != 255 || p[2] != 255; };
+  EXPECT_GT(CountNear(*canvas, a, 16, red), 40);
+  EXPECT_GT(CountNear(*canvas, b, 16, red), 40);
+  // Nothing but the two icons is drawn, and nothing in them is black.
+  int total = 0;
+  for (int y = 0; y < 400; ++y)
+    for (int x = 0; x < 400; ++x)
+      if (inked(Px(*canvas, x, y))) ++total;
+  EXPECT_EQ(total, CountNear(*canvas, a, 16, inked) + CountNear(*canvas, b, 16, inked));
+  auto dark = [](const unsigned char* p) { return p[0] < 100 && p[1] < 100 && p[2] < 100; };
+  EXPECT_EQ(CountNear(*canvas, a, 16, dark), 0);
+}
+
+TEST(FeatureOverlay, IconColourDefaultsToBlackAndOpacityFades) {
+  fv::PixelPoint a, b;
+  const auto black = DrawRestaurantIcons("{}", &a, &b);
+  auto dark = [](const unsigned char* p) { return p[0] < 40 && p[1] < 40 && p[2] < 40; };
+  EXPECT_GT(CountNear(*black, a, 16, dark), 40);
+  const auto faded = DrawRestaurantIcons(R"({"icon-color": "#ff0000", "icon-opacity": 0.5})", &a, &b);
+  auto pink = [](const unsigned char* p) {
+    return p[0] == 255 && p[1] > 100 && p[1] < 155 && p[1] == p[2];
+  };
+  EXPECT_GT(CountNear(*faded, a, 16, pink), 40);
 }
 
 }  // namespace

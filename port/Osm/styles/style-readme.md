@@ -32,7 +32,22 @@ landmarks from z5, and state lines, state names and ranked city names fill the l
 Sidewalks, parking lots and lodging wait for close zooms. On-road provision comes from the
 profile's `cycleway` attribute (`track`, `lane`, `share_busway`, `shared_lane`), and drinking
 water, repair stands and air pumps from its `poi` layer.
-`atlanta-streets-dark.json` is generated from it by `port/tools/make_atlanta_dark_style.py`.
+`atlanta-streets-dark.json` is generated from it by `port/tools/make_atlanta_dark_style.py`,
+which copies the legend across unchanged.
+
+## The legend
+
+`metadata["peregrine:legend"]` lists the map key: groups of entries, each with a label, a
+`detail` sentence, one or more `specimen` features in tile vocabulary (`layer` is the source
+layer, `tags` the attributes the profile writes) and the same row as raw `osm` tags for the
+router. A swatch is the specimen drawn by the style itself (`fvkit/style/legend.h`), so it
+cannot drift from the map. `unlisted_layers` names the road lines that deliberately have no
+row; `OsmLegend.AtlantaLegendCoversEveryRoadLine` fails on any other line without one.
+`port/tools/bike_tags_check.py --legend <style>` runs each entry's `osm` tags through
+`process-peregrine.lua` and checks the specimen carries what the profile writes.
+
+A malformed legend is the one part of a style that does not fail the load: the map loads, the
+legend is empty, and `legend_error()` names the problem.
 
 ## The one rule that shapes everything else
 
@@ -77,7 +92,9 @@ Everything not listed here is rejected if present.
 
 `minzoom`/`maxzoom` become a scale band through one zoom↔scale relation shared with the tile
 source. Set the engine's reference latitude and display pitch to the source's own, or the
-style's zoom windows will not agree with the tiles that were read.
+style's zoom windows will not agree with the tiles that were read. The bands are computed at
+load, from the latitude and pitch set before it; setting them afterwards moves zoom functions
+but not the bands.
 
 ### `background`
 

@@ -256,6 +256,10 @@ Status SampleElevationGrid(IElevationSource& src, const GeoRect& bounds,
   if (covered != nullptr)
     covered->assign(static_cast<size_t>(width) * height, 0);
 
+  if (src.SampleGrid(bounds, width, height, out->meters.data(),
+                     covered != nullptr ? covered->data() : nullptr))
+    return Status::Ok();
+
   const double dlat = out->LatStep(), dlon = out->LonStep();
   for (int r = 0; r < height; ++r) {
     for (int c = 0; c < width; ++c) {

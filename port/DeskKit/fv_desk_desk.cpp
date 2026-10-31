@@ -6,6 +6,7 @@
 #include "fv_desk_desk.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -17,13 +18,17 @@
 #include "fv_desk_overlay_manifest.h"
 #include "fv_desk_feature_editor.h"
 #include "fv_desk_point_editor.h"
+#include "fv_desk_user_settings.h"
 #include "fv_route_editor.h"
 #include "fv_route_overlay.h"
 #include "fv_route_planner.h"
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/source_spec.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/feature/points_layer.h"
 #include "fvkit/formats/dted.h"
+#include "fvkit/formats/elevation_stack.h"
+#include "fvkit/formats/geotiff_dem.h"
 #include "fvkit/log.h"
 #include "fvkit/overlay/contour_overlay.h"
 #include "fvkit/overlay/feature_overlay.h"
@@ -40,6 +45,8 @@ constexpr int kDimmedOverlayPercent = 50;
 
 constexpr char kWorkspaceConfig[] = "workspace";
 constexpr char kWorkspacePrefix[] = "session.workspace.";
+/// User-settings rows `recent.overlay.<n>.type` and `.path`, most recent first.
+constexpr char kRecentPrefix[] = "recent.overlay.";
 
 app::FileTypeDesc WorkspaceFileType() {
   app::FileTypeDesc d;
@@ -160,11 +167,12 @@ class Desk::StackHook : public StackObserver {
  public:
   explicit StackHook(Desk& desk) : desk_(desk) {}
   void OverlayAdded(Overlay& o) override {
+    desk_.NoteRecent(o);
     // An elevation overlay with no source draws nothing, which reads as broken.
     if (!desk_.BindOverlay(o)) {
       const app::OverlayTypeDesc* d = desk_.types_.Find(o.type_id());
       const std::string what = d != nullptr ? d->display_name : o.Name();
-      desk_.Report(Status::Error(kNotFound, what + " needs DTED elevation data; the catalog has none."));
+      desk_.Report(Status::Error(kNotFound, what + " needs elevation data (DTED or lidar); the catalog has none."));
     }
     Changed();
   }
@@ -192,6 +200,7 @@ class Desk::StackHook : public StackObserver {
 Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
     : shell_(shell), settings_(settings), groups_(std::move(groups)), menus_(commands_) {
   tap_ = std::make_unique<ShellTap>(*this);
+  search_ = std::make_unique<DeskSearch>();
   overlays_.SetTypeRegistry(&types_);
   session_ = std::make_unique<app::OverlaySession>(types_, overlays_, *tap_, settings_);
   editors_ = std::make_unique<app::EditorManager>(types_, overlays_, *tap_);
@@ -223,7 +232,8 @@ Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
                                 LayerCommand{"overlay.edit_feature", "Edit Feature…", "edit_point"},
                                 LayerCommand{"overlay.style", "Layer Style…", "layer_style"},
                                 LayerCommand{"overlay.style_feature", "Style This Feature…", "style_feature"},
-                                LayerCommand{"overlay.fields", "Layer Fields…", "layer_fields"}}) {
+                                LayerCommand{"overlay.fields", "Layer Fields…", "layer_fields"},
+                                LayerCommand{"overlay.export_selection", "Export Selection…", "export_selection"}}) {
     const std::string id = c.id;
     FeatureLayerTool t;
     t.label = c.label;
@@ -265,6 +275,7 @@ void Desk::Refresh() {
   RegisterGroupCommands();
   RegisterOverlayTypeCommands();
   RegisterInstanceCommands();
+  RegisterRecentCommands();
   RegisterEditorCommands();
   RebuildMenus();
 }
@@ -340,6 +351,7 @@ void Desk::RegisterStaticCommands() {
       "zoom_in");
   add("map.zoom_out", "Zoom Out", "Primary+-", [this] { view_->Step(-1); }, nullptr, nullptr,
       "zoom_out");
+  add("map.goto", "Go To / Find…", "Primary+F", [this] { shell_.ShowFind(); });
   add("map.recenter", "Recenter on Data", "", [this] { Recenter(); },
       [this] { return CurrentGroup() != nullptr; }, nullptr, "recenter");
   add("map.pan.north", "North", "Up", [this] { PanScreens(0, -0.5); });
@@ -357,7 +369,7 @@ void Desk::RegisterStaticCommands() {
         [this, t] { return view_->View().Type() == t; });
   }
 
-  add("overlay.open", "Open…", "Primary+Shift+O",
+  add("overlay.open", "Open Overlay…", "Primary+Shift+O",
       [this] { session_->OpenFileOverlays(app::TypeId()); }, [this] {
         for (const app::OverlayTypeDesc* d : types_.All())
           if (d->file && !d->display_name.empty()) return true;
@@ -368,6 +380,9 @@ void Desk::RegisterStaticCommands() {
   add("overlay.options", "Options…", "",
       [this] { shell_.ShowOverlayOptions(OverlayOptions()); });
   add("overlay.layers", "Layers…", "Primary+L", [this] { shell_.ShowLayers(); });
+  add("overlay.layers_panel", "Layers", "",
+      [this] { layers_shown_ ? shell_.HideLayers() : shell_.ShowLayers(); }, nullptr,
+      [this] { return layers_shown_; }, "layers");
   add("overlay.attribute_table", "Attribute Table…", "", [this] {
     const Status st = OpenAttributeTable();
     if (!st.ok()) Report(st);
@@ -384,6 +399,8 @@ void Desk::RegisterStaticCommands() {
     const Status st = OpenLayerStyle();
     if (!st.ok()) Report(st);
   }, [this] { return dynamic_cast<const FeatureOverlay*>(overlays_.current()) != nullptr; });
+  // Off the menus: Overlay ▸ New ▸ Feature Layer… runs the same dialog. Kept for shells that run it by id.
+  add("overlay.new_layer", "New Feature Layer…", "", [this] { OpenNewLayer(); });
   add("overlay.fields", "Layer Fields…", "", [this] {
     const Status st = OpenLayerFields();
     if (!st.ok()) Report(st);
@@ -391,7 +408,6 @@ void Desk::RegisterStaticCommands() {
     const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
     return f != nullptr && f->layer() != nullptr;
   });
-  add("overlay.new_layer", "New Feature Layer…", "", [this] { OpenNewLayer(); });
   add("overlay.style_feature", "Style This Feature…", "", [this] {
     const Status st = StyleSelectedFeature();
     if (!st.ok()) Report(st);
@@ -399,7 +415,15 @@ void Desk::RegisterStaticCommands() {
     const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
     return f != nullptr && f->selected() != 0;
   });
+  add("overlay.export_selection", "Export Selection…", "", [this] {
+    const Status st = ExportSelection();
+    if (!st.ok()) Report(st);
+  }, [this] {
+    const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
+    return f != nullptr && f->layer() != nullptr && !f->selection().empty();
+  });
   RegisterLayerManagerCommands();
+  RegisterRuleCommands();
   RegisterCatalogCommands();
 }
 
@@ -436,9 +460,29 @@ void Desk::RegisterLayerManagerCommands() {
   };
 
   add("layers.properties", "Properties…", [this] {
+    // A static overlay's properties are its type's overlay options.
+    if (const Overlay* o = overlays_.current()) {
+      const app::OverlayTypeDesc* d = types_.Find(o->type_id());
+      std::shared_ptr<OptionsModel> options = OverlayOptions();
+      if (d != nullptr && !d->file && options->SelectPage(d->id)) {
+        shell_.ShowOverlayOptions(std::move(options));
+        return;
+      }
+    }
     const Status st = OpenLayerProperties(PropertiesTab::kGeneral);
     if (!st.ok()) Report(st);
   }, has_current);
+  add("layers.select_by_attributes", "Select by Attributes…", [this] {
+    const Status st = OpenSelectByAttributes();
+    if (!st.ok()) Report(st);
+  }, [this] {
+    const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
+    return f != nullptr && f->layer() != nullptr;
+  });
+  add("layers.clear_selection", "Clear Selection", [this] { ClearSelection(); }, [this] {
+    const Overlay* o = overlays_.current();
+    return o != nullptr && SelectedFeatureOf(*o) != 0;
+  });
   add("layers.zoom_to", "Zoom to Layer", [this, zoom_box] {
     GeoRect box;
     if (zoom_box({overlays_.FindShared(overlays_.current())}, &box)) ZoomTo(box);
@@ -478,6 +522,18 @@ void Desk::RegisterLayerManagerCommands() {
     GeoRect box;
     return zoom_box(CurrentSourceOverlays(), &box);
   });
+  add("layers.source.new_layer", "New Layer…", [this] {
+    const std::vector<SourceRow> rows = sources_.Rows();
+    const int at = CurrentSource(rows);
+    if (at >= 0) OpenNewLayer(rows[at].path);
+  }, [this] {
+    const std::vector<SourceRow> rows = sources_.Rows();
+    const int at = CurrentSource(rows);
+    if (at < 0) return false;
+    std::string ext = std::filesystem::path(rows[at].path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    return ext == ".gpkg";
+  });
   add("layers.source.close", "Close", [this] {
     for (const std::shared_ptr<Overlay>& o : CurrentSourceOverlays()) {
       const app::FlowResult r = types_.IsFile(o->type_id()) ? session_->Close(*o) : session_->ToggleStatic(o->type_id());
@@ -516,8 +572,18 @@ Status Desk::OpenLayerProperties(PropertiesTab tab) {
       Status s = LayerGeneralModel::Open(o, &general_);
       if (!s.ok()) return s;
     }
+    // An overlay with neither opacity nor features has no Display tab.
+    if (!display_) LayerDisplayModel::Open(o, &display_);
     const auto feature = std::dynamic_pointer_cast<FeatureOverlay>(o);
     if (feature && feature->layer() != nullptr) {
+      if (!selection_) {
+        Status s = LayerSelectionModel::Open(feature, &selection_);
+        if (!s.ok()) return s;
+      }
+      if (!query_) {
+        Status s = QueryBuilderModel::Open(feature, feature->definition_query().text(), &query_);
+        if (!s.ok()) return s;
+      }
       if (!PropertiesOwnsStyle()) {
         std::shared_ptr<LayerStyleModel> style;
         Status s = LayerStyleModel::Open(feature, 0, "Layer Style — " + o->Name(), &style);
@@ -542,11 +608,14 @@ Status Desk::OpenLayerProperties(PropertiesTab tab) {
 std::vector<PropertiesTab> Desk::PropertiesTabs() const {
   std::vector<PropertiesTab> tabs{PropertiesTab::kSource};
   if (general_) tabs.push_back(PropertiesTab::kGeneral);
+  if (display_) tabs.push_back(PropertiesTab::kDisplay);
   if (PropertiesOwnsStyle()) {
     tabs.push_back(PropertiesTab::kSymbology);
     tabs.push_back(PropertiesTab::kLabels);
   }
   if (PropertiesOwnsFields()) tabs.push_back(PropertiesTab::kFields);
+  if (selection_) tabs.push_back(PropertiesTab::kSelection);
+  if (query_) tabs.push_back(PropertiesTab::kDefinitionQuery);
   return tabs;
 }
 
@@ -567,11 +636,23 @@ void Desk::ReopenPropertiesStyle() {
 }
 
 bool Desk::LayerPropertiesDirty() const {
-  return (general_ && general_->dirty()) || (PropertiesOwnsStyle() && style_->dirty()) ||
-         (PropertiesOwnsFields() && fields_->dirty());
+  return (general_ && general_->dirty()) || (display_ && display_->dirty()) ||
+         (PropertiesOwnsStyle() && style_->dirty()) || (PropertiesOwnsFields() && fields_->dirty()) ||
+         (selection_ && selection_->dirty()) || (query_ && query_->dirty());
 }
 
 Status Desk::ApplyLayerProperties() {
+  if (display_ && display_->dirty()) {
+    const auto feature = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(display_->overlay()));
+    const bool fields_changed = feature && (feature->map_tip_field() != display_->display().map_tip_field ||
+                                            feature->hyperlink_field() != display_->display().hyperlink_field);
+    Status s = display_->Apply();
+    if (!s.ok()) return s;
+    // The file keeps the map tip and hyperlink fields; opacity stays in the workspace.
+    if (fields_changed && feature->AsPersistence() != nullptr) feature->AsPersistence()->set_dirty(true);
+    ++layers_generation_;
+    shell_.RequestInvalidate();
+  }
   if (general_ && general_->dirty()) {
     Status s = general_->Apply();
     if (!s.ok()) return s;
@@ -595,6 +676,32 @@ Status Desk::ApplyLayerProperties() {
     Status s = ApplyLayerFields();
     if (!s.ok()) return s;
   }
+  const auto feature = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(properties_overlay_));
+  auto dirty_file = [&feature] {
+    if (feature && feature->AsPersistence() != nullptr) feature->AsPersistence()->set_dirty(true);
+  };
+  if (selection_ && selection_->dirty()) {
+    Status s = selection_->Apply();
+    if (!s.ok()) return s;
+    dirty_file();
+    shell_.RequestInvalidate();
+  }
+  if (query_ && query_->dirty()) {
+    std::string json;
+    Status s = query_->Expression(&json);
+    if (!s.ok()) return s;
+    if (!feature) return Status::Error(kNotFound, "the layer has closed");
+    s = feature->SetDefinitionQuery(json);
+    if (!s.ok()) return s;
+    query_->MarkApplied();
+    dirty_file();
+    if (table_ && table_->overlay() == feature.get()) {
+      s = table_->Reload();
+      if (!s.ok()) Warn("attribute table: " + s.message);
+    }
+    ++feature_views_gen_;
+    shell_.RequestInvalidate();
+  }
   return Status::Ok();
 }
 
@@ -604,8 +711,11 @@ Status Desk::RevertLayerProperties() {
     if (first.ok() && !s.ok()) first = s;
   };
   if (general_) keep(general_->Revert());
+  if (display_) keep(display_->Revert());
   if (PropertiesOwnsStyle()) keep(style_->Revert());
   if (PropertiesOwnsFields()) keep(fields_->Revert());
+  if (selection_) keep(selection_->Revert());
+  if (query_) query_->Revert();
   ++feature_views_gen_;
   return first;
 }
@@ -614,6 +724,9 @@ void Desk::CloseLayerProperties() {
   if (PropertiesOwnsStyle()) style_.reset();
   if (PropertiesOwnsFields()) fields_.reset();
   general_.reset();
+  display_.reset();
+  selection_.reset();
+  query_.reset();
   properties_overlay_ = nullptr;
   ++feature_views_gen_;
 }
@@ -739,6 +852,11 @@ void Desk::RegisterOverlayTypeCommands() {
     } else {
       c.id = "overlay.new." + id;
       c.action = [this, id] { session_->NewFileOverlay(id); };
+      // A feature layer needs its geometry, fields and file chosen first.
+      if (id == FeatureOverlay::kTypeId) {
+        c.label = "Feature Layer…";
+        c.action = [this] { OpenNewLayer(); };
+      }
       commands_.Register(c);
     }
     if (d->editor_factory) {
@@ -770,6 +888,67 @@ std::string Desk::DocumentName() const {
   return "unnamed." + (ext.empty() ? std::string("fvrte") : ext);
 }
 
+void Desk::RegisterRecentCommands() {
+  commands_.RemovePrefix("file.recent.");
+  for (size_t i = 0; i < recent_.size(); ++i) {
+    Command c;
+    c.id = "file.recent." + std::to_string(i);
+    c.label = std::filesystem::path(recent_[i].path).filename().string();
+    c.action = [this, i] { OpenRecent(i); };
+    commands_.Register(std::move(c));
+  }
+}
+
+void Desk::NoteRecent(Overlay& o) {
+  if (!types_.IsFile(o.type_id())) return;
+  const app::Persistence* p = o.AsPersistence();
+  if (p == nullptr || p->file_spec().empty()) return;
+  // Every layer of a multi-layer file is one entry: reopening the path opens them all.
+  const RecentOverlay entry{o.type_id(), app::SplitSourceSpec(p->file_spec()).path};
+  recent_.erase(std::remove(recent_.begin(), recent_.end(), entry), recent_.end());
+  recent_.insert(recent_.begin(), entry);
+  if (recent_.size() > kMaxRecentOverlays) recent_.resize(kMaxRecentOverlays);
+  StoreRecent();
+  RegisterRecentCommands();
+}
+
+void Desk::OpenRecent(size_t i) {
+  if (i >= recent_.size()) return;
+  const RecentOverlay entry = recent_[i];
+  const app::FlowResult r = session_->OpenFile(entry.type, entry.path);
+  if (r == app::FlowResult::kCanceled) return;
+  recent_.erase(std::remove(recent_.begin(), recent_.end(), entry), recent_.end());
+  // An already-open file is only made current, so no overlay is added to note it.
+  if (r == app::FlowResult::kDone) recent_.insert(recent_.begin(), entry);
+  StoreRecent();
+  RegisterRecentCommands();
+  RebuildMenus();
+}
+
+void Desk::StoreRecent() {
+  if (user_settings_ == nullptr) return;
+  user_settings_->ErasePrefix(kRecentPrefix);
+  for (size_t i = 0; i < recent_.size(); ++i) {
+    const std::string key = kRecentPrefix + std::to_string(i);
+    user_settings_->Set(key + ".type", recent_[i].type);
+    user_settings_->Set(key + ".path", recent_[i].path);
+  }
+}
+
+void Desk::SetUserSettings(UserSettings* user) {
+  user_settings_ = user;
+  if (user == nullptr) return;
+  recent_.clear();
+  for (size_t i = 0; i < kMaxRecentOverlays; ++i) {
+    const std::string key = kRecentPrefix + std::to_string(i);
+    RecentOverlay entry{user->Get(key + ".type"), user->Get(key + ".path")};
+    if (entry.type.empty() || entry.path.empty()) break;
+    recent_.push_back(std::move(entry));
+  }
+  RegisterRecentCommands();
+  RebuildMenus();
+}
+
 void Desk::RegisterInstanceCommands() {
   commands_.RemovePrefix("overlay.instance.");
   const auto& stack = overlays_.Overlays();
@@ -778,14 +957,19 @@ void Desk::RegisterInstanceCommands() {
   for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
     const std::shared_ptr<Overlay>& o = *it;
     if (!types_.IsFile(o->type_id())) continue;
-    std::string label = o->Name();
-    if (app::Persistence* p = o->AsPersistence()) {
-      if (!p->file_spec().empty())
-        label = std::filesystem::path(p->file_spec()).filename().string();
-    }
     Command c;
     c.id = "overlay.instance." + std::to_string(k++);
-    c.label = label;
+    c.label = o->Name();
+    if (app::Persistence* p = o->AsPersistence()) {
+      const std::string path = app::SplitSourceSpec(p->file_spec()).path;
+      const std::string file = std::filesystem::path(path).filename().string();
+      // A feature layer is listed by its own name under its file; other
+      // documents by their file name.
+      if (!file.empty() && o->type_id() == FeatureOverlay::kTypeId)
+        c.submenu = file;
+      else if (!file.empty())
+        c.label = file;
+    }
     const std::weak_ptr<Overlay> weak = o;
     c.checked = [this, weak] {
       const auto sp = weak.lock();
@@ -962,8 +1146,11 @@ Status Desk::GenerateCoverage() {
   if (!missing.empty())
     return Status::Error(kNotFound, "cannot reach " + missing +
                                         "; reconnect it or remove it from Map Data Sources");
-  if (!roots.empty() && steps.empty())
-    return Status::Error(kUnsupported, "no map format this app can scan is registered");
+  if (!roots.empty() && steps.empty()) {
+    std::string listed;
+    for (const std::string& root : roots) listed += (listed.empty() ? "" : ", ") + root;
+    return Status::Error(kNotFound, "found no map data folder (" + ScanFolderNames() + ") in " + listed);
+  }
   // A list derived from the old data sources becomes the saved list.
   const Status s = SaveScanRoots(roots);
   if (!s.ok()) return s;
@@ -1011,20 +1198,39 @@ void Desk::CatalogChanged() {
   RebuildMenus();
 }
 
+namespace {
+
+/// Lidar DEMs stacked over the DTED tree; either may be absent.
+std::unique_ptr<IElevationSource> OpenElevation(const std::string& dted_dir,
+                                                const std::vector<std::string>& lidar_dirs) {
+  std::unique_ptr<IElevationSource> dted;
+  if (!dted_dir.empty()) dted = std::make_unique<DtedElevationSource>(dted_dir);
+  if (lidar_dirs.empty()) return dted;
+  auto lidar = std::make_shared<GeoTiffDemSource>(lidar_dirs);
+  if (lidar->FileCount() == 0) return dted;
+  return std::make_unique<ElevationStack>(
+      std::vector<std::shared_ptr<IElevationSource>>{lidar, std::move(dted)});
+}
+
+}  // namespace
+
 void Desk::ResolveElevation() {
   ++elevation_gen_;
   elevation_.reset();
   pointer_elevation_.reset();
   std::vector<DataSourceRow> rows;
+  std::string dted_dir;
+  std::vector<std::string> lidar_dirs;
   if (catalog_ && catalog_->DataSources(&rows).ok()) {
     for (const DataSourceRow& r : rows) {
       std::error_code ec;
-      if (r.format != "dted" || !std::filesystem::is_directory(r.path, ec)) continue;
-      elevation_ = std::make_shared<DtedElevationSource>(r.path);
-      pointer_elevation_ = std::make_unique<DtedElevationSource>(r.path);
-      break;
+      if (!std::filesystem::is_directory(r.path, ec)) continue;
+      if (r.format == "dted" && dted_dir.empty()) dted_dir = r.path;
+      if (r.format == "lidar" && r.frames > 0) lidar_dirs.push_back(r.path);
     }
   }
+  elevation_ = OpenElevation(dted_dir, lidar_dirs);
+  pointer_elevation_ = OpenElevation(dted_dir, lidar_dirs);
   for (const std::shared_ptr<Overlay>& o : overlays_.Overlays()) BindOverlay(*o);
 }
 
@@ -1032,6 +1238,8 @@ bool Desk::BindOverlay(Overlay& overlay) {
   if (auto* r = dynamic_cast<RouteOverlay*>(&overlay)) {
     r->SetManager(&overlays_);
     r->SetPlanner(planner_.get());
+    r->SetAvoidHillsPenalty(
+        settings_.GetDouble("routing.avoid_hills_penalty", kDefaultAvoidHillsPenalty));
     // A new route is priced with the configured profile; an opened one keeps its own.
     if (r->waypoints().empty() && r->profile().empty() && !r->is_dirty()) {
       const std::string profile = settings_.GetString("routing.profile", "");
@@ -1093,7 +1301,13 @@ Status Desk::MoveLayer(size_t from, size_t to) {
   return s;
 }
 
-Status Desk::SelectLayer(size_t row) { return layers_.Select(row); }
+Status Desk::SelectLayer(size_t row) {
+  if (!rule_id_.empty()) {
+    rule_id_.clear();
+    ++layers_generation_;
+  }
+  return layers_.Select(row);
+}
 
 Status Desk::SetSourceVisible(size_t source, bool visible) {
   Status s = sources_.SetVisible(source, visible);
@@ -1180,6 +1394,17 @@ Status Desk::OpenAttributeTable() {
   std::shared_ptr<AttributeTableModel> table;
   Status s = AttributeTableModel::Open(std::move(layer), o->Name(), o.get(), &table);
   if (!s.ok()) return s;
+  if (const auto feature = std::dynamic_pointer_cast<FeatureOverlay>(o)) {
+    const std::weak_ptr<FeatureOverlay> weak = feature;
+    table->SetFeatureFilter([weak](const Feature& f) {
+      const std::shared_ptr<FeatureOverlay> fo = weak.lock();
+      return !fo || fo->Shows(f);
+    });
+    if (!feature->definition_query().empty()) {
+      s = table->Reload();
+      if (!s.ok()) return s;
+    }
+  }
   table_ = std::move(table);
   ++feature_views_gen_;
   shell_.ShowAttributeTable();
@@ -1223,6 +1448,69 @@ void Desk::DropFeatureViews(const Overlay& overlay) {
   if (table_ && table_->overlay() == &overlay) CloseAttributeTable();
   if (style_ && style_->overlay() == &overlay) CloseLayerStyle();
   if (fields_ && fields_->overlay() == &overlay) CloseLayerFields();
+  if (select_query_ && select_query_->overlay() == &overlay) CloseSelectByAttributes();
+  if (rule_filter_ && rule_filter_->overlay() == &overlay) CloseRuleFilter();
+  if (rule_style_ && rule_style_->overlay() == &overlay) CloseRuleStyle();
+}
+
+Status Desk::OpenSelectByAttributes() {
+  const auto o = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(overlays_.current()));
+  if (!o || !o->layer()) return Status::Error(kNotFound, "the current overlay is not a feature layer");
+  if (!select_query_ || select_query_->overlay() != o.get()) {
+    std::shared_ptr<QueryBuilderModel> q;
+    Status s = QueryBuilderModel::Open(o, std::string(), &q);
+    if (!s.ok()) return s;
+    select_query_ = std::move(q);
+  }
+  ++feature_views_gen_;
+  shell_.ShowSelectByAttributes();
+  return Status::Ok();
+}
+
+Status Desk::ApplySelectByAttributes(SelectionMethod method, size_t* selected) {
+  if (!select_query_) return Status::Error(kNotFound, "Select by Attributes is not open");
+  const auto o = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(select_query_->overlay()));
+  if (!o) return Status::Error(kNotFound, "the layer has closed");
+  std::vector<int64_t> matches;
+  Status s = select_query_->Matching(true, &matches, nullptr);
+  if (!s.ok()) return s;
+  std::vector<int64_t> next;
+  switch (method) {
+    case SelectionMethod::kNew:
+      next = std::move(matches);
+      break;
+    case SelectionMethod::kAdd:
+      next = o->selection();
+      next.insert(next.end(), matches.begin(), matches.end());
+      break;
+    case SelectionMethod::kRemove:
+      for (int64_t id : o->selection())
+        if (std::find(matches.begin(), matches.end(), id) == matches.end()) next.push_back(id);
+      break;
+    case SelectionMethod::kWithin:
+      for (int64_t id : o->selection())
+        if (std::find(matches.begin(), matches.end(), id) != matches.end()) next.push_back(id);
+      break;
+  }
+  o->SetSelection(std::move(next));
+  if (selected != nullptr) *selected = o->selection().size();
+  ++feature_views_gen_;
+  shell_.RequestInvalidate();
+  return Status::Ok();
+}
+
+void Desk::CloseSelectByAttributes() {
+  if (!select_query_) return;
+  select_query_.reset();
+  ++feature_views_gen_;
+}
+
+Status Desk::ClearSelection() {
+  Overlay* o = overlays_.current();
+  if (o == nullptr || !SelectFeatureIn(*o, 0)) return Status::Error(kNotFound, "the current layer has no features");
+  ++feature_views_gen_;
+  shell_.RequestInvalidate();
+  return Status::Ok();
 }
 
 Status Desk::OpenLayerStyle() {
@@ -1250,6 +1538,74 @@ Status Desk::StyleSelectedFeature() {
   style_ = std::move(style);
   ++feature_views_gen_;
   shell_.ShowLayerStyle();
+  return Status::Ok();
+}
+
+Status Desk::ExportSelection() {
+  const auto o = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(overlays_.current()));
+  if (!o || o->selection().empty()) return Status::Error(kNotFound, "select features to export first");
+  app::FileTypeDesc type;
+  type.default_extension = FeatureOverlay::kExtension;
+  type.open_filters = {{"GeoPackage (*.gpkg)", "*.gpkg"}};
+  type.save_filters = type.open_filters;
+  const size_t count = o->selection().size();
+  const std::string what = std::to_string(count) + (count == 1 ? " feature" : " features");
+
+  // An existing file is picked with the open panel, so the save panel never asks to replace it.
+  std::vector<std::string> open_paths;
+  for (const std::shared_ptr<Overlay>& layer : overlays_.OfType(FeatureOverlay::kTypeId)) {
+    const auto& package = static_cast<const FeatureOverlay&>(*layer).package();
+    if (package && package->Writable() &&
+        std::find(open_paths.begin(), open_paths.end(), package->Path()) == open_paths.end())
+      open_paths.push_back(package->Path());
+  }
+  std::vector<std::string> rows = {"New GeoPackage…", "Existing GeoPackage…"};
+  for (const std::string& p : open_paths) rows.push_back(std::filesystem::path(p).filename().string());
+  const std::optional<int> where = shell_.ChooseFromList("Export " + what + " to", rows);
+  if (!where || *where < 0 || *where >= static_cast<int>(rows.size())) return Status::Ok();
+
+  FeatureExport to;
+  if (*where == 0) {
+    to.path = shell_.ChooseSaveSpec(type, o->Name() + ".gpkg").first;
+    if (to.path.empty()) return Status::Ok();
+  } else {
+    if (*where == 1) {
+      const std::vector<std::string> paths = shell_.ChooseFilesToOpen(type);
+      if (paths.empty()) return Status::Ok();
+      to.path = paths.front();
+    } else {
+      to.path = open_paths[static_cast<size_t>(*where - 2)];
+    }
+    to.mode = FeatureExport::Mode::kNewTable;
+    std::vector<GeoPackageLayerInfo> targets;
+    Status s = o->AppendTargets(to.path, &targets);
+    if (!s.ok()) return s;
+    // Without a table of the same schema there is nothing to choose: it goes in as a new layer.
+    if (!targets.empty()) {
+      std::vector<std::string> choices = {"New layer \"" + o->Name() + "\""};
+      for (const GeoPackageLayerInfo& t : targets) choices.push_back("Add to \"" + t.identifier + "\"");
+      const std::optional<int> answer = shell_.ChooseFromList(
+          "Export " + what + " to " + std::filesystem::path(to.path).filename().string(), choices);
+      if (!answer || *answer < 0 || *answer >= static_cast<int>(choices.size())) return Status::Ok();
+      if (*answer > 0) {
+        to.mode = FeatureExport::Mode::kAppend;
+        to.table = targets[static_cast<size_t>(*answer - 1)].table;
+      }
+    }
+  }
+  const std::string file = std::filesystem::path(to.path).filename().string();
+  std::string spec;
+  Status s = o->ExportSelection(to, &spec);
+  if (!s.ok()) return s;
+  SetFeedback("Exported " + std::to_string(count) + (count == 1 ? " feature to " : " features to ") +
+              app::SplitSourceSpec(spec).layer + " in " + file);
+  // An appended table may be on the map or in the attribute table.
+  if (table_) {
+    const Status st = table_->Reload();
+    if (!st.ok()) Warn("attribute table: " + st.message);
+  }
+  ++feature_views_gen_;
+  shell_.RequestInvalidate();
   return Status::Ok();
 }
 
@@ -1286,10 +1642,11 @@ Status Desk::OpenLayerFields() {
 std::string Desk::LayerFieldsLoss() const {
   if (!fields_) return std::string();
   SchemaChangeImpact impact;
-  if (!fields_->Assess(&impact).ok() || !impact.LosesData()) return std::string();
-  SchemaChangeImpact losses = impact;
-  losses.missing_required.clear();
-  return losses.Describe();
+  if (!fields_->Assess(&impact).ok()) return std::string();
+  impact.missing_required.clear();
+  std::string text = impact.Describe();
+  for (const std::string& sentence : fields_->StyleBreaks()) text += (text.empty() ? "" : " ") + sentence;
+  return text;
 }
 
 Status Desk::ApplyLayerFields() {
@@ -1317,8 +1674,12 @@ void Desk::CloseLayerFields() {
   ++feature_views_gen_;
 }
 
-void Desk::OpenNewLayer() {
+void Desk::OpenNewLayer(const std::string& package) {
   new_layer_ = std::make_shared<NewLayerModel>();
+  if (!package.empty()) {
+    new_layer_->SetTarget(NewLayerTarget::kPackage);
+    new_layer_->SetPath(package);
+  }
   ++feature_views_gen_;
   shell_.ShowNewLayer();
 }
@@ -1328,14 +1689,33 @@ Status Desk::CreateNewLayer() {
   Status s = new_layer_->Validate();
   if (!s.ok()) return s;
   const std::string path = new_layer_->path();
-  if (overlays_.FindByFileSpec(FeatureOverlay::kTypeId, path))
+  const NewLayerTarget target = new_layer_->target();
+  if (target == NewLayerTarget::kUnsaved) {
+    if (session_->NewFileOverlay(FeatureOverlay::kTypeId) != app::FlowResult::kDone) return session_->last_error();
+    auto* made = dynamic_cast<FeatureOverlay*>(overlays_.current());
+    if (made == nullptr) return Status::Error(kInternal, "the new layer is not current");
+    made->SetName(new_layer_->name());
+    made->SetLayer(std::make_shared<MemoryFeatureLayer>(new_layer_->name(), new_layer_->schema()));
+    CloseNewLayer();
+    ++layers_generation_;
+    shell_.RequestInvalidate();
+    return Status::Ok();
+  }
+  if (target == NewLayerTarget::kNewFile && overlays_.FindByFileSpec(FeatureOverlay::kTypeId, path))
     return Status::Error(kInvalidArg, path + " is open; close it before replacing it");
-  s = new_layer_->Create();
+  std::string spec;
+  s = new_layer_->Create(&spec);
   if (!s.ok()) return s;
-  const app::FlowResult r = session_->OpenFile(FeatureOverlay::kTypeId, path);
+  if (target == NewLayerTarget::kPackage) {
+    // A layer opened by the bare path now shares the file; its spec names its own table.
+    for (const std::shared_ptr<Overlay>& o : overlays_.OfType(FeatureOverlay::kTypeId))
+      if (auto* f = dynamic_cast<FeatureOverlay*>(o.get()); f != nullptr && f->file_spec() == path)
+        f->NameTableInSpec();
+  }
+  const app::FlowResult r = session_->OpenFile(FeatureOverlay::kTypeId, spec);
   if (r != app::FlowResult::kDone) {
     const Status& e = session_->last_error();
-    return e.ok() ? Status::Error(kInternal, "opening " + path + " was cancelled") : e;
+    return e.ok() ? Status::Error(kInternal, "opening " + spec + " was cancelled") : e;
   }
   CloseNewLayer();
   shell_.RequestInvalidate();
@@ -1378,6 +1758,10 @@ void Desk::ResolveRoutePlanner() {
   const std::string graph = settings_.GetString("routing.graph", "");
   const std::string rules = settings_.GetString("routing.rules", "");
   const std::string paths = graph + '\n' + rules;
+  const double penalty =
+      settings_.GetDouble("routing.avoid_hills_penalty", kDefaultAvoidHillsPenalty);
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
+    if (auto* r = dynamic_cast<RouteOverlay*>(o.get())) r->SetAvoidHillsPenalty(penalty);
   if (planner_paths_ && *planner_paths_ == paths) return;
   planner_paths_ = paths;
   // The planner loads its graph lazily, on the first Follow Roads.
@@ -1495,6 +1879,36 @@ void Desk::GoTo(const GeoPoint& center, double scale_denom) {
   view_->SetViewport(v.WithCamera(center, scale_denom, v.Rotation()));
   // Panning alone keeps the product; a jump chooses it again.
   ApplyGroupToView();
+}
+
+std::vector<DeskSearchRow> Desk::Search(const std::string& text, bool map_view_only) {
+  ResolveRoutePlanner();
+  const view::Viewport& v = view_->View();
+  DeskSearchInput in;
+  in.text = text;
+  in.overlays = &overlays_;
+  in.planner = planner_.get();
+  in.catalog = catalog_;
+  if (view_->HasProduct()) in.product = view_->Product();
+  in.near = v.Center();
+  if (v.HasSurface()) in.view = v.Projection().VmapBounds();
+  in.map_view_only = map_view_only;
+  in.enc_dir = CurrentVectorMapConfig().enc_dir;
+  return search_->Search(in);
+}
+
+void Desk::GoToSearchRow(const DeskSearchRow& row) {
+  constexpr double kNearestFrameDenom = 2500.0;
+  const view::Viewport& v = view_->View();
+  const double fit = SearchFitScale(row.bounds, v.WidthPt(), v.HeightPt(), v.MmPerPoint(),
+                                    kNearestFrameDenom);
+  if (fit > 0.0) {
+    const GeoPoint mid{0.5 * (row.bounds.ll.lat + row.bounds.ur.lat),
+                       0.5 * (row.bounds.ll.lon + row.bounds.ur.lon)};
+    GoTo(mid, fit);
+  } else {
+    GoTo(row.position, v.ScaleDenom());
+  }
 }
 
 std::vector<view::LadderProduct> Desk::ProductsAt(const GeoPoint& p) const {
@@ -1717,6 +2131,66 @@ void Desk::OverlayHover(double x_pt, double y_pt) {
   const MouseEvent e = PixelEvent(v, x_pt, y_pt);
   pick_->UpdateHover(v.Projection(), PixelPoint{e.x, e.y});
   UpdateEditHint(e);
+}
+
+app::MenuNode Desk::MapContextMenu(double x_pt, double y_pt) {
+  const view::Viewport& v = view_->View();
+  if (!v.HasSurface()) return app::MenuNode();
+  const MouseEvent e = PixelEvent(v, x_pt, y_pt);
+  const PixelPoint p{e.x, e.y};
+  const MapProjection& proj = v.Projection();
+  static const char kGetInfo[] = "Get Info\xE2\x80\xA6";
+  std::vector<std::string> titles;
+  app::MenuNode root = pick_->BuildContextMenu(proj, p, [&](Overlay& o, app::MenuNode& section) {
+    app::ItemInfo* info = o.AsItemInfo();
+    if (info == nullptr) return;
+    std::optional<app::ItemInfoSheet> sheet = info->InfoAt(proj, p, pick_->tolerance_px);
+    if (!sheet) return;
+    const std::weak_ptr<Overlay> weak = overlays_.FindShared(&o);
+    titles.push_back(sheet->title);
+    app::MenuNode edit;
+    if (!sheet->edit_label.empty()) {
+      edit.label = sheet->edit_label;
+      edit.action = [this, weak, select = sheet->select] {
+        if (const auto sp = weak.lock()) {
+          const Status s = EditItem(sp, select);
+          if (!s.ok()) shell_.ReportError(s);
+        }
+      };
+    }
+    app::MenuNode get;
+    get.label = kGetInfo;
+    get.action = [this, weak, sheet = std::move(*sheet)] {
+      if (weak.expired()) return;
+      item_info_ = sheet;
+      shell_.ShowItemInfo();
+    };
+    section.children.push_back(std::move(get));
+    if (!edit.label.empty()) section.children.push_back(std::move(edit));
+  });
+  if (titles.size() > 1) {
+    size_t k = 0;
+    for (app::MenuNode& child : root.children) {
+      if (child.label == kGetInfo && k < titles.size())
+        child.label = "Get Info: " + titles[k++] + "\xE2\x80\xA6";
+    }
+  }
+  return root;
+}
+
+Status Desk::EditItem(const std::shared_ptr<Overlay>& overlay, const std::function<void()>& select) {
+  if (!overlay || !overlays_.Contains(overlay)) return Status::Error(kNotFound, "the layer has closed");
+  // Current first: a mode entered afterwards adopts the current overlay of its
+  // type, and one already active moves its focus (and the raise) to it.
+  Status s = overlays_.MakeCurrent(overlay);
+  if (!s.ok()) return s;
+  if (editors_->CurrentMode() != overlay->type_id() &&
+      editors_->SetMode(overlay->type_id()) != app::FlowResult::kDone) {
+    return editors_->last_error();
+  }
+  if (select) select();
+  shell_.RequestInvalidate();
+  return Status::Ok();
 }
 
 void Desk::OverlayHoverExit() {

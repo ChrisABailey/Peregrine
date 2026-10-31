@@ -38,9 +38,11 @@ final class DisplayUnits: ObservableObject {
 
     private init() {
         let stored = UserDefaults.standard.string(forKey: Self.key)
-        // Miles is the default because this app's riders are on Kiawah. Only
-        // the default: a stored choice is read first and wins.
-        units = stored.flatMap(DistanceUnits.init(rawValue:)) ?? .miles
+        // A stored choice wins only if this app offers it.
+        let offered = AppFlavor.current.offeredUnits
+        units = stored.flatMap(DistanceUnits.init(rawValue:)).flatMap {
+            offered.contains($0) ? $0 : nil
+        } ?? AppFlavor.current.defaultUnits
     }
 }
 
@@ -59,6 +61,18 @@ struct MapMenuButton: View, Equatable {
     let onExportRide: () -> Void
     /// Opens the tide card; nil hides the item, for a pack with no table.
     let onTides: (() -> Void)?
+    /// Opens the map key; nil hides the item, for a style with no legend.
+    let onMapKey: (() -> Void)?
+    /// Opens the NOAA region picker; nil hides the item.
+    let onDownloadCharts: (() -> Void)?
+    /// Opens the Files picker for a chart zip; nil hides the item.
+    let onImportCharts: (() -> Void)?
+    /// Checks NOAA for chart updates; nil hides the item.
+    let onCheckChartUpdates: (() -> Void)?
+    /// Opens the chart settings; nil hides the item.
+    let onChartSettings: (() -> Void)?
+    /// Opens the chart help; nil hides the item.
+    let onChartHelp: (() -> Void)?
     let onAbout: () -> Void
     let onReportProblem: () -> Void
 
@@ -74,7 +88,7 @@ struct MapMenuButton: View, Equatable {
             }
             .pickerStyle(.menu)
             Picker("Distance Units", selection: $units) {
-                ForEach(DistanceUnits.allCases) { unit in
+                ForEach(AppFlavor.current.offeredUnits) { unit in
                     Text(unit.menuName).tag(unit)
                 }
             }
@@ -84,8 +98,38 @@ struct MapMenuButton: View, Equatable {
                     Label("Tides", systemImage: "water.waves")
                 }
             }
+            if let onMapKey {
+                Button(action: onMapKey) {
+                    Label("Map Key", systemImage: "list.bullet.rectangle")
+                }
+            }
+            if let onChartSettings {
+                Button(action: onChartSettings) {
+                    Label("Chart Settings", systemImage: "slider.horizontal.3")
+                }
+            }
+            if let onDownloadCharts {
+                Button(action: onDownloadCharts) {
+                    Label("Download Charts", systemImage: "icloud.and.arrow.down")
+                }
+            }
+            if let onCheckChartUpdates {
+                Button(action: onCheckChartUpdates) {
+                    Label("Check for Chart Updates", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            if let onImportCharts {
+                Button(action: onImportCharts) {
+                    Label("Import Charts", systemImage: "square.and.arrow.down")
+                }
+            }
+            if let onChartHelp {
+                Button(action: onChartHelp) {
+                    Label("Chart Help", systemImage: "questionmark.circle")
+                }
+            }
             Button(action: onExportRide) {
-                Label("Export Ride Tracks", systemImage: "square.and.arrow.up")
+                Label(AppFlavor.current.exportTracksTitle, systemImage: "square.and.arrow.up")
             }
             Button(action: onAbout) {
                 Label("About", systemImage: "info.circle")
@@ -123,6 +167,12 @@ struct MapMenuButton: View, Equatable {
             && a.symbolStepLabels == b.symbolStepLabels
             && a.units == b.units
             && (a.onTides == nil) == (b.onTides == nil)
+            && (a.onMapKey == nil) == (b.onMapKey == nil)
+            && (a.onImportCharts == nil) == (b.onImportCharts == nil)
+            && (a.onDownloadCharts == nil) == (b.onDownloadCharts == nil)
+            && (a.onCheckChartUpdates == nil) == (b.onCheckChartUpdates == nil)
+            && (a.onChartSettings == nil) == (b.onChartSettings == nil)
+            && (a.onChartHelp == nil) == (b.onChartHelp == nil)
     }
 }
 
@@ -179,7 +229,7 @@ struct ReportProblemSheet: View {
                 } header: {
                     Text("Description of Problem")
                 } footer: {
-                    Text("The report is saved on your phone. You can "
+                    Text("The report is saved on this device. You can "
                          + "review the email contents before choosing to "
                          + "send it.")
                 }

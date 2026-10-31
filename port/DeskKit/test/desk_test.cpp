@@ -11,6 +11,8 @@
 #include <map>
 #include <set>
 
+#include "dem_fixture.h"
+#include "fv_desk_catalog_build.h"
 #include "fv_desk_fake.h"
 #include "fv_map_enums.h"
 #include "fvkit/app/capabilities.h"
@@ -568,6 +570,101 @@ TEST(DeskData, ElevationOverlaysDrawFromTheCatalogsDted) {
   fv::ClearFormatRegistryForTest();
 }
 
+TEST(DeskData, ContoursDrawFromALidarFolderOverNoDted) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root + "/lidar");
+  fv::test_dem::DemSpec dem;  // 0.0001 deg posts, rising 0.5 m per post to the east
+  dem.width = dem.height = 200;
+  dem.scale = {0.0001, 0.0001, 0.0};
+  dem.tiepoint = {0, 0, 0, -80.01, 32.61, 0};
+  dem.value = [](int c, int) { return 10.0 + 0.5 * c; };
+  fv::test_dem::WriteDem(root + "/lidar/slope.tif", dem);
+
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  const std::string catalog_path = dir.Path("catalog.sqlite");
+  {
+    fv::desk::CatalogBuild build(catalog_path, fv::desk::PlanScan(root));
+    build.Wait();
+    bool lidar = false;
+    for (const auto& r : build.Results())
+      lidar = lidar || (r.format == "lidar" && std::filesystem::path(r.path).filename() == "lidar");
+    EXPECT_TRUE(lidar) << build.Summary();
+  }
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(catalog_path).ok());
+
+  FakeDesk fd(256, 256);
+  auto& mv = fd.desk().map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.6, -80.0}, 20000, 0));
+  const std::string contour_id = fv::ContourOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + contour_id}).ok());
+  fd.desk().SetCatalog(cat);
+  ASSERT_NE(fd.desk().elevation_source(), nullptr);
+  double feet = 0;
+  ASSERT_TRUE(fd.desk().ElevationFeetAt(GeoPoint{32.6, -80.0}, &feet));
+  // Post c = 99.5 at lon -80.0: 59.75 m.
+  EXPECT_NEAR(feet, 59.75 / 0.3048, 0.5);
+
+  fv::PixelBuffer buf;
+  const fv::Status drawn = fd.Render(&buf);
+  ASSERT_TRUE(drawn.ok()) << drawn.message;
+  auto contour = std::dynamic_pointer_cast<fv::ContourOverlay>(
+      fd.desk().overlays().FirstOfType(contour_id));
+  ASSERT_TRUE(contour);
+  EXPECT_FALSE(contour->last_draw().no_source);
+  EXPECT_GT(contour->last_draw().lines_drawn, 0);
+  fv::ClearFormatRegistryForTest();
+}
+
+TEST(DeskData, ElevationMapsReachLidarAndItsOverlaysUseIt) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root + "/lidar");
+  fv::test_dem::DemSpec dem;  // 0.0001 deg posts over rolling ground
+  dem.width = dem.height = 200;
+  dem.scale = {0.0001, 0.0001, 0.0};
+  dem.tiepoint = {0, 0, 0, -80.01, 32.61, 0};
+  dem.value = [](int c, int r) { return 40.0 + 15 * std::sin(c * 0.1) + 10 * std::cos(r * 0.07); };
+  fv::test_dem::WriteDem(root + "/lidar/hills.tif", dem);
+
+  fv::ClearFormatRegistryForTest();
+  fv::RegisterBuiltinFormats();
+  const std::string catalog_path = dir.Path("catalog.sqlite");
+  {
+    fv::desk::CatalogBuild build(catalog_path, fv::desk::PlanScan(root));
+    build.Wait();
+  }
+  auto cat = std::make_shared<fv::Catalog>();
+  ASSERT_TRUE(cat->Open(catalog_path).ok());
+
+  FakeDesk fd(256, 256);
+  fd.desk().SetCatalog(cat);
+  ASSERT_TRUE(fd.desk().SelectGroup("elevation").ok());
+  fd.desk().GoTo(GeoPoint{32.6, -80.0}, 20000);
+  ASSERT_TRUE(fd.desk().map_view().HasProduct());
+  EXPECT_EQ(fd.desk().map_view().Product().format, "lidar-shaded");
+
+  const std::string contour_id = fv::ContourOverlay::kTypeId;
+  const std::string mask_id = fv::TAMaskOverlay::kTypeId;
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + contour_id}).ok());
+  ASSERT_TRUE(fd.Run({"overlay.toggle." + mask_id}).ok());
+  fv::PixelBuffer buf;
+  const fv::Status drawn = fd.Render(&buf);
+  ASSERT_TRUE(drawn.ok()) << drawn.message;
+  EXPECT_EQ(buf.Row(10)[4 * 10 + 3], 255) << "no shaded relief under the overlays";
+  auto contour = std::dynamic_pointer_cast<fv::ContourOverlay>(
+      fd.desk().overlays().FirstOfType(contour_id));
+  auto mask = std::dynamic_pointer_cast<fv::TAMaskOverlay>(
+      fd.desk().overlays().FirstOfType(mask_id));
+  ASSERT_TRUE(contour && mask);
+  EXPECT_FALSE(contour->last_draw().no_source);
+  EXPECT_GT(contour->last_draw().lines_drawn, 0);
+  EXPECT_FALSE(mask->last_draw().no_source);
+  fv::ClearFormatRegistryForTest();
+}
+
 // MARK: Points
 
 TEST_F(DeskTest, PointEditorAddsAPointWhereClicked) {
@@ -736,10 +833,13 @@ TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusToolbarOrLayerMenus) {
   CollectIds(desk.menus().Toolbar(), &reachable);
   CollectIds(desk.LayerMenu(), &reachable);
   CollectIds(desk.SourceMenu(), &reachable);
+  CollectIds(desk.RuleMenu(), &reachable);
   // The feature editor's palette runs these through its own editor.tool ids.
   for (const char* id : {"overlay.attribute_table", "overlay.edit_feature", "overlay.style",
                          "overlay.style_feature", "overlay.fields"})
     reachable.insert(id);
+  // An alias of Overlay ▸ New ▸ Feature Layer… that PeregrineGtk runs by id.
+  reachable.insert("overlay.new_layer");
   for (const std::string& id : desk.commands().Ids())
     EXPECT_TRUE(reachable.count(id)) << id << " is in no menu and not on the toolbar";
 }
@@ -757,8 +857,9 @@ TEST_F(DeskTest, TheToolbarShowsOnlyCommandsWithIcons) {
   ASSERT_TRUE(desk.types().Register(std::move(d)).ok());
   desk.Refresh();
   EXPECT_EQ(Ids(desk.menus().Toolbar()),
-            (std::vector<std::string>{"editor.mode.fv.points", "editor.mode.fv.features",
-                                      "editor.mode.fv.route", "editor.mode.test.sketch"}));
+            (std::vector<std::string>{"overlay.layers_panel", "editor.mode.fv.points",
+                                      "editor.mode.fv.features", "editor.mode.fv.route",
+                                      "editor.mode.test.sketch"}));
 
   // While editing, the tools with icons follow; "Locked" and "More ▸ Inner"
   // have none and stay in the Sketch menu.
@@ -857,6 +958,8 @@ TEST_F(DeskTest, MapDataSourcesCreatesACatalogAndGeneratesCoverage) {
   Scratch dir;
   const std::string root = dir.Path("data");
   std::filesystem::create_directories(root + "/sub");
+  std::filesystem::create_directories(root + "/rpf");
+  std::filesystem::create_directories(root + "/enc");
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
   ASSERT_TRUE(desk.AvailableGroups().empty());
@@ -901,7 +1004,25 @@ TEST_F(DeskTest, MapDataSourcesCreatesACatalogAndGeneratesCoverage) {
   std::vector<fv::DataSourceRow> sources;
   ASSERT_TRUE(desk.catalog()->DataSources(&sources).ok());
   ASSERT_EQ(sources.size(), 2u);
-  for (const fv::DataSourceRow& r : sources) EXPECT_EQ(r.path, root);
+  // Each format is catalogued from its own folder.
+  for (const fv::DataSourceRow& r : sources) EXPECT_EQ(r.path, root + "/" + (r.format == "cadrg" ? "rpf" : "enc"));
+}
+
+TEST_F(DeskTest, GenerateCoverageNamesTheFoldersItLooksFor) {
+  Scratch dir;
+  const std::string root = dir.Path("data");
+  std::filesystem::create_directories(root + "/intel");
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  fd.shell().save_spec = dir.Path("new.sqlite");
+  ASSERT_TRUE(fd.Run({"map.sources"}).ok());
+  ASSERT_TRUE(desk.AddScanRoot(root).ok());
+  ASSERT_TRUE(fd.Run({"map.generate_coverage"}).ok());
+  EXPECT_FALSE(desk.Building());
+  ASSERT_EQ(fd.shell().errors.size(), 1u);
+  const std::string& message = fd.shell().errors[0].message;
+  EXPECT_NE(message.find(root), std::string::npos) << message;
+  EXPECT_NE(message.find("rpf"), std::string::npos) << message;
 }
 
 TEST_F(DeskTest, AnOldCatalogOffersItsSourceDirectories) {

@@ -29,6 +29,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+@interface PPRouteLeg ()
+- (instancetype)initWithLeg:(const pippin::RouteLeg &)leg;
+@end
+
+@interface PPElevationSample ()
+- (instancetype)initWithAlong:(double)alongMeters elevation:(double)elevationMeters;
+@end
+
 @interface PPBeachStretch ()
 
 /// A null `stretch` leaves the distances NaN, for a stretch the plan dropped.

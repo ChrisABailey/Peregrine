@@ -218,7 +218,7 @@ struct SearchView: View {
             } else {
                 Text("Nothing found.")
                     .foregroundStyle(.secondary)
-                Text("Your pins and roads are searched everywhere. Other places on the map are found only where you can see them.")
+                Text(AppFlavor.current.searchScopeNote)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

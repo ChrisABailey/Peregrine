@@ -68,13 +68,32 @@ NS_SWIFT_SENDABLE
 /// Sustained onshore component at or above which the water may run higher
 /// than the prediction.
 @property(nonatomic, readonly) double onshoreWarnMetersPerSecond;
-/// Headwind component on a beach stretch at or above which the sheet warns.
-@property(nonatomic, readonly) double headwindWarnMetersPerSecond;
+/// Wind component along a beach stretch, head or tail, above which the
+/// route sheet names it.
+@property(nonatomic, readonly) double alongWarnMetersPerSecond;
 
 /// The seaward normal of a stretch run along `headingDegrees`: whichever
 /// perpendicular lies nearer `beachFacesDegrees`. NaN when the facing is
 /// unknown.
 - (double)seawardForHeading:(double)headingDegrees NS_SWIFT_NAME(seaward(heading:));
+@end
+
+/// The wind on one beach stretch of the route, for the chevrons drawn along it.
+NS_SWIFT_SENDABLE
+@interface PPBeachWindMark : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// `stretch` indexes `PPRoute.beachStretches`; `towardDegrees` is where the
+/// wind blows, degrees true; `along` is the component in the direction of
+/// travel, positive with the rider; `seaward` puts the chevrons on the
+/// landward side, NaN centres them.
+- (instancetype)initWithStretch:(NSInteger)stretch
+                  towardDegrees:(double)towardDegrees
+           alongMetersPerSecond:(double)along
+                 seawardDegrees:(double)seaward NS_DESIGNATED_INITIALIZER;
+@property(nonatomic, readonly) NSInteger stretch;
+@property(nonatomic, readonly) double towardDegrees;
+@property(nonatomic, readonly) double alongMetersPerSecond;
+@property(nonatomic, readonly) double seawardDegrees;
 @end
 
 NS_ASSUME_NONNULL_END

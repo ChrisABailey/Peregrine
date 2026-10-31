@@ -9,10 +9,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <string>
+#include <unordered_map>
 
 // G2: DrawSymbolAt / DrawPixmapSymbolAt / ResolveSymbol / DrawResolvedSymbol
 // and InkBox used to be defined below, in the anonymous namespace. They now
 // live here so an overlay can reach them too.
+#include "fvkit/draw_interrupt.h"
 #include "fvkit/vector/symbol_draw.h"
 #include "fvkit/vector/text_draw.h"
 
@@ -36,6 +39,36 @@ SurfacePoint PointLabelAnchor(const LabelStyle& label, VectorGeometryType type,
   return SurfacePoint{(x0 + x1) / 2, (y0 + y1) / 2};
 }
 
+/// Text placed so far in one frame, for VectorRenderer's repeat filter.
+class LabelRepeats {
+ public:
+  LabelRepeats(double min_px, PixelSize canvas)
+      : min_sq_(min_px * min_px), w_(canvas.width), h_(canvas.height) {}
+  bool enabled() const { return min_sq_ > 0.0; }
+  /// True when `text` was already placed within the minimum distance. Only
+  /// anchors on the canvas take part: an off-canvas copy must not hide one
+  /// that shows.
+  bool Near(const std::string& text, double x, double y) const {
+    if (!OnCanvas(x, y)) return false;
+    auto it = placed_.find(text);
+    if (it == placed_.end()) return false;
+    for (const SurfacePoint& p : it->second)
+      if ((p.x - x) * (p.x - x) + (p.y - y) * (p.y - y) < min_sq_) return true;
+    return false;
+  }
+  void Add(const std::string& text, double x, double y) {
+    if (OnCanvas(x, y)) placed_[text].push_back(SurfacePoint{x, y});
+  }
+
+ private:
+  bool OnCanvas(double x, double y) const {
+    return x >= 0.0 && y >= 0.0 && x < w_ && y < h_;
+  }
+
+  double min_sq_;
+  double w_, h_;
+  std::unordered_map<std::string, std::vector<SurfacePoint>> placed_;
+};
 
 // Outcodes for Cohen-Sutherland.
 enum { kInside = 0, kLeft = 1, kRight = 2, kBottom = 4, kTop = 8 };
@@ -758,6 +791,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
 
   const Clock::time_point t_draw = Clock::now();
   const PixelSize size = canvas->Size();
+  LabelRepeats repeats(label_repeat_px_, size);
 
   // SEED for an area pattern's stamp lattice: where lat/lon 0,0 lands in this
   // frame's pixels. Written out from the projection's own linear relation
@@ -820,7 +854,9 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   const std::vector<GeoPoint>& pts = scene_.points();
   const std::vector<uint32_t>& part_first = scene_.part_first();
 
-  for (const SceneItem& it : scene_.items()) {
+  for (size_t item = 0; item < scene_.items().size(); ++item) {
+    if (DrawInterruptedAt(item)) return Status::Error(kInterrupted, "vector draw interrupted");
+    const SceneItem& it = scene_.items()[item];
     const StyleResult& sr = scene_.styles()[it.style];
 
     for (size_t p = 0; p < it.part_count; ++p) {
@@ -1046,6 +1082,12 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                        sr.label.offset_px +
                            AlongPathAnchorShift(sr.label, ts.size),
                        sr.label.keep_upright)) {
+                if (run.glyphs.empty()) continue;
+                const PlacedGlyph& mid = run.glyphs[run.glyphs.size() / 2];
+                if (repeats.enabled()) {
+                  if (repeats.Near(sr.label.text, mid.x, mid.y)) continue;
+                  repeats.Add(sr.label.text, mid.x, mid.y);
+                }
                 InkBox ink;
                 bool drew = false;
                 // The WHOLE run's halo goes down before ANY of its fill. Per
@@ -1126,8 +1168,11 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
               }
             }
 
-            if (lx > -1000 && ly > -1000 && lx < size.width + 1000 &&
-                ly < size.height + 1000) {
+            const bool repeated =
+                repeats.enabled() && repeats.Near(sr.label.text, a.x, a.y);
+            if (!repeated && lx > -1000 && ly > -1000 &&
+                lx < size.width + 1000 && ly < size.height + 1000) {
+              if (repeats.enabled()) repeats.Add(sr.label.text, a.x, a.y);
               for (int i = 0; i < halo_n; ++i) {
                 canvas->DrawTextString(
                     sr.label.text,

@@ -42,6 +42,19 @@ std::string Cxx(NSString* _Nullable s) {
 
 @end
 
+@implementation PPRouteLeg
+
+- (instancetype)initWithLeg:(const pippin::RouteLeg&)leg {
+  self = [super init];
+  if (self == nil) return nil;
+  _courseDegrees = leg.course_deg;
+  _distanceMeters = leg.distance_m;
+  _isMeasured = leg.ok ? YES : NO;
+  return self;
+}
+
+@end
+
 @implementation PPBeachStretch
 
 - (instancetype)initWithStretch:(const fv::RouteBeachStretch*)stretch
@@ -71,6 +84,17 @@ std::string Cxx(NSString* _Nullable s) {
 
 @end
 
+@implementation PPElevationSample
+
+- (instancetype)initWithAlong:(double)alongMeters elevation:(double)elevationMeters {
+  if (!(self = [super init])) return nil;
+  _alongMeters = alongMeters;
+  _elevationMeters = elevationMeters;
+  return self;
+}
+
+@end
+
 @implementation PPRoute
 
 - (instancetype)initWithSnapshot:(const pippin::RouteSnapshot&)snapshot
@@ -95,6 +119,7 @@ std::string Cxx(NSString* _Nullable s) {
     case fv::RouteBeach::kWheneverPossible: _beachUse = PPBeachUseWheneverPossible; break;
     case fv::RouteBeach::kNever: _beachUse = PPBeachUseNever; break;
   }
+  _avoidHills = snapshot.avoid_hills ? YES : NO;
   NSMutableArray<PPBeachStretch*>* stretches =
       [NSMutableArray arrayWithCapacity:snapshot.beach_stretches.size()];
   double beachMeters = 0.0;
@@ -131,9 +156,22 @@ std::string Cxx(NSString* _Nullable s) {
   _isCalculated = snapshot.calculated ? YES : NO;
   _isComplete = snapshot.complete ? YES : NO;
   _straightLegs = (NSInteger)snapshot.straight_legs;
+  _isStraight = snapshot.straight ? YES : NO;
+  NSMutableArray<PPRouteLeg*>* legs = [NSMutableArray arrayWithCapacity:snapshot.legs.size()];
+  for (const pippin::RouteLeg& leg : snapshot.legs)
+    [legs addObject:[[PPRouteLeg alloc] initWithLeg:leg]];
+  _legs = [legs copy];
   _isBicycle = snapshot.is_bicycle ? YES : NO;
   _lengthMeters = snapshot.length_m;
   _seconds = snapshot.seconds;
+  _hasElevation = snapshot.has_elevation ? YES : NO;
+  _climbMeters = snapshot.climb_m;
+  _descentMeters = snapshot.descent_m;
+  NSMutableArray<PPElevationSample*>* profile =
+      [NSMutableArray arrayWithCapacity:snapshot.elevation.size()];
+  for (const fv::routing::ElevationPoint& p : snapshot.elevation)
+    [profile addObject:[[PPElevationSample alloc] initWithAlong:p.along_m elevation:p.elev_m]];
+  _elevationProfile = [profile copy];
   _statusText = Str(snapshot.status);
   _planMilliseconds = planMilliseconds;
   return self;

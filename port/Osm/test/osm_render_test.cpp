@@ -28,6 +28,7 @@
 #include <gtest/gtest.h>
 #include <png.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +42,8 @@
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/overlay/vector_map_overlay.h"
 #include "fvkit/proj.h"
+#include "fvkit/style/legend.h"
+#include "fvkit/geo/web_mercator.h"
 #include "fvkit/vector/renderer.h"
 
 namespace fs = std::filesystem;
@@ -524,5 +527,90 @@ TEST(OsmOverlay, LeavesTheMapUnderneathShowing) {
     ASSERT_TRUE(base.OnDraw(proj, c2).ok());
     EXPECT_LT(PixelsStillShowingTheMapUnder(c2.Buffer()), under / 2)
         << "the base sheet is expected to paint over the map, not beside it";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The Atlanta Streets legend, every row's swatch stacked into one column at
+// the phone's 1:1 size (64 x 36 pt, 2 px per point), separated by a black
+// rule. One frame per zoom and theme; a row the map does not draw at that
+// zoom is bare ground.
+
+namespace {
+
+/// Renders every legend row of `style_file` at zoom `z` into one image.
+fv::PixelBuffer RenderLegendSheet(const std::string& style_file, double z, int* rows_drawn) {
+  constexpr double kPpp = 2.0;
+  constexpr int kWPt = 64, kHPt = 36, kGapPx = 2;
+  const int w = int(kWPt * kPpp), h = int(kHPt * kPpp);
+  // Pitch and latitude before the load, which is when minzooms become scale bands.
+  fv::OsmStyleEngine e;
+  e.SetDisplayMmPerPixel(25.4 / 163.0);
+  e.SetReferenceLatitude(kAtlantaLat);
+  std::string err;
+  EXPECT_TRUE(e.LoadFile(style_file, &err).ok()) << err;
+  std::vector<const fv::MapLibreLegendEntry*> entries;
+  for (const auto& g : e.legend())
+    for (const auto& entry : g.entries) entries.push_back(&entry);
+
+  const int sheet_h = int(entries.size()) * (h + kGapPx);
+  fv::CpuCanvas sheet(w, sheet_h);
+  sheet.Clear(fv::FvColor{0, 0, 0, 255});
+  // Just inside the zoom, so a layer whose minzoom is exactly `z` does not
+  // hinge on the last bit of the zoom/scale round trip.
+  const double scale =
+      fv::webmerc::ScaleForZoomExact(z + 0.01, kAtlantaLat, e.display_mm_per_pixel());
+  *rows_drawn = 0;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    fv::CpuCanvas swatch(w, h);
+    if (!fv::RenderLegendSwatch(e, *entries[i], scale, kPpp, kWPt, kHPt, &swatch).empty())
+      ++*rows_drawn;
+    for (int y = 0; y < h; ++y)
+      std::copy(swatch.Buffer().Row(y), swatch.Buffer().Row(y) + w * 4,
+                sheet.Buffer().Row(int(i) * (h + kGapPx) + y));
+  }
+  return sheet.Buffer();
+}
+
+}  // namespace
+
+// Pinned 2026-10-14 after looking at the PNGs: 16 of 21 rows draw at z12, 19 at
+// z14 (sidewalk and steps not yet), 20 at z16 (sidewalk not yet), all at z19,
+// where the interstate's 30 pt casing nearly fills its 36 pt row.
+// 0 = probe mode (prints the hash, asserts nothing).
+constexpr struct {
+  const char* style;
+  double zoom;
+  uint64_t hash;
+} kLegendGoldens[] = {
+    {"atlanta-streets.json", 12, 0x59cbc04fc919e31bull},
+    {"atlanta-streets.json", 14, 0xf30d7a95b43b0b77ull},
+    {"atlanta-streets.json", 16, 0xc8f80ca89cf6c02ull},
+    {"atlanta-streets.json", 19, 0x1efa5a7e2b122f15ull},
+    {"atlanta-streets-dark.json", 12, 0x7953956ab3f6bd97ull},
+    {"atlanta-streets-dark.json", 14, 0xd8586dfc8bc31eafull},
+    {"atlanta-streets-dark.json", 16, 0x1daef83f75450a6bull},
+    {"atlanta-streets-dark.json", 19, 0xf857b08612b0335aull},
+};
+
+TEST(OsmRender, AtlantaLegendSheets) {
+  const char* dir = getenv("FVW_OSM_STYLE_DIR");
+  if (dir == nullptr) GTEST_SKIP() << "no FVW_OSM_STYLE_DIR";
+  for (const auto& g : kLegendGoldens) {
+    int rows = 0;
+    const fv::PixelBuffer sheet =
+        RenderLegendSheet(std::string(dir) + "/" + g.style, g.zoom, &rows);
+    EXPECT_GT(rows, 0) << g.style << " z" << g.zoom;
+    const uint64_t h = Fnv1a(sheet);
+    const std::string name = std::string("osm_legend_") +
+                             (std::string(g.style).find("dark") != std::string::npos
+                                  ? "dark" : "light") +
+                             "_z" + std::to_string(int(g.zoom));
+    if (g.hash == 0)
+      printf("PROBE %s rows %d hash: 0x%llxull\n", name.c_str(), rows,
+             (unsigned long long)h);
+    else
+      EXPECT_EQ(h, g.hash) << name;
+    WritePng(sheet, name);
   }
 }

@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -117,6 +118,75 @@ TEST(MapView, DragPansAndBumpsTheGeneration) {
   EXPECT_NEAR(q.x, 150, 1e-6);
   EXPECT_NEAR(q.y, 80, 1e-6);
   EXPECT_GT(mv.Generation(), g0);
+}
+
+TEST(MapView, APanKeepsTheFrameGeneration) {
+  MapView mv = EncView();
+  const uint64_t f0 = mv.FrameGeneration();
+  mv.PointerDown(PointF{100, 100});
+  mv.PointerDrag(PointF{130, 90});
+  mv.Scroll(PointF{50, 50}, 5, 5, true);
+  EXPECT_EQ(mv.FrameGeneration(), f0);
+  mv.Step(+1);
+  EXPECT_GT(mv.FrameGeneration(), f0);
+}
+
+TEST(MapView, AFastReleaseCoastsAndSlowsToAStop) {
+  MapView mv = EncView();
+  double now = 10.0;
+  mv.SetClock([&now] { return now; });
+  mv.PointerDown(PointF{100, 100});
+  for (int i = 1; i <= 5; ++i) {
+    now += 0.01;
+    mv.PointerDrag(PointF{100.0 + 8 * i, 100});  // 800 pt/s to the right
+  }
+  EXPECT_TRUE(mv.Panning());
+  EXPECT_NEAR(mv.PanVelocity().x, 800, 1);
+  const GeoPoint released = mv.View().Center();
+  mv.PointerUp(PointF{140, 100});
+  ASSERT_TRUE(mv.Coasting());
+  EXPECT_TRUE(mv.Panning());
+  now += 0.1;
+  EXPECT_TRUE(mv.Advance());
+  EXPECT_LT(mv.View().Center().lon, released.lon);  // content moved right
+  EXPECT_LT(mv.PanVelocity().x, 800);
+  now += 10;
+  EXPECT_FALSE(mv.Advance());
+  EXPECT_FALSE(mv.Coasting());
+  // The whole coast is v0 * tau, about 400 points at 800 pt/s.
+  PointF q;
+  ASSERT_TRUE(mv.View().PointFor(released, &q));
+  EXPECT_NEAR(q.x - mv.View().SurfaceCenter().x, 800 * -0.001 / std::log(0.998), 2);
+}
+
+TEST(MapView, AReleaseAfterAPauseDoesNotCoast) {
+  MapView mv = EncView();
+  double now = 10.0;
+  mv.SetClock([&now] { return now; });
+  mv.PointerDown(PointF{100, 100});
+  for (int i = 1; i <= 5; ++i) {
+    now += 0.01;
+    mv.PointerDrag(PointF{100.0 + 8 * i, 100});
+  }
+  now += 0.2;
+  mv.PointerUp(PointF{140, 100});
+  EXPECT_FALSE(mv.Coasting());
+  EXPECT_FALSE(mv.Panning());
+}
+
+TEST(MapView, APressStopsACoast) {
+  MapView mv = EncView();
+  double now = 10.0;
+  mv.SetClock([&now] { return now; });
+  mv.PointerDown(PointF{100, 100});
+  for (int i = 1; i <= 5; ++i) {
+    now += 0.01;
+    mv.PointerDrag(PointF{100.0 + 8 * i, 100});
+  }
+  mv.PointerUp(PointF{140, 100});
+  ASSERT_TRUE(mv.Coasting());
+  mv.PointerDown(PointF{60, 60});
+  EXPECT_FALSE(mv.Coasting());
 }
 
 TEST(MapView, PreciseScrollPansNotchedScrollSteps) {

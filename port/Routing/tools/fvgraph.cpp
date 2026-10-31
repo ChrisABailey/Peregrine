@@ -18,10 +18,13 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "fv_road_graph.h"
+#include "fvkit/formats/dted.h"
+#include "fvkit/formats/geotiff_dem.h"
 #include "fv_route_rules.h"
 #include "fv_router.h"
 
@@ -40,7 +43,8 @@ int Usage() {
                "  fvgraph build -o OUT.fvroad INPUT.osm[.pbf] [INPUT ...]\n"
                "                [--drive-only] [--cycle-only] [--no-oneway]\n"
                "                [--ignore-access] [--ignore-turns] [--no-ferries]\n"
-               "                [--beach]\n"
+               "                [--beach] [--dem DIR [--dem-open N] [--dem-close N]]\n"
+               "                (DIR: a DTED tree, or a folder of lidar GeoTIFF DEMs)\n"
                "  fvgraph info  GRAPH.fvroad\n"
                "  fvgraph route GRAPH.fvroad LAT1 LON1 LAT2 LON2\n"
                "                [--via LAT LON ...] [--u-turns]\n"
@@ -49,7 +53,7 @@ int Usage() {
                "                [--snap-nodes]\n"
                "                [--avoid-toll] [--avoid-ferry]\n"
                "                [--toll-penalty X] [--ferry-penalty X]\n"
-               "                [--beach never|time|prefer]\n"
+               "                [--beach never|time|prefer] [--hill-penalty X]\n"
                "                [--rules FILE] [--profile NAME] [--geojson OUT.json]\n"
                "  fvgraph profiles [RULES.json]\n"
                "\n"
@@ -68,6 +72,8 @@ int Usage() {
                "  --beach admits the beach arcs a --beach graph holds: at their\n"
                "  true cost (time) or discounted (prefer). The default is the\n"
                "  profile's beach_penalty, which excludes them.\n"
+               "  --hill-penalty X multiplies the profile's climb cost on a graph\n"
+               "  built with --dem (1.0 = neutral; Pippin's \"Avoid hills\" uses 4).\n"
                "  An end is snapped onto the ROAD, so a route begins where it was\n"
                "  asked to rather than at the nearest junction; --snap-nodes is\n"
                "  the old behaviour, for seeing what the snap was moving.\n");
@@ -82,6 +88,9 @@ int Fail(const Status& s) {
 int Build(int argc, char** argv) {
   std::string out_path;
   std::vector<std::string> inputs;
+  std::string dem_dir;
+  int dem_open = -1;  // -1: the default for the DEM kind
+  int dem_close = -1;
   fv::routing::RoadGraphBuildOptions options;
 
   for (int i = 0; i < argc; ++i) {
@@ -102,6 +111,12 @@ int Build(int argc, char** argv) {
       options.include_ferries = false;
     } else if (a == "--beach") {
       options.beaches = true;
+    } else if (a == "--dem" && i + 1 < argc) {
+      dem_dir = argv[++i];
+    } else if (a == "--dem-open" && i + 1 < argc) {
+      dem_open = std::atoi(argv[++i]);
+    } else if (a == "--dem-close" && i + 1 < argc) {
+      dem_close = std::atoi(argv[++i]);
     } else if (!a.empty() && a[0] == '-') {
       return Usage();
     } else {
@@ -114,6 +129,43 @@ int Build(int argc, char** argv) {
   fv::routing::RoadGraphBuildStats stats;
   Status s = fv::routing::BuildRoadGraph(inputs, options, &graph, &stats);
   if (!s.ok()) return Fail(s);
+  fv::routing::ElevationStats elev_stats;
+  if (!dem_dir.empty()) {
+    // A lidar folder is bare earth and needs no ground filter; DTED from SRTM
+    // is a surface model and in a city carries the buildings.
+    std::unique_ptr<fv::IElevationSource> source;
+    auto lidar = std::make_unique<fv::GeoTiffDemSource>(dem_dir);
+    if (lidar->FileCount() > 0) {
+      std::printf("dem: %zu lidar GeoTIFF files\n", lidar->FileCount());
+      // Graph order jumps around the file; hold each file's decoded tiles.
+      lidar->SetCacheLimitPerFile(size_t{2} << 30);
+      source = std::move(lidar);
+      if (dem_open < 0) dem_open = 1;
+      if (dem_close < 0) dem_close = 1;
+    } else {
+      source = std::make_unique<fv::DtedElevationSource>(dem_dir);
+      if (dem_open < 0) dem_open = 11;
+      if (dem_close < 0) dem_close = 5;
+    }
+    fv::IElevationSource& dem = *source;
+    fv::routing::ElevationOptions elev_options;
+    // Sample at the DEM's own north-south post spacing at the graph's centre.
+    const fv::GeoRect b = graph.bounds();
+    const fv::GeoPoint centre{(b.ll.lat + b.ur.lat) / 2, (b.ll.lon + b.ur.lon) / 2};
+    double lat_deg = 0.0, lon_deg = 0.0;
+    if (dem.PostSpacing(centre, &lat_deg, &lon_deg)) elev_options.sample_step_m = lat_deg * 111195.0;
+    fv::routing::ElevationSampler sampler = [&dem](double lat, double lon, float* metres) {
+      return dem.GetElevation(fv::GeoPoint{lat, lon}, metres).ok();
+    };
+    if (lat_deg > 0.0 && lon_deg > 0.0 && (dem_open > 1 || dem_close > 1)) {
+      const double margin = std::max(dem_open, dem_close) * lat_deg;
+      const fv::GeoRect box{{b.ll.lat - margin, b.ll.lon - margin},
+                            {b.ur.lat + margin, b.ur.lon + margin}};
+      sampler = fv::routing::GroundSampler(sampler, box, lat_deg, lon_deg, dem_open, dem_close);
+    }
+    s = fv::routing::AddElevation(sampler, elev_options, &graph, &elev_stats);
+    if (!s.ok()) return Fail(s);
+  }
   s = graph.Save(out_path);
   if (!s.ok()) return Fail(s);
 
@@ -187,6 +239,17 @@ int Build(int argc, char** argv) {
                 static_cast<long long>(stats.beach_runs), stats.beach_run_m / 1000.0,
                 static_cast<long long>(stats.beach_access_arcs),
                 static_cast<long long>(stats.beach_access_unreached));
+  }
+  if (!dem_dir.empty()) {
+    std::printf("  elevation        %lld nodes from the DEM, %lld interpolated, %lld no data; "
+                "%lld bridge/tunnel/ferry edges\n",
+                static_cast<long long>(elev_stats.nodes_sampled),
+                static_cast<long long>(elev_stats.nodes_interpolated),
+                static_cast<long long>(elev_stats.nodes_no_data),
+                static_cast<long long>(elev_stats.edges_structure));
+    std::printf("                   %lld samples (%lld missing), %.1f km climbed one way\n",
+                static_cast<long long>(elev_stats.samples),
+                static_cast<long long>(elev_stats.samples_missing), elev_stats.climb_m / 1000.0);
   }
   std::printf("  graph            %u nodes, %u arcs, %u shape points\n", graph.node_count(),
               graph.arc_count(), graph.geometry_count());
@@ -276,6 +339,22 @@ int Info(int argc, char** argv) {
     if (graph.restriction(i).kind == fv::routing::TurnRestrictionKind::kOnly) ++only_turns;
   }
   std::printf("  %u turn restrictions (%u only_*)\n", graph.restriction_count(), only_turns);
+  if (graph.has_elevation()) {
+    double lo = 1e9, hi = -1e9, climb = 0.0, steepest = 0.0;
+    for (uint32_t i = 0; i < graph.node_count(); ++i) {
+      lo = std::min(lo, graph.node_elevation_m(i));
+      hi = std::max(hi, graph.node_elevation_m(i));
+    }
+    for (uint32_t a = 0; a < graph.arc_count(); ++a) {
+      const fv::routing::RoadArc& arc = graph.arc(a);
+      climb += arc.climb_m() / 2.0;  // each edge's climb is the twin's descent
+      if (arc.length_m >= 50.0) steepest = std::max(steepest, arc.climb_m() / arc.length_m);
+    }
+    std::printf("  elevation        %.0f..%.0f m, %.1f km climbed one way, "
+                "steepest arc over 50 m %.1f%%\n", lo, hi, climb / 1000.0, steepest * 100.0);
+  } else {
+    std::printf("  elevation        none\n");
+  }
 
   // Connected components, ignoring direction. A extract clipped mid-island
   // legitimately has many; a graph whose *largest* component is a small
@@ -428,6 +507,8 @@ int Route(int argc, char** argv) {
       else if (v == "time") options.beach = fv::routing::BeachUse::kToSaveTime;
       else if (v == "prefer") options.beach = fv::routing::BeachUse::kWheneverPossible;
       else return Usage();
+    } else if (a == "--hill-penalty" && i + 1 < argc) {
+      if (!penalty(argv[++i], &options.hill_penalty)) return Usage();
     } else if (a == "--snap" && i + 1 < argc) {
       options.snap_meters = std::atof(argv[++i]);
     } else if (a == "--snap-nodes") {
@@ -491,6 +572,9 @@ int Route(int argc, char** argv) {
   std::printf("snapped %.0f m from the start, %.0f m from the end%s\n", route.start_offset_m,
               route.end_offset_m,
               options.snap_to_arcs ? " (onto the road, not the junction)" : " (onto junctions)");
+  if (route.has_elevation) {
+    std::printf("climb %.0f m, descent %.0f m\n", route.climb_m, route.descent_m);
+  }
   if (!vias.empty()) {
     std::printf("through %zu stops", route.stop_nodes.size());
     // Worth saying out loud: the route doubled back at a stop because the

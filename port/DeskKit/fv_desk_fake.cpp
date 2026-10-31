@@ -30,7 +30,11 @@ std::pair<std::string, int> FakeDeskShell::ChooseSaveSpec(const app::FileTypeDes
 std::optional<int> FakeDeskShell::ChooseFromList(const std::string&,
                                                  const std::vector<std::string>& rows) {
   list_rows = rows;
-  return list_choice;
+  lists.push_back(rows);
+  if (list_choices.empty()) return list_choice;
+  const std::optional<int> answer = list_choices.front();
+  list_choices.erase(list_choices.begin());
+  return answer;
 }
 
 FakeDesk::FakeDesk(int width, int height, MapGroups groups) {

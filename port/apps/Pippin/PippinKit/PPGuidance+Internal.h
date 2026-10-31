@@ -11,6 +11,7 @@
 
 #import <PippinKit/PPGuidance.h>
 
+#include "fvkit/nav/course_deviation.h"
 #include "fvkit/nav/guidance.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -20,6 +21,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithEvent:(const fv::nav::GuidanceEvent &)event
                          road:(NSString *)road NS_DESIGNATED_INITIALIZER;
 
+/// A course event; `name` is the point's label, `nextName` the next one's.
+- (instancetype)initWithCourseEvent:(const fv::nav::CourseEvent &)event
+                               name:(NSString *)name
+                           nextName:(NSString *)nextName NS_DESIGNATED_INITIALIZER;
+
 @end
 
 @interface PPGuidance ()
@@ -27,6 +33,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithState:(const fv::nav::GuidanceState &)state
                          road:(NSString *)road
     NS_DESIGNATED_INITIALIZER;
+
+@end
+
+@interface PPCourseDeviation ()
+
+- (instancetype)initWithState:(const fv::nav::CourseState &)state
+                        limit:(double)offCourseLimitMeters
+                waypointCount:(NSInteger)count
+                         name:(NSString *)name NS_DESIGNATED_INITIALIZER;
 
 @end
 

@@ -227,6 +227,12 @@ FlowResult EditorManager::AdoptForMode(std::shared_ptr<Overlay> adopt) {
   // An adopt whose type does not match is a caller error, not a mode change;
   // fall back to the search rather than bracketing focus onto the wrong thing.
   if (target != nullptr && target->type_id() != mode_) target = nullptr;
+  // The current overlay when it is of the mode's type: with several layers of
+  // one type open, the user chose it, and the topmost may be another.
+  if (target == nullptr) {
+    const std::shared_ptr<Overlay>& current = manager_.current_ptr();
+    if (current != nullptr && current->type_id() == mode_) target = current;
+  }
   if (target == nullptr) target = manager_.FirstOfType(mode_);
 
   if (target == nullptr) {

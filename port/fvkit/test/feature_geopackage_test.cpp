@@ -4,14 +4,18 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "fvkit/detail/sqlite.h"
+#include "fvkit/draw_interrupt.h"
 #include "fvkit/feature/geopackage.h"
 
 namespace {
@@ -440,6 +444,128 @@ TEST_F(FeatureGeoPackage, RtreeFollowsEditsAndQueries) {
   EXPECT_EQ(Scalar(db, "SELECT id FROM rtree_places_geom"), tokyo.id);
 }
 
+TEST_F(FeatureGeoPackage, AQueryStopsUnderAFiringDrawInterrupt) {
+  auto gp = Create();
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> layer;
+  FeatureSchema schema;
+  schema.geometry_type = GeometryType::kGeometry;
+  schema.fields = {Field("name")};
+  ASSERT_TRUE(gp->CreateLayer("places", schema, {}, &layer).ok());
+  for (int i = 0; i < 2000; ++i) {
+    Feature f = Make(Geometry::Point({0.001 * i, 0.001 * i}), {std::string("p")});
+    ASSERT_TRUE(layer->Insert(&f).ok());
+  }
+  ASSERT_TRUE(gp->Save().ok());
+
+  std::vector<Feature> hits;
+  const std::function<bool()> never = [] { return false; };
+  const std::function<bool()> always = [] { return true; };
+  {
+    fv::DrawInterruptScope scope(never);
+    ASSERT_TRUE(layer->Query(GeoRect::World(), &hits).ok());
+    EXPECT_EQ(hits.size(), 2000u);
+  }
+  {
+    fv::DrawInterruptScope scope(always);
+    EXPECT_EQ(layer->Query(GeoRect::World(), &hits).code, fv::kInterrupted);
+  }
+  // Outside the scope the handler is gone.
+  ASSERT_TRUE(layer->Query(GeoRect::World(), &hits).ok());
+  EXPECT_EQ(hits.size(), 2000u);
+}
+
+// A table without an R-tree is queried from boxes read once, which an
+// interrupt leaves part-read and a save rereads.
+TEST_F(FeatureGeoPackage, ATableWithoutAnRtreeQueriesFromItsScannedBoxes) {
+  {
+    auto gp = Create();
+    ASSERT_NE(gp, nullptr);
+    std::shared_ptr<GeoPackageFeatureLayer> layer;
+    FeatureSchema schema;
+    schema.geometry_type = GeometryType::kGeometry;
+    schema.fields = {Field("name")};
+    ASSERT_TRUE(gp->CreateLayer("places", schema, {}, &layer).ok());
+    for (int i = 0; i < 1000; ++i) {
+      Feature f = Make(Geometry::Point({0.01 * i, 0.01 * i}), {std::string("p")});
+      ASSERT_TRUE(layer->Insert(&f).ok());
+    }
+    Feature line = Make(Geometry::LineString({{-5, -5}, {-4, -4}}), {std::string("l")});
+    ASSERT_TRUE(layer->Insert(&line).ok());
+    ASSERT_TRUE(gp->Save().ok());
+  }
+  {
+    fv::detail::SqliteDb db;
+    ASSERT_TRUE(db.Open(path_).ok());
+    std::vector<std::string> triggers;
+    fv::detail::SqliteStmt st;
+    ASSERT_TRUE(st.Prepare(db, "SELECT name FROM sqlite_master WHERE type = 'trigger' AND "
+                               "name LIKE 'rtree_places_geom%'").ok());
+    while (st.Step()) triggers.push_back(st.ColText(0));
+    ASSERT_FALSE(triggers.empty());
+    for (const std::string& t : triggers) ASSERT_TRUE(db.Exec(("DROP TRIGGER \"" + t + "\"").c_str()).ok());
+    ASSERT_TRUE(db.Exec("DROP TABLE rtree_places_geom").ok());
+  }
+  auto gp = Open(true);
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> layer;
+  ASSERT_TRUE(gp->OpenLayer("places", &layer).ok());
+  std::vector<Feature> hits;
+  const GeoRect box{{0.995, 0.995}, {2.005, 2.005}};
+  {
+    const std::function<bool()> always = [] { return true; };
+    fv::DrawInterruptScope scope(always);
+    EXPECT_EQ(layer->Query(box, &hits).code, fv::kInterrupted);
+  }
+  ASSERT_TRUE(layer->Query(box, &hits).ok());
+  ASSERT_EQ(hits.size(), 101u);
+  EXPECT_EQ(hits.front().id, 101);
+  EXPECT_EQ(hits.back().id, 201);
+  ASSERT_TRUE(layer->Query(GeoRect{{-4.5, -4.5}, {-4.4, -4.4}}, &hits).ok());
+  ASSERT_EQ(hits.size(), 1u);
+  EXPECT_EQ(hits[0].id, 1001);
+  ASSERT_TRUE(layer->QueryFields(GeoRect{{-4.5, -4.5}, {-4.4, -4.4}}, {false}, &hits).ok());
+  ASSERT_EQ(hits.size(), 1u);
+  ASSERT_EQ(hits[0].values.size(), 1u);
+  EXPECT_TRUE(fv::IsNull(hits[0].values[0]));
+
+  // A moved feature is found at its new place before and after the save.
+  Feature moved;
+  ASSERT_TRUE(layer->Get(1, &moved).ok());
+  moved.geometry = Geometry::Point({1.5, 1.5});
+  ASSERT_TRUE(layer->Update(moved).ok());
+  ASSERT_TRUE(layer->Query(box, &hits).ok());
+  EXPECT_EQ(hits.size(), 102u);
+  ASSERT_TRUE(gp->Save().ok());
+  ASSERT_TRUE(layer->Query(box, &hits).ok());
+  EXPECT_EQ(hits.size(), 102u);
+  EXPECT_EQ(hits.front().id, 1);
+  ASSERT_TRUE(layer->Query(GeoRect{{-0.001, -0.001}, {0.001, 0.001}}, &hits).ok());
+  EXPECT_TRUE(hits.empty());
+}
+
+TEST_F(FeatureGeoPackage, QueryFieldsReadsOnlyTheMarkedColumns) {
+  {
+    auto gp = Create();
+    ASSERT_NE(gp, nullptr);
+    WriteExamples(*gp);
+  }
+  auto gp = Open(false);
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> rivers;
+  ASSERT_TRUE(gp->OpenLayer("rivers", &rivers).ok());
+  std::vector<Feature> hits;
+  ASSERT_TRUE(rivers->QueryFields(GeoRect::World(), {false, true, false}, &hits).ok());
+  ASSERT_EQ(hits.size(), 1u);
+  ASSERT_EQ(hits[0].values.size(), 3u);
+  EXPECT_TRUE(fv::IsNull(hits[0].values[0]));
+  EXPECT_EQ(std::get<double>(hits[0].values[1]), 12.5);
+  EXPECT_TRUE(fv::IsNull(hits[0].values[2]));
+  EXPECT_EQ(hits[0].geometry.type, GeometryType::kLineString);
+  ASSERT_TRUE(rivers->QueryFields(GeoRect::World(), {}, &hits).ok());
+  EXPECT_EQ(std::get<std::string>(hits[0].values[0]), "Cooper River");
+}
+
 TEST_F(FeatureGeoPackage, SaveCommitsAndRevertDiscards) {
   {
     auto gp = Create();
@@ -493,6 +619,54 @@ TEST_F(FeatureGeoPackage, SaveCommitsAndRevertDiscards) {
   EXPECT_EQ(ro->CreateLayer("more", RiverSchema(), {}, nullptr).code, fv::kUnsupported);
 }
 
+TEST_F(FeatureGeoPackage, ALayerSavesWithoutTheOthersEdits) {
+  {
+    auto gp = Create();
+    ASSERT_NE(gp, nullptr);
+    WriteExamples(*gp);
+  }
+  auto gp = Open(true);
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> pizza, rivers;
+  ASSERT_TRUE(gp->OpenLayer("pizza", &pizza).ok());
+  ASSERT_TRUE(gp->OpenLayer("rivers", &rivers).ok());
+  ASSERT_TRUE(pizza->Delete(1).ok());
+  Feature river;
+  ASSERT_TRUE(rivers->Get(1, &river).ok());
+  river.values[0] = std::string("Cooper");
+  ASSERT_TRUE(rivers->Update(river).ok());
+
+  ASSERT_TRUE(pizza->Save().ok());
+  EXPECT_FALSE(pizza->HasEdits());
+  EXPECT_TRUE(rivers->HasEdits());
+  EXPECT_TRUE(gp->HasUnsavedChanges());
+  {
+    fv::detail::SqliteDb db;
+    ASSERT_TRUE(db.OpenReadOnly(path_).ok());
+    EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM pizza"), 1);
+    EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM rivers WHERE name = 'Cooper'"), 0);
+  }
+
+  // A schema change after a move rebuilds the table on save; the R-tree follows the move.
+  river.geometry = Geometry::LineString({{10.0, 20.0}, {10.5, 20.5}});
+  ASSERT_TRUE(rivers->Update(river).ok());
+  fv::SchemaChange change;
+  change.schema = RiverSchema();
+  change.schema.fields[0].name = "label";
+  change.source = {0, 1, 2};
+  ASSERT_TRUE(rivers->ChangeSchema(change).ok());
+  EXPECT_EQ(rivers->Schema().fields[0].name, "label");
+  ASSERT_TRUE(rivers->Save().ok());
+  EXPECT_FALSE(gp->HasUnsavedChanges());
+  fv::detail::SqliteDb db;
+  ASSERT_TRUE(db.OpenReadOnly(path_).ok());
+  EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM rivers WHERE label = 'Cooper'"), 1);
+  EXPECT_EQ(Scalar(db, "SELECT COUNT(*) FROM rtree_rivers_geom WHERE minx >= 19.9 AND maxx <= 20.6"), 1);
+  std::vector<Feature> hits;
+  ASSERT_TRUE(rivers->Query(GeoRect{{9.9, 19.9}, {10.6, 20.6}}, &hits).ok());
+  EXPECT_EQ(hits.size(), 1u);
+}
+
 TEST_F(FeatureGeoPackage, CopiesAMemoryLayerKeepingIdsAndZ) {
   FeatureSchema schema = RiverSchema();
   fv::MemoryFeatureLayer src("Rivers of the Lowcountry", schema);
@@ -523,6 +697,38 @@ TEST_F(FeatureGeoPackage, CopiesAMemoryLayerKeepingIdsAndZ) {
   flat.geometry.has_z = true;
   ASSERT_TRUE(layer->Insert(&flat).ok());
   EXPECT_EQ(flat.id, 13);
+}
+
+TEST_F(FeatureGeoPackage, OneLayerReadsFromTwoThreadsAtOnce) {
+  fv::MemoryFeatureLayer src("Rivers", RiverSchema());
+  for (int i = 0; i < 2000; ++i) {
+    Feature f = Make(Geometry::LineString({{32.0 + i * 1e-4, -80.0}, {32.1, -79.9}}),
+                     {std::string("river ") + std::to_string(i)});
+    ASSERT_TRUE(src.Insert(&f).ok());
+  }
+  auto gp = Create();
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> layer;
+  ASSERT_TRUE(gp->WriteLayer(src, "rivers", &layer).ok());
+  ASSERT_TRUE(gp->Save().ok());
+
+  // The render thread scans the layer while the UI thread fetches features
+  // from it, as a frame and the toolbar's tool state do.
+  std::atomic<bool> scan_ok{true};
+  std::thread scan([&] {
+    for (int pass = 0; pass < 10; ++pass) {
+      std::vector<Feature> all;
+      if (!layer->All(&all).ok() || all.size() != 2000) scan_ok = false;
+    }
+  });
+  bool get_ok = true;
+  for (int i = 0; i < 4000; ++i) {
+    Feature f;
+    if (!layer->Get(1 + i % 2000, &f).ok()) get_ok = false;
+  }
+  scan.join();
+  EXPECT_TRUE(scan_ok);
+  EXPECT_TRUE(get_ok);
 }
 
 TEST_F(FeatureGeoPackage, RefusesWhatTheLayerCannotHold) {
@@ -645,6 +851,50 @@ TEST_F(FeatureGeoPackage, ReadsAForeignFile) {
   EXPECT_EQ(grid.code, fv::kUnsupported);
   EXPECT_NE(grid.message.find("EPSG:27700"), std::string::npos) << grid.message;
   EXPECT_EQ(gp->OpenLayer("curves", &other).code, fv::kUnsupported);
+}
+
+// GDAL (Geofabrik's free extracts) labels lon/lat data with a custom NONE:100000 "CRS84" row.
+TEST_F(FeatureGeoPackage, ReadsWgs84DeclaredOnlyByWkt) {
+  {
+    auto gp = Create();
+    ASSERT_NE(gp, nullptr);
+  }
+  {
+    fv::detail::SqliteDb db;
+    ASSERT_TRUE(db.Open(path_).ok());
+    std::vector<uint8_t> blob;
+    ASSERT_TRUE(fv::WriteGpkgGeometry(Geometry::Point({33.75, -84.39}), 100000, &blob).ok());
+    const fv::Status s = db.Exec(
+        "INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 (CRS84)',100000,'NONE',100000,"
+        " 'GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],"
+        "PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],"
+        "AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]',NULL);"
+        "INSERT INTO gpkg_spatial_ref_sys VALUES('WGS 84 / Paris',100001,'NONE',100001,"
+        " 'GEOGCS[\"x\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],"
+        "PRIMEM[\"Paris\",2.33722917],UNIT[\"degree\",0.0174532925199433]]',NULL);"
+        "CREATE TABLE roads(fid INTEGER PRIMARY KEY AUTOINCREMENT, geom POINT, name TEXT);"
+        "INSERT INTO gpkg_contents(table_name, data_type, srs_id) VALUES('roads','features',100000);"
+        "INSERT INTO gpkg_geometry_columns VALUES('roads','geom','POINT',100000,0,0);"
+        "CREATE TABLE paris(fid INTEGER PRIMARY KEY AUTOINCREMENT, geom POINT);"
+        "INSERT INTO gpkg_contents(table_name, data_type, srs_id) VALUES('paris','features',100001);"
+        "INSERT INTO gpkg_geometry_columns VALUES('paris','geom','POINT',100001,0,0);");
+    ASSERT_TRUE(s.ok()) << s.message;
+    fv::detail::SqliteStmt ins;
+    ASSERT_TRUE(ins.Prepare(db, "INSERT INTO roads(geom, name) VALUES(?, 'Peachtree')").ok());
+    ins.BindBlob(1, blob.data(), blob.size());
+    ins.Step();
+  }
+  auto gp = Open(false);
+  ASSERT_NE(gp, nullptr);
+  std::shared_ptr<GeoPackageFeatureLayer> roads;
+  const fv::Status s = gp->OpenLayer("roads", &roads);
+  ASSERT_TRUE(s.ok()) << s.message;
+  std::vector<Feature> hits;
+  ASSERT_TRUE(roads->Query(GeoRect{{33, -85}, {34, -84}}, &hits).ok());
+  EXPECT_EQ(hits.size(), 1u);
+
+  std::shared_ptr<GeoPackageFeatureLayer> paris;
+  EXPECT_EQ(gp->OpenLayer("paris", &paris).code, fv::kUnsupported);
 }
 
 TEST_F(FeatureGeoPackage, OpenRefusesNonGeoPackages) {

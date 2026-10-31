@@ -58,10 +58,10 @@ std::vector<OverlayManifestEntry> Parse(const std::string& text, fv::Status* s,
   return out;
 }
 
-/// The command ids an Overlay-menu submenu titled `title` lists.
+/// The command ids a File-menu submenu titled `title` lists.
 std::vector<std::string> SubmenuIds(const fv::desk::Desk& desk, const std::string& title) {
   std::vector<std::string> ids;
-  const fv::desk::Menu* m = desk.menus().Find("overlay");
+  const fv::desk::Menu* m = desk.menus().Find("file");
   if (m == nullptr) return ids;
   for (const fv::desk::MenuItem& item : m->items)
     if (item.label == title)
@@ -237,8 +237,8 @@ TEST(OverlayManifest, JsonAloneReachesMenusOptionsAndFileOpen) {
   ASSERT_EQ(ids, std::vector<std::string>{"test.rings"});
   EXPECT_GT(fake.shell().menus_changed, menus_before);
 
-  // Menus: Overlay ▸ New lists it.
-  const auto news = SubmenuIds(desk, "New");
+  // Menus: File ▸ New Overlay lists it.
+  const auto news = SubmenuIds(desk, "New Overlay");
   EXPECT_NE(std::find(news.begin(), news.end(), "overlay.new.test.rings"), news.end());
 
   // Options: Overlay ▸ Options… hands the shell a model with its page.

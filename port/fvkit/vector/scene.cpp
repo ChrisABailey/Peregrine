@@ -9,6 +9,8 @@
 #include <chrono>
 #include <utility>
 
+#include "fvkit/draw_interrupt.h"
+
 namespace fv {
 namespace {
 
@@ -166,6 +168,10 @@ Status VectorScene::Build(IVectorSource* source, IStyleEngine* style,
   std::vector<std::vector<StyleResult>> styled(features.size());
   std::vector<PendingItem> pending;
   for (size_t i = 0; i < features.size(); ++i) {
+    if (DrawInterruptedAt(i)) {
+      Clear();
+      return Status::Error(kInterrupted, "scene build interrupted");
+    }
     Status ss = style->Style(features[i], params.ctx, &styled[i]);
     if (!ss.ok()) {
       Clear();

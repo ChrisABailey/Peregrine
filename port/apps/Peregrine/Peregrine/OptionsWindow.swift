@@ -46,10 +46,13 @@ final class OptionsWindowController: NSWindowController, NSWindowDelegate,
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// Re-reads the model after the core opened it afresh.
+    /// Re-reads the model after the core opened it afresh, moving to the page
+    /// the core asked for, if any.
     func reload() {
         sidebar.reloadData()
         let count = host.OptionsPageCount(kind)
+        let initial = host.OptionsInitialPage(kind)
+        if initial >= 0 { page = initial }
         if page >= count { page = 0 }
         if count > 0 { sidebar.selectRowIndexes([Int(page)], byExtendingSelection: false) }
         showPage()

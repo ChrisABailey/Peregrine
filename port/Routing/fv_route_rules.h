@@ -48,6 +48,8 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -132,6 +134,30 @@ struct RouteProfile {
   /// RoadCrossing: half on arriving at it, half on leaving it.
   double crossing_seconds[4] = {0.0, 0.0, 0.0, 0.0};
 
+  /// `hills`: how climb and descent on an arc with elevation change its
+  /// seconds, in both the cost and the reported clock. All zero (no effect)
+  /// unless the file says otherwise; a graph without elevation is unaffected.
+  struct Hills {
+    /// Seconds added per metre climbed.
+    double climb_s_per_m = 0.0;
+    /// Seconds saved per metre descended while the arc's descent grade is at
+    /// most `steep_grade`.
+    double descent_s_per_m = 0.0;
+    /// Descent grade (rise over run, 0.12 = 12%) above which a descent costs
+    /// time instead of saving it.
+    double steep_grade = 0.12;
+    /// Seconds added per metre descended above `steep_grade`.
+    double steep_descent_s_per_m = 0.0;
+    /// The fastest a descent credit can make an arc, km/h. Required when
+    /// `descent_s_per_m` is set; keeps every arc's seconds positive.
+    double max_kph = 0.0;
+
+    bool any() const {
+      return climb_s_per_m != 0.0 || descent_s_per_m != 0.0 || steep_descent_s_per_m != 0.0;
+    }
+  };
+  Hills hills;
+
   /// `speed_factor`: (max_kph, factor) pairs, ascending. An arc with a posted
   /// speed takes the factor of the first band whose max_kph it does not
   /// exceed, or the last band's. Empty means no speed factor.
@@ -139,6 +165,20 @@ struct RouteProfile {
 
   /// The `speed_factor` for an arc whose posted speed is `kph`.
   double SpeedFactor(int kph) const;
+
+  /// `legend_tiers`: (upper bound, word) pairs, ascending, naming a legend row's
+  /// cost factor. A factor takes the word of the first bound it does not exceed;
+  /// the last bound is infinity. An excluded way is always "Never". The default
+  /// bounds sit midway (geometrically) between the key's class slider stops, so a
+  /// row with no modifiers reads the same word as its slider.
+  std::vector<std::pair<double, std::string>> legend_tiers = {
+      {0.735, "Most preferred"}, {1.16, "Preferred"}, {2.29, "Acceptable"},
+      {5.29, "Avoided"},          {std::numeric_limits<double>::infinity(), "Last resort"}};
+
+  /// `key_locks`: settings the map key shows with a lock instead of a slider,
+  /// setting id (as `ProfileOverrides`) → the reason it shows, e.g. a
+  /// motorway closed to bikes. Overlaid key by key under `extends`.
+  std::map<std::string, std::string> key_locks;
 
   // Indexed by RoadClass; kClassExcluded for a class this profile bars.
   double class_weight[static_cast<size_t>(RoadClass::kCount)];
@@ -188,12 +228,16 @@ class RouteRules {
   std::vector<std::string> names() const;
   const std::vector<RouteProfile>& profiles() const { return profiles_; }
 
+  /// The file's display name (`"name"`, e.g. "City Rules"); empty when unset.
+  const std::string& name() const { return name_; }
+
   // Where these rules came from — a path, or "<builtin>". Diagnostics only.
   const std::string& origin() const { return origin_; }
 
  private:
   std::vector<RouteProfile> profiles_;
   std::string default_profile_name_;
+  std::string name_;
   std::string origin_;
 };
 
@@ -263,6 +307,27 @@ class RouteRulesFile {
 // avoidances.
 Status SelectProfile(const std::shared_ptr<const RouteRules>& rules, const std::string& name,
                      RouteOptions* options);
+
+/// Points `options` at `profile` and mirrors it onto the RouteOptions fields, as
+/// SelectProfile does once it has found the profile by name.
+void ApplyProfile(std::shared_ptr<const RouteProfile> profile, RouteOptions* options);
+
+/// A rider's adjustments to a profile: setting id (`CostTerm::setting`, e.g.
+/// "classes.tertiary" or "bike_lane_factor.lane") to its new value.
+/// kClassExcluded bars a class or a golf, toll or ferry way; a lane, route or
+/// surface factor cannot exclude.
+using ProfileOverrides = std::map<std::string, double>;
+
+/// Copies `base` into `out` with `overrides` applied. An unknown setting id or
+/// an out-of-range value is an error and leaves `out` untouched. An empty map
+/// gives an exact copy.
+Status ApplyOverrides(const RouteProfile& base, const ProfileOverrides& overrides,
+                      RouteProfile* out);
+
+/// Reads the setting `id` names in `profile` as the rule file gave it
+/// (kClassExcluded, or a non-positive penalty for "no preference"). False for
+/// an id ApplyOverrides would reject.
+bool ProfileSetting(const RouteProfile& profile, const std::string& id, double* value);
 
 }  // namespace routing
 }  // namespace fv

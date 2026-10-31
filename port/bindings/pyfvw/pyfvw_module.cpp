@@ -44,6 +44,7 @@
 #include "fvkit/store/tile_pack.h"
 #include "fvkit/formats/cadrg.h"
 #include "fvkit/formats/dted.h"
+#include "fvkit/formats/geotiff_dem.h"
 #include "fvkit/formats/dted_shaded.h"
 #include "fvkit/formats/geotiff.h"
 #include "fvkit/formats/registry.h"
@@ -1028,6 +1029,37 @@ PYBIND11_MODULE(pyfvw, m) {
       .def(
           "get_elevation",
           [](fv::DtedElevationSource& s, double lat, double lon) {
+            float e = 0;
+            fv::Status st;
+            {
+              py::gil_scoped_release release;
+              st = s.GetElevation(fv::GeoPoint{lat, lon}, &e);
+            }
+            ThrowIfError(st);
+            return e;
+          },
+          "lat"_a, "lon"_a);
+
+  py::class_<fv::GeoTiffDemSource, fv::IElevationSource,
+             std::shared_ptr<fv::GeoTiffDemSource>>(
+      formats, "GeoTiffDemSource",
+      "Elevation queries over the lidar GeoTIFF DEMs in a folder (format "
+      "\"lidar\"). Meters as float, bilinear; voids come back as NaN; a "
+      "point outside coverage raises FvError (OUT_OF_COVERAGE).")
+      .def(py::init([](const std::string& dir) {
+             std::shared_ptr<fv::GeoTiffDemSource> p;
+             {
+               py::gil_scoped_release release;
+               p = std::make_shared<fv::GeoTiffDemSource>(dir);
+             }
+             return p;
+           }),
+           "dir"_a)
+      .def_property_readonly("bounds", &fv::GeoTiffDemSource::Bounds)
+      .def_property_readonly("file_count", &fv::GeoTiffDemSource::FileCount)
+      .def(
+          "get_elevation",
+          [](fv::GeoTiffDemSource& s, double lat, double lon) {
             float e = 0;
             fv::Status st;
             {
@@ -2144,7 +2176,7 @@ PYBIND11_MODULE(pyfvw, m) {
                 fv::RegisterOsmFormat();
               },
               "Register the built-in format adapters (dted, geotiff, cadrg, "
-              "tiros, vpf, gpkg, dted-shaded, enc, osm) with the scan "
+              "tiros, vpf, gpkg, dted-shaded, lidar, lidar-shaded, enc, osm) with the scan "
               "registry. Idempotent; call before Catalog.scan.");
 
   catalog.def("registered_format_keys", &fv::RegisteredFormatKeys,

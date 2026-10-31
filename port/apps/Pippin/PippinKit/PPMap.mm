@@ -19,14 +19,20 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
+#include <optional>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fv_osm_style.h"
 #include "fv_osm_vector_source.h"
+#include "fv_enc_vector_source.h"
+#include "fv_route_legend.h"
 #include "fvkit/app/pick.h"
 #include "fvkit/app/search.h"
 #include "fvkit/canvas/cpu_canvas.h"
@@ -48,6 +54,7 @@
 // the follow slew should take, and whether the cached base map still covers
 // the live camera.
 #include "PPBaseCoverage.h"
+#include "PPEncChart.h"
 #include "PPFollowCadence.h"
 
 // The point document's life in the app. `PPRouteStore.h` arrives through
@@ -62,6 +69,7 @@
 #include "fvkit/nav/trip.h"
 #include "fvkit/proj.h"
 #include "fvkit/settings.h"
+#include "fvkit/style/legend.h"
 #include "fvkit/symbol/builtin.h"
 #include "fvkit/vector/renderer.h"
 
@@ -225,6 +233,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _headingIsReported = heading.reported ? YES : NO;
   _speedMetersPerSecond = fix.speed_mps;
   _hasSpeed = fix.has_speed ? YES : NO;
+  _courseDegrees = fix.true_heading_deg;
+  _hasCourse = fix.has_true_heading ? YES : NO;
   _isSnappedToRoad = snapped;
   _roadName = [NSString stringWithUTF8String:roadName.c_str()] ?: @"";
   _timestamp = fix.time_s;
@@ -287,6 +297,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                                 trip:(PPTrip*)trip
                             guidance:(PPGuidance*)guidance
                       guidanceEvents:(NSArray<PPGuidanceEvent*>*)guidanceEvents
+                     courseDeviation:(PPCourseDeviation*)courseDeviation
                                 slew:(const fv::SlewState&)slew {
   self = [super init];
   if (self == nil) return nil;
@@ -308,6 +319,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _trip = trip;
   _guidance = guidance;
   _guidanceEvents = guidanceEvents;
+  _courseDeviation = courseDeviation;
   _hasCameraUpdate = slew.changed ? YES : NO;
   _cameraCenter = PPGeoPointMake(slew.center.lat, slew.center.lon);
   _cameraRotationDegrees = slew.rotation_deg;
@@ -323,6 +335,13 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 - (CGImageRef)overlayImage { return _overlayImage; }
 - (CGImageRef)baseImage { return _baseImage; }
 
+@end
+
+@interface PPRouteReplan ()
+- (instancetype)initWithRoute:(PPRoute*)route
+         previousLengthMeters:(double)previousLengthMeters
+                  avoidedRoad:(NSString*)avoidedRoad
+                  lineChanged:(BOOL)lineChanged;
 @end
 
 @interface PPUnderlay ()
@@ -361,12 +380,29 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
 @end
 
+@interface PPChartFeature ()
+- (instancetype)initWithName:(NSString*)name kind:(NSString*)kind;
+@end
+
+@implementation PPChartFeature
+
+- (instancetype)initWithName:(NSString*)name kind:(NSString*)kind {
+  self = [super init];
+  if (self == nil) return nil;
+  _name = [name copy];
+  _kind = [kind copy];
+  return self;
+}
+
+@end
+
 @implementation PPCameraStep
 
 - (instancetype)initWithOwnship:(PPOwnship*)ownship
                            trip:(PPTrip*)trip
                        guidance:(PPGuidance*)guidance
                  guidanceEvents:(NSArray<PPGuidanceEvent*>*)guidanceEvents
+                courseDeviation:(PPCourseDeviation*)courseDeviation
                            slew:(const fv::SlewState&)slew {
   self = [super init];
   if (self == nil) return nil;
@@ -374,10 +410,149 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _trip = trip;
   _guidance = guidance;
   _guidanceEvents = guidanceEvents;
+  _courseDeviation = courseDeviation;
   _hasCameraUpdate = slew.changed ? YES : NO;
   _cameraCenter = PPGeoPointMake(slew.center.lat, slew.center.lon);
   _cameraRotationDegrees = slew.rotation_deg;
   _cameraIsAnimating = slew.active ? YES : NO;
+  return self;
+}
+
+@end
+
+@implementation PPLegendOnRoad
+
+- (instancetype)initWithLabel:(NSString*)label
+                     tierWord:(NSString*)tierWord
+                     tierRank:(NSInteger)tierRank
+                       factor:(double)factor {
+  self = [super init];
+  if (self == nil) return nil;
+  _label = [label copy];
+  _tierWord = [tierWord copy];
+  _tierRank = tierRank;
+  _factor = factor;
+  return self;
+}
+
+@end
+
+@implementation PPLegendEntry {
+  CGImageRef _swatch;
+}
+
+/// Retains `swatch`.
+- (instancetype)initWithIdentifier:(NSString*)identifier
+                             label:(NSString*)label
+                            detail:(NSString*)detail
+                    routerSentence:(NSString*)routerSentence
+                         termsLine:(NSString*)termsLine
+                          tierWord:(NSString*)tierWord
+                          tierRank:(NSInteger)tierRank
+                            factor:(double)factor
+                           minZoom:(double)minZoom
+                             shown:(BOOL)shown
+                             onMap:(BOOL)onMap
+                            swatch:(CGImageRef)swatch
+              swatchPixelsPerPoint:(double)swatchPixelsPerPoint
+                         settingId:(NSString*)settingId
+                       settingKind:(PPLegendSettingKind)settingKind
+                            locked:(BOOL)locked
+                        lockReason:(NSString*)lockReason
+                    termSettingIds:(NSArray<NSString*>*)termSettingIds
+                         stopWords:(NSArray<NSString*>*)stopWords
+                              stop:(NSInteger)stop
+                       defaultStop:(NSInteger)defaultStop
+                           onRoads:(NSArray<PPLegendOnRoad*>*)onRoads {
+  self = [super init];
+  if (self == nil) return nil;
+  _identifier = [identifier copy];
+  _label = [label copy];
+  _detail = [detail copy];
+  _routerSentence = [routerSentence copy];
+  _termsLine = [termsLine copy];
+  _tierWord = [tierWord copy];
+  _tierRank = tierRank;
+  _factor = factor;
+  _minZoom = minZoom;
+  _shown = shown;
+  _onMap = onMap;
+  _swatch = swatch != nullptr ? CGImageRetain(swatch) : nullptr;
+  _swatchPixelsPerPoint = swatchPixelsPerPoint > 0.0 ? swatchPixelsPerPoint : 1.0;
+  _settingId = [settingId copy];
+  _settingKind = settingKind;
+  _locked = locked;
+  _lockReason = [lockReason copy];
+  _termSettingIds = [termSettingIds copy];
+  _stopWords = [stopWords copy];
+  _stop = stop;
+  _defaultStop = defaultStop;
+  _onRoads = [onRoads copy];
+  return self;
+}
+
+- (void)dealloc {
+  if (_swatch != nullptr) CGImageRelease(_swatch);
+}
+
+- (CGImageRef)swatch { return _swatch; }
+
+@end
+
+@implementation PPLegendGroup
+
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                      entries:(NSArray<PPLegendEntry*>*)entries {
+  self = [super init];
+  if (self == nil) return nil;
+  _title = [title copy];
+  _subtitle = [subtitle copy];
+  _entries = [entries copy];
+  return self;
+}
+
+@end
+
+namespace {
+
+/// A swatch already drawn, and whether any layer drew it.
+struct LegendSwatch {
+  CGImageRef image = nullptr;
+  /// Style layers that drew the swatch; empty when the row is not drawn.
+  std::vector<std::string> layers;
+  /// Hash of the swatch's pixels, to spot a row drawn exactly like another.
+  size_t pixelHash = 0;
+};
+
+NSString* NSStr(const std::string& s) {
+  return [NSString stringWithUTF8String:s.c_str()] ?: @"";
+}
+
+}  // namespace
+
+@interface PPChartFeatureInfo ()
+- (instancetype)initWithInfo:(const pippin::EncFeatureInfo&)info;
+@end
+
+@implementation PPChartFeatureInfo
+
+- (instancetype)initWithInfo:(const pippin::EncFeatureInfo&)info {
+  self = [super init];
+  if (self == nil) return nil;
+  _title = NSStr(info.title);
+  _kind = NSStr(info.kind);
+  _acronym = NSStr(info.acronym);
+  _summary = NSStr(info.summary);
+  NSMutableArray<NSString*>* names = [NSMutableArray array];
+  NSMutableArray<NSString*>* values = [NSMutableArray array];
+  for (const auto& kv : info.attributes) {
+    [names addObject:NSStr(kv.first)];
+    [values addObject:NSStr(kv.second)];
+  }
+  _attributeNames = [names copy];
+  _attributeValues = [values copy];
+  _source = NSStr(info.source);
   return self;
 }
 
@@ -417,6 +592,12 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // The underlay's own renderer over the same source and style. A scene
   // retained at the underlay's zoom would evict the base map's.
   std::unique_ptr<fv::VectorRenderer> _underlayRenderer;
+  // Set instead of the OSM source, style and renderers when the pack is an
+  // ENC chart pack (`enc.cells`); everything OSM-only is skipped then.
+  std::unique_ptr<pippin::EncChart> _chart;
+  pippin::EncChartSettings _chartSettings;  // palette resolved by applyChartSettings
+  PPChartPalette _chartPalette;
+  BOOL _chartDepthsInFeet;
 
   // The route store owns the planner and the overlay, because the overlay
   // borrows a raw pointer to the planner and neither may outlive the other.
@@ -432,6 +613,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // store destroyed first would leave the manager's destructor looking at a
   // freed document.
   std::unique_ptr<pippin::PointStore> _pointStore;
+  // The held point's press, its offset from the finger in flat points, and
+  // the selection to restore on release.
+  CGPoint _pointDragPress;
+  CGVector _pointDragOffset;
+  int64_t _pointDragPriorSelection;
 
   std::unique_ptr<fv::OverlayManager> _overlays;
 
@@ -446,6 +632,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // either.
   std::shared_ptr<fv::VectorMapOverlay> _searchChart;
   std::shared_ptr<fv::RoadGraphOverlay> _searchRoads;
+  // The ENC chart `_searchChart` was built over; an import replaces the chart.
+  const pippin::EncChart* _searchChartFor;
   // A pack with no `.fvroad` reports once and is then remembered: a missing
   // graph is a configuration, not an error to repeat on every keystroke.
   bool _searchRoadsFailed;
@@ -481,6 +669,12 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // correspond one to one: a frame that swallowed two fixes carries both
   // fixes' events, and an alert is never dropped for being early.
   std::vector<fv::nav::GuidanceEvent> _pendingGuidanceEvents;
+
+  // The course deviation indicator for a straight-leg route, fed and given its
+  // route beside `_guidance`; `_courseNames` are the route points' labels.
+  fv::nav::CourseDeviation _course;
+  std::vector<std::string> _courseNames;
+  std::vector<fv::nav::CourseEvent> _pendingCourseEvents;
 
   // Beside the trip computer and fed from the same place, `consumeRawFix:`,
   // so a ride recorded from the demo replay and one from a real receiver take
@@ -546,6 +740,25 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   CGImageRef _baseImage;
   PPViewport* _baseViewport;
   pippin::BaseCoverageLimits _baseLimits;
+
+  // The legend's own engine, loaded from the map's current sheet. Separate so
+  // legend renders leave the map's diagnostics and retained scene alone, and
+  // reloaded when the sheet, the latitude band or the pixel pitch changes,
+  // since layer minzooms become scale bands at load.
+  std::unique_ptr<fv::OsmStyleEngine> _legendStyle;
+  BOOL _legendDark;
+  double _legendRefLat;
+  double _legendMmPerPoint;
+  // Swatches for the loaded legend engine, keyed by (row index, quarter
+  // zoom); cleared with the engine or when the swatch geometry changes.
+  std::map<std::pair<size_t, int>, LegendSwatch> _legendSwatches;
+  std::vector<double> _legendMinZooms;
+  double _legendSwatchKey[4];  // width, height, pixels per point, symbol zoom
+  // Style layers that drew in the last base render that styled features; kept
+  // across frames served from the base cache or the retained scene.
+  std::vector<std::string> _mapLayerIds;
+  BOOL _mapLayerIdsKnown;
+  BOOL _hasLegend;
 }
 
 - (nullable instancetype)initWithDataPackURL:(NSURL*)packURL
@@ -572,38 +785,50 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     return _packRoot + "/" + _settings.GetString(key, fallback);
   };
 
-  _source = std::make_shared<fv::OsmVectorSource>();
-  const fv::Status os =
-      _source->Open(packPath("pippin.mbtiles", "kiawah.mbtiles"));
-  if (!os.ok()) {
-    if (error) *error = ErrorFromStatus(PPErrorPackIncomplete, os, @"mbtiles");
-    return nil;
-  }
-
-  _style = std::make_shared<fv::OsmStyleEngine>();
-  _lightStylePath = packPath("osm.style", "peregrine-osm.json");
-  _darkStylePath = _settings.GetString("osm.style_dark", "").empty()
-                       ? std::string()
-                       : packPath("osm.style_dark", "");
   _darkStyle = NO;
-  std::string styleError;
-  const fv::Status ys = _style->LoadFile(_lightStylePath, &styleError);
-  if (!ys.ok()) {
-    if (error) *error = ErrorFromStatus(PPErrorPackIncomplete, ys, @"style");
-    return nil;
-  }
+  if (!_settings.GetString("enc.cells", "").empty()) {
+    _chart = std::make_unique<pippin::EncChart>();
+    _chart->SetSceneMargin(_settings.GetDouble("vector.scene_margin", 0.25));
+    _chart->SetSimplifyPixels(_settings.GetDouble("vector.simplify_pixels", 0.0));
+    const fv::Status cs =
+        _chart->Open(packPath("enc.cells", ""), packPath("enc.data_dir", "s52"));
+    if (!cs.ok()) {
+      if (error) *error = ErrorFromStatus(PPErrorPackIncomplete, cs, @"ENC");
+      return nil;
+    }
+  } else {
+    _source = std::make_shared<fv::OsmVectorSource>();
+    const fv::Status os =
+        _source->Open(packPath("pippin.mbtiles", "kiawah.mbtiles"));
+    if (!os.ok()) {
+      if (error) *error = ErrorFromStatus(PPErrorPackIncomplete, os, @"mbtiles");
+      return nil;
+    }
 
-  _renderer = std::make_unique<fv::VectorRenderer>(_source, _style);
-  // R3a's retained scene, sized so a drag-pan re-projects rather than
-  // re-queries. A phone pans further per gesture than a mouse does, so this
-  // is the settings key's default rather than nothing.
-  _renderer->SetSceneMargin(_settings.GetDouble("vector.scene_margin", 0.25));
-  _renderer->SetSimplifyPixels(_settings.GetDouble("vector.simplify_pixels", 0.0));
-  // No scene margin: an underlay is redrawn at a new camera, never re-panned.
-  _underlayRenderer = std::make_unique<fv::VectorRenderer>(_source, _style);
-  _underlayRenderer->SetSceneMargin(0.0);
-  _underlayRenderer->SetSimplifyPixels(
-      _settings.GetDouble("vector.simplify_pixels", 0.0));
+    _style = std::make_shared<fv::OsmStyleEngine>();
+    _lightStylePath = packPath("osm.style", "peregrine-osm.json");
+    _darkStylePath = _settings.GetString("osm.style_dark", "").empty()
+                         ? std::string()
+                         : packPath("osm.style_dark", "");
+    std::string styleError;
+    const fv::Status ys = _style->LoadFile(_lightStylePath, &styleError);
+    if (!ys.ok()) {
+      if (error) *error = ErrorFromStatus(PPErrorPackIncomplete, ys, @"style");
+      return nil;
+    }
+
+    _renderer = std::make_unique<fv::VectorRenderer>(_source, _style);
+    // R3a's retained scene, sized so a drag-pan re-projects rather than
+    // re-queries. A phone pans further per gesture than a mouse does, so this
+    // is the settings key's default rather than nothing.
+    _renderer->SetSceneMargin(_settings.GetDouble("vector.scene_margin", 0.25));
+    _renderer->SetSimplifyPixels(_settings.GetDouble("vector.simplify_pixels", 0.0));
+    // No scene margin: an underlay is redrawn at a new camera, never re-panned.
+    _underlayRenderer = std::make_unique<fv::VectorRenderer>(_source, _style);
+    _underlayRenderer->SetSceneMargin(0.0);
+    _underlayRenderer->SetSimplifyPixels(
+        _settings.GetDouble("vector.simplify_pixels", 0.0));
+  }
   _overlays = std::make_unique<fv::OverlayManager>();
 
   // The label font. The pack carries its own because iOS gives an app no
@@ -631,9 +856,17 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     _hasLabelFont = _baseCanvas->SetDefaultFont(_fontPath).ok() ? YES : NO;
     if (_hasLabelFont) _overlayCanvas->SetDefaultFont(_fontPath);
   }
-  _style->SetDrawLabels(_hasLabelFont ? true : false);
-
-  _styleName = [NSString stringWithUTF8String:_style->style_name().c_str()];
+  if (_chart) {
+    _chart->SetDrawLabels(_hasLabelFont ? true : false);
+    _styleName = @"S-52";
+    _hasLegend = NO;
+  } else {
+    _style->SetDrawLabels(_hasLabelFont ? true : false);
+    _styleName = [NSString stringWithUTF8String:_style->style_name().c_str()];
+    _hasLegend = _style->legend().empty() ? NO : YES;
+    if (!_style->legend_error().empty())
+      NSLog(@"PPMap: legend not loaded: %s", _style->legend_error().c_str());
+  }
 
   _homeBounds.southWest = PPGeoPointMake(32.55, -80.17);
   _homeBounds.northEast = PPGeoPointMake(32.67, -79.97);
@@ -658,6 +891,8 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   _routeDepartureOverride = NAN;
   [self loadTides];
   [self loadWindSettings];
+  _routeStore->set_avoid_hills_penalty(
+      _settings.GetDouble("routing.avoid_hills_penalty", fv::kDefaultAvoidHillsPenalty));
   return self;
 }
 
@@ -712,7 +947,10 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                       longitude:lon
               beachFacesDegrees:_settings.GetDouble("beach.faces_deg", nan)
      onshoreWarnMetersPerSecond:_settings.GetDouble("wind.onshore_warn_mps", 7.0)
-    headwindWarnMetersPerSecond:_settings.GetDouble("wind.headwind_warn_mps", 5.0)];
+       alongWarnMetersPerSecond:_settings.GetDouble(
+                                    "wind.along_warn_mps",
+                                    // Packs from 1.3 name only the headwind threshold.
+                                    _settings.GetDouble("wind.headwind_warn_mps", 1.8))];
 }
 
 - (nullable PPWindSettings*)wind {
@@ -765,6 +1003,13 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
   _routeDefaultProfile = [NSString
       stringWithUTF8String:_settings.GetString("routing.profile", "bicycle").c_str()];
+  if (_settings.GetString("routing.legs", "roads") == "rhumb") _routeStore->SetStraightLegs(true);
+  {
+    fv::nav::CourseSettings course;
+    course.arrival_m = _settings.GetDouble("course.arrival_m", course.arrival_m);
+    course.off_course_m = _settings.GetDouble("course.off_course_m", course.off_course_m);
+    _course.SetSettings(course);
+  }
 
   const fv::Status s = _overlays->Add(_routeStore->overlay());
   (void)s;  // a fresh manager with no type registry cannot refuse an Add
@@ -899,14 +1144,20 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
 - (PPViewport*)initialViewport {
   // The pack's zoom range is the pyramid's own, straight off the file: what
-  // the data holds is what the camera is allowed to ask for.
+  // the data holds is what the camera is allowed to ask for. A chart pack has
+  // no pyramid and states its range instead.
+  const int minZoom = _chart ? (int)_settings.GetDouble("enc.min_zoom", 5)
+                             : _source->file().min_zoom();
+  const int maxZoom = _chart ? (int)_settings.GetDouble("enc.max_zoom", 18)
+                             : _source->file().max_zoom();
   return [[PPViewport alloc] initWithHomeBounds:_homeBounds
-                                    minTileZoom:_source->file().min_zoom()
-                                    maxTileZoom:_source->file().max_zoom()
+                                    minTileZoom:minZoom
+                                    maxTileZoom:maxZoom
                              mmPerPixelOverride:_mmPerPixelOverride];
 }
 
 - (void)dealloc {
+  [self dropLegendSwatches];
   // The cached images are CF references held outside ARC's reach.
   if (_baseImage != nullptr) CGImageRelease(_baseImage);
   if (_overlayImage != nullptr) CGImageRelease(_overlayImage);
@@ -922,6 +1173,46 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 /// class needs it: the coverage test refuses a camera the cache cannot serve,
 /// and every content change is in the overlay. It exists for a memory warning
 /// and for a shell that wants to prove a frame is being drawn.
+- (BOOL)drawsCharts {
+  return _chart ? YES : NO;
+}
+
+- (NSURL*)chartCatalogURL {
+  if (_settings.GetString("enc.cells", "").empty()) return nil;
+  const std::string dir = _packRoot + "/" + _settings.GetString("enc.data_dir", "s52");
+  return [NSURL fileURLWithPath:[NSString stringWithUTF8String:dir.c_str()] isDirectory:YES];
+}
+
+- (NSInteger)outdatedChartCellCount {
+  return _chart ? static_cast<NSInteger>(_chart->outdated_cell_count()) : 0;
+}
+
+- (BOOL)openChartsAtURL:(NSURL*)url error:(NSError**)error {
+  if (!_chart) {
+    if (error) *error = MakeError(PPErrorChartImportFailed, @"this map does not draw charts");
+    return NO;
+  }
+  auto next = std::make_unique<pippin::EncChart>();
+  next->SetSceneMargin(_settings.GetDouble("vector.scene_margin", 0.25));
+  next->SetSimplifyPixels(_settings.GetDouble("vector.simplify_pixels", 0.0));
+  const fv::Status s = next->Open(url.fileSystemRepresentation ?: "",
+                                  _packRoot + "/" + _settings.GetString("enc.data_dir", "s52"));
+  if (!s.ok()) {
+    if (error) *error = ErrorFromStatus(PPErrorChartImportFailed, s, @"charts");
+    return NO;
+  }
+  next->SetDrawLabels(_hasLabelFont ? true : false);
+  next->SetSettings(_chartSettings);
+  const fv::GeoRect cover = next->coverage();
+  if (cover.ll.lat <= cover.ur.lat && cover.ll.lon <= cover.ur.lon) {
+    _homeBounds.southWest = PPGeoPointMake(cover.ll.lat, cover.ll.lon);
+    _homeBounds.northEast = PPGeoPointMake(cover.ur.lat, cover.ur.lon);
+  }
+  _chart = std::move(next);
+  [self invalidateBaseLayer];
+  return YES;
+}
+
 - (void)invalidateBaseLayer {
   if (_baseImage != nullptr) {
     CGImageRelease(_baseImage);
@@ -945,10 +1236,12 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   if (z == _symbolZoom) return;
   _symbolZoom = z;
   [self invalidateBaseLayer];
+  _routeStore->overlay()->SetWindArrowScale(z);
+  [self overlayContentChanged];
 }
 
 - (BOOL)hasDarkStyle {
-  return _darkStylePath.empty() ? NO : YES;
+  return (_chart || !_darkStylePath.empty()) ? YES : NO;
 }
 
 - (BOOL)darkStyle {
@@ -959,6 +1252,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 /// drawing, because `LoadFile` commits nothing on error.
 - (void)setDarkStyle:(BOOL)dark {
   if (dark == _darkStyle) return;
+  if (_chart) {
+    _darkStyle = dark;
+    [self applyChartSettings];
+    return;
+  }
   if (dark && _darkStylePath.empty()) return;
   const std::string& path = dark ? _darkStylePath : _lightStylePath;
   std::string styleError;
@@ -982,10 +1280,318 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   [self invalidateBaseLayer];
 }
 
+/// Pushes the chart settings, with the palette resolved against dark mode, to
+/// the chart; the point labels follow the palette's darkness.
+- (void)applyChartSettings {
+  if (!_chart) return;
+  pippin::EncChartSettings s = _chartSettings;
+  switch (_chartPalette) {
+    case PPChartPaletteAutomatic:
+      s.palette = _darkStyle ? pippin::EncPalette::kNight : pippin::EncPalette::kDay;
+      break;
+    case PPChartPaletteDay: s.palette = pippin::EncPalette::kDay; break;
+    case PPChartPaletteDusk: s.palette = pippin::EncPalette::kDusk; break;
+    case PPChartPaletteNight: s.palette = pippin::EncPalette::kNight; break;
+  }
+  if (s == _chart->settings()) return;
+  _chart->SetSettings(s);
+  _chartSettings = _chart->settings();
+  if (_pointStore) {
+    if (s.palette != pippin::EncPalette::kDay)
+      _pointStore->SetLabelColors(fv::FvColor{241, 237, 230, 255},
+                                  fv::FvColor{77, 62, 46, 255});
+    else
+      _pointStore->SetLabelColors(fv::FvColor{0, 0, 0, 255},
+                                  fv::FvColor{255, 255, 255, 255});
+  }
+  ++_contentEpoch;
+  [self invalidateBaseLayer];
+}
+
+- (double)chartSafetyContour {
+  return _chartSettings.safety_contour;
+}
+
+- (void)setChartSafetyContour:(double)metres {
+  if (!(metres > 0.0)) return;
+  _chartSettings.safety_contour = metres;
+  [self applyChartSettings];
+}
+
+- (double)chartSafetyDepth {
+  return _chartSettings.safety_depth;
+}
+
+- (void)setChartSafetyDepth:(double)metres {
+  if (!(metres > 0.0)) return;
+  _chartSettings.safety_depth = metres;
+  [self applyChartSettings];
+}
+
+- (PPChartCategory)chartCategory {
+  switch (_chartSettings.category) {
+    case pippin::EncDisplayCategory::kBase: return PPChartCategoryBase;
+    case pippin::EncDisplayCategory::kStandard: return PPChartCategoryStandard;
+    case pippin::EncDisplayCategory::kAll: return PPChartCategoryAll;
+  }
+  return PPChartCategoryAll;
+}
+
+- (void)setChartCategory:(PPChartCategory)category {
+  pippin::EncDisplayCategory c = pippin::EncDisplayCategory::kAll;
+  if (category == PPChartCategoryBase) c = pippin::EncDisplayCategory::kBase;
+  if (category == PPChartCategoryStandard) c = pippin::EncDisplayCategory::kStandard;
+  _chartSettings.category = c;
+  [self applyChartSettings];
+}
+
+- (PPChartPalette)chartPalette {
+  return _chartPalette;
+}
+
+- (void)setChartPalette:(PPChartPalette)palette {
+  _chartPalette = palette;
+  [self applyChartSettings];
+}
+
+- (BOOL)chartDepthsInFeet {
+  return _chartDepthsInFeet;
+}
+
+- (void)setChartDepthsInFeet:(BOOL)feet {
+  _chartDepthsInFeet = feet;
+}
+
+- (BOOL)hasLegend {
+  return _hasLegend;
+}
+
+- (NSString*)legendRulesName {
+  return _routeStore ? NSStr(_routeStore->rules()->name()) : @"";
+}
+
+- (void)dropLegendSwatches {
+  for (auto& kv : _legendSwatches)
+    if (kv.second.image != nullptr) CGImageRelease(kv.second.image);
+  _legendSwatches.clear();
+}
+
+/// Loads the legend engine for `viewport` when it is missing or stale.
+/// Returns NO when the sheet does not load.
+- (BOOL)prepareLegendStyleForViewport:(PPViewport*)viewport {
+  const double mmPerPoint = viewport.mmPerPoint;
+  const double lat =
+      std::round(viewport.center.latitude / kRefLatStep) * kRefLatStep;
+  if (_legendStyle && _legendDark == _darkStyle && _legendRefLat == lat &&
+      _legendMmPerPoint == mmPerPoint)
+    return YES;
+  auto engine = std::make_unique<fv::OsmStyleEngine>();
+  engine->SetDisplayMmPerPixel(mmPerPoint);
+  engine->SetReferenceLatitude(lat);
+  engine->SetDrawLabels(false);
+  std::string styleError;
+  const std::string& path = _darkStyle ? _darkStylePath : _lightStylePath;
+  if (!engine->LoadFile(path, &styleError).ok()) {
+    NSLog(@"PPMap: legend style %s did not load: %s", path.c_str(), styleError.c_str());
+    return NO;
+  }
+  [self dropLegendSwatches];
+  _legendStyle = std::move(engine);
+  _legendDark = _darkStyle;
+  _legendRefLat = lat;
+  _legendMmPerPoint = mmPerPoint;
+  _legendMinZooms.clear();
+  for (const fv::MapLibreLegendGroup& g : _legendStyle->legend())
+    for (const fv::MapLibreLegendEntry& e : g.entries)
+      _legendMinZooms.push_back(fv::LegendEntryMinZoom(*_legendStyle, e));
+  return YES;
+}
+
+- (NSArray<PPLegendGroup*>*)legendForViewport:(PPViewport*)viewport
+                                   swatchSize:(CGSize)swatchSize
+                                      appName:(NSString*)appName {
+  if (!_hasLegend || ![self prepareLegendStyleForViewport:viewport]) return @[];
+  fv::OsmStyleEngine& engine = *_legendStyle;
+
+  // The map's lines are scaled by the symbol zoom; the swatch is drawn at the
+  // same device dpi on a canvas shrunk by it, so it stays `swatchSize` points.
+  const double ppp = viewport.displayScale > 0 ? viewport.displayScale : 1.0;
+  const double renderPpp = ppp * _symbolZoom;
+  const int widthPt = std::max(1, static_cast<int>(std::lround(swatchSize.width / _symbolZoom)));
+  const int heightPt = std::max(1, static_cast<int>(std::lround(swatchSize.height / _symbolZoom)));
+  const double key[4] = {swatchSize.width, swatchSize.height, ppp, _symbolZoom};
+  if (!std::equal(key, key + 4, _legendSwatchKey)) {
+    [self dropLegendSwatches];
+    std::copy(key, key + 4, _legendSwatchKey);
+  }
+
+  // Quarter zoom: the scale is moved to the quantised zoom so a cached swatch
+  // is exactly what that zoom draws.
+  const double scale = viewport.scaleDenominator;
+  const double zoom = engine.ZoomForScale(scale);
+  const int quarter = static_cast<int>(std::lround(zoom * 4.0));
+  const double drawScale = scale * std::exp2(zoom - quarter / 4.0);
+
+  std::shared_ptr<const fv::routing::RouteRules> rules =
+      _routeStore ? _routeStore->rules() : fv::routing::RouteRules::Builtin();
+  const fv::routing::RouteProfile* shipped = rules->Find(_routeDefaultProfile.UTF8String);
+  if (shipped == nullptr) shipped = rules->default_profile();
+  const fv::routing::RouteProfile* profile = shipped;
+  fv::routing::RouteProfile adjusted;
+  if (shipped != nullptr && _routeStore) {
+    const fv::routing::ProfileOverrides overrides = _routeStore->OverridesFor(shipped->name);
+    if (!overrides.empty() && fv::routing::ApplyOverrides(*shipped, overrides, &adjusted).ok())
+      profile = &adjusted;
+  }
+  const std::string app = appName.UTF8String ?: "";
+  auto tierRank = [profile](const fv::routing::LegendCost& c) -> NSInteger {
+    if (c.excluded) return -1;
+    NSInteger rank = 0;
+    while (rank + 1 < static_cast<NSInteger>(profile->legend_tiers.size()) &&
+           c.factor > profile->legend_tiers[rank].first)
+      ++rank;
+    return rank;
+  };
+
+  // Keeps about eight quarter zooms of swatches; a pinch through the whole
+  // range would otherwise hold every zoom's images.
+  if (_legendSwatches.size() > 8 * std::max<size_t>(_legendMinZooms.size(), 1))
+    [self dropLegendSwatches];
+
+  NSMutableArray<PPLegendGroup*>* groups = [NSMutableArray array];
+  size_t row = 0;
+  // A row whose specimen draws only the layers under it (a bike lane below
+  // the lane's minzoom) looks exactly like an earlier row and is not listed
+  // as on the map a second time.
+  std::set<size_t> onMapSwatches;
+  for (const fv::MapLibreLegendGroup& g : engine.legend()) {
+    NSMutableArray<PPLegendEntry*>* entries = [NSMutableArray array];
+    for (const fv::MapLibreLegendEntry& e : g.entries) {
+      const size_t index = row++;
+      LegendSwatch& sw = _legendSwatches[{index, quarter}];
+      if (sw.image == nullptr) {
+        fv::CpuCanvas canvas(static_cast<int>(std::lround(widthPt * renderPpp)),
+                             static_cast<int>(std::lround(heightPt * renderPpp)));
+        sw.layers = fv::RenderLegendSwatch(engine, e, drawScale, renderPpp, widthPt,
+                                           heightPt, &canvas);
+        const fv::PixelBuffer& px = canvas.Buffer();
+        sw.pixelHash = std::hash<std::string_view>{}(std::string_view(
+            reinterpret_cast<const char*>(px.Data()),
+            static_cast<size_t>(px.StrideBytes()) * px.Height()));
+        sw.image = PPCreateCGImageFromPixelBuffer(canvas.Buffer());
+      }
+
+      NSString* sentence = @"";
+      NSString* terms = @"";
+      NSString* tier = @"";
+      NSInteger rank = -1;
+      double factor = NAN;
+      NSString* settingId = @"";
+      PPLegendSettingKind settingKind = PPLegendSettingKindNone;
+      BOOL locked = NO;
+      NSString* lockReason = @"";
+      NSMutableArray<NSString*>* termSettingIds = [NSMutableArray array];
+      NSMutableArray<NSString*>* stopWords = [NSMutableArray array];
+      NSInteger stop = -1;
+      NSInteger defaultStop = -1;
+      NSMutableArray<PPLegendOnRoad*>* onRoads = [NSMutableArray array];
+      if (!e.osm.empty() && profile != nullptr) {
+        std::vector<fv::routing::OsmTag> tags;
+        for (const auto& kv : e.osm) tags.push_back({kv.first, kv.second});
+        const fv::routing::LegendCost cost = fv::routing::CostOfTags(*profile, tags);
+        sentence = NSStr(fv::routing::LegendSentence(*profile, cost, app));
+        terms = NSStr(fv::routing::LegendTermsLine(cost));
+        tier = NSStr(fv::routing::LegendTierWord(*profile, cost));
+        rank = tierRank(cost);
+        if (!cost.excluded) factor = cost.factor;
+
+        // Lock and default come from the shipped profile: a rider's Never is
+        // not a legal exclusion.
+        const fv::routing::LegendCost base =
+            profile == shipped ? cost : fv::routing::CostOfTags(*shipped, tags);
+        const std::string& id = base.setting.setting;
+        const fv::routing::CostTermKind kind = base.setting.kind;
+        settingId = NSStr(id);
+        locked = base.locked ? YES : NO;
+        lockReason = NSStr(base.lock_reason);
+        if (id.empty()) {
+          for (const fv::routing::CostTerm& t : base.terms) {
+            if (t.kind == fv::routing::CostTermKind::kModifier ||
+                t.kind == fv::routing::CostTermKind::kCondition)
+              [termSettingIds addObject:NSStr(t.setting)];
+          }
+        }
+        switch (kind) {
+          case fv::routing::CostTermKind::kClass:
+            settingKind = PPLegendSettingKindRoadType;
+            break;
+          case fv::routing::CostTermKind::kModifier:
+            settingKind = PPLegendSettingKindModifier;
+            break;
+          case fv::routing::CostTermKind::kCondition:
+            settingKind = PPLegendSettingKindCondition;
+            break;
+          case fv::routing::CostTermKind::kFixed:
+            break;
+        }
+        double shippedValue = 0.0;
+        double adjustedValue = 0.0;
+        if (!locked && fv::routing::ProfileSetting(*shipped, id, &shippedValue) &&
+            fv::routing::ProfileSetting(*profile, id, &adjustedValue)) {
+          for (const fv::routing::LegendStop& st : fv::routing::LegendStops(kind))
+            [stopWords addObject:NSStr(st.word)];
+          defaultStop = fv::routing::LegendStopOf(kind, shippedValue);
+          stop = fv::routing::LegendStopOf(kind, adjustedValue);
+        }
+        for (const fv::routing::LegendOnRoad& r : fv::routing::ModifierOnRoads(*profile, tags)) {
+          [onRoads addObject:[[PPLegendOnRoad alloc]
+                                 initWithLabel:NSStr(r.label)
+                                      tierWord:NSStr(fv::routing::LegendTierWord(*profile, r.cost))
+                                      tierRank:tierRank(r.cost)
+                                        factor:r.cost.excluded ? NAN : r.cost.factor]];
+        }
+      }
+      BOOL onMap = (_mapLayerIdsKnown ? fv::LegendEntryOnMap(sw.layers, _mapLayerIds)
+                                      : !sw.layers.empty())
+                       ? YES
+                       : NO;
+      if (onMap && !onMapSwatches.insert(sw.pixelHash).second) onMap = NO;
+      const double minZoom = index < _legendMinZooms.size() ? _legendMinZooms[index] : -1.0;
+      [entries addObject:[[PPLegendEntry alloc] initWithIdentifier:NSStr(e.id)
+                                                             label:NSStr(e.label)
+                                                            detail:NSStr(e.detail)
+                                                    routerSentence:sentence
+                                                         termsLine:terms
+                                                          tierWord:tier
+                                                          tierRank:rank
+                                                            factor:factor
+                                                           minZoom:minZoom
+                                                             shown:sw.layers.empty() ? NO : YES
+                                                             onMap:onMap
+                                                            swatch:sw.image
+                                              swatchPixelsPerPoint:ppp
+                                                         settingId:settingId
+                                                       settingKind:settingKind
+                                                            locked:locked
+                                                        lockReason:lockReason
+                                                    termSettingIds:termSettingIds
+                                                         stopWords:stopWords
+                                                              stop:stop
+                                                       defaultStop:defaultStop
+                                                           onRoads:onRoads]];
+    }
+    [groups addObject:[[PPLegendGroup alloc] initWithTitle:NSStr(g.title)
+                                                  subtitle:NSStr(g.subtitle)
+                                                   entries:entries]];
+  }
+  return groups;
+}
+
 /// Sets the source's and style's pitch and the style's reference latitude
 /// for a draw at `viewport`. The latitude is stepped, so a draw that does not
 /// cross a step leaves the style epoch, and the retained scene, alone.
 - (void)prepareStyleForViewport:(PPViewport*)viewport {
+  if (_chart) return;
   const double mmPerPoint = viewport.mmPerPoint;
   _source->SetDisplayMmPerPixel(mmPerPoint);
   _style->SetDisplayMmPerPixel(mmPerPoint);
@@ -1014,15 +1620,18 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   // underlay back to the live scale its lines and text are the sharp map's
   // size rather than four times it.
   [self prepareStyleForViewport:under];
-  _underlayRenderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint *
-                                  _symbolZoom / pippin::kUnderlayZoomOut);
+  if (_underlayRenderer)
+    _underlayRenderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint *
+                                    _symbolZoom / pippin::kUnderlayZoomOut);
 
   // The background under the live camera, for the shell to paint behind
   // everything, and the one at the underlay's own scale to clear it with.
   fv::FvColor liveBg{255, 255, 255, 255};
-  _style->background(viewport.projection.Scale(), &liveBg);
   fv::FvColor bg{255, 255, 255, 255};
-  _style->background(under.projection.Scale(), &bg);
+  if (_style) {
+    _style->background(viewport.projection.Scale(), &liveBg);
+    _style->background(under.projection.Scale(), &bg);
+  }
   bg.a = 255;
 
   // A canvas per build: an underlay is drawn a few times a minute at most,
@@ -1031,7 +1640,14 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   fv::CpuCanvas canvas(under.pixelWidth, under.pixelHeight);
   if (_hasLabelFont) canvas.SetDefaultFont(_fontPath);
   canvas.Clear(bg);
-  const fv::Status rs = _underlayRenderer->Render(under.projection, &canvas);
+  // A chart's 96-dpi pixel is a point, as the OSM style's is, so S-52 pens
+  // are drawn at Peregrine's weight rather than at full ECDIS millimetres.
+  const double chartScale = pixelsPerPoint * _symbolZoom / pippin::kUnderlayZoomOut;
+  const fv::Status rs =
+      _chart ? _chart->Render(under.projection, kStyleNominalDpi * chartScale,
+                              chartScale,
+                              pippin::EncChartPass::kUnderlay, &canvas)
+             : _underlayRenderer->Render(under.projection, &canvas);
   if (!rs.ok()) {
     if (error) *error = ErrorFromStatus(PPErrorRenderFailed, rs, @"underlay");
     return nil;
@@ -1050,6 +1666,11 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                 viewport:under
          backgroundColor:color
       renderMilliseconds:(CFAbsoluteTimeGetCurrent() - t0) * 1000.0];
+}
+
+/// The renderer behind the last base draw: the OSM one, or the chart band's.
+- (fv::VectorRenderer*)baseRenderer {
+  return _chart ? _chart->last_renderer() : _renderer.get();
 }
 
 - (nullable PPFrame*)renderViewport:(PPViewport*)viewport
@@ -1139,20 +1760,32 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
     // grows lines, text, halos, icons and an area pattern's pitch together and
     // touches neither the tile level nor the projection. See `symbolZoom` in
     // the header.
-    _renderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint * _symbolZoom);
+    if (_renderer) _renderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint * _symbolZoom);
 
     // A GL style states its own background, and `background` is a layer rather
     // than a feature, so it cannot arrive as a StyleResult: the application
     // has to clear with it.
     fv::FvColor bg{255, 255, 255, 255};
-    _style->background(proj.Scale(), &bg);
+    if (_style) _style->background(proj.Scale(), &bg);
     bg.a = 255;  // the base layer handed to the compositor is opaque
     _baseCanvas->Clear(bg);
 
-    const fv::Status rs = _renderer->Render(bandProj, _baseCanvas.get());
+    // The legend's "on this map" set. A reused scene styles nothing, so the
+    // previous set still describes it.
+    if (_style) _style->ResetDiagnostics();
+    const fv::Status rs =
+        _chart ? _chart->Render(bandProj,
+                                kStyleNominalDpi * pixelsPerPoint * _symbolZoom,
+                                pixelsPerPoint * _symbolZoom,
+                                pippin::EncChartPass::kBase, _baseCanvas.get())
+               : _renderer->Render(bandProj, _baseCanvas.get());
     if (!rs.ok()) {
       if (error) *error = ErrorFromStatus(PPErrorRenderFailed, rs, @"render");
       return nil;
+    }
+    if (_style && !_renderer->scene_reused()) {
+      _mapLayerIds = _style->layer_ids_that_drew();
+      _mapLayerIdsKnown = YES;
     }
 
     CGImageRef base = PPCreateCGImageFromPixelBuffer(_baseCanvas->Buffer());
@@ -1209,15 +1842,16 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                   baseImage:CGImageRetain(_baseImage)
                baseViewport:_baseViewport
               baseWasDrawn:(baseServes ? NO : YES)
-            featuresQueried:(NSUInteger)_renderer->features_queried()
-               drawsEmitted:(NSUInteger)_renderer->draws_emitted()
-                  queryZoom:(NSInteger)_source->last_query_zoom()
+            featuresQueried:(NSUInteger)([self baseRenderer] ? [self baseRenderer]->features_queried() : 0)
+               drawsEmitted:(NSUInteger)([self baseRenderer] ? [self baseRenderer]->draws_emitted() : 0)
+                  queryZoom:(NSInteger)(_source ? _source->last_query_zoom() : 0)
          renderMilliseconds:(CFAbsoluteTimeGetCurrent() - t0) * 1000.0
            baseMilliseconds:baseMs
                     ownship:[self ownshipOrNil]
                        trip:[self tripOrNil]
                    guidance:[self guidanceOrNil]
              guidanceEvents:[self takeGuidanceEvents]
+            courseDeviation:[self courseDeviationOrNil]
                        slew:tick.slew];
 }
 
@@ -1235,6 +1869,7 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
                                           trip:[self tripOrNil]
                                       guidance:[self guidanceOrNil]
                                 guidanceEvents:[self takeGuidanceEvents]
+                               courseDeviation:[self courseDeviationOrNil]
                                           slew:tick.slew];
 }
 
@@ -1552,6 +2187,9 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
   for (const fv::nav::GuidanceEvent& e : _guidance.OnFix(raw)) {
     _pendingGuidanceEvents.push_back(e);
   }
+  for (const fv::nav::CourseEvent& e : _course.OnFix(raw)) {
+    _pendingCourseEvents.push_back(e);
+  }
   // The same gate serves both, which is why the recorder is here rather than
   // in `pushFix:`: a live fix reaches this method twice, once on arrival and
   // once through the tick that consumed it, and the stamp above makes that one
@@ -1622,7 +2260,49 @@ static double PPEpochNow() {
     [out addObject:[[PPGuidanceEvent alloc] initWithEvent:e road:road]];
   }
   _pendingGuidanceEvents.clear();
+  for (const fv::nav::CourseEvent& e : _pendingCourseEvents) {
+    [out addObject:[[PPGuidanceEvent alloc] initWithCourseEvent:e
+                                                           name:[self courseName:e.waypoint_index]
+                                                       nextName:[self courseName:e.waypoint_index + 1]]];
+  }
+  _pendingCourseEvents.clear();
   return out;
+}
+
+// The label of route point `i`, or empty past the end.
+- (NSString*)courseName:(std::size_t)i {
+  return i < _courseNames.size() ? @(_courseNames[i].c_str()) : @"";
+}
+
+// Gives the course deviation indicator the route's points when the route is
+// straight legs, and no route otherwise.
+- (void)setCourseRoute {
+  std::vector<fv::GeoPoint> points;
+  _courseNames.clear();
+  if (_routeStore->straight_legs()) {
+    for (const fv::RouteWaypoint& w : _routeStore->Snapshot().waypoints) {
+      points.push_back(w.position);
+      _courseNames.push_back(w.label);
+    }
+  }
+  _course.SetRoute(std::move(points));
+  _pendingCourseEvents.clear();
+}
+
+// Nil outside GPS mode, with no straight-leg route, before the first fix, and
+// past the last point.
+- (nullable PPCourseDeviation*)courseDeviationOrNil {
+  if (!_gpsModeEnabled || !_course.has_route()) return nil;
+  const fv::nav::CourseState& state = _course.state();
+  if (!state.valid || state.arrived) return nil;
+  return [[PPCourseDeviation alloc] initWithState:state
+                                            limit:_course.settings().off_course_m
+                                    waypointCount:static_cast<NSInteger>(_course.waypoints().size())
+                                             name:[self courseName:state.waypoint_index]];
+}
+
+- (nullable PPCourseDeviation*)currentCourseDeviation {
+  return [self courseDeviationOrNil];
 }
 
 - (nullable PPOwnship*)ownshipOrNil {
@@ -1680,6 +2360,7 @@ static double PPEpochNow() {
   // Events raised while the app was in the background name corners the rider
   // has already reached; the banner is recomputed from the current state.
   _pendingGuidanceEvents.clear();
+  _pendingCourseEvents.clear();
   _jumpCameraOnNextFix = YES;
 }
 
@@ -1712,11 +2393,13 @@ static double PPEpochNow() {
     _hasLastTripFixTime = NO;
     _trip.SetRoute(_routeStore->RoutePath());
     _guidance.SetRoute(_routeStore->RoutePath(), _routeStore->RouteManeuvers());
+    [self setCourseRoute];
     _trip.Start(PPEpochNow());
   } else {
     _trip.Stop(PPEpochNow());
     // Anything not yet drawn is not announced either: the ride is over.
     _pendingGuidanceEvents.clear();
+    _pendingCourseEvents.clear();
   }
 
   if (enabled) {
@@ -1862,6 +2545,7 @@ static double PPEpochNow() {
   // ...and the guidance's, for the same reason: a rider being counted down to
   // a corner on a route they have just replaced is the same defect.
   _guidance.SetRoute(_routeStore->RoutePath(), _routeStore->RouteManeuvers());
+  [self setCourseRoute];
   return [[PPRoute alloc] initWithSnapshot:snapshot
                           planMilliseconds:_routeStore->last_plan_ms()];
 }
@@ -1876,6 +2560,16 @@ static double PPEpochNow() {
   // A first launch comes back as a route whose `exists` is NO, never nil:
   // under the `NSError **` convention a nil return with no error is undefined
   // in Swift, so this method has two answers, a route or a throw.
+  return [self routeFromSnapshot:_routeStore->Snapshot()];
+}
+
+- (nullable PPRoute*)importRouteFromURL:(NSURL*)url error:(NSError**)error {
+  [self overlayContentChanged];
+  const fv::Status s = _routeStore->Import(url.fileSystemRepresentation ?: "");
+  if (!s.ok()) {
+    if (error) *error = ErrorFromStatus(PPErrorRouteFailed, s, @"shared route");
+    return nil;
+  }
   return [self routeFromSnapshot:_routeStore->Snapshot()];
 }
 
@@ -1894,12 +2588,32 @@ static double PPEpochNow() {
 - (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
                       profile:(NSString*)profile
                      beachUse:(PPBeachUse)beachUse {
+  return [self setRouteWaypoints:waypoints profile:profile beachUse:beachUse hills:std::nullopt];
+}
+
+- (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
+                      profile:(NSString*)profile
+                     beachUse:(PPBeachUse)beachUse
+                   avoidHills:(BOOL)avoidHills {
+  return [self setRouteWaypoints:waypoints
+                         profile:profile
+                        beachUse:beachUse
+                           hills:std::optional<bool>(avoidHills == YES)];
+}
+
+/// The two beach-and-hills setters' shared body; an empty `avoidHills` keeps
+/// the document's own.
+- (PPRoute*)setRouteWaypoints:(NSArray<PPWaypoint*>*)waypoints
+                      profile:(NSString*)profile
+                     beachUse:(PPBeachUse)beachUse
+                        hills:(std::optional<bool>)avoidHills {
   [self overlayContentChanged];
   fv::RouteBeach beach = fv::RouteBeach::kNever;
   if (beachUse == PPBeachUseToSaveTime) beach = fv::RouteBeach::kToSaveTime;
   if (beachUse == PPBeachUseWheneverPossible) beach = fv::RouteBeach::kWheneverPossible;
   const pippin::RouteSnapshot snapshot = _routeStore->SetWaypoints(
-      PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "", beach);
+      PPWaypointsToRoute(waypoints), profile != nil ? profile.UTF8String : "", beach,
+      avoidHills);
   return [self routeFromSnapshot:snapshot];
 }
 
@@ -1917,8 +2631,67 @@ static double PPEpochNow() {
   }
 }
 
+- (void)setBeachWind:(NSArray<PPBeachWindMark*>*)marks
+              warnAt:(double)alongWarnMetersPerSecond {
+  [self overlayContentChanged];
+  std::vector<fv::RouteOverlay::BeachWindMark> out;
+  out.reserve(marks.count);
+  for (PPBeachWindMark* m in marks) {
+    if (m.stretch < 0) continue;
+    out.push_back({static_cast<size_t>(m.stretch), m.towardDegrees,
+                   m.alongMetersPerSecond, m.seawardDegrees});
+  }
+  _routeStore->overlay()->SetBeachWind(std::move(out), alongWarnMetersPerSecond);
+}
+
+- (BOOL)routeLegsAreStraight {
+  return _routeStore->straight_legs() ? YES : NO;
+}
+
 - (BOOL)beachAvailable {
   return _routeStore->BeachAvailable() ? YES : NO;
+}
+
+- (BOOL)elevationAvailable {
+  return _routeStore->ElevationAvailable() ? YES : NO;
+}
+
+- (BOOL)routeSlopeColors {
+  return _routeStore->overlay()->slope_colors() ? YES : NO;
+}
+
+- (void)setRouteSlopeColors:(BOOL)on {
+  if ((on ? true : false) == _routeStore->overlay()->slope_colors()) return;
+  _routeStore->overlay()->SetSlopeColors(on);
+  [self overlayContentChanged];
+}
+
+- (void)setRouteAdjustments:
+    (NSDictionary<NSString*, NSDictionary<NSString*, NSNumber*>*>*)adjustments {
+  _routeAdjustments = [adjustments copy];
+  std::map<std::string, fv::routing::LegendStopChoices> perProfile;
+  for (NSString* profile in adjustments) {
+    fv::routing::LegendStopChoices& choices = perProfile[profile.UTF8String ?: ""];
+    NSDictionary<NSString*, NSNumber*>* stops = adjustments[profile];
+    for (NSString* setting in stops) choices[setting.UTF8String ?: ""] = stops[setting].intValue;
+  }
+  if (_routeStore) _routeStore->set_adjustments(std::move(perProfile));
+}
+
+- (PPRouteReplan*)replanForAdjustments {
+  pippin::RouteStore::ReplanChange change;
+  const pippin::RouteSnapshot snapshot = _routeStore->ReplanShowingPrevious(&change);
+  [self overlayContentChanged];
+  return [[PPRouteReplan alloc] initWithRoute:[self routeFromSnapshot:snapshot]
+                         previousLengthMeters:change.before_m
+                                  avoidedRoad:@(change.road_dropped.c_str())
+                                  lineChanged:change.line_changed ? YES : NO];
+}
+
+- (void)clearRouteGhost {
+  if (_routeStore->overlay()->ghost().empty()) return;
+  _routeStore->ClearGhost();
+  [self overlayContentChanged];
 }
 
 - (PPRoute*)clearRoute {
@@ -2114,7 +2887,16 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 // the planner's graph is handed over instead — the same sharing
 // `PPRouteStore.h` documents between the router and the snapper.
 - (void)ensureSearchProviders {
-  if (_searchChart == nullptr) {
+  // An ENC chart answers with its named objects (OBJNAM) across the whole set.
+  if (_chart && _searchChartFor != _chart.get()) {
+    if (_searchChart != nullptr) _overlays->Remove(_searchChart);
+    _searchChart = std::make_shared<fv::VectorMapOverlay>("Chart", _chart->search_source());
+    _searchChart->SetLabelTags({"OBJNAM"});
+    _searchChart->SetVisible(false);
+    _overlays->Add(_searchChart);
+    _searchChartFor = _chart.get();
+  }
+  if (_searchChart == nullptr && _source != nullptr) {
     _searchChart = std::make_shared<fv::VectorMapOverlay>("Chart", _source);
     _searchChart->SetVisible(false);
     _overlays->Add(_searchChart);
@@ -2166,9 +2948,11 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
   }
   // A degenerate box is no box, and the overlay makes that test itself: a
   // projection nobody has drawn with reports a zero-sized viewport.
+  // An ENC chart answers text from its name table; the view is the fallback
+  // when that table could not be built.
   if (_searchChart != nullptr) {
     _searchChart->SetSearchFallbackArea(
-        self.chartSearchIsViewOnly ? window : std::nullopt);
+        _chart || self.chartSearchIsViewOnly ? window : std::nullopt);
   }
   if (q.text.empty()) return @[];
 
@@ -2359,6 +3143,63 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
   return _pointStore->UpdatePoint([point mapPoint]) ? YES : NO;
 }
 
+- (BOOL)beginPointDrag:(int64_t)pointId
+                    at:(CGPoint)screenPoint
+            inViewport:(PPViewport*)viewport {
+  if (viewport == nil || !viewport.hasSurface) return NO;
+  const fv::MapPoint* point = _pointStore->Find(pointId);
+  if (point == nullptr || !_pointStore->BeginDrag(pointId)) return NO;
+  [self overlayContentChanged];
+  const CGPoint anchor = [viewport
+      pointForGeo:PPGeoPoint{point->position.lat, point->position.lon}];
+  _pointDragPress = screenPoint;
+  _pointDragOffset =
+      CGVectorMake(anchor.x - screenPoint.x, anchor.y - screenPoint.y);
+  _pointDragPriorSelection = _pointStore->selected();
+  _pointStore->SetSelected(pointId);
+  return YES;
+}
+
+- (BOOL)dragPointTo:(CGPoint)screenPoint inViewport:(PPViewport*)viewport {
+  if (viewport == nil || !viewport.hasSurface || _pointStore->dragging() == 0)
+    return NO;
+  [self overlayContentChanged];
+  const PPGeoPoint g = [viewport
+      geoAtPoint:CGPointMake(screenPoint.x + _pointDragOffset.dx,
+                             screenPoint.y + _pointDragOffset.dy)];
+  // NaN above the horizon of a tilted view: the point stays where it was.
+  if (!std::isfinite(g.latitude) || !std::isfinite(g.longitude)) return NO;
+  return _pointStore->DragTo(fv::GeoPoint{g.latitude, g.longitude}) ? YES : NO;
+}
+
+- (BOOL)endPointDragAt:(CGPoint)screenPoint inViewport:(PPViewport*)viewport {
+  const int64_t id = _pointStore->dragging();
+  if (id == 0) return NO;
+  [self overlayContentChanged];
+  _pointStore->SetSelected(_pointDragPriorSelection);
+  const PPGeoPoint g =
+      viewport != nil && viewport.hasSurface
+          ? [viewport geoAtPoint:CGPointMake(screenPoint.x + _pointDragOffset.dx,
+                                             screenPoint.y + _pointDragOffset.dy)]
+          : PPGeoPoint{NAN, NAN};
+  // A press held still is not a move: the release is a few points of finger
+  // jitter from the press, and writing that would creep the point.
+  if (hypot(screenPoint.x - _pointDragPress.x,
+            screenPoint.y - _pointDragPress.y) <= 3.0 ||
+      !std::isfinite(g.latitude) || !std::isfinite(g.longitude)) {
+    _pointStore->CancelDrag();
+    return NO;
+  }
+  return _pointStore->EndDrag(fv::GeoPoint{g.latitude, g.longitude}) ? YES : NO;
+}
+
+- (void)cancelPointDrag {
+  if (_pointStore->dragging() == 0) return;
+  [self overlayContentChanged];
+  _pointStore->SetSelected(_pointDragPriorSelection);
+  _pointStore->CancelDrag();
+}
+
 - (BOOL)removePointWithId:(int64_t)pointId {
   [self overlayContentChanged];
   return _pointStore->RemovePoint(pointId) ? YES : NO;
@@ -2371,6 +3212,94 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 }
 
 - (BOOL)pointsWereSeeded { return _pointStore->seeded() ? YES : NO; }
+
+- (nullable PPChartFeature*)chartFeatureNear:(CGPoint)screenPoint
+                                  inViewport:(PPViewport*)viewport
+                                   tolerance:(double)tolerance {
+  fv::VectorRenderer* renderer = [self baseRenderer];
+  fv::IVectorSource* source =
+      _chart ? static_cast<fv::IVectorSource*>(_chart->last_source()) : _source.get();
+  if (viewport == nil || !viewport.hasSurface || _baseViewport == nil ||
+      renderer == nullptr || source == nullptr) {
+    return nil;
+  }
+  // The pick index is in the pixels of the band the base was last drawn
+  // into, which is wider than the screen and centred elsewhere after a pan
+  // the cache absorbed. Through the ground, not by offset: the band may also
+  // be at another scale.
+  const PPGeoPoint g = [viewport geoAtPoint:screenPoint];
+  double sx = 0, sy = 0;
+  if (![_baseViewport projection]
+           .GeoToSurface(fv::GeoPoint{g.latitude, g.longitude}, &sx, &sy)
+           .ok()) {
+    return nil;
+  }
+  const double scale =
+      _baseViewport.displayScale > 0.0 ? _baseViewport.displayScale : 1.0;
+  const std::vector<fv::PickHit> hits = renderer->pick_index().HitTest(
+      (int)std::lround(sx), (int)std::lround(sy), tolerance * scale);
+
+  // The topmost named hit gives the name and its class. With nothing named
+  // under the press, the topmost hit still gives the class ("grass").
+  // OBJNAM is the S-57 object name.
+  static const char* const kNameTags[] = {"name", "name:latin", "name:en", "OBJNAM"};
+  std::string fallbackKind;
+  for (const fv::PickHit& hit : hits) {  // topmost first
+    fv::FeatureDescription desc;
+    if (!source->Describe(hit.ref, &desc).ok()) continue;
+    std::string name, cls, subclass;
+    for (const fv::FeatureAttribute& a : desc.attributes) {
+      if (a.raw.empty()) continue;
+      if (a.code == "class") cls = a.raw;
+      if (a.code == "subclass") subclass = a.raw;
+    }
+    std::string kind = !cls.empty() ? cls
+                       : !subclass.empty() ? subclass : desc.class_name;
+    std::replace(kind.begin(), kind.end(), '_', ' ');
+    if (fallbackKind.empty()) fallbackKind = kind;
+    for (const char* tag : kNameTags) {
+      for (const fv::FeatureAttribute& a : desc.attributes) {
+        if (a.code == tag && !a.raw.empty()) { name = a.raw; break; }
+      }
+      if (!name.empty()) break;
+    }
+    NSString* n = [NSString stringWithUTF8String:name.c_str()];
+    if (n.length == 0) continue;
+    NSString* k = [NSString stringWithUTF8String:kind.c_str()];
+    return [[PPChartFeature alloc] initWithName:n kind:k != nil ? k : @""];
+  }
+  if (fallbackKind.empty()) return nil;
+  NSString* k = [NSString stringWithUTF8String:fallbackKind.c_str()];
+  return k.length > 0 ? [[PPChartFeature alloc] initWithName:@"" kind:k] : nil;
+}
+
+- (NSArray<PPChartFeatureInfo*>*)chartFeaturesNear:(CGPoint)screenPoint
+                                        inViewport:(PPViewport*)viewport
+                                         tolerance:(double)tolerance {
+  if (!_chart || viewport == nil || !viewport.hasSurface || _baseViewport == nil) return @[];
+  // Same conversion as chartFeatureNear: through the ground into the band.
+  const PPGeoPoint g = [viewport geoAtPoint:screenPoint];
+  double sx = 0, sy = 0;
+  if (![_baseViewport projection]
+           .GeoToSurface(fv::GeoPoint{g.latitude, g.longitude}, &sx, &sy)
+           .ok()) {
+    return @[];
+  }
+  const double scale =
+      _baseViewport.displayScale > 0.0 ? _baseViewport.displayScale : 1.0;
+  const std::vector<pippin::EncFeatureInfo> found = _chart->FeaturesAt(
+      sx, sy, tolerance * scale,
+      _chartDepthsInFeet ? pippin::EncDepthUnits::kFeet : pippin::EncDepthUnits::kMetres);
+  NSMutableArray<PPChartFeatureInfo*>* out = [NSMutableArray array];
+  for (const pippin::EncFeatureInfo& f : found)
+    [out addObject:[[PPChartFeatureInfo alloc] initWithInfo:f]];
+  return out;
+}
+
+- (double)chartFeatureHitTolerance {
+  const double v = _settings.GetDouble("points.feature_hit_tolerance", 12.0);
+  return v >= 0.0 ? v : 12.0;
+}
 
 - (double)pointHitTolerance {
   // 22 points is about a thumb, and it is added to the marker's drawn
@@ -2530,6 +3459,23 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
     return NO;
   }
   return YES;
+}
+
+@end
+
+@implementation PPRouteReplan
+
+- (instancetype)initWithRoute:(PPRoute*)route
+         previousLengthMeters:(double)previousLengthMeters
+                  avoidedRoad:(NSString*)avoidedRoad
+                  lineChanged:(BOOL)lineChanged {
+  if ((self = [super init])) {
+    _route = route;
+    _previousLengthMeters = previousLengthMeters;
+    _avoidedRoad = [avoidedRoad copy];
+    _lineChanged = lineChanged;
+  }
+  return self;
 }
 
 @end

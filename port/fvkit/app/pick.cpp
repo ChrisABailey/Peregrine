@@ -6,6 +6,8 @@
 #include "fvkit/app/pick.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <utility>
 
 #include "fvkit/overlay/manager.h"
@@ -225,18 +227,32 @@ std::optional<SnapToItem> PickSession::SnapToPoint(const MapProjection& proj,
 // Context menu
 // ---------------------------------------------------------------------------
 
+std::string FormatInfoPosition(const GeoPoint& p) {
+  char buf[64];
+  std::snprintf(buf, sizeof buf, "%.5f\xC2\xB0 %c, %.5f\xC2\xB0 %c", std::fabs(p.lat),
+                p.lat < 0 ? 'S' : 'N', std::fabs(p.lon), p.lon < 0 ? 'W' : 'E');
+  return buf;
+}
+
 MenuNode PickSession::BuildContextMenu(const MapProjection& proj,
                                        PixelPoint p) const {
+  return BuildContextMenu(proj, p, nullptr);
+}
+
+MenuNode PickSession::BuildContextMenu(
+    const MapProjection& proj, PixelPoint p,
+    const std::function<void(Overlay&, MenuNode&)>& append) const {
   MenuNode root;
   const std::vector<Overlay*> order = manager_.DrawOrderAt(proj);
   for (auto it = order.rbegin(); it != order.rend(); ++it) {
     ContextMenu* menu = (*it)->AsContextMenu();
-    if (menu == nullptr) continue;
+    if (menu == nullptr && !append) continue;
     // Into a scratch node, so an overlay that appends NOTHING costs no
     // separator -- the section break belongs to the contribution, not to the
     // attempt.
     MenuNode section;
-    menu->AppendMenuItems(proj, p, section);
+    if (menu != nullptr) menu->AppendMenuItems(proj, p, section);
+    if (append) append(**it, section);
     if (section.children.empty()) continue;
     if (!root.children.empty()) root.children.push_back(MenuNode());  // rule
     for (MenuNode& child : section.children) {

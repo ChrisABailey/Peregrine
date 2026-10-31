@@ -9,13 +9,16 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <thread>
 
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/formats/registry.h"
+#include "fvkit/formats/scan_interrupt.h"
 #include "scratch.h"
 #include "stub_formats.h"
 
@@ -58,20 +61,22 @@ class CatalogBuildTest : public ::testing::Test {
   }
 };
 
-TEST_F(CatalogBuildTest, PlanProbesTheRootThenTheConventionalSubdirectory) {
+TEST_F(CatalogBuildTest, PlanScansEachFormatInItsOwnFolderOnly) {
   Scratch dir;
   const std::string root = dir.Path("data");
-  fs::create_directories(root + "/rpf");
+  fs::create_directories(root + "/RPF");  // case does not matter
+  fs::create_directories(root + "/intel/rpf");  // not the format's folder: not scanned
   const std::vector<ScanStep> steps = PlanScan(root);
-  // Only the registered formats, in table order; tiros3/ does not exist.
-  ASSERT_EQ(steps.size(), 2u);
+  // Only the registered formats with a folder; tiros3/ does not exist.
+  ASSERT_EQ(steps.size(), 1u);
   EXPECT_EQ(steps[0].format, "cadrg");
-  ASSERT_EQ(steps[0].dirs.size(), 2u);
-  EXPECT_EQ(steps[0].dirs[0], root);
-  EXPECT_EQ(fs::path(steps[0].dirs[1]).filename(), "rpf");
-  EXPECT_EQ(steps[1].format, "tiros");
-  ASSERT_EQ(steps[1].dirs.size(), 1u);
+  EXPECT_EQ(steps[0].dirs, std::vector<std::string>{root + "/RPF"});
   EXPECT_FALSE(steps[0].keep_if_empty);
+
+  // A root that is the format's folder is scanned itself.
+  const std::vector<ScanStep> own = PlanScan(root + "/RPF");
+  ASSERT_EQ(own.size(), 1u);
+  EXPECT_EQ(own[0].dirs, std::vector<std::string>{root + "/RPF"});
 
   EXPECT_TRUE(PlanScan(dir.Path("missing")).empty());
 }
@@ -89,12 +94,16 @@ TEST_F(CatalogBuildTest, VpfDatabasesAreFoundByTheirHeaderTable) {
   EXPECT_EQ(fs::path(dbs[0]).filename(), "a");
   EXPECT_EQ(fs::path(dbs[1]).filename(), "wvs");
 
-  // A registered vpf format adds one step per database, after the table.
+  // A registered vpf format adds one step per database under the vpf folder.
   ASSERT_TRUE(fv::desk::test::RegisterStubFormat("vpf").ok());
-  const std::vector<ScanStep> steps = PlanScan(root);
-  ASSERT_EQ(steps.size(), 4u);
-  EXPECT_EQ(steps[2].format, "vpf");
-  EXPECT_EQ(steps[2].dirs, std::vector<std::string>{dbs[0]});
+  EXPECT_TRUE(PlanScan(root).empty());
+  const std::string data = dir.Path("data2");
+  Touch(data + "/vpf/dnc17/dht");
+  Touch(data + "/other/wvs/dht");  // outside the vpf folder: not searched
+  const std::vector<ScanStep> steps = PlanScan(data);
+  ASSERT_EQ(steps.size(), 1u);
+  EXPECT_EQ(steps[0].format, "vpf");
+  EXPECT_EQ(fs::path(steps[0].dirs[0]).filename(), "dnc17");
 }
 
 TEST_F(CatalogBuildTest, BuildKeepsWhatYieldsFramesAndDropsTheRest) {
@@ -102,6 +111,7 @@ TEST_F(CatalogBuildTest, BuildKeepsWhatYieldsFramesAndDropsTheRest) {
   const std::string catalog = dir.Path("catalog.sqlite");
   const std::string root = dir.Path("data");
   fs::create_directories(root + "/rpf");
+  fs::create_directories(root + "/tiros3");
   CatalogBuild build(catalog, PlanScan(root));
   build.Wait();
 
@@ -110,10 +120,10 @@ TEST_F(CatalogBuildTest, BuildKeepsWhatYieldsFramesAndDropsTheRest) {
   EXPECT_FALSE(p.cancelled);
   EXPECT_EQ(p.done, 2);
   EXPECT_EQ(p.total, 2);
-  // The stub ignores its path, so the root wins and rpf/ is never tried.
+  // The tiros stub has no frames, so only cadrg's folder is kept.
   ASSERT_EQ(build.Results().size(), 1u);
   EXPECT_EQ(build.Results()[0].format, "cadrg");
-  EXPECT_EQ(build.Results()[0].path, root);
+  EXPECT_EQ(build.Results()[0].path, root + "/rpf");
   EXPECT_EQ(build.Results()[0].frames, 2);
   EXPECT_TRUE(build.Errors().empty());
   EXPECT_EQ(build.Summary(), "Catalogued 2 frames from 1 source.");
@@ -212,6 +222,39 @@ TEST_F(CatalogBuildTest, CancelStopsBetweenSources) {
 
 namespace {
 
+/// An enumerator that walks until the scan is interrupted, as a format's walk
+/// of a large network tree would.
+class EndlessEnumerator : public fv::IFrameEnumerator {
+ public:
+  fv::Status Begin(const std::string&) override {
+    while (!fv::ScanInterrupted()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return fv::Status::Error(fv::kInterrupted, "scan cancelled");
+  }
+  bool Next(fv::FrameInfo*) override { return false; }
+};
+
+TEST_F(CatalogBuildTest, CancelStopsInsideASource) {
+  fv::FormatFactories f;
+  f.format_key = "endless";
+  f.make_enumerator = [] { return std::make_shared<EndlessEnumerator>(); };
+  ASSERT_TRUE(fv::RegisterFormat(f).ok());
+
+  Scratch dir;
+  const std::string catalog = dir.Path("catalog.sqlite");
+  CatalogBuild build(catalog, {ScanStep{"endless", {dir.Path("a")}}, ScanStep{"endless", {dir.Path("b")}}});
+  while (build.Progress().current.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  build.Cancel();
+  build.Wait();
+
+  const BuildProgress p = build.Progress();
+  EXPECT_TRUE(p.finished);
+  EXPECT_TRUE(p.cancelled);
+  EXPECT_EQ(p.done, 1);
+  // A cancel is not an error, and the source it stopped in is not kept.
+  EXPECT_TRUE(build.Errors().empty());
+  EXPECT_TRUE(Sources(catalog).empty());
+}
+
 TEST_F(CatalogBuildTest, ReplaceExistingRemovesEverySourceFirst) {
   Scratch dir;
   const std::string catalog = dir.Path("catalog.sqlite");
@@ -224,13 +267,13 @@ TEST_F(CatalogBuildTest, ReplaceExistingRemovesEverySourceFirst) {
     ASSERT_TRUE(cat.Scan(id, &frames).ok());
   }
   const std::string root = dir.Path("data");
-  fs::create_directories(root);
+  fs::create_directories(root + "/rpf");
   CatalogBuild build(catalog, PlanScan(root), true);
   build.Wait();
   EXPECT_TRUE(build.Errors().empty());
   const auto sources = Sources(catalog);
   ASSERT_EQ(sources.size(), 1u);
-  EXPECT_EQ(sources[0].path, root);
+  EXPECT_EQ(sources[0].path, root + "/rpf");
   EXPECT_EQ(sources[0].frames, 2);
 }
 

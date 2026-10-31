@@ -7,9 +7,12 @@
 /// read and write (port/feature-overlay-plan.md §1–2, FO2).
 ///
 /// A `GeoPackage` is one open file holding any number of feature tables. Each
-/// table is a `GeoPackageFeatureLayer`. Edits run inside one transaction per
-/// file: the first edit begins it, `Save` commits it and `Revert` rolls it
-/// back. Every table written here has an R-tree spatial index kept by the
+/// table is a `GeoPackageFeatureLayer`. A layer holds its feature and field
+/// edits in memory until `GeoPackageFeatureLayer::Save` writes them, so the
+/// layers of one file save and revert independently. Table-level changes
+/// (`CreateLayer`, `WriteLayer`, `WriteLayerStyle`) run inside one transaction
+/// per file, which `GeoPackage::Save` commits together with every open
+/// layer's edits. Every table written here has an R-tree spatial index kept by the
 /// spec's triggers. Field titles, descriptions, choices and bounds go in
 /// `gpkg_data_columns` and `gpkg_data_column_constraints`, where QGIS reads
 /// them; roles, units and date ranges go in the `fv_data_columns` extension
@@ -17,7 +20,10 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -74,9 +80,13 @@ class GeoPackage : public std::enable_shared_from_this<GeoPackage> {
 
   /// The feature tables, in `gpkg_contents` order.
   Status Layers(std::vector<GeoPackageLayerInfo>* out) const;
-  /// kNotFound for a table that is not a feature table; kUnsupported for an
-  /// SRS other than EPSG:4326 or undefined geographic (FO-D9), or a curve type.
+  /// kNotFound for a table that is not a feature table; kUnsupported for a
+  /// curve type or an SRS that is not WGS-84 degrees (EPSG:4326, OGC:CRS84, an
+  /// equivalent WKT definition) or undefined geographic.
   Status OpenLayer(const std::string& table, std::shared_ptr<GeoPackageFeatureLayer>* out);
+  /// The layer of `table` opened earlier and still held somewhere, so a
+  /// caller can share its edits; null when none is.
+  std::shared_ptr<GeoPackageFeatureLayer> FindOpenLayer(const std::string& table) const;
   /// Adds an empty feature table with its index and metadata, inside the edit
   /// transaction. kInvalidArg for an invalid schema, a reserved or taken table
   /// name; kUnsupported when the schema has a blob field with a choice list.
@@ -97,14 +107,19 @@ class GeoPackage : public std::enable_shared_from_this<GeoPackage> {
   /// kNotFound when `table` is not a feature table.
   Status WriteLayerStyle(const std::string& table, const std::string& json);
 
-  /// True between the first edit and `Save` or `Revert`.
+  /// True while a table-level change is uncommitted or an open layer holds edits.
   bool HasUnsavedChanges() const;
-  /// Brings `gpkg_contents` bounds and last_change up to date for every table
-  /// edited, then commits.
+  /// Writes every open layer's edits, brings `gpkg_contents` bounds and
+  /// last_change up to date for every table written, then commits.
   Status Save();
-  /// Discards every edit since the last `Save`. A layer created since then
-  /// no longer exists; its handle returns errors.
+  /// Discards every table-level change and every open layer's edits since the
+  /// last save. A layer created since then no longer exists; its handle
+  /// returns errors.
   Status Revert();
+  /// Commits the table-level changes alone; open layers keep their edits.
+  Status SaveTableChanges();
+  /// Rolls back the table-level changes alone; open layers keep their edits.
+  Status RevertTableChanges();
 
  private:
   friend class GeoPackageFeatureLayer;
@@ -114,15 +129,21 @@ class GeoPackage : public std::enable_shared_from_this<GeoPackage> {
   /// Begins the edit transaction if none is open.
   Status Begin();
   Status RegisterFunctions();
+  /// The layers opened from this file that are still held somewhere.
+  std::vector<std::shared_ptr<GeoPackageFeatureLayer>> OpenLayers() const;
+  /// Writes `layers`' edits into the transaction and commits it. On failure
+  /// the layers keep their edits and the file is as before.
+  Status Commit(const std::vector<GeoPackageFeatureLayer*>& layers);
 
   std::string path_;
   bool writable_ = false;
   std::unique_ptr<detail::SqliteDb> db_;
   std::set<std::string> dirty_tables_;
+  std::vector<std::weak_ptr<GeoPackageFeatureLayer>> layers_;
 };
 
-/// One feature table of an open GeoPackage. Reads go to the file; ids are the
-/// table's integer primary key.
+/// One feature table of an open GeoPackage. Reads merge the file with this
+/// layer's unsaved edits; ids are the table's integer primary key.
 class GeoPackageFeatureLayer : public IEditableFeatureLayer {
  public:
   std::string Name() const override { return identifier_; }
@@ -132,6 +153,9 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   Status All(std::vector<Feature>* out) const override;
   /// Uses the R-tree when the table has one, then checks each envelope.
   Status Query(const GeoRect& box, std::vector<Feature>* out) const override;
+  /// Reads only the columns `fields` marks; an empty `fields` reads all.
+  Status QueryFields(const GeoRect& box, const std::vector<bool>& fields,
+                     std::vector<Feature>* out) const override;
   Status Get(int64_t id, Feature* out) const override;
   /// Geometry must match the layer's type and Z/M; values the schema.
   Status Insert(Feature* feature) override;
@@ -139,11 +163,25 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   Status Delete(int64_t id) override;
 
   Status InsertWithId(const Feature& feature) override;
-  /// Rebuilds the table inside the edit transaction, keeping ids, geometry
-  /// blobs, the R-tree and the table's other triggers and indexes; the field
-  /// metadata is rewritten from the new schema. A new field may not take the
-  /// id or geometry column's name.
+  /// Remaps every feature to the new schema now; `Save` rebuilds the table,
+  /// keeping ids, unedited geometry blobs, the R-tree and the table's other
+  /// triggers and indexes, and rewrites the field metadata. A new field may
+  /// not take the id or geometry column's name.
   Status ChangeSchema(const SchemaChange& change) override;
+  bool Revision(uint64_t* out) const override {
+    *out = revision_;
+    return true;
+  }
+
+  /// True when the layer holds edits not yet written to the file.
+  bool HasEdits() const { return rebuild_ || !edits_.empty(); }
+  /// Writes this layer's edits, and `style_json` as its style when given, and
+  /// commits them with any table-level change already pending in the file.
+  /// Other layers' edits stay unsaved. On failure nothing this call wrote
+  /// stays in the file's transaction.
+  Status Save(const std::string* style_json = nullptr);
+  /// Drops this layer's unsaved edits; the file's other layers keep theirs.
+  void DiscardEdits() { ClearEdits(/*saved=*/false); }
 
   const std::string& Table() const { return table_; }
   const std::shared_ptr<GeoPackage>& Package() const { return package_; }
@@ -152,12 +190,37 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   friend class GeoPackage;
   GeoPackageFeatureLayer() = default;
 
+  /// An unsaved change to one feature. `feature` is empty for a deletion.
+  struct Edit {
+    std::optional<Feature> feature;
+    bool stored = false;            ///< the row exists in the file
+    bool geometry_changed = false;  ///< the stored geometry blob is stale
+  };
+
   /// Reads `table_`'s schema, geometry column and metadata from the file.
   Status Load();
+  /// Rows matching `where_sql`, in id order. A field `fields` marks false is
+  /// read as null; null `fields` reads every one.
   Status Select(const std::string& where_sql, const std::vector<int64_t>& ids,
-                std::vector<Feature>* out) const;
+                std::vector<Feature>* out, const std::vector<bool>* fields = nullptr) const;
+  /// `stored` with this layer's edits applied, in id order.
+  void Merge(std::vector<Feature>* stored, const GeoRect* box) const;
   Status CheckFeature(Feature* feature) const;
-  Status Write(const Feature& feature, bool with_id, bool replace, int64_t* id_out);
+  /// The id the next `Insert` takes: past every id the file and the edits have used.
+  Status NextId(int64_t* out);
+  /// Writes the edits into the open transaction; the caller commits.
+  Status WriteEdits();
+  /// Writes one feature row, as an INSERT with its id or an UPDATE.
+  Status WriteRow(const Feature& f, bool replace);
+  /// Rebuilds the table under `schema_` from the edits, which hold every row.
+  Status RebuildTable();
+  /// Forgets the edits after they were committed (`saved`) or discarded.
+  void ClearEdits(bool saved);
+  /// Reads the stored rows' boxes into `scan_`, continuing after the last row
+  /// an interrupted read reached.
+  Status ScanEnvelopes() const;
+  /// The stored rows whose box meets `box`, from `scan_`, in id order.
+  Status SelectScanned(const GeoRect& box, std::vector<Feature>* out, const std::vector<bool>* fields) const;
 
   std::shared_ptr<GeoPackage> package_;
   std::string table_;
@@ -170,6 +233,24 @@ class GeoPackageFeatureLayer : public IEditableFeatureLayer {
   bool has_rtree_ = false;
   FeatureSchema schema_;
   std::string select_sql_;  ///< SELECT id, geom, fields... FROM table
+
+  std::map<int64_t, Edit> edits_;
+  /// The schema changed: `edits_` holds every row and `Save` rebuilds the table.
+  bool rebuild_ = false;
+  int64_t next_id_ = 0;  ///< 0 until the first insert reads it from the file
+  uint64_t revision_ = 0;
+
+  /// Every stored row's id and x/y box, for a table without an R-tree. The
+  /// first `Query` reads it; a save that writes the table drops it.
+  struct EnvelopeScan {
+    std::vector<int64_t> ids;
+    std::vector<float> boxes;  ///< min x, max x, min y, max y per id, rounded outward
+    int64_t last_id = 0;       ///< the last row read, when `started`
+    bool started = false;
+    bool complete = false;
+  };
+  mutable EnvelopeScan scan_;
+  mutable std::mutex scan_mu_;  ///< queries come from the draw worker and the UI thread
 };
 
 }  // namespace fv

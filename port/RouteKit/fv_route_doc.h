@@ -64,6 +64,9 @@ enum class RouteBeach : unsigned char {
 /// The `options.beach` spelling of `v`, or "" for kNever (which is not written).
 const char* RouteBeachKey(RouteBeach v);
 
+/// The `options.hills` spelling of "avoid hills".
+extern const char kRouteHillsAvoid[];  // "avoid"
+
 // One waypoint. The label is the IDENTITY — route.py selects and deletes by
 // it, and two waypoints sharing one label would delete as a pair — so it is
 // carried rather than derived from the index.
@@ -104,6 +107,11 @@ class RouteDoc {
   RouteBeach beach() const { return beach_; }
   void set_beach(RouteBeach v) { beach_ = v; }
 
+  /// Whether the route avoids climbing: `options.hills` is "avoid", and an
+  /// absent key is neutral. Written only when set, like `beach`.
+  bool avoid_hills() const { return avoid_hills_; }
+  void set_avoid_hills(bool v) { avoid_hills_ = v; }
+
   const std::vector<RouteWaypoint>& waypoints() const { return waypoints_; }
   std::vector<RouteWaypoint>& waypoints() { return waypoints_; }
   void set_waypoints(std::vector<RouteWaypoint> v) { waypoints_ = std::move(v); }
@@ -136,6 +144,7 @@ class RouteDoc {
   FvColor color_{220, 30, 30, 255};  // route.py's default red
   std::string profile_;
   RouteBeach beach_ = RouteBeach::kNever;
+  bool avoid_hills_ = false;
   std::vector<RouteWaypoint> waypoints_;
 };
 

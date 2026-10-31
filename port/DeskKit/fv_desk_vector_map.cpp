@@ -83,10 +83,11 @@ void VectorBaseMap::Reset(std::shared_ptr<Catalog> catalog) {
   config_ = CurrentVectorMapConfig();
 }
 
-Status VectorBaseMap::OpenSource(const view::LadderProduct& product,
-                                 std::shared_ptr<IVectorSource>* out) {
+Status OpenVectorProductSource(const Catalog& catalog, const view::LadderProduct& product,
+                               const std::string& enc_dir,
+                               std::shared_ptr<IVectorSource>* out) {
   std::vector<CoverageRow> rows;
-  Status s = catalog_->SelectByGeoRect(GeoRect::World(), &rows, product.series_id);
+  Status s = catalog.SelectByGeoRect(GeoRect::World(), &rows, product.series_id);
   if (!s.ok()) return s;
   if (rows.empty())
     return Status::Error(kNotFound, "no coverage rows for " + product.series_key);
@@ -102,7 +103,7 @@ Status VectorBaseMap::OpenSource(const view::LadderProduct& product,
     std::set<std::string> cells;
     for (const CoverageRow& r : rows) cells.insert(r.path);
     auto src = std::make_shared<EncVectorSource>();
-    s = src->OpenCells(std::vector<std::string>(cells.begin(), cells.end()), config_.enc_dir);
+    s = src->OpenCells(std::vector<std::string>(cells.begin(), cells.end()), enc_dir);
     *out = src;
   } else {
     // A VPF locator is "<database root>|<library>|<tile>".
@@ -113,6 +114,11 @@ Status VectorBaseMap::OpenSource(const view::LadderProduct& product,
     *out = src;
   }
   return s;
+}
+
+Status VectorBaseMap::OpenSource(const view::LadderProduct& product,
+                                 std::shared_ptr<IVectorSource>* out) {
+  return OpenVectorProductSource(*catalog_, product, config_.enc_dir, out);
 }
 
 Status VectorBaseMap::OpenSeries(const view::LadderProduct& product, Series* out) {

@@ -119,7 +119,7 @@ class FeatureEditSession {
   // MARK: Edits — each is one undo entry; false when refused
 
   /// Inserts a feature with `geometry` (conformed to the layer's Multi- type)
-  /// and null values, and selects it. Returns its id, or 0.
+  /// and each field's default value, and selects it. Returns its id, or 0.
   int64_t AddFeature(const Geometry& geometry, const std::string& label = "Add Feature");
   bool DeleteFeatures(const std::vector<int64_t>& ids);
   bool DeleteSelected();

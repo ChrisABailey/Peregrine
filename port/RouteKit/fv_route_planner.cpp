@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <map>
 
 namespace fv {
 
@@ -18,6 +19,31 @@ bool IsBicycleRequest(const std::string& profile, bool cycle_only) {
                  [](unsigned char c) { return static_cast<char>(::tolower(c)); });
   return lower.find("bike") != std::string::npos ||
          lower.find("cycle") != std::string::npos;
+}
+
+std::string RoadDropped(const RoutePlan& before, const RoutePlan& after, double min_drop_m) {
+  if (before.roads.empty() || after.roads.empty()) return std::string();
+  std::map<std::string, double> now;
+  for (const routing::RouteLeg& leg : after.roads) now[leg.name] += leg.length_m;
+  std::vector<std::pair<std::string, double>> was;  // travel order, for the tie rule
+  for (const routing::RouteLeg& leg : before.roads) {
+    if (leg.name.empty()) continue;
+    auto it = std::find_if(was.begin(), was.end(),
+                           [&](const auto& w) { return w.first == leg.name; });
+    if (it == was.end()) was.emplace_back(leg.name, leg.length_m);
+    else it->second += leg.length_m;
+  }
+  std::string best;
+  double best_drop = 0.0;
+  for (const auto& [name, meters] : was) {
+    const auto it = now.find(name);
+    const double kept = it == now.end() ? 0.0 : it->second;
+    const double drop = meters - kept;
+    if (drop < min_drop_m || kept > 0.5 * meters || drop <= best_drop) continue;
+    best = name;
+    best_drop = drop;
+  }
+  return best;
 }
 
 routing::BeachUse ToBeachUse(RouteBeach v) {
@@ -111,6 +137,12 @@ std::vector<std::string> RoutePlanner::profile_names() const {
   return rules_->rules()->names();
 }
 
+std::shared_ptr<const routing::RouteRules> RoutePlanner::rules() const {
+  if (rules_path_.empty()) return routing::RouteRules::Builtin();
+  if (!rules_) rules_.reset(new routing::RouteRulesFile(rules_path_));
+  return rules_->rules();
+}
+
 Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
                                   routing::RouteOptions* out) const {
   out->snap_meters = in.snap_meters;
@@ -132,6 +164,14 @@ Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
     // options, so the query's own avoidances have to be applied AFTER it.
     Status s = routing::SelectProfile(rules, in.profile, out);
     if (!s.ok()) return s;
+    if (!in.overrides.empty()) {
+      auto adjusted = std::make_shared<routing::RouteProfile>();
+      s = routing::ApplyOverrides(*out->profile, in.overrides, adjusted.get());
+      if (!s.ok()) return s;
+      routing::ApplyProfile(std::move(adjusted), out);
+    }
+  } else if (!in.overrides.empty()) {
+    return Status::Error(kInvalidArg, "profile overrides need a profile");
   }
 
   // O5e: the penalties are the only profile-backed settings the router reads
@@ -140,6 +180,7 @@ Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
   if (in.avoid_tolls) out->toll_penalty = routing::kAvoidExcluded;
   if (in.avoid_ferries) out->ferry_penalty = routing::kAvoidExcluded;
   out->beach = in.beach;
+  out->hill_penalty = in.avoid_hills.value_or(false) ? in.avoid_hills_penalty : 1.0;
   return Status::Ok();
 }
 
@@ -250,8 +291,8 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
   routing::RouteOptions options;
   s = BuildOptions(in, &options);
   if (!s.ok()) {
-    // A profile the rule file does not define. Reported once and NOT retried
-    // per pair: every pair would fail identically.
+    // A profile the rule file does not define, or a bad override. Reported
+    // once and NOT retried per pair: every pair would fail identically.
     plan.status = s.message;
     plan.error = s;
     return plan;
@@ -289,15 +330,26 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
     plan.length_m = through.length_m;
     plan.seconds = through.seconds;
     plan.u_turn_stops = through.u_turn_stops;
+    plan.has_elevation = through.has_elevation;
+    plan.climb_m = through.climb_m;
+    plan.descent_m = through.descent_m;
+    plan.elevation = through.profile;
     // The turn list is measured along `through.geometry`, and `legs` joined
     // end to end is that same line: the cuts are indices into it, and the
     // duplicate vertices a joiner drops are zero-length segments that no
     // cumulative distance counted in the first place.
     plan.maneuvers = ManeuversOf(through);
+    plan.roads = through.legs;
     plan.beach = BeachStretchesOf(through);
     std::string turned;
+    if (through.has_elevation) {
+      char hills[96];
+      std::snprintf(hills, sizeof(hills), ", up %.0f m, down %.0f m%s", through.climb_m,
+                    through.descent_m, in.avoid_hills.value_or(false) ? " (avoiding hills)" : "");
+      turned = hills;
+    }
     if (!through.u_turn_stops.empty()) {
-      turned = " (turned round at " +
+      turned += " (turned round at " +
                std::to_string(through.u_turn_stops.size()) +
                " stop(s) with no other way out)";
     }

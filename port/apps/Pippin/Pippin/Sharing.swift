@@ -130,7 +130,7 @@ enum RideLibrary {
         guard let directory = directory() else { return nil }
         return DocumentFolder.uniqueURL(
             in: directory,
-            stem: "ride-" + DocumentFolder.fileNameFormatter.string(from: date),
+            stem: AppFlavor.current.trackNoun + "-" + DocumentFolder.fileNameFormatter.string(from: date),
             ext: "gpx")
     }
 
@@ -250,6 +250,52 @@ enum PointShare {
     }
 }
 
+// MARK: - A route, between devices
+
+/// A route travels as its own `.fvrte` document: the stops and settings, not
+/// the drawn line, so the receiving device plans it on its own graph and
+/// gets a route it can edit and be guided along.
+enum RouteShare {
+    static let fileExtension = "fvrte"
+
+    /// A copy of the saved route document, named for its destination, ready
+    /// for the share sheet. Nil when there is nothing saved to send.
+    static func payload(document: URL, destination: String?) -> SharePayload? {
+        guard FileManager.default.fileExists(atPath: document.path) else { return nil }
+        let title = destination.map { "Route to \($0)" } ?? "Route"
+        let safe = title.map { $0.isLetter || $0.isNumber || $0 == " " || $0 == "-" ? $0 : "-" }
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(String(safe) + "." + fileExtension)
+        try? FileManager.default.removeItem(at: copy)
+        guard (try? FileManager.default.copyItem(at: document, to: copy)) != nil else {
+            return nil
+        }
+        return SharePayload(items: [copy], subject: title)
+    }
+
+    static func isRouteFile(_ url: URL) -> Bool {
+        url.isFileURL && url.pathExtension.lowercased() == fileExtension
+    }
+
+    /// Copies an incoming route file somewhere this app owns, so it can be
+    /// read after the URL's access ends. A copy the system placed in
+    /// `Documents/Inbox` is removed once taken.
+    static func receive(_ url: URL) -> URL? {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let local = FileManager.default.temporaryDirectory
+            .appendingPathComponent("received-\(UUID().uuidString).\(fileExtension)")
+        guard (try? FileManager.default.copyItem(at: url, to: local)) != nil else {
+            return nil
+        }
+        if let inbox = DocumentFolder.documents?.appendingPathComponent("Inbox"),
+           url.standardizedFileURL.path.hasPrefix(inbox.standardizedFileURL.path) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        return local
+    }
+}
+
 // MARK: - Rides sheet
 
 /// The list of recorded rides: start, stop, share, delete. Recording is
@@ -275,7 +321,7 @@ struct RideSheet: View {
                     Button(action: onToggleRecording) {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(isRecording ? "Stop Recording" : "Record a Ride")
+                                Text(isRecording ? "Stop Recording" : "Record a \(AppFlavor.current.trackTitle)")
                                 if isRecording {
                                     Text(recordingPointCount == 1
                                          ? "1 point so far"
@@ -290,17 +336,17 @@ struct RideSheet: View {
                         }
                     }
                 } footer: {
-                    Text("A ride is written to the file as you go, so it "
-                         + "survives the app being closed mid-ride.")
+                    Text("A \(AppFlavor.current.trackNoun) is written to the file as you go, so it "
+                         + "survives the app being closed partway through.")
                 }
 
                 if rides.isEmpty {
                     Section {
-                        Text("No saved rides yet.")
+                        Text("No saved \(AppFlavor.current.trackNoun)s yet.")
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Section("Saved Rides") {
+                    Section("Saved \(AppFlavor.current.trackTitle)s") {
                         ForEach(rides) { ride in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -328,7 +374,7 @@ struct RideSheet: View {
                     }
                 }
             }
-            .navigationTitle("Rides")
+            .navigationTitle("\(AppFlavor.current.trackTitle)s")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

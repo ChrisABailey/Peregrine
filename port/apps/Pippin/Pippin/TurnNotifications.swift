@@ -79,7 +79,9 @@ final class TurnNotifications {
                             maneuverIndex: event.maneuverIndex,
                             turn: turn(event.maneuver),
                             distanceMeters: event.distanceMeters,
-                            road: event.road)
+                            road: event.road,
+                            nextName: event.nextName,
+                            crossTrackMeters: event.crossTrackMeters)
     }
 
     private static func kind(_ k: PPGuidanceEventKind) -> GuidanceNoticeEvent.Kind {
@@ -89,6 +91,9 @@ final class TurnNotifications {
         case .offRoute: return .offRoute
         case .rejoined: return .rejoined
         case .arrived: return .arrived
+        case .waypoint: return .waypoint
+        case .offCourse: return .offCourse
+        case .backOnCourse: return .backOnCourse
         @unknown default: return .passed
         }
     }

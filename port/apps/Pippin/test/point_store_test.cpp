@@ -319,6 +319,52 @@ TEST(PointStore, AnEditedPointSurvivesARelaunchAndKeepsItsPlaceInTheSet) {
   EXPECT_EQ("https://example.invalid/turnstone", again.Points()[0].url);
 }
 
+TEST(PointStore, ADragWritesOnceOnReleaseAndSurvivesARelaunch) {
+  Scratch scratch("drag");
+  const std::string seed = WriteSeed(scratch);
+  const std::string doc = scratch.file("points.fvpoints");
+  {
+    PointStore store(seed, doc);
+    ASSERT_TRUE(store.LoadAtLaunch().ok());
+    const int64_t id = store.Points()[0].id;
+    ASSERT_TRUE(store.BeginDrag(id));
+    EXPECT_EQ(id, store.dragging());
+    ASSERT_TRUE(store.DragTo(GeoPoint{32.605, -80.105}));
+    EXPECT_NEAR(32.605, store.Find(id)->position.lat, 1e-9);
+
+    // Mid-drag the document on disk still has the old position.
+    PointStore reader(seed, doc);
+    ASSERT_TRUE(reader.LoadAtLaunch().ok());
+    EXPECT_NEAR(store.Points()[1].position.lat,
+                reader.Points()[1].position.lat, 1e-9);
+    EXPECT_GT(std::abs(reader.Points()[0].position.lat - 32.605), 1e-6);
+
+    EXPECT_TRUE(store.EndDrag(GeoPoint{32.61, -80.11}));
+    EXPECT_EQ(0, store.dragging());
+  }
+
+  PointStore again(seed, doc);
+  ASSERT_TRUE(again.LoadAtLaunch().ok());
+  ASSERT_EQ(2u, again.Points().size());
+  EXPECT_NEAR(32.61, again.Points()[0].position.lat, 1e-9);
+  EXPECT_NEAR(-80.11, again.Points()[0].position.lon, 1e-9);
+}
+
+TEST(PointStore, ACancelledDragPutsThePointBack) {
+  Scratch scratch("dragcancel");
+  const std::string doc = scratch.file("points.fvpoints");
+  PointStore store(std::string(), doc);
+  ASSERT_TRUE(store.LoadAtLaunch().ok());
+  const int64_t id = store.AddPoint(MakePoint(0, "A", 32.6, -80.1));
+  ASSERT_TRUE(store.BeginDrag(id));
+  ASSERT_TRUE(store.DragTo(GeoPoint{32.7, -80.2}));
+  store.CancelDrag();
+  EXPECT_EQ(0, store.dragging());
+  EXPECT_NEAR(32.6, store.Find(id)->position.lat, 1e-9);
+  EXPECT_FALSE(store.DragTo(GeoPoint{32.7, -80.2})) << "nothing is held";
+  EXPECT_FALSE(store.BeginDrag(id + 99));
+}
+
 TEST(PointStore, AStaleIdIsRefusedRatherThanResurrected) {
   Scratch scratch("stale");
   const std::string doc = scratch.file("points.fvpoints");

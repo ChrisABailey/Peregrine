@@ -51,7 +51,7 @@ add_library(fv_imagelib_geotiff STATIC
 )
 target_include_directories(fv_imagelib_geotiff PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${ILC} ${ILC}/tiff ${ILC}/jpeg
+  ${ILC} ${ILC}/jpeg
   ${CMAKE_SOURCE_DIR}/fvw_core/geo_tool
   ${CMAKE_SOURCE_DIR}/fvw_core/geo3
   ${CMAKE_SOURCE_DIR}/fvw_core/Utility/SVD

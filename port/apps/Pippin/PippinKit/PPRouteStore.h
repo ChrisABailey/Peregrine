@@ -38,17 +38,27 @@
 #include <optional>
 #include <string>
 #include <functional>
+#include <map>
 #include <vector>
 
 #include "fv_road_network.h"
 #include "fv_route_doc.h"
+#include "fv_route_legend.h"
 #include "fv_route_overlay.h"
 #include "fv_route_planner.h"
+#include "fvkit/analysis/path.h"
 #include "fvkit/geo.h"
 #include "fvkit/nav/road_snap.h"
 #include "fvkit/nav/tide.h"
 
 namespace pippin {
+
+/// One straight leg, waypoint i to i+1, measured along a rhumb line.
+struct RouteLeg {
+  double course_deg = 0.0;  ///< true, [0, 360)
+  double distance_m = 0.0;
+  bool ok = false;          ///< false when the pair could not be measured
+};
 
 // The route as a UI sees it: a plain value, so it crosses a queue boundary by
 // being copied, with nothing behind it another thread could be writing.
@@ -64,6 +74,7 @@ struct RouteSnapshot {
   std::vector<fv::RouteWaypoint> waypoints;
   std::string profile;
   fv::RouteBeach beach = fv::RouteBeach::kNever;
+  bool avoid_hills = false;
 
   // Road geometry, as against straight legs between the waypoints. False both
   // when nothing has been planned and when the plan came back with nothing
@@ -75,9 +86,20 @@ struct RouteSnapshot {
   bool complete = false;
   int straight_legs = 0;
 
+  /// The store joins waypoints with rhumb lines and plans no roads; `legs`
+  /// holds one entry per leg and `length_m` is their sum.
+  bool straight = false;
+  std::vector<RouteLeg> legs;
+
   bool is_bicycle = false;
   double length_m = 0.0;
   double seconds = 0.0;
+
+  /// The plan's climb, descent and elevation profile; see `fv::RoutePlan`.
+  bool has_elevation = false;
+  double climb_m = 0.0;
+  double descent_m = 0.0;
+  std::vector<fv::routing::ElevationPoint> elevation;
 
   // The planner's own sentence, or empty when nothing has been planned. Shown
   // by the sheet rather than drawn on the map; see `RouteStore`'s constructor
@@ -173,16 +195,24 @@ class RouteStore {
   // afterwards.
   fv::Status LoadAtLaunch();
 
+  /// Makes the `.fvrte` at `path` (a route shared from another device) the
+  /// current route: its waypoints and options, replanned on this graph and
+  /// written to `document_path()`. `path` itself is only read. A file that
+  /// will not parse, or holds no waypoints, is reported and the current
+  /// route is left as it was.
+  fv::Status Import(const std::string& path);
+
   // The whole editing surface: wholesale replacement, which is what a sheet
   // produces. Plans, then writes.
   //
   // `profile` names a rule-file profile ("foot", "bicycle"); empty keeps the
-  // document's own, as does an empty `beach`. Fewer than two waypoints is not
+  // document's own, as does an empty `beach` or `avoid_hills`. Fewer than two waypoints is not
   // an error — it is a half-built route — and comes back as a snapshot whose
   // `status` says so.
   RouteSnapshot SetWaypoints(std::vector<fv::RouteWaypoint> waypoints,
                              const std::string& profile,
-                             std::optional<fv::RouteBeach> beach = std::nullopt);
+                             std::optional<fv::RouteBeach> beach = std::nullopt,
+                             std::optional<bool> avoid_hills = std::nullopt);
 
   /// Gates beach stretches on `table` for every later plan. A null table
   /// keeps the beach and judges it unknown, as does a departure outside the
@@ -195,12 +225,56 @@ class RouteStore {
   /// The departure clock, Unix seconds; the system clock unless a test sets it.
   void set_clock(std::function<double()> now) { now_ = std::move(now); }
 
+  /// Joins waypoints with rhumb lines instead of planning roads: no graph is
+  /// loaded, legs are drawn and measured as constant-course lines, and the
+  /// snapshot carries each leg's course and distance. Replans.
+  void SetStraightLegs(bool on);
+  bool straight_legs() const { return straight_legs_; }
+
   /// Whether the loaded graph has any beach arc. Loads the graph.
   bool BeachAvailable() const;
+
+  /// Whether the loaded graph carries elevation. Loads the graph.
+  bool ElevationAvailable() const;
+
+  /// The hill penalty "Avoid hills" plans with (`[routing]
+  /// avoid_hills_penalty`). Does not replan.
+  void set_avoid_hills_penalty(double v) { avoid_hills_penalty_ = v; }
+
+  /// The rider's map-key sliders, per profile name: setting id → stop in
+  /// `fv::routing::LegendStops`. Every plan and point lookup on that profile
+  /// uses them. Does not replan.
+  void set_adjustments(std::map<std::string, fv::routing::LegendStopChoices> per_profile) {
+    adjustments_ = std::move(per_profile);
+  }
+  const std::map<std::string, fv::routing::LegendStopChoices>& adjustments() const {
+    return adjustments_;
+  }
+
+  /// `profile`'s adjustments as planner overrides, against its shipped values
+  /// in `rules()`. Empty for no adjustments, an empty or unknown profile, or
+  /// choices OverridesFromStops rejects.
+  fv::routing::ProfileOverrides OverridesFor(const std::string& profile) const;
 
   // Replans what is already there, without touching the document. For a rule
   // file or a graph that has changed under a route the user has not edited.
   RouteSnapshot Replan();
+
+  /// What `ReplanShowingPrevious` did to the route on screen.
+  struct ReplanChange {
+    double before_m = 0.0;
+    double after_m = 0.0;
+    /// `fv::RoadDropped` of the two plans; empty when no road qualifies.
+    std::string road_dropped;
+    /// The drawn line moved; only then is the previous one kept as a ghost.
+    bool line_changed = false;
+  };
+
+  /// Replans after the rider's preferences changed. When the line moves, the
+  /// previous one stays drawn as the overlay's ghost until `ClearGhost` or an
+  /// edit. Without a calculated route nothing is planned and `change` is zero.
+  RouteSnapshot ReplanShowingPrevious(ReplanChange* change);
+  void ClearGhost() { overlay_->ClearGhost(); }
 
   // No route, and no document on disk either.
   RouteSnapshot Clear();
@@ -394,6 +468,9 @@ class RouteStore {
   std::vector<std::string> ProfileNames() const;
   std::string rules_error() const { return planner_->rules_error(); }
 
+  // The rules in force, for the map legend's tier words.
+  std::shared_ptr<const fv::routing::RouteRules> rules() const { return planner_->rules(); }
+
   // What the last plan cost, in milliseconds. Planning happens on the queue
   // that draws, so this is how long a frame was not being drawn, and it is the
   // measurement that decides whether a plan needs its own queue (`PPMap.h`).
@@ -425,6 +502,8 @@ class RouteStore {
   std::optional<fv::nav::BeachTideLimits> tide_foot_limits_;
   std::function<double()> now_;
   double depart_s_ = 0.0;
+  double avoid_hills_penalty_ = fv::kDefaultAvoidHillsPenalty;
+  std::map<std::string, fv::routing::LegendStopChoices> adjustments_;
 
   // Built on demand by `EnsureRoadNetwork` and rebuilt if the graph under it
   // is ever replaced. The network holds its own reference to the graph, so it
@@ -444,6 +523,10 @@ class RouteStore {
   // changed since the press. `moved` is why a grab-and-let-go writes nothing.
   std::string drag_label_;
   bool drag_moved_ = false;
+
+  bool straight_legs_ = false;
+  // The waypoints as a rhumb-line path; measured only in straight-leg mode.
+  fv::analysis::GeoPath straight_path_;
 };
 
 }  // namespace pippin

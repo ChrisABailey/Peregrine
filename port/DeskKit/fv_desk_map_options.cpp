@@ -326,8 +326,18 @@ MapOptionsSource RoutingOptions(std::function<void()> changed) {
     profile.type = app::PropertyType::kString;
     profile.default_value = app::PropertyValue::String(std::string());
     profile.help = "A profile named in the rule file; an opened route keeps its own.";
+    app::PropertySpec hills;
+    hills.key = "routing.avoid_hills_penalty";
+    hills.label = "Avoid hills penalty";
+    hills.group = "Routing";
+    hills.type = app::PropertyType::kDouble;
+    hills.default_value = app::PropertyValue::Double(kDefaultAvoidHillsPenalty);
+    hills.min = 1;
+    hills.max = 20;
+    hills.help = "How many times the climb cost a route marked Avoid Hills pays; "
+                 "needs a road network built with elevation.";
     return std::make_unique<SpecProperties>(
-        std::vector<app::PropertySpec>{graph, rules, profile});
+        std::vector<app::PropertySpec>{graph, rules, profile, hills});
   };
   src.apply = [changed](const app::Properties&) {
     if (changed) changed();
@@ -335,8 +345,32 @@ MapOptionsSource RoutingOptions(std::function<void()> changed) {
   return src;
 }
 
+void SetGeoTransDataDir(const std::string& dir) {
+  if (dir.empty()) return;
+#ifdef _WIN32
+  _putenv_s("MSPCCS_DATA", dir.c_str());
+#else
+  setenv("MSPCCS_DATA", dir.c_str(), 1);
+#endif
+}
+
+MapOptionsSource DataOptions() {
+  MapOptionsSource src;
+  src.group_id = "data";
+  src.title = "Data";
+  src.make = [] {
+    return std::make_unique<SpecProperties>(std::vector<app::PropertySpec>{
+        PathSpec("geotrans.data_dir", "GeoTrans data", app::PathKind::kDirectory,
+                 "The directory holding the GeoTrans datum and ellipsoid tables "
+                 "(ellips.dat, 3_param.dat, 7_param.dat, egm96.grd). Needed to enter "
+                 "MGRS in Go To / Find. Takes effect the next time Peregrine starts.")});
+  };
+  src.apply = [](const app::Properties& p) { SetGeoTransDataDir(p.GetString("geotrans.data_dir")); };
+  return src;
+}
+
 std::vector<MapOptionsSource> BuiltinMapOptions() {
-  return {ElevationMapOptions(), DncMapOptions(), EncMapOptions(), OsmMapOptions()};
+  return {ElevationMapOptions(), DncMapOptions(), EncMapOptions(), OsmMapOptions(), DataOptions()};
 }
 
 }  // namespace desk
