@@ -135,3 +135,35 @@ add_subdirectory(port/apps/Peregrine)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS ${CMAKE_SOURCE_DIR}/port/apps/PeregrineGtk/CMakeLists.txt)
   add_subdirectory(port/apps/PeregrineGtk)
 endif()
+
+# --- Debian package of the Linux app -----------------------------------------
+#
+# `cpack --config build/CPackConfig.cmake` builds peregrine_<version>_<arch>.deb
+# from the `peregrine` install component only; the install rules of the
+# FetchContent dependencies (gtest, zlib, expat, ...) are left out. The version
+# is PEREGRINE_VERSION, which CI sets from the release tag (v1.2.0 -> 1.2.0).
+# Library dependencies are read from the binary by dpkg-shlibdeps.
+if(TARGET peregrine-gtk)
+  set(PEREGRINE_VERSION "0.0.0" CACHE STRING "Version written into the Linux package")
+  set(CPACK_GENERATOR DEB)
+  set(CPACK_PACKAGE_NAME peregrine)
+  set(CPACK_PACKAGE_VERSION ${PEREGRINE_VERSION})
+  set(CPACK_PACKAGE_VENDOR "Chris Bailey")
+  set(CPACK_PACKAGE_CONTACT "Chris Bailey")
+  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Map viewer for raster and vector map data")
+  set(CPACK_PACKAGE_DESCRIPTION
+    "Peregrine is a cross-platform port of the FalconView mapping application. It reads GeoTIFF, DTED, CADRG, VPF/DNC, ENC and OpenStreetMap data from a local catalog and draws overlays, feature layers and routes over it.")
+  set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/ChrisABailey/Peregrine")
+  set(CPACK_PACKAGING_INSTALL_PREFIX /usr)
+  set(CPACK_STRIP_FILES ON)
+  set(CPACK_COMPONENTS_ALL peregrine)
+  set(CPACK_DEB_COMPONENT_INSTALL ON)
+  set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+  set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+  set(CPACK_DEBIAN_PACKAGE_SECTION science)
+  set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+  # The label font DeskKit looks for, and the symbolic icons the toolbar names.
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "fonts-dejavu-core")
+  set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "adwaita-icon-theme")
+  include(CPack)
+endif()

@@ -71,6 +71,35 @@ xvfb-run -a ctest --test-dir build -j8
   the versions are in the root `CMakeLists.txt` and
   `port/third_party/CMakeLists.txt`.
 
+### Continuous integration and the Linux package
+
+`.github/workflows/linux.yml` builds and tests the tree on Ubuntu 24.04 for
+every pull request and every push to `main` or `linux/**`: GCC with the whole
+tree including the GTK app, and clang with the shared code only. The GCC job
+also builds a Debian package of the desktop app, installs it, runs it once and
+uploads it as the run's `peregrine-deb` artifact.
+
+To publish a release, push a version tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow then attaches `peregrine_0.1.0_amd64.deb` to a GitHub Release
+named for the tag (a tag with a hyphen, such as `v0.2.0-rc1`, is marked a
+pre-release). Install it with:
+
+```sh
+sudo apt install ./peregrine_0.1.0_amd64.deb
+```
+
+The package installs `peregrine-gtk` with a launcher entry, the datum tables
+GeoTIFF needs, and the OpenStreetMap style sheets under
+`/usr/share/peregrine/osm-styles`. It is built on Ubuntu 24.04 and needs
+24.04 or later (or Debian 13), because it links against that release's GTK.
+To build it locally, see `port/apps/PeregrineGtk/README.md` (*Install and
+package*).
+
 ## What works
 
 | Layer | Capability |
