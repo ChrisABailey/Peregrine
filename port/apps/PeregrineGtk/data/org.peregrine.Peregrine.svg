@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later
+     Copyright (C) 2026 Chris Bailey
+     Part of Peregrine, a cross-platform port of FalconView(tm).
+     See COPYING.LESSER and NOTICE.md for the full licensing picture. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="8" y="8" width="112" height="112" rx="22" fill="#1d4e89"/>
+  <g fill="none" stroke="#7fa7d6" stroke-width="2" opacity="0.7">
+    <path d="M8 43h112M8 64h112M8 85h112"/>
+    <path d="M43 8v112M64 8v112M85 8v112"/>
+  </g>
+  <circle cx="64" cy="64" r="34" fill="none" stroke="#ffffff" stroke-width="5"/>
+  <path d="M64 30 L74 64 L64 98 L54 64 Z" fill="#ffffff"/>
+  <path d="M64 30 L74 64 L54 64 Z" fill="#e85d3f"/>
+</svg>

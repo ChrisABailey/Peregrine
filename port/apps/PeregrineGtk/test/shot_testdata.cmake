@@ -7,8 +7,8 @@
 # --center --shot` on the Charleston orthophoto under xvfb-run, and checks
 # that the status line names the GeoTIFF series and that the PNG holds a
 # picture rather than one flat colour. Prints "SKIPPED:" without the data.
-# Inputs: APP, BUILD_CATALOG, DATA (testdata/), GEOTRANS (MSPCCS_DATA),
-# XVFB_RUN, WORK (a scratch directory).
+# Inputs: APP, BUILD_CATALOG, DATA (testdata/), GEOTRANS (MSPCCS_DATA; empty
+# leaves it unset), XVFB_RUN, WORK (a scratch directory).
 
 if(NOT EXISTS ${DATA}/geotiff/22620e2710n_4ft.tif)
   message("SKIPPED: no GeoTIFF in ${DATA}")
@@ -21,7 +21,11 @@ set(CATALOG ${WORK}/catalog.sqlite)
 set(SHOT ${WORK}/shot.png)
 set(ENV{XDG_CONFIG_HOME} ${WORK}/config)
 set(ENV{XDG_DATA_HOME} ${WORK}/data)
-set(ENV{MSPCCS_DATA} ${GEOTRANS})
+if(GEOTRANS)
+  set(ENV{MSPCCS_DATA} ${GEOTRANS})
+else()
+  unset(ENV{MSPCCS_DATA})
+endif()
 set(ENV{GSK_RENDERER} cairo)
 
 execute_process(
@@ -52,6 +56,11 @@ if(NOT EXISTS ${SHOT})
 endif()
 if(NOT "${out}${err}" MATCHES "shot\\.png: 1:6,714 \\| geotiff Color")
   message(FATAL_ERROR "the status line does not report the GeoTIFF series at 1:6,714")
+endif()
+# Without the datum tables GEOTRANS skips the NAD27 shift and says so; the
+# picture still draws, so this message is the only sign.
+if("${out}${err}" MATCHES "Environment variable undefined: MSPCCS_DATA")
+  message(FATAL_ERROR "GEOTRANS did not find its datum tables (MSPCCS_DATA)")
 endif()
 # A flat fill (no frame, or a node the renderer could not draw) compresses to
 # a few kilobytes; the orthophoto does not.

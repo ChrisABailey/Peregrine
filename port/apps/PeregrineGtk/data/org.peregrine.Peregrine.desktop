@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# Copyright (C) 2026 Chris Bailey
+# Part of Peregrine, a cross-platform port of FalconView(tm).
+# See COPYING.LESSER and NOTICE.md for the full licensing picture.
+[Desktop Entry]
+Type=Application
+Name=Peregrine
+GenericName=Map Viewer
+Comment=View and annotate raster and vector map data
+Exec=peregrine-gtk
+Icon=org.peregrine.Peregrine
+Terminal=false
+Categories=Education;Science;Geography;GTK;
+Keywords=map;chart;GIS;GeoTIFF;DTED;CADRG;OpenStreetMap;
+StartupNotify=true

@@ -38,6 +38,33 @@ target_link_libraries(peregrine-gtk PRIVATE fv_deskkit PkgConfig::GTKMM4)
 # libpng16 that GTK loads, which crashes the first PNG GTK reads or writes.
 target_link_options(peregrine-gtk PRIVATE "LINKER:--exclude-libs,ALL")
 
+# Installation, as the `peregrine` component the root CPack configuration packages:
+# the app, its launcher entry and icon, the GEOTRANS datum tables (MSPCCS_DATA) and
+# the OpenStreetMap style sheets. main.cpp finds the data directory relative to the
+# executable, so the layout works under any prefix.
+include(GNUInstallDirs)
+set(PEREGRINE_GTK_DATADIR ${CMAKE_INSTALL_DATADIR}/peregrine)
+file(RELATIVE_PATH _peregrine_data_from_bin
+  /${CMAKE_INSTALL_BINDIR} /${PEREGRINE_GTK_DATADIR})
+target_compile_definitions(peregrine-gtk PRIVATE
+  PEREGRINE_DATA_FROM_BIN="${_peregrine_data_from_bin}")
+
+install(TARGETS peregrine-gtk RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  COMPONENT peregrine)
+install(FILES data/org.peregrine.Peregrine.desktop
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT peregrine)
+install(FILES data/org.peregrine.Peregrine.svg
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps COMPONENT peregrine)
+install(FILES data/org.peregrine.Peregrine.metainfo.xml
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo COMPONENT peregrine)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/fvw_core/PdfLib/sdk/lib/
+  DESTINATION ${PEREGRINE_GTK_DATADIR}/geotrans COMPONENT peregrine)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/port/Osm/styles/
+  DESTINATION ${PEREGRINE_GTK_DATADIR}/osm-styles COMPONENT peregrine)
+install(FILES ${CMAKE_SOURCE_DIR}/COPYING ${CMAKE_SOURCE_DIR}/COPYING.LESSER
+  ${CMAKE_SOURCE_DIR}/NOTICE.md
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/peregrine COMPONENT peregrine)
+
 # The menu, action, shortcut, key and frame-placement tests run without a display. The
 # window tests and the --shot tests need an X server, so they run under xvfb-run when that
 # is present: the dialogs and feature-layer windows, the window with an empty catalog, and
@@ -87,5 +114,17 @@ if(FVW_BUILD_TESTS)
         -DWORK=${CMAKE_CURRENT_BINARY_DIR}/shot_testdata
         -P ${CMAKE_CURRENT_SOURCE_DIR}/test/shot_testdata.cmake)
     set_tests_properties(peregrine_gtk.shot_testdata PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+
+    # The same picture from an installed copy with MSPCCS_DATA unset: the app has to
+    # find the datum tables the install put beside it.
+    add_test(NAME peregrine_gtk.installed_shot
+      COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${CMAKE_BINARY_DIR}
+        -DBUILD_CATALOG=$<TARGET_FILE:peregrine-gtk-build-catalog>
+        -DDATA=${CMAKE_SOURCE_DIR}/testdata
+        -DXVFB_RUN=${XVFB_RUN}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/installed_shot
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/test/installed_shot_test.cmake)
+    set_tests_properties(peregrine_gtk.installed_shot PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   endif()
 endif()
