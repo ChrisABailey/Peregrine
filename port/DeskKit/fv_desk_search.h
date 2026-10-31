@@ -91,6 +91,9 @@ bool ParseSearchLocation(const std::string& text, GeoPoint* out);
 /// "33.74000° N, 84.39000° W".
 std::string FormatSearchLocation(const GeoPoint& p);
 
+/// A result's distance column: "350 m" under a kilometre, "12.4 km" beyond.
+std::string FormatSearchDistance(double meters);
+
 /// The scale denominator that fits `bounds` in a `width_pt` × `height_pt`
 /// view with a 20% margin, never larger-scale than `min_denom`. A degenerate
 /// box returns 0 (keep the current scale).

@@ -131,6 +131,13 @@ TEST(SearchLocation, FormatsHemispheres) {
   EXPECT_EQ(fv::desk::FormatSearchLocation({-12.5, 130.25}), "12.50000\xC2\xB0 S, 130.25000\xC2\xB0 E");
 }
 
+TEST(SearchDistance, MetresUnderAKilometreThenKilometres) {
+  EXPECT_EQ(fv::desk::FormatSearchDistance(0), "0 m");
+  EXPECT_EQ(fv::desk::FormatSearchDistance(349.6), "350 m");
+  EXPECT_EQ(fv::desk::FormatSearchDistance(1000), "1.0 km");
+  EXPECT_EQ(fv::desk::FormatSearchDistance(12449), "12.4 km");
+}
+
 TEST(DeskSearch, ACoordinateIsTheWholeAnswer) {
   fv::OverlayManager stack;
   // A provider that would answer anything, to show it is never asked.

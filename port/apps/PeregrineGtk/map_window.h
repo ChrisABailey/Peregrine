@@ -16,6 +16,7 @@
 #include "data_sources_window.h"
 #include "dialogs.h"
 #include "feature_form_window.h"
+#include "find_window.h"
 #include "fv_desk_host.h"
 #include "properties_window.h"
 #include "layer_style_window.h"
@@ -60,11 +61,14 @@ class MapWindow : public Gtk::ApplicationWindow {
   void ShowLog();
   /// Brings up the Map Data Sources window, reusing it when it is showing.
   void ShowDataSources();
+  /// Brings up Go To / Find with its field ready to type over, reusing the window.
+  void ShowFind();
   /// The Map Data Sources window, or null when it is not open.
   DataSourcesWindow* data_sources_window() { return data_sources_.get(); }
   /// The panels and dialogs the core opened, or null before the first time
   /// each is shown; a closed one is hidden, not destroyed.
   LayersWindow* layers_window() { return layers_.get(); }
+  FindWindow* find_window() { return find_.get(); }
   FeatureFormWindow* feature_form_window() { return feature_form_.get(); }
   AttributeTableWindow* attribute_table_window() { return attribute_table_.get(); }
   LayerStyleWindow* layer_style_window() { return layer_style_.get(); }
@@ -121,6 +125,7 @@ class MapWindow : public Gtk::ApplicationWindow {
   std::unique_ptr<JobDialog> job_dialog_;
   std::unique_ptr<DataSourcesWindow> data_sources_;
   std::unique_ptr<LayersWindow> layers_;
+  std::unique_ptr<FindWindow> find_;
   std::unique_ptr<FeatureFormWindow> feature_form_;
   std::unique_ptr<AttributeTableWindow> attribute_table_;
   std::unique_ptr<LayerStyleWindow> layer_style_;

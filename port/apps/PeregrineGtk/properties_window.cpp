@@ -164,12 +164,13 @@ void PropertiesWindow::Reload() {
   while (notebook_.get_n_pages() > 0) notebook_.remove_page(-1);
   symbology_ = labels_ = nullptr;
   fields_ = nullptr;
-  tabs_ = HostTabs();
+  host_tabs_ = HostTabs();
+  tabs_.clear();
   auto report = [this](const std::string& error) { Report(error); };
-  for (size_t i = 0; i < tabs_.size(); ++i) {
+  for (size_t i = 0; i < host_tabs_.size(); ++i) {
     const std::string title = host_.LayerPropertiesTabTitle(static_cast<int>(i));
     Gtk::Widget* page = nullptr;
-    switch (tabs_[i]) {
+    switch (host_tabs_[i]) {
       case kSource: page = &source_page_; break;
       case kGeneral: page = &general_page_; break;
       case kSymbology:
@@ -187,6 +188,7 @@ void PropertiesWindow::Reload() {
       page->set_margin_end(6);
     }
     notebook_.append_page(*page, title);
+    tabs_.push_back(host_tabs_[i]);
   }
   notebook_.set_show_tabs(tabs_.size() > 1);
   buttons_->set_visible(tabs_.size() > 1);
@@ -199,7 +201,7 @@ void PropertiesWindow::Reload() {
 bool PropertiesWindow::Refresh() {
   const bool had_layer = std::find(tabs_.begin(), tabs_.end(), kGeneral) != tabs_.end();
   if (had_layer && !host_.LayerGeneralOpen()) return false;
-  if (HostTabs() == tabs_) return true;
+  if (HostTabs() == host_tabs_) return true;
   const int shown = current_tab();
   Reload();
   ShowTab(shown);
@@ -279,7 +281,7 @@ bool PropertiesWindow::Apply() {
   const std::string loss = host_.LayerFieldsLoss();
   if (!loss.empty() && !(confirm_ && confirm_(loss))) return false;
   const std::string error = host_.ApplyLayerProperties();
-  if (HostTabs() == tabs_) {
+  if (HostTabs() == host_tabs_) {
     ReloadSource();
     ReloadGeneral();
     for (LayerStylePanel* p : {symbology_, labels_})

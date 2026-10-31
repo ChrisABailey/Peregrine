@@ -77,6 +77,7 @@ const std::map<std::string, std::string>& IconNames() {
       {"leg_type", "object-flip-horizontal-symbolic"},
       {"follow_roads", "media-playlist-repeat-symbolic"},
       {"follow_roads_bicycle", "media-playlist-shuffle-symbolic"},
+      {"avoid_hills", "go-bottom-symbolic"},
       {"straight_legs", "go-next-symbolic"},
       {"labels", "insert-text-symbolic"},
       {"select", "edit-select-symbolic"},
@@ -94,6 +95,8 @@ const std::map<std::string, std::string>& IconNames() {
       {"layer_style", "applications-graphics-symbolic"},
       {"style_feature", "color-select-symbolic"},
       {"layer_fields", "view-list-bullet-symbolic"},
+      {"export_selection", "document-send-symbolic"},
+      {"layers", "sidebar-show-right-symbolic"},
   };
   return kIcons;
 }

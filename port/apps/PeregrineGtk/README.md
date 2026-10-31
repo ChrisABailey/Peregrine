@@ -11,8 +11,8 @@ The desktop map application on GTK4 (gtkmm-4), the Linux counterpart of
 lives in C++ under `port/`; this directory holds only the window, event
 translation, the frame blit, the menus and toolbar generated from
 DeskKit's model, and the windows that show DeskKit's dialog models: the
-questions the core asks, the options, Map Data Sources, the layers panel,
-the feature-layer dialogs and the route profile.
+questions the core asks, the options, Map Data Sources, Go To / Find, the
+layers panel, the feature-layer dialogs and the route profile.
 
 | This app | macOS app |
 |---|---|
@@ -24,7 +24,8 @@ the feature-layer dialogs and the route profile.
 | `data_sources_window.{h,cpp}` | `DataSourcesWindow.swift` |
 | `options_window.{h,cpp}` | `OptionsWindow.swift` |
 | `layers_window.{h,cpp}` | `LayersWindow.swift` |
-| `properties_window.{h,cpp}` | (none yet) |
+| `properties_window.{h,cpp}` | `PropertiesWindow.swift` |
+| `find_window.{h,cpp}` | `FindWindow.swift` |
 | `feature_form_window.{h,cpp}` | `FeatureFormWindow.swift` |
 | `attribute_table_window.{h,cpp}` | `AttributeTableWindow.swift` |
 | `layer_style_window.{h,cpp}` | `LayerStyleWindow.swift` |
@@ -45,7 +46,8 @@ xvfb-run -a build/port/apps/PeregrineGtk/peregrine-gtk --shot /tmp/shot.png
 ```
 
 The target is skipped, with a configure message, when gtkmm-4.0 is not
-installed.
+installed. Under a Wayland session GTK prefers the desktop to Xvfb, so a
+`--shot` run there needs `GDK_BACKEND=x11` (the tests set it).
 
 ### On the sample data
 
@@ -75,7 +77,7 @@ Layer Fields) and adds the Feature Layer menu.
 | Test | What it proves |
 |---|---|
 | `peregrine_gtk_test` (gtest) | every command in DeskKit's menu bar has one menu item and one action; shortcuts map to GTK accelerators, and a bare key (an arrow) is not one; actions follow the commands' enabled and checked state; the menus rebuild when a catalog with data opens; every icon the macOS toolbar draws has a symbolic icon; GDK keys map to the core's key codes; the frame placement is a transform every GSK renderer draws |
-| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; Style This Feature… takes the style tabs away and Layer Style… takes them back; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
+| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; Style This Feature… takes the style tabs away and Layer Style… takes them back; Go To / Find lists results under group headings, steps the selection over a heading and goes to a coordinate on Enter; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
 | `peregrine_gtk.shot_empty_catalog` | `--shot` writes a PNG and the status line reports the empty catalog |
 | `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, and the PNG holds the picture |
 
@@ -151,7 +153,7 @@ calls (`MapCanvas::SetHeld`) and keeps painting the last frame.
 Each window is shown when the host's tick asks for it (`options_requested`,
 `layers_requested`, `form_requested`, `table_requested`, `style_requested`,
 `fields_requested`, `new_layer_requested`, `profile_requested`,
-`properties_requested`), is created
+`properties_requested`, `find_requested`), is created
 the first time and reloaded after, and hides rather than closes. Closing one
 closes its model in the host (`CloseFeatureForm`, `CloseOptions`…), so the
 next request starts afresh; `features_changed` hides a dialog whose model the
@@ -175,7 +177,8 @@ a control re-reads the model after each edit.
   source has the read-only *Source* sheet alone (a heading per section,
   values selectable). A layer adds *General* (name, description, credits and
   the scale range it draws in, Current filling a scale from the map) and, for
-  a feature layer, *Symbology*, *Labels* and *Fields*. Layer Style… and
+  a feature layer, *Symbology*, *Labels* and *Fields*; a tab with no page
+  here yet (*Display*, *Selection*, *Definition Query*) is left out. Layer Style… and
   Layer Fields… open it at their tab (`SetPropertiesTabs`). One Apply writes
   every tab, asking first when a change of fields loses values.
 - **Attribute Table, Edit Feature** (`AttributeTableWindow`,
@@ -191,6 +194,12 @@ a control re-reads the model after each edit.
 - **Fields panel, New Feature Layer** (`LayerFieldsPanel`, `NewLayerWindow`):
   the field list and editor of the Fields tab; New Layer's template, geometry
   and file.
+- **Map ▸ Go To / Find…** (`FindWindow`): one field for a coordinate or a
+  name, results under a heading per group (Location, Overlays, Roads, Map)
+  with the distance DeskKit formats, and "Search the map in this view only"
+  (on by default, kept for the session). Typing searches after 200 ms; Enter
+  searches and goes to a single answer; Down moves into the list; activating
+  a row or Go To moves the map there.
 - **Route elevation profile** (`ProfileWindow`): the chart the host lays out,
   drawn with cairo, with a cursor readout and the summary line.
 

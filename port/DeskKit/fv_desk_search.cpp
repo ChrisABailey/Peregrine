@@ -87,6 +87,13 @@ std::string FormatSearchLocation(const GeoPoint& p) {
   return buf;
 }
 
+std::string FormatSearchDistance(double meters) {
+  char buf[32];
+  if (meters < 1000) std::snprintf(buf, sizeof buf, "%d m", static_cast<int>(std::lround(meters)));
+  else std::snprintf(buf, sizeof buf, "%.1f km", meters / 1000);
+  return buf;
+}
+
 double SearchFitScale(const GeoRect& b, double width_pt, double height_pt, double mm_per_point,
                       double min_denom) {
   if (!HasArea(b) || width_pt <= 0 || height_pt <= 0 || mm_per_point <= 0) return 0.0;

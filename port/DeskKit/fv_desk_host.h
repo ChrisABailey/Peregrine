@@ -320,6 +320,8 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string SearchRowSource(int row) const;
   /// Metres from the view centre at the time of the search.
   double SearchRowDistance(int row) const;
+  /// `SearchRowDistance` as the dialog shows it (`FormatSearchDistance`).
+  std::string SearchRowDistanceText(int row) const;
   double SearchRowLatitude(int row) const;
   double SearchRowLongitude(int row) const;
   /// One line for under the list: the count, and what could not be searched.
