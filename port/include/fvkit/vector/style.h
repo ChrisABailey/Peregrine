@@ -233,6 +233,11 @@ struct PathRun {
   // Perpendicular displacement in pixels, positive toward the symbol's +y
   // (left of the direction of travel). GeoSym's SAMI vertical displacement.
   double offset = 0.0;
+  /// Bend the symbol along the path rather than stamp it straight along the
+  /// tangent at its anchor, so a symbol longer than a segment follows the
+  /// turn instead of overhanging it. Needs a display list; a pixmap-only
+  /// symbol is stamped straight.
+  bool bend = false;
 };
 
 struct LinePatternStyle {

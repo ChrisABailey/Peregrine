@@ -74,6 +74,12 @@ add_library(fv_fvkit STATIC
   nav/sun.cpp
   nav/wind.cpp
   nav/beach.cpp
+  ais/decoder.cpp
+  ais/vessel_table.cpp
+  ais/presentation.cpp
+  ais/openwaters.cpp
+  ais/receiver.cpp
+  overlay/ais_overlay.cpp
   overlay/manager.cpp
   draw_interrupt.cpp
   formats/scan_interrupt.cpp
@@ -222,6 +228,11 @@ if(FVW_BUILD_TESTS)
     nav/test/nav_sun_test.cpp
     nav/test/nav_wind_test.cpp
     nav/test/nav_beach_test.cpp
+    ais/test/ais_decoder_test.cpp
+    ais/test/ais_vessel_table_test.cpp
+    ais/test/ais_overlay_test.cpp
+    ais/test/ais_openwaters_test.cpp
+    ais/test/ais_receiver_test.cpp
     app/test/app_type_registry_test.cpp
     app/test/app_stack_test.cpp
     app/test/app_session_test.cpp
@@ -255,7 +266,8 @@ if(FVW_BUILD_TESTS)
     FV_FAMILIES_ENC="${CMAKE_SOURCE_DIR}/port/families/enc-families.json"
     FV_FAMILIES_OSM="${CMAKE_SOURCE_DIR}/port/families/osm-families.json"
     FV_TIDE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/charleston-2026-03.json"
-    FV_WIND_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/nws-chs-82-68-2026-09-26.json")
+    FV_WIND_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/nav/test/data/nws-chs-82-68-2026-09-26.json"
+    FV_AIS_SAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/ais/test/data/charleston-synthetic.nmea")
   # MSPCCS_DATA: GEOTRANS data for the GeoTIFF datum shift. Each variable is
   # its own single-valued property: CMake 3.28-3.30 split an escaped '\;'
   # list into separate arguments, which dropped every entry after the first.

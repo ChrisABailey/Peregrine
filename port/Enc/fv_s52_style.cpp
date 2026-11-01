@@ -11,6 +11,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -86,6 +89,108 @@ bool AttrIn(const VectorFeature& f, const char* acronym,
   return false;
 }
 
+// MARK: Light sectors
+
+/// Prefix of the generated light-sector symbol ids. The id carries the whole
+/// geometry, `LTSECT_<sectr1>_<sectr2>_<radius mm>_<colour token>`, so it
+/// passes through SY() and Symbol() with no per-feature state.
+constexpr char kLightSectorPrefix[] = "LTSECT_";
+
+// LIGHTS05's screen distances, in mm.
+constexpr double kSectorArcRadiusMm = 20.0;
+constexpr double kAllRoundArcRadiusMm = 25.0;
+constexpr double kSectorLegLengthMm = 25.0;
+constexpr double kSectorLegDashMm = 3.6;  // LS(DASH): 3.6 mm on, 1.8 mm off
+constexpr double kSectorLegGapMm = 1.8;
+constexpr double kHimetricPerMm = 100.0;
+constexpr double kPenHimetric = kS52PenMm * kHimetricPerMm;
+
+bool IsLightSectorId(const std::string& id) {
+  return id.compare(0, sizeof(kLightSectorPrefix) - 1, kLightSectorPrefix) == 0;
+}
+
+std::string LightSectorId(double sectr1, double sectr2, double radius_mm,
+                          const char* colour) {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "%s%g_%g_%g_%s", kLightSectorPrefix, sectr1,
+                sectr2, radius_mm, colour);
+  return buf;
+}
+
+/// Point at `mm` along compass bearing `deg`, in HIMETRIC with y up.
+SymbolPoint AlongBearing(double deg, double mm) {
+  const double r = deg * 3.14159265358979323846 / 180.0;
+  return SymbolPoint{std::sin(r) * mm * kHimetricPerMm,
+                     std::cos(r) * mm * kHimetricPerMm};
+}
+
+SymbolPrimitive Stroke(std::vector<SymbolPoint> pts, FvColor color,
+                       double width) {
+  SymbolPrimitive p;
+  p.type = SymbolPrimitiveType::kPolyline;
+  p.points = std::move(pts);
+  p.has_stroke = true;
+  p.stroke_color = color;
+  p.stroke_width = width;
+  return p;
+}
+
+/// Builds the display list a light-sector id names: dashed black legs along
+/// both sector limits and an arc between them, the light colour over a wider
+/// OUTLW pen. Sector limits are bearings from seaward, so the drawing lies on
+/// the reciprocals. A 360-degree span is a full circle without legs. Colours
+/// come from `color` (the active scheme). False when the id is malformed.
+bool BuildLightSector(const std::string& id,
+                      const std::function<FvColor(const std::string&)>& color,
+                      VectorSymbol* out) {
+  if (!IsLightSectorId(id)) return false;
+  std::vector<std::string> fields;
+  size_t pos = sizeof(kLightSectorPrefix) - 1;
+  while (true) {
+    const size_t sep = id.find('_', pos);
+    fields.push_back(id.substr(pos, sep == std::string::npos ? sep : sep - pos));
+    if (sep == std::string::npos) break;
+    pos = sep + 1;
+  }
+  if (fields.size() != 4) return false;
+  const double s1 = ToDouble(fields[0], NAN);
+  const double s2 = ToDouble(fields[1], NAN);
+  const double radius = ToDouble(fields[2], NAN);
+  if (!std::isfinite(s1) || !std::isfinite(s2) || !(radius > 0.0)) return false;
+
+  double span = std::fmod(s2 - s1 + 720.0, 360.0);
+  const bool all_round = span < 1e-6 || std::fabs(s2 - s1) >= 360.0;
+  if (all_round) span = 360.0;
+  const double start = s1 + 180.0;
+
+  out->primitives.clear();
+  if (!all_round) {
+    const FvColor black = color("CHBLK");
+    for (double leg : {start, s2 + 180.0}) {
+      for (double d = 0.0; d < kSectorLegLengthMm;
+           d += kSectorLegDashMm + kSectorLegGapMm) {
+        const double e = (std::min)(d + kSectorLegDashMm, kSectorLegLengthMm);
+        out->primitives.push_back(Stroke(
+            {AlongBearing(leg, d), AlongBearing(leg, e)}, black, kPenHimetric));
+      }
+    }
+  }
+  std::vector<SymbolPoint> arc;
+  const int steps = (std::max)(2, static_cast<int>(std::ceil(span / 2.0)));
+  for (int i = 0; i <= steps; ++i)
+    arc.push_back(AlongBearing(start + span * i / steps, radius));
+  out->primitives.push_back(Stroke(arc, color("OUTLW"), 4 * kPenHimetric));
+  out->primitives.push_back(
+      Stroke(std::move(arc), color(fields[3]), 2 * kPenHimetric));
+
+  const double reach =
+      ((std::max)(radius, all_round ? 0.0 : kSectorLegLengthMm) +
+       kS52PenMm * 2) * kHimetricPerMm;
+  out->min_x = out->min_y = -reach;
+  out->max_x = out->max_y = reach;
+  return true;
+}
+
 int PriorityOf(const S52Lookup& l) { return l.display_priority; }
 
 // S-52's display category onto the cross-product axis in fvkit/vector/rules.h.
@@ -114,12 +219,32 @@ struct S52StyleEngine::Impl {
   // nothing this engine draws moved with them.
   bool show_meta = false;
   bool show_buoy_names = true;
+  bool show_beacon_names = true;
 
   std::map<std::string, size_t> unhandled_cs;
   size_t placeholders = 0;
   size_t sector_lights_simplified = 0;
 
+  // Generated light-sector symbols, keyed by colour scheme and id. Entries
+  // are never erased, so handed-out pointers stay valid for the engine's life.
+  std::mutex light_mu;
+  std::map<std::string, std::unique_ptr<VectorSymbol>> light_symbols;
+
   // --- helpers ------------------------------------------------------------
+
+  /// The display list for a light-sector id in the active colour scheme, or
+  /// nullptr when the id is malformed.
+  const VectorSymbol* LightSector(const std::string& id) {
+    const std::string key = std::to_string(static_cast<int>(scheme)) + id;
+    std::lock_guard<std::mutex> lock(light_mu);
+    auto it = light_symbols.find(key);
+    if (it != light_symbols.end()) return it->second.get();
+    auto sym = std::make_unique<VectorSymbol>();
+    if (!BuildLightSector(
+            id, [this](const std::string& t) { return Color(t); }, sym.get()))
+      sym.reset();
+    return (light_symbols[key] = std::move(sym)).get();
+  }
 
   FvColor Color(const std::string& token) const {
     FvColor c;
@@ -477,38 +602,64 @@ std::string Wrecks02(const VectorFeature& f, const S52MarinerSettings& m) {
 // So the two forms of one symbol agree once the display list is turned 135.
 constexpr int kFlareBearingDeg = 135;
 
-// LIGHTS05 — lights (100 features here). The flare colour comes straight from
-// COLOUR through the library's own symbol descriptions (LIGHTS11 red, 12
-// green, 13 white/yellow, 14 magenta, LITDEF11 the default).
-//
-// TWO DOCUMENTED REDUCTIONS, both counted rather than hidden:
-//  * A SECTOR light (SECTR1/SECTR2) is drawn as a plain flare. The published
-//    procedure draws the sector's two legs and the arc between them at the
-//    light's nominal range, which is GEOMETRY the style engine cannot express
-//    — an instruction string names symbols, not arcs. Emitting it needs either
-//    a geometry-producing style op or a light-specific overlay; the count is
-//    in sector_lights_simplified().
-//  * The light DESCRIPTION string ("Fl(2)R.10s12M") is not composed. That is
-//    a text formatter over six attributes, and labels are a separate axis.
-//
-// The flare is drawn at kFlareBearingDeg, which is the whole difference
-// between a chart and a buoy with a bulb growing out of its head.
+/// Flare symbol for a light's COLOUR: the first match in LIGHTS05's order of
+/// precedence (red, green, then the white family), LITDEF11 otherwise.
+const char* LightFlare(const VectorFeature& f) {
+  // S-57 COLOUR: 1 white, 3 red, 4 green, 6 yellow, 9 amber, 11 orange,
+  // 12 magenta.
+  if (AttrIn(f, "COLOUR", {3})) return "LIGHTS11";
+  if (AttrIn(f, "COLOUR", {4})) return "LIGHTS12";
+  if (AttrIn(f, "COLOUR", {1, 6, 9, 11})) return "LIGHTS13";
+  if (AttrIn(f, "COLOUR", {12})) return "LIGHTS14";
+  return "LITDEF11";
+}
+
+/// Arc colour token for a light, with the same precedence as LightFlare.
+const char* LightArcColour(const VectorFeature& f) {
+  if (AttrIn(f, "COLOUR", {3})) return "LITRD";
+  if (AttrIn(f, "COLOUR", {4})) return "LITGN";
+  if (AttrIn(f, "COLOUR", {1, 6, 9, 11})) return "LITYW";
+  return "CHMGD";
+}
+
+/// Reads SECTR1/SECTR2. False when either is missing or the pair spans the
+/// full circle, which S-52 treats as an all-round light.
+bool LightSectors(const VectorFeature& f, double* s1, double* s2) {
+  *s1 = AttrNumber(f, "SECTR1", NAN);
+  *s2 = AttrNumber(f, "SECTR2", NAN);
+  if (!std::isfinite(*s1) || !std::isfinite(*s2)) return false;
+  const double span = std::fmod(*s2 - *s1 + 720.0, 360.0);
+  return span > 1e-6 && std::fabs(*s2 - *s1) < 360.0;
+}
+
+// A light with a nominal range (VALNMR) of at least this many nautical miles
+// is a major light; all-round, it is ringed in its colour.
+constexpr double kMajorLightRangeNm = 10.0;
+
+/// LIGHTS05 — lights. A sector light draws its legs and arc instead of a
+/// flare; an all-round light draws a flare at kFlareBearingDeg, and a major
+/// one also a full circle. Not implemented: the light description text
+/// ("Fl(2)R.10s12M"), the 25 mm arc for overlapping sectors at one position,
+/// full-range legs, and directional (ORIENT) lights.
 std::string Lights05(const VectorFeature& f, const S52MarinerSettings&) {
   // CATLIT 8 = flood light, 11 = strip light: both have their own symbol and
   // neither takes a flare.
   if (AttrIn(f, "CATLIT", {8})) return "SY(LIGHTS82)";
   if (AttrIn(f, "CATLIT", {11})) return "SY(LIGHTS81)";
 
-  // S-57 COLOUR: 1 white, 3 red, 4 green, 6 yellow, 9 amber, 11 orange,
-  // 12 magenta. A light with several colours takes the first that matches, in
-  // the spec's own order of precedence (red, green, then the white family).
-  const char* sym = "LITDEF11";
-  if (AttrIn(f, "COLOUR", {3})) sym = "LIGHTS11";
-  else if (AttrIn(f, "COLOUR", {4})) sym = "LIGHTS12";
-  else if (AttrIn(f, "COLOUR", {1, 6, 9, 11})) sym = "LIGHTS13";
-  else if (AttrIn(f, "COLOUR", {12})) sym = "LIGHTS14";
-  return std::string("SY(") + sym + "," + std::to_string(kFlareBearingDeg) +
-         ")";
+  double s1 = 0.0, s2 = 0.0;
+  if (LightSectors(f, &s1, &s2)) {
+    return "SY(" +
+           LightSectorId(s1, s2, kSectorArcRadiusMm, LightArcColour(f)) + ")";
+  }
+  std::string out = std::string("SY(") + LightFlare(f) + "," +
+                    std::to_string(kFlareBearingDeg) + ")";
+  if (AttrNumber(f, "VALNMR", 0.0) >= kMajorLightRangeNm) {
+    out += ";SY(" +
+           LightSectorId(0.0, 360.0, kAllRoundArcRadiusMm, LightArcColour(f)) +
+           ")";
+  }
+  return out;
 }
 
 // TOPMAR01 — a topmark on a buoy or beacon. TOPSHP names the shape; the
@@ -625,12 +776,12 @@ const std::unordered_map<std::string, CsProc>& CsRegistry() {
   return *kRegistry;
 }
 
-// True when this feature is a sector light the procedure simplified — the
-// caller counts these so the deviation is measured, not remembered.
+/// True for a light with only one of SECTR1/SECTR2, which LIGHTS05 cannot
+/// draw as a sector and falls back to a flare for.
 bool IsSimplifiedSectorLight(const VectorFeature& f) {
   const std::string* a = f.Attribute("SECTR1");
   const std::string* b = f.Attribute("SECTR2");
-  return (a != nullptr && !a->empty()) || (b != nullptr && !b->empty());
+  return (a != nullptr && !a->empty()) != (b != nullptr && !b->empty());
 }
 
 }  // namespace
@@ -680,6 +831,13 @@ void S52StyleEngine::SetShowBuoyNames(bool on) {
 }
 bool S52StyleEngine::show_buoy_names() const { return impl_->show_buoy_names; }
 
+void S52StyleEngine::SetShowBeaconNames(bool on) {
+  if (impl_->show_beacon_names == on) return;
+  impl_->show_beacon_names = on;
+  BumpStyleEpoch();
+}
+bool S52StyleEngine::show_beacon_names() const { return impl_->show_beacon_names; }
+
 void S52StyleEngine::SetPointStyle(S52PointStyle s) {
   impl_->point_style = s;
   BumpStyleEpoch();
@@ -722,11 +880,13 @@ void S52StyleEngine::ResetDiagnostics() {
 
 const VectorSymbol* S52StyleEngine::Symbol(const std::string& symbol_id) {
   if (symbol_id.empty()) return nullptr;
+  if (IsLightSectorId(symbol_id)) return impl_->LightSector(symbol_id);
+  if (symbol_id.compare(0, 3, "LC:") == 0) return impl_->lib.LineStyle(symbol_id.substr(3));
+  if (symbol_id.compare(0, 3, "AP:") == 0) return impl_->lib.Pattern(symbol_id.substr(3));
   const VectorSymbol* s = impl_->lib.Symbol(symbol_id);
   if (s != nullptr) return s;
-  // Line-styles and patterns share the symbol namespace on the way out: a
-  // caller holding an id from LC()/AP() must be able to fetch its display
-  // list without knowing which table it came from.
+  // An untagged name still finds a line-style or pattern, for callers that
+  // fetch one by its library name.
   s = impl_->lib.LineStyle(symbol_id);
   if (s != nullptr) return s;
   return impl_->lib.Pattern(symbol_id);
@@ -734,6 +894,10 @@ const VectorSymbol* S52StyleEngine::Symbol(const std::string& symbol_id) {
 
 const SymbolPixmap* S52StyleEngine::Pixmap(const std::string& symbol_id) {
   if (symbol_id.empty()) return nullptr;
+  // Line-styles and patterns are vector only; a point symbol's tile under the
+  // same name is a different drawing.
+  if (symbol_id.compare(0, 3, "LC:") == 0 || symbol_id.compare(0, 3, "AP:") == 0)
+    return nullptr;
   return impl_->lib.SymbolBitmap(symbol_id);
 }
 
@@ -791,6 +955,10 @@ bool IsMetaAcronym(const std::string& acronym) {
 /// BOYSPP).
 bool IsBuoyAcronym(const std::string& acronym) {
   return acronym.size() == 6 && acronym.compare(0, 3, "BOY") == 0;
+}
+
+bool IsBeaconAcronym(const std::string& acronym) {
+  return acronym.size() == 6 && acronym.compare(0, 3, "BCN") == 0;
 }
 
 // The first ink colour a display list puts down, for the fallbacks.
@@ -966,8 +1134,9 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       if (!(period > 0.0)) period = 100.0;  // a degenerate definition
       PathRun run;
       run.type = PathRunType::kSymbol;
-      run.symbol_id = name;
+      run.symbol_id = S52LineStyleId(name);
       run.length = period * PxPerHimetric(ctx);
+      run.bend = true;
       if (!(run.length > 0.5)) {
         // Below half a pixel per cycle the placer would stamp thousands of
         // overlapping copies for no visible gain; fall back to a plain pen in
@@ -1020,7 +1189,7 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       const double scale = PxPerHimetric(ctx);
       AreaPatternStyle& ap = builder.AreaPattern();
       ap.valid = true;
-      ap.symbol_id = name;
+      ap.symbol_id = S52PatternId(name);
       // Never below 2 px: a sub-pixel pitch is millions of stamps for a solid
       // block of ink, and the placer's own budget would truncate it anyway.
       ap.spacing_x = (std::max)(2.0, sx * scale);
@@ -1031,7 +1200,9 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
 
     if (ins.op == "SY" && !ins.params.empty()) {
       const std::string name = Clean(ins.params[0]);
-      const VectorSymbol* sym = impl_->lib.Symbol(name);
+      const VectorSymbol* sym = IsLightSectorId(name)
+                                    ? impl_->LightSector(name)
+                                    : impl_->lib.Symbol(name);
       PointSymbolStyle& s = builder.Symbol();
       s.valid = true;
       // The renderer already folds StyleContext::symbol_scale into its pixel
@@ -1081,6 +1252,7 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
 
     if ((ins.op == "TX" || ins.op == "TE") && draw_labels) {
       if (!impl_->show_buoy_names && IsBuoyAcronym(f.style_key)) continue;
+      if (!impl_->show_beacon_names && IsBeaconAcronym(f.style_key)) continue;
       const bool is_te = ins.op == "TE";
       const size_t attr_index = is_te ? 1 : 0;
       if (ins.params.size() <= attr_index) continue;

@@ -14,8 +14,9 @@
 import Foundation
 
 /// What the ride was doing over an interval. Nil (no log) when neither.
+/// `browsing` is neither, logged only under `-PPEnergyLog YES`.
 enum EnergyMode: String {
-    case following, recording, both
+    case following, recording, both, browsing
 
     init?(following: Bool, recording: Bool) {
         switch (following, recording) {

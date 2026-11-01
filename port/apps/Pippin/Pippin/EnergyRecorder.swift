@@ -22,6 +22,9 @@ import UIKit
 final class EnergyRecorder {
     /// Seconds between rows.
     static let interval: TimeInterval = 60
+    /// `-PPEnergyLog YES`: also log while neither following nor recording,
+    /// as `browsing`, so an idle chart can be measured.
+    static let logsBrowsing = UserDefaults.standard.bool(forKey: "PPEnergyLog")
 
     private let counters: () -> EnergyCounters
     private var meter = EnergyMeter()
@@ -39,6 +42,7 @@ final class EnergyRecorder {
     /// recording changes.
     func update(following: Bool, recording: Bool) {
         let next = EnergyMode(following: following, recording: recording)
+            ?? (Self.logsBrowsing ? .browsing : nil)
         guard next != mode else { return }
         if let current = mode {
             appendRow(mode: current)

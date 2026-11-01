@@ -137,6 +137,33 @@ TEST(GpxWriteTest, TrackPointsSurviveAWriteAndARead) {
   }
 }
 
+// A route's point names are what a chartplotter lists the route by.
+TEST(GpxWriteTest, RoutePointNamesSurviveAWriteAndARead) {
+  GpxDocument original;
+  GpxTrack route;
+  route.name = "Harbor run";
+  GpxTrackSegment segment;
+  segment.points.push_back(MakeFix(32.75, -79.90, 0.0));
+  segment.points.push_back(MakeFix(32.76, -79.88, 0.0));
+  segment.points.push_back(MakeFix(32.78, -79.87, 0.0));
+  segment.points[0].has_time = segment.points[1].has_time = segment.points[2].has_time = false;
+  route.segments.push_back(segment);
+  route.point_names = {"Fort Sumter", "R \"4\"", ""};
+  original.routes.push_back(route);
+
+  const std::string xml = WriteGpx(original);
+  EXPECT_NE(xml.find("<name>Fort Sumter</name>"), std::string::npos);
+
+  GpxDocument reread;
+  ASSERT_TRUE(ParseGpx(xml, &reread).ok());
+  ASSERT_EQ(reread.routes.size(), 1u);
+  EXPECT_EQ(reread.routes[0].name, "Harbor run");
+  ASSERT_EQ(reread.routes[0].point_count(), 3u);
+  EXPECT_EQ(reread.routes[0].point_names,
+            (std::vector<std::string>{"Fort Sumter", "R \"4\"", ""}));
+  EXPECT_TRUE(reread.tracks.empty());
+}
+
 // Writer rule 1, and it is the rule a round-trip test alone would not catch:
 // a zero written for an absent field reads back as a VALID zero.
 TEST(GpxWriteTest, AnAbsentFieldIsAbsentAndNotAZero) {

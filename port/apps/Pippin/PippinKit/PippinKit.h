@@ -14,6 +14,7 @@
 
 #import <Foundation/Foundation.h>
 
+#import <PippinKit/PPAis.h>
 #import <PippinKit/PPFix.h>
 #import <PippinKit/PPGeometry.h>
 #import <PippinKit/PPLocationSource.h>

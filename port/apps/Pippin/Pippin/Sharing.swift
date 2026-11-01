@@ -262,15 +262,27 @@ enum RouteShare {
     /// for the share sheet. Nil when there is nothing saved to send.
     static func payload(document: URL, destination: String?) -> SharePayload? {
         guard FileManager.default.fileExists(atPath: document.path) else { return nil }
-        let title = destination.map { "Route to \($0)" } ?? "Route"
-        let safe = title.map { $0.isLetter || $0.isNumber || $0 == " " || $0 == "-" ? $0 : "-" }
-        let copy = FileManager.default.temporaryDirectory
-            .appendingPathComponent(String(safe) + "." + fileExtension)
+        let title = title(destination: destination)
+        let copy = temporaryURL(title: title, ext: fileExtension)
         try? FileManager.default.removeItem(at: copy)
         guard (try? FileManager.default.copyItem(at: document, to: copy)) != nil else {
             return nil
         }
         return SharePayload(items: [copy], subject: title)
+    }
+
+    /// "Route to Beach Club", or "Route" with no destination named.
+    static func title(destination: String?) -> String {
+        guard let destination, !destination.isEmpty else { return "Route" }
+        return "Route to \(destination)"
+    }
+
+    /// `title.ext` in the temporary directory, with characters a file name or
+    /// a receiving device might choke on replaced.
+    static func temporaryURL(title: String, ext: String) -> URL {
+        let safe = title.map { $0.isLetter || $0.isNumber || $0 == " " || $0 == "-" ? $0 : "-" }
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent(String(safe) + "." + ext)
     }
 
     static func isRouteFile(_ url: URL) -> Bool {
@@ -298,10 +310,22 @@ enum RouteShare {
 
 // MARK: - Rides sheet
 
-/// The list of recorded rides: start, stop, share, delete. Recording is
-/// normally started from the map button in one tap; the stop control is here
-/// too so a rider who opened the sheet mid-ride need not close it to finish.
+/// The planned route's row in the export sheet.
+struct RouteExport {
+    let title: String
+    /// NO while there is no line to follow: one stop, or nothing planned.
+    let isReady: Bool
+    /// Writes the GPX and hands back what to share; nil when the write failed.
+    let write: (@escaping @MainActor (SharePayload?) -> Void) -> Void
+}
+
+/// The export sheet: the planned route as GPX, then the recorded rides with
+/// start, stop, share and delete. Recording is normally started from the map
+/// button in one tap; the stop control is here too so a rider who opened the
+/// sheet mid-ride need not close it to finish.
 struct RideSheet: View {
+    /// Nil when the sheet opens as the saved-rides list rather than Export.
+    let route: RouteExport?
     let rides: [RecordedRide]
     let isRecording: Bool
     let recordingPointCount: Int
@@ -313,10 +337,14 @@ struct RideSheet: View {
     let onClose: () -> Void
 
     @State private var sharing: SharePayload?
+    @State private var writingRoute = false
 
     var body: some View {
         NavigationStack {
             List {
+                if let route {
+                    routeSection(route)
+                }
                 Section {
                     Button(action: onToggleRecording) {
                         Label {
@@ -346,7 +374,7 @@ struct RideSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Section("Saved \(AppFlavor.current.trackTitle)s") {
+                    Section {
                         ForEach(rides) { ride in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -371,10 +399,14 @@ struct RideSheet: View {
                         .onDelete { offsets in
                             offsets.map { rides[$0] }.forEach(onDelete)
                         }
+                    } header: {
+                        Text("Saved \(AppFlavor.current.trackTitle)s")
+                    } footer: {
+                        Text("Swipe left to delete.")
                     }
                 }
             }
-            .navigationTitle("\(AppFlavor.current.trackTitle)s")
+            .navigationTitle(route != nil ? "Export" : "\(AppFlavor.current.trackTitle)s")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -392,6 +424,43 @@ struct RideSheet: View {
                     try? await Task.sleep(for: .seconds(1))
                 }
             }
+        }
+    }
+
+    /// The route row, and the note on which devices read a GPX.
+    private func routeSection(_ route: RouteExport) -> some View {
+        Section {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(route.isReady ? route.title : "No planned route")
+                    Text(route.isReady
+                         ? AppFlavor.current.routeGpxSubtitle
+                         : "Plan one with the route tool, then export it here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if writingRoute {
+                    ProgressView()
+                } else {
+                    Button {
+                        writingRoute = true
+                        route.write { payload in
+                            writingRoute = false
+                            sharing = payload
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!route.isReady)
+                    .accessibilityLabel("Export \(route.title) as GPX")
+                }
+            }
+        } header: {
+            Text("Planned Route")
+        } footer: {
+            Label(AppFlavor.current.gpxDevicesNote(appName: AppName.display), systemImage: AppFlavor.current.gpxDevicesSymbol)
         }
     }
 }

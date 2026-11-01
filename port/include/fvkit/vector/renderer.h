@@ -228,6 +228,11 @@ struct PlacedSymbol {
   double x = 0.0, y = 0.0;    // pixels, the symbol's own (0,0) anchor
   double rotation_deg = 0.0;  // the angle DrawSymbolAt applies (see below)
   double scale = 1.0;
+  /// Arc length of the anchor along the path, in pixels.
+  double along = 0.0;
+  /// PathRun::offset and PathRun::bend, for a stamp drawn bent along the path.
+  double offset = 0.0;
+  bool bend = false;
 };
 
 struct PathPlacement {

@@ -207,12 +207,10 @@ CHARLESTON_ENC_INI = {
     "pippin.home_bounds": '"%s"' % CHARLESTON_BOUNDS,
     "points.seed": '"charleston.fvpoints"',
     "search.initial_text": '""',
-    "tides.station": '"8665530"',
-    "wind.lat": "32.7808",
-    "wind.lon": "-79.9236",
 }
+# No tide card or wind: operators carry their own tide and weather sources.
 CHARLESTON_ENC_DROP = ["pippin.mbtiles", "routing.graph", "beach",
-                       "osm.style_dark"]
+                       "osm.style_dark", "tides", "wind"]
 CHARLESTON_ENC_APPEND = """
 [enc]
 # The base map is these S-57 cells (any directory with *.000 below it) instead
@@ -237,9 +235,6 @@ TAMPA_ENC_INI = {
     "pippin.home_bounds": '"%s"' % TAMPA_BOUNDS,
     "points.seed": '"tampa.fvpoints"',
     "search.initial_text": '""',
-    "tides.station": '"8726520"',
-    "wind.lat": "27.6667",
-    "wind.lon": "-82.6667",
 }
 
 
@@ -343,9 +338,7 @@ REGIONS = {
         + enc_cell_rows(ENC_FIXTURE)
         + [Item("testdata/kiawah_cycle.gpx", "kiawah_cycle.gpx",
                 "the demo feed, inside the coastal cell's coverage",
-                debug_only=True),
-           Item("testdata/tides/8665530.json", "tides.json",
-                "NOAA tide predictions, Charleston Harbor (Customs House)")]
+                debug_only=True)]
         + [Item("port/apps/Pippin/pippin.ini", "pippin.ini",
                 "the settings file, rewritten for Charleston ENC",
                 transform=region_ini(CHARLESTON_ENC_INI, CHARLESTON_ENC_DROP,
@@ -356,8 +349,6 @@ REGIONS = {
               "S-52 presentation library / S-57 catalogue")
          for f in ENC_S52_FILES]
         + enc_cell_rows(ENC_FLORIDA, TAMPA_CELL_BOUNDS, min_band=2)
-        + [Item("testdata/tides/8726520.json", "tides.json",
-                "NOAA tide predictions, St. Petersburg")]
         + [Item("port/apps/Pippin/pippin.ini", "pippin.ini",
                 "the settings file, rewritten for Tampa Bay ENC",
                 transform=region_ini(TAMPA_ENC_INI,

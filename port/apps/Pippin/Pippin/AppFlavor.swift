@@ -31,7 +31,7 @@ enum AppFlavor: String {
     var offeredUnits: [DistanceUnits] {
         switch self {
         case .pippin: return [.kilometres, .miles]
-        case .osprey: return [.nauticalMiles, .kilometres, .miles]
+        case .osprey: return [.nauticalMiles, .miles, .kilometres]
         }
     }
 
@@ -59,6 +59,24 @@ enum AppFlavor: String {
 
     /// A course-over-ground vector ahead of the ship and COG in the trip bar.
     var showsCourseOverGround: Bool { self == .osprey }
+
+    /// The trip readout as one card of labelled cells, styled like the course
+    /// deviation card and stacked above it, instead of two large clusters.
+    var compactTripCard: Bool { self == .osprey }
+
+    /// The compass button drawn as a compass rose rather than a north arrow.
+    var drawsCompassRose: Bool { self == .osprey }
+
+    /// Live AIS traffic from Open Waters, offered in the map menu.
+    var offersAisTraffic: Bool { self == .osprey }
+
+    /// Route markers and AIS targets grow with the Symbol Size setting.
+    var overlaysFollowSymbolSize: Bool { self == .osprey }
+
+    /// Course-up following tilts the chart (`[display] follow_pitch_deg`).
+    /// Osprey stays flat: at chart scales a tilted band covers hundreds of
+    /// kilometres ahead and costs a full ENC draw for little to read.
+    var tiltsWhileFollowing: Bool { self == .pippin }
 
     /// Osprey shows a "not for navigation" notice until it is acknowledged.
     var needsNavigationNotice: Bool { self == .osprey }
@@ -93,11 +111,42 @@ enum AppFlavor: String {
         }
     }
 
-    /// The menu item that opens the saved-track sheet.
-    var exportTracksTitle: String {
+    /// The placeholder in the problem report's description field.
+    var reportPrompt: String {
         switch self {
-        case .pippin: return "Export Ride Tracks"
-        case .osprey: return "Export Tracks"
+        case .pippin: return "A path that is not there, a gate that is, a name that is wrong\u{2026}"
+        case .osprey: return "Data displayed wrong, App crash, or Suggested Addition"
+        }
+    }
+
+    /// What the planned route becomes in a GPX, in the export row.
+    var routeGpxSubtitle: String {
+        switch self {
+        case .pippin: return "The planned line, along the roads"
+        case .osprey: return "The waypoints, as a route"
+        }
+    }
+
+    /// The export sheet's note on where a GPX can go. `appName` is the
+    /// display name, passed in so this file stays free of the bundle.
+    func gpxDevicesNote(appName: String) -> String {
+        switch self {
+        case .pippin:
+            return "Exports the route as a GPX for use on many GPS watches and bike "
+                + "computers. To send this route to another \(appName) user, use "
+                + "Share Route in the route tool."
+        case .osprey:
+            return "Exports the route as a GPX for use on most chartplotters and marine "
+                + "navigation apps. To send this route to another \(appName) user, use "
+                + "Share Route in the route tool."
+        }
+    }
+
+    /// The SF Symbol beside the export sheet's GPX note.
+    var gpxDevicesSymbol: String {
+        switch self {
+        case .pippin: return "applewatch"
+        case .osprey: return "ferry"
         }
     }
 }

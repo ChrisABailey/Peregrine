@@ -85,6 +85,8 @@ struct ChartSettings: Equatable {
     var category: ChartCategory = .all
     var palette: ChartPalette = .automatic
     var depthUnit: DepthUnit = .feet
+    /// Hides the names of buoys and beacons, which crowd a busy harbour.
+    var hideNavaidNames = true
 
     /// A 15 ft safety contour and safety depth, for small craft.
     init() {
@@ -107,6 +109,7 @@ struct ChartSettings: Equatable {
         static let category = "PPChartCategory"
         static let palette = "PPChartPalette"
         static let depthUnit = "PPChartDepthUnit"
+        static let hideNavaidNames = "PPChartHideNavaidNames"
     }
 
     /// The stored settings, with defaults for anything absent or unreadable.
@@ -123,6 +126,9 @@ struct ChartSettings: Equatable {
            let c = ChartCategory(rawValue: raw) { s.category = c }
         if let raw = defaults.object(forKey: Key.palette) as? Int,
            let p = ChartPalette(rawValue: raw) { s.palette = p }
+        if let hide = defaults.object(forKey: Key.hideNavaidNames) as? Bool {
+            s.hideNavaidNames = hide
+        }
         return s.converted(to: s.depthUnit)
     }
 
@@ -132,5 +138,6 @@ struct ChartSettings: Equatable {
         defaults.set(category.rawValue, forKey: Key.category)
         defaults.set(palette.rawValue, forKey: Key.palette)
         defaults.set(depthUnit.rawValue, forKey: Key.depthUnit)
+        defaults.set(hideNavaidNames, forKey: Key.hideNavaidNames)
     }
 }

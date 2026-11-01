@@ -24,6 +24,7 @@ expect(DepthUnit.feet.nearestChoice(to: d.safetyContour), d.safetyContour, "defa
 expect(d.safetyDepth, d.safetyContour, "default safety depth equals the contour")
 expect(d.category, .all, "default category draws the chart as before")
 expect(d.palette, .automatic, "default palette follows dark mode")
+expect(d.hideNavaidNames, true, "buoy and beacon names hidden by default")
 
 // Labels and choices.
 expect(DepthUnit.metres.label(metres: 4.6), "5 m", "metres round")
@@ -55,6 +56,7 @@ saved.safetyContour = 10
 saved.safetyDepth = 3
 saved.category = .base
 saved.palette = .dusk
+saved.hideNavaidNames = false
 saved.save(to: defaults)
 expect(ChartSettings.load(from: defaults), saved, "round trip")
 defaults.set(99, forKey: "PPChartCategory")

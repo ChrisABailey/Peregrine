@@ -190,17 +190,15 @@ inline bool BaseCovers(const fv::MapProjection& base,
 }
 
 // True when the base's pixels land exactly on the live screen's: the same
-// scale, pitch and rotation, the screen's pixel centres on whole base pixels,
-// and the screen inside the base. Such a base is shown unfiltered and needs no
-// settle frame, whatever its size and wherever the screen sits in it.
+// scale and pitch, a turn under a tenth of a pixel at the corners, the
+// screen's pixel centres on whole base pixels, and the screen inside the base.
+// Such a base is shown unfiltered and needs no settle frame, whatever its size
+// and wherever the screen sits in it.
 inline bool PixelAligned(const fv::MapProjection& base,
                          const fv::MapProjection& live) {
   if (!base.Ready() || !live.Ready()) return false;
   if (!(base.Scale() == live.Scale())) return false;
   if (!(base.MmPerPixel() == live.MmPerPixel())) return false;
-  if (!(std::fabs(fv::ShortestRotationDelta(base.Rotation(), live.Rotation())) <
-        1e-9))
-    return false;
   const fv::PixelSize lsz = live.SurfaceSize();
   const fv::PixelSize bsz = base.SurfaceSize();
   if (lsz.width <= 0 || lsz.height <= 0 || bsz.width < lsz.width ||
@@ -212,6 +210,15 @@ inline bool PixelAligned(const fv::MapProjection& base,
   // thousandths of a pixel across the screen; unfiltered sampling still picks
   // the same pixel for anything under a tenth.
   constexpr double kTol = 0.1;
+  // A turn counts once it moves the screen's corners by that tolerance.
+  // Course-up following recomputes the heading on every fix, so an exact
+  // match would refuse a base that is the same picture to a hundredth of a
+  // pixel and owe a full redraw per fix.
+  const double turn_rad =
+      std::fabs(fv::ShortestRotationDelta(base.Rotation(), live.Rotation())) *
+      M_PI / 180.0;
+  if (!(turn_rad * std::hypot((double)lsz.width, (double)lsz.height) < kTol))
+    return false;
   const double lx[2] = {0.0, (double)lsz.width - 1.0};
   const double ly[2] = {0.0, (double)lsz.height - 1.0};
   double bx[2], by[2];

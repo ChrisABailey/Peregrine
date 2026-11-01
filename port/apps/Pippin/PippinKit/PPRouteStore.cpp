@@ -287,6 +287,47 @@ const std::vector<fv::nav::Maneuver>& RouteStore::RouteManeuvers() const {
   return overlay_->has_plan() ? overlay_->plan().maneuvers : kNone;
 }
 
+fv::GpxDocument RouteStore::ExportGpx(const std::string& name) const {
+  fv::GpxDocument doc;
+  const std::vector<fv::RouteWaypoint>& stops = overlay_->waypoints();
+  if (stops.size() < 2) return doc;
+  if (!straight_legs_ && !overlay_->has_plan()) return doc;
+  doc.name = name;
+
+  auto fix_at = [](const fv::GeoPoint& p) {
+    fv::PositionFix fix;
+    fix.SetPosition(p.lat, p.lon);
+    return fix;
+  };
+
+  fv::GpxTrack line;
+  line.name = name;
+  fv::GpxTrackSegment segment;
+  if (straight_legs_) {
+    // A chartplotter's route is its waypoints; it draws and steers the legs.
+    for (const fv::RouteWaypoint& w : stops) {
+      segment.points.push_back(fix_at(w.position));
+      line.point_names.push_back(w.label);
+    }
+    line.segments.push_back(std::move(segment));
+    doc.routes.push_back(std::move(line));
+    return doc;
+  }
+
+  // A <trk>, not a dense <rte>: watches and bike computers follow a track as
+  // drawn, while many recompute a route between its points on their own maps.
+  line.type = Snapshot().is_bicycle ? "cycling" : "walking";
+  for (const fv::GeoPoint& p : RoutePath()) segment.points.push_back(fix_at(p));
+  line.segments.push_back(std::move(segment));
+  doc.tracks.push_back(std::move(line));
+  for (const fv::RouteWaypoint& w : stops) {
+    doc.waypoints.push_back(fix_at(w.position));
+    doc.waypoint_names.push_back(w.label);
+    doc.waypoint_descriptions.emplace_back();
+  }
+  return doc;
+}
+
 std::vector<fv::GeoPoint> RouteStore::RoutePath() const {
   if (straight_legs_) {
     // Densified so a consumer measuring along great-circle segments stays on

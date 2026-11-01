@@ -702,6 +702,11 @@ process CPU seconds, with the battery level (5 % steps), charging state and ther
 row's time. The first row is the starting level with zero counts. Over USB the file is also in
 Finder's Files tab for the phone.
 
+For unattended runs, `-PPEnergyLog YES` also logs a `browsing` row while neither following nor
+recording, `-PPFollow YES` enters GPS mode 5 s after launch, and `-PPScale N` sets the scale to
+1:N after the zoom-out rule (all Debug only). With devicectl
+put `--` before them: `process launch ... org.peregrine.Osprey -- -PPFollow YES`.
+
 **The baseline table.** Screen brightness fixed (Auto-Brightness off, ~50 %), unplugged, the same
 Kiawah loop: 30 minutes following, then 30 minutes recording with GPS mode off and the ship on
 screen. For each, percent per hour = (first level − last level) / hours, and CPU seconds per

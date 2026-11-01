@@ -63,8 +63,8 @@ if(FVW_BUILD_TESTS)
                              test/cgm_library_test.cpp)
   # fv_vpf: the V5b end-to-end test renders real DNC through the seam.
 # fv_png: golden-PNG side channel, same convention as canvas_test.
-target_link_libraries(fv_geosym_test PRIVATE fv_geosym fv_vpf fv_png
-                                             GTest::gtest_main)
+# fv_vpf and fv_png come PUBLIC through fv_geosym -> fv_fvkit; naming them again makes ld warn.
+target_link_libraries(fv_geosym_test PRIVATE fv_geosym GTest::gtest_main)
   gtest_discover_tests(fv_geosym_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 endif()

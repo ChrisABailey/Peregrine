@@ -26,7 +26,7 @@ extensions are not built for Osprey.
 
 - Distances in nautical miles, speeds in knots, heights in feet (kilometres and miles stay
   in the menu).
-- No beach routing, avoid hills or slope colours; the tide card has no beach verdict.
+- No beach routing, avoid hills or slope colours. No tide card or wind forecast.
 - Recordings are "tracks", not "rides".
 - A "Not for Navigation" notice on first launch, until acknowledged.
 
@@ -35,7 +35,6 @@ extensions are not built for Osprey.
 From the repo root:
 
 ```sh
-python3 port/tools/fetch_tides.py 8665530 2026-2030 testdata/tides/8665530.json
 python3 port/apps/Pippin/stage_data.py --region charleston-enc --pack port/apps/Osprey/Data
 cmake --preset ios-sim && cmake --build build-ios-sim -j
 xcodebuild -project port/apps/Pippin/Pippin.xcodeproj -scheme Osprey -sdk iphonesimulator \
@@ -44,12 +43,10 @@ xcrun simctl install booted build-xcode-sim/Build/Products/Debug-iphonesimulator
 xcrun simctl launch booted org.peregrine.Osprey
 ```
 
-The tide fetch is needed once; the pack check in the build names the stage command when the
-pack is missing.
+The pack check in the build names the stage command when the pack is missing.
 
 For a real device, use `ios` instead of `ios-sim` and `-destination 'generic/platform=iOS'`
 ```sh
-python3 port/tools/fetch_tides.py 8665530 2026-2030 testdata/tides/8665530.json
 python3 port/apps/Pippin/stage_data.py --region charleston-enc --pack port/apps/Osprey/Data
 cmake --preset ios && cmake --build build-ios -j
 

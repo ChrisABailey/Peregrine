@@ -137,7 +137,9 @@ std::string LightSummary(const fv::FeatureDescription& d) {
 bool EncChartSettings::operator==(const EncChartSettings& o) const {
   return safety_contour == o.safety_contour && safety_depth == o.safety_depth &&
          shallow_contour == o.shallow_contour && deep_contour == o.deep_contour &&
-         category == o.category && palette == o.palette;
+         category == o.category && palette == o.palette &&
+         navaid_names == o.navaid_names &&
+         symbolized_boundaries == o.symbolized_boundaries;
 }
 
 std::string EncFeatureSummary(const fv::FeatureDescription& d, EncDepthUnits units) {
@@ -319,6 +321,11 @@ fv::GeoRect EncChart::coverage() const {
 fv::Status EncChart::Open(const std::string& cell_root, const std::string& s52_dir) {
   cells_.clear();
   open_.clear();
+  drawn_.clear();
+  last_bands_.clear();
+  last_band_ = 0;
+  last_renderer_ = nullptr;
+  last_source_ = nullptr;
   outdated_cells_ = 0;
   fv::Status s;
   const std::string index_path = cell_root + "/" + fv::kEncIndexFileName;
@@ -360,9 +367,6 @@ fv::Status EncChart::Open(const std::string& cell_root, const std::string& s52_d
   auto style = std::make_shared<fv::S52StyleEngine>();
   s = style->Open(s52_dir);
   if (!s.ok()) return s;
-  // Charleston-density buoy names bury the chart; the identify panel still
-  // gives each buoy's name on a tap.
-  style->SetShowBuoyNames(false);
   style_ = std::move(style);
   s52_dir_ = s52_dir;
   cell_root_ = cell_root;
@@ -404,6 +408,13 @@ void EncChart::ApplySettings() {
   if (settings_.palette == EncPalette::kDusk) scheme = fv::S52ColorScheme::kDusk;
   if (settings_.palette == EncPalette::kNight) scheme = fv::S52ColorScheme::kNight;
   if (scheme != style_->color_scheme()) style_->SetColorScheme(scheme);
+
+  // The identify panel still gives each buoy's and beacon's name on a tap.
+  style_->SetShowBuoyNames(settings_.navaid_names);
+  style_->SetShowBeaconNames(settings_.navaid_names);
+  style_->SetAreaStyle(settings_.symbolized_boundaries
+                           ? fv::S52AreaStyle::kSymbolizedBoundaries
+                           : fv::S52AreaStyle::kPlainBoundaries);
 }
 
 fv::FvColor EncChart::ground_color() const {
@@ -420,13 +431,20 @@ fv::FvColor EncChart::ground_color() const {
 std::vector<EncFeatureInfo> EncChart::FeaturesAt(double x, double y, double tolerance,
                                                  EncDepthUnits units, size_t max_items) {
   std::vector<EncFeatureInfo> out;
-  if (last_renderer_ == nullptr || last_source_ == nullptr) return out;
-  const std::vector<fv::PickHit> hits = last_renderer_->pick_index().HitTest(
-      (int)std::lround(x), (int)std::lround(y), tolerance);
+  // The finest drawn band with anything under the point answers; a coarser
+  // band answers only where the finer cells have no data.
+  std::vector<fv::PickHit> hits;
+  fv::EncVectorSource* source = nullptr;
+  for (Band* b : drawn_) {
+    hits = b->base->pick_index().HitTest((int)std::lround(x), (int)std::lround(y),
+                                         tolerance);
+    source = b->source.get();
+    if (!hits.empty()) break;
+  }
   for (const fv::PickHit& hit : hits) {
     if (out.size() >= max_items) break;
     fv::FeatureDescription d;
-    if (!last_source_->Describe(hit.ref, &d).ok()) continue;
+    if (!source->Describe(hit.ref, &d).ok()) continue;
     EncFeatureInfo info;
     info.kind = d.title;
     info.acronym = d.class_name;
@@ -461,9 +479,9 @@ fv::Status EncChart::OpenBand(int band, Band** out) {
   return fv::Status::Ok();
 }
 
-void EncChart::ReleaseOtherBands(int keep) {
+void EncChart::ReleaseOtherBands(const std::vector<int>& keep) {
   for (auto& kv : open_) {
-    if (kv.first == keep) continue;
+    if (std::find(keep.begin(), keep.end(), kv.first) != keep.end()) continue;
     kv.second->source->ReleaseCells();
     kv.second->base->InvalidateScene();
     kv.second->underlay->InvalidateScene();
@@ -476,27 +494,63 @@ size_t EncChart::resident_cell_count() const {
   return n;
 }
 
+std::vector<int> EncChart::BandsForView(const fv::MapProjection& proj) const {
+  const int wanted = EncBandForScale(bands_, proj.Scale());
+  const fv::GeoRect view = proj.VmapBounds();
+  std::vector<int> out;
+  for (auto it = bands_.rbegin(); it != bands_.rend(); ++it) {
+    if (*it > wanted) continue;
+    bool meets = false, covers = false;
+    for (const fv::EncCellEntry& c : cells_.at(*it)) {
+      if (!c.bounds.Intersects(view)) continue;
+      meets = true;
+      if (c.bounds.Contains(view.ll) && c.bounds.Contains(view.ur) &&
+          c.bounds.Contains({view.ll.lat, view.ur.lon}) &&
+          c.bounds.Contains({view.ur.lat, view.ll.lon})) {
+        covers = true;
+        break;
+      }
+    }
+    if (meets) out.push_back(*it);
+    if (covers) break;
+  }
+  // Nothing charted in view: draw the scale's band as before (an empty ground).
+  if (out.empty() && wanted != 0) out.push_back(wanted);
+  std::reverse(out.begin(), out.end());
+  return out;
+}
+
 fv::Status EncChart::Render(const fv::MapProjection& proj, double device_dpi,
                             double symbol_scale, EncChartPass pass,
                             fv::ICanvas* canvas) {
   if (!style_) return fv::Status::Error(fv::kInvalidArg, "ENC chart is not open");
   canvas->Clear(ground_color());
-  const int band = EncBandForScale(bands_, proj.Scale());
-  Band* b = nullptr;
-  const fv::Status s = OpenBand(band, &b);
-  if (!s.ok()) return s;
-  if (pass == EncChartPass::kBase && band != last_band_) ReleaseOtherBands(band);
-  fv::VectorRenderer& r = pass == EncChartPass::kBase ? *b->base : *b->underlay;
-  r.SetDeviceDpi(device_dpi);
-  r.SetSymbolScale(symbol_scale);
-  r.SetLabelRepeatPixels(kLabelRepeatPoints * symbol_scale);
-  if (pass == EncChartPass::kBase) {
-    last_band_ = band;
-    last_renderer_ = &r;
-    last_source_ = b->source.get();
+  const std::vector<int> bands = BandsForView(proj);
+  if (pass == EncChartPass::kBase && bands != last_bands_) ReleaseOtherBands(bands);
+  if (pass == EncChartPass::kBase) drawn_.clear();
+  // Coarsest first: a finer band's opaque area fills cover the coarser chart
+  // wherever the finer cells have data, and the coarser chart shows elsewhere.
+  for (int band : bands) {
+    Band* b = nullptr;
+    const fv::Status s = OpenBand(band, &b);
+    if (!s.ok()) return s;
+    fv::VectorRenderer& r = pass == EncChartPass::kBase ? *b->base : *b->underlay;
+    r.SetDeviceDpi(device_dpi);
+    r.SetSymbolScale(symbol_scale);
+    r.SetLabelRepeatPixels(kLabelRepeatPoints * symbol_scale);
+    const fv::Status rs = r.Render(proj, canvas);
+    if (!rs.ok()) return rs;
+    if (pass == EncChartPass::kBase) drawn_.insert(drawn_.begin(), b);
+  }
+  if (pass == EncChartPass::kBase && !bands.empty()) {
+    Band* top = drawn_.front();
+    last_bands_ = bands;
+    last_band_ = bands.back();
+    last_renderer_ = top->base.get();
+    last_source_ = top->source.get();
     last_center_ = proj.Center();
   }
-  return r.Render(proj, canvas);
+  return fv::Status::Ok();
 }
 
 }  // namespace pippin

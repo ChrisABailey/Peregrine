@@ -1,0 +1,9 @@
+time,mode,battery_level,battery_state,thermal_state,frames,base_draws,cache_hits,fixes,cpu_s
+2026-10-29T19:38:58Z,browsing,0.85,charging,nominal,0,0,0,0,0.000
+2026-10-29T19:39:03Z,browsing,0.85,charging,nominal,2,2,0,6,0.303
+2026-10-29T19:39:58Z,following,0.85,charging,nominal,107,11,96,55,8.540
+2026-10-29T19:40:58Z,following,0.85,charging,nominal,61,0,61,60,7.607
+2026-10-29T19:41:58Z,following,0.85,charging,nominal,65,0,65,59,7.576
+2026-10-29T19:42:58Z,following,0.85,charging,nominal,60,0,60,60,7.614
+2026-10-29T19:43:58Z,following,0.80,charging,nominal,64,0,64,60,7.699
+2026-10-29T19:44:58Z,following,0.80,charging,nominal,69,0,69,60,7.599

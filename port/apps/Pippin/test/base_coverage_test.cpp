@@ -127,6 +127,14 @@ TEST(PixelAligned, APanByWholePixelsStaysAlignedAndAFractionDoesNot) {
       wide, Make(kScreenW, kScreenH, Shifted(wide, 0, 600), 96161, 0)));
 }
 
+TEST(PixelAligned, ATurnTooSmallToMoveAPixelStaysAligned) {
+  const fv::MapProjection band = Band(kHome, kRidingScale, 57, 0.25);
+  EXPECT_TRUE(pippin::PixelAligned(
+      band, Make(kScreenW, kScreenH, kHome, kRidingScale, 57.000001)));
+  EXPECT_FALSE(pippin::PixelAligned(
+      band, Make(kScreenW, kScreenH, kHome, kRidingScale, 57.01)));
+}
+
 TEST(PixelAligned, ScaleTurnAndAScreenPastTheBandAreRefused) {
   const fv::MapProjection band = Band(kHome, kRidingScale, 0, 0.25);
   EXPECT_FALSE(pippin::PixelAligned(

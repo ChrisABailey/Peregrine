@@ -271,6 +271,19 @@ NmeaType NmeaTypeOf(const std::string& line, std::string* talker) {
   return type;
 }
 
+bool ParseNmeaTrueHeading(const std::string& line, double* heading_deg) {
+  if (line.size() < 6 || line[0] != '$' || line.compare(3, 3, "HDT") != 0) return false;
+  if (!NmeaSentenceLooksValid(line)) return false;
+  const std::vector<std::string> fields = SplitNmeaFields(line);
+  if (fields.size() < 2 || fields[1].empty()) return false;
+  if (fields.size() > 2 && !fields[2].empty() && fields[2] != "T") return false;
+  char* end = nullptr;
+  const double v = std::strtod(fields[1].c_str(), &end);
+  if (end == fields[1].c_str() || *end != '\0' || !(v >= 0.0 && v <= 360.0)) return false;
+  *heading_deg = v;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // ParseNmeaSentence
 // ---------------------------------------------------------------------------

@@ -74,6 +74,8 @@ struct MapScreen: View {
     @State private var placingPoint: PointDraft?
 
     @State private var ridesShown = false
+    /// The rides sheet opened from Export, so it leads with the route.
+    @State private var exportShown = false
     @State private var problemShown = false
     @State private var aboutShown = false
     @State private var tidesShown = false
@@ -84,9 +86,21 @@ struct MapScreen: View {
     @State private var preferencesShown = false
     @State private var navigationNoticeShown = NavigationNotice.isNeeded(flavor: .current)
     @State private var chartImporterShown = false
-    @State private var chartSettingsShown = false
+    @State private var settingsShown = false
+    @State private var settingsDetent: PresentationDetent = .medium
+    /// Natural height of the settings form, measured on first display.
+    @State private var settingsFit: CGFloat?
+
+    private static let isPad = UIDevice.current.userInterfaceIdiom == .pad
+
+    /// Medium and large, plus on iPad a stop at the form's natural height.
+    private var settingsDetents: Set<PresentationDetent> {
+        guard Self.isPad, let fit = settingsFit else { return [.medium, .large] }
+        return [.medium, .height(fit), .large]
+    }
     @State private var chartHelpShown = false
     @State private var chartDownloadShown = false
+    @State private var aisSettingsShown = false
     /// The chart features under the last tap; non-empty while their sheet is up.
     @State private var chartFeatures: [PPChartFeatureInfo] = []
 
@@ -267,12 +281,24 @@ struct MapScreen: View {
                           allowedContentTypes: [.zip]) { result in
                 if case .success(let url) = result { model.importCharts(from: url) }
             }
-            .sheet(isPresented: $chartSettingsShown) {
-                ChartSettingsSheet(settings: model.chartSettings,
-                                   onChange: { model.setChartSettings($0) },
-                                   onClose: { chartSettingsShown = false })
-                    .presentationDetents([.medium, .large])
+            .sheet(isPresented: $settingsShown) {
+                SettingsSheet(chart: model.chartSettings,
+                              onChartChange: { model.setChartSettings($0) },
+                              symbolStep: Binding(get: { model.symbolStep },
+                                                  set: { model.setSymbolStep($0) }),
+                              symbolStepLabels: symbolStepLabels,
+                              onClose: { settingsShown = false })
+                    .modifier(ContentHeightReader(height: $settingsFit))
+                    .presentationDetents(settingsDetents, selection: $settingsDetent)
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                    .onChange(of: settingsFit) { old, new in
+                        // Follow the measurement while the card sits at its fitted
+                        // height; the first one replaces the provisional .large.
+                        guard Self.isPad, let new else { return }
+                        let atFit = old.map { settingsDetent == .height($0) }
+                            ?? (settingsDetent == .large)
+                        if atFit { settingsDetent = .height(new) }
+                    }
             }
             .sheet(isPresented: $chartDownloadShown) {
                 ChartDownloadSheet(active: model.chartDownload?.region,
@@ -285,6 +311,16 @@ struct MapScreen: View {
                                    },
                                    onCancel: { model.cancelChartDownload() },
                                    onClose: { chartDownloadShown = false })
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $aisSettingsShown) {
+                AisSettingsSheet(receiver: model.aisReceiver,
+                                 feed: model.aisFeed,
+                                 trafficOn: model.aisTraffic,
+                                 openWaters: Binding(get: { model.aisOpenWaters },
+                                                     set: { model.setAisOpenWaters($0) }),
+                                 onApply: { model.setAisReceiver($0) },
+                                 onClose: { aisSettingsShown = false })
                     .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $chartHelpShown) {
@@ -949,6 +985,7 @@ struct MapScreen: View {
 
     private var ridesSheet: some View {
         RideSheet(
+            route: exportShown ? routeExport : nil,
             rides: model.rides,
             isRecording: model.isRecording,
             recordingPointCount: model.recordedPointCount,
@@ -956,6 +993,16 @@ struct MapScreen: View {
             onPollCount: { model.refreshRecordedCount() },
             onDelete: { model.deleteRide($0) },
             onClose: { ridesShown = false })
+    }
+
+    /// The route row of the export sheet. Without a searched destination the
+    /// name carries the date, so routes on a watch do not all read "Route".
+    private var routeExport: RouteExport {
+        let title = draft.stops.last?.name.map { RouteShare.title(destination: $0) }
+            ?? "Route " + Date().formatted(.dateTime.month(.abbreviated).day())
+        return RouteExport(title: title, isReady: model.routeExportsGpx) { done in
+            model.exportRouteGpx(title: title, done: done)
+        }
     }
 
     // MARK: - Map layers and preview transform
@@ -1187,11 +1234,12 @@ struct MapScreen: View {
                             }
                     }
                     .padding(.horizontal, ControlMetrics.side)
-                    // Drops below the ride bar's right cluster when there is one.
-                    .padding(.top, Self.belowBars(top: top, rideBarTrailingHeight))
+                    .padding(.top, compassTop(top: top))
                 }
             }
             Spacer()
+            AisCreditButton(feed: model.aisFeed)
+                .padding(.horizontal, ControlMetrics.side)
             // Bottom-aligned: both sides are columns of different heights.
             HStack(alignment: .bottom, spacing: ControlMetrics.spacing) {
                 // Left column: the menu above the row of things a rider puts
@@ -1202,8 +1250,14 @@ struct MapScreen: View {
                                             set: { model.setSymbolStep($0) }),
                         symbolStepLabels: symbolStepLabels,
                         units: $display.units,
-                        onExportRide: {
+                        aisTraffic: AppFlavor.current.offersAisTraffic
+                            ? Binding(get: { model.aisTraffic }, set: { model.setAisTraffic($0) })
+                            : nil,
+                        onAisSettings: AppFlavor.current.offersAisTraffic
+                            ? { aisSettingsShown = true } : nil,
+                        onExport: {
                             model.refreshRides()
+                            exportShown = true
                             ridesShown = true
                         },
                         onTides: model.tide == nil ? nil : { tidesShown = true },
@@ -1214,7 +1268,13 @@ struct MapScreen: View {
                         onCheckChartUpdates: model.hasInstalledCharts && model.chartDownload == nil
                             && model.chartImportProgress == nil && !model.checkingChartUpdates
                             ? { model.checkForChartUpdates() } : nil,
-                        onChartSettings: model.importsCharts ? { chartSettingsShown = true } : nil,
+                        onSettings: model.importsCharts ? {
+                            // iPad opens at the form's own height: at medium the cut falls
+                            // on a section header and the options below it are easy to miss.
+                            settingsDetent = Self.isPad
+                                ? settingsFit.map { .height($0) } ?? .large : .medium
+                            settingsShown = true
+                        } : nil,
                         onChartHelp: model.importsCharts ? { chartHelpShown = true } : nil,
                         onAbout: { aboutShown = true },
                         onReportProblem: { problemShown = true })
@@ -1267,6 +1327,7 @@ struct MapScreen: View {
                         activeTint: .red,
                         onLongPress: {
                             model.refreshRides()
+                            exportShown = false
                             ridesShown = true
                         },
                         longPressLabel: "Saved \(AppFlavor.current.trackNoun)s") {
@@ -1311,18 +1372,73 @@ struct MapScreen: View {
     /// is turned (tap returns to north).
     private var compassShown: Bool { model.gpsMode || model.isChartTurned }
 
+    /// Below the ride bar's right cluster, or with the compact trip card below
+    /// both top cards, which span the width.
+    private func compassTop(top: CGFloat) -> CGFloat {
+        guard AppFlavor.current.compactTripCard else {
+            return Self.belowBars(top: top, rideBarTrailingHeight)
+        }
+        return Self.belowBars(top: top, model.gpsMode ? rideBarHeight : 0, guidanceBannerHeight)
+    }
+
     private var compassLabel: String {
         guard model.gpsMode else { return "Face north" }
         return model.courseUp ? "North up" : "Course up"
     }
 
-    /// The ride bar shown in GPS mode: elapsed, speed and odometer on the
-    /// left; distance to go and ETA on the right when there is a route. Each
-    /// cluster stacks vertically so a growing number moves only itself. An
-    /// invalid field shows an en-dash, never a zero, so a stopped bike and a
-    /// silent receiver read differently.
+    /// The trip readout shown in GPS mode. An invalid field shows an en-dash,
+    /// never a zero, so a stopped vehicle and a silent receiver read
+    /// differently.
     @ViewBuilder
     private func rideBar(top: CGFloat) -> some View {
+        if AppFlavor.current.compactTripCard {
+            tripCard(top: top)
+        } else {
+            rideClusters(top: top)
+        }
+    }
+
+    /// The trip readout as one card: elapsed time, speed and course always;
+    /// distance to go and arrival with a route, the log without one.
+    private func tripCard(top: CGFloat) -> some View {
+        let trip = model.trip
+        return VStack {
+            // On the labels' baseline: a value shrunk to fit is shorter and
+            // would otherwise drop its label below the others.
+            // One size for every cell, small enough that the arrival time fits
+            // unshrunk; units sit against their numbers to save width.
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                courseReadout("TIME", Self.elapsedText(trip), valueSize: Self.tripValueSize)
+                courseReadout("SOG", Self.tight(speedText(trip)), valueSize: Self.tripValueSize)
+                courseReadout("COG", courseText(model.ownship), valueSize: Self.tripValueSize)
+                if trip?.hasRemaining == true {
+                    courseReadout("DIST", Self.tight(remainingText(trip)),
+                                  valueSize: Self.tripValueSize)
+                    courseReadout("ARR", Self.etaText(trip), valueSize: Self.tripValueSize)
+                } else {
+                    courseReadout("LOG", Self.tight(odometerText(trip)),
+                                  valueSize: Self.tripValueSize)
+                }
+            }
+            .readoutCard()
+            .measuredHeight(RideBarHeightKey.self)
+            .padding(.top, top)
+            Spacer()
+        }
+        .allowsHitTesting(false)
+    }
+
+    private static let tripValueSize: CGFloat = 16
+
+    /// "9.7 kn" as "9.7kn": the number and its unit without the space between.
+    private static func tight(_ value: String) -> String {
+        value.replacingOccurrences(of: " ", with: "")
+    }
+
+    /// Elapsed, speed and odometer on the left; distance to go and ETA on the
+    /// right when there is a route. Each cluster stacks vertically so a
+    /// growing number moves only itself.
+    private func rideClusters(top: CGFloat) -> some View {
         VStack {
             HStack(alignment: .top) {
                 rideCluster(alignment: .leading) {
@@ -1330,7 +1446,7 @@ struct MapScreen: View {
                     Label(speedText(model.trip), systemImage: "speedometer")
                     Label(odometerText(model.trip), systemImage: "arrow.forward")
                     if AppFlavor.current.showsCourseOverGround {
-                        Label(Self.courseText(model.ownship), systemImage: "safari")
+                        Label(courseText(model.ownship), systemImage: "safari")
                     }
                 }
                 Spacer(minLength: 8)
@@ -1378,12 +1494,12 @@ struct MapScreen: View {
         return String(format: "%d:%02d", m, sec)
     }
 
-    /// COG as reported by the receiver, "047°T"; an en-dash when it reports
-    /// none or the boat is slower than the vector's minimum speed.
-    private static func courseText(_ ship: PPOwnship?) -> String {
+    /// COG as reported by the receiver, "047°T" or "055°M"; an en-dash when
+    /// it reports none or the boat is slower than the vector's minimum speed.
+    private func courseText(_ ship: PPOwnship?) -> String {
         guard let ship, ship.hasCourse, ship.hasSpeed,
               ship.speedMetersPerSecond >= Course.vectorMinimumSpeed else { return "—" }
-        return Course.text(ship.courseDegrees)
+        return display.courseText(ship.courseDegrees, at: ship.coordinate)
     }
 
     /// Instance methods because they read `display.units`. The underlying
@@ -1510,8 +1626,10 @@ struct MapScreen: View {
                 .font(.system(size: 14, weight: .medium, design: .rounded))
                 .monospacedDigit()
                 HStack(spacing: 0) {
-                    courseReadout("DTK", Course.text(course.legCourseDegrees))
-                    courseReadout("BRG", Course.text(course.bearingToWaypointDegrees))
+                    courseReadout("DTK", display.courseText(course.legCourseDegrees,
+                                                             at: model.ownship?.coordinate))
+                    courseReadout("BRG", display.courseText(course.bearingToWaypointDegrees,
+                                                             at: model.ownship?.coordinate))
                     courseReadout("TTG", course.hasTimeToGo
                                   ? Course.timeToGoText(course.secondsToWaypoint) : "–")
                     courseReadout("ETA", course.hasTimeToGo
@@ -1520,12 +1638,7 @@ struct MapScreen: View {
                                   : "–")
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(maxWidth: 420)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20,
-                                                            style: .continuous))
-            .padding(.horizontal, 12)
+            .readoutCard()
             .measuredHeight(GuidanceBannerHeightKey.self)
             .padding(.top, Self.belowBars(top: top, rideBarHeight))
             Spacer()
@@ -1533,14 +1646,15 @@ struct MapScreen: View {
         .allowsHitTesting(false)
     }
 
-    /// One labelled CDI readout, "BRG" over "047°T".
-    private func courseReadout(_ label: String, _ value: String) -> some View {
+    /// One labelled readout cell, "BRG" over "047°T".
+    private func courseReadout(_ label: String, _ value: String,
+                               valueSize: CGFloat = 16) -> some View {
         VStack(spacing: 1) {
             Text(label)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .font(.system(size: valueSize, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -1726,6 +1840,15 @@ private typealias GuidanceBannerHeightKey = HeightKey<GuidanceBannerTag>
 private typealias RideBarTrailingHeightKey = HeightKey<RideBarTrailingTag>
 
 private extension View {
+    /// The material card the course deviation and trip readouts sit on.
+    func readoutCard() -> some View {
+        padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 420)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .padding(.horizontal, 12)
+    }
+
     /// Reports this view's height up the tree under `key`. A `background`
     /// rather than an `overlay` so the measuring view never takes a touch.
     func measuredHeight<K: PreferenceKey>(_ key: K.Type) -> some View
@@ -1737,10 +1860,6 @@ private extension View {
     }
 }
 
-/// The compass control. Its own view rather than a `CircleButton` because
-/// the glyph turns. The needle points at north, not the heading, so one
-/// control serves both modes: it swings in course-up and sits still in
-/// north-up.
 /// The CDI scale: five dots each side of a centre mark, and the needle (the
 /// course line) at `position`, -1 full left to 1 full right. The needle is
 /// red at full scale or when `alarm` is set.
@@ -1790,6 +1909,10 @@ private struct Triangle: Shape {
     }
 }
 
+/// The compass control. Its own view rather than a `CircleButton` because
+/// the glyph turns. The needle points at north, not the heading, so one
+/// control serves both modes: it swings in course-up and sits still in
+/// north-up.
 struct CompassButton: View {
     /// Where north is on screen, degrees clockwise from up.
     let northAngleDegrees: Double
@@ -1798,13 +1921,16 @@ struct CompassButton: View {
     let action: () -> Void
 
     var body: some View {
+        // Whole degrees: course-up recomputes the angle on every camera step,
+        // and an animation keyed on the raw value restarts at 20 Hz without
+        // end, which SwiftUI keeps merging at a growing CPU cost.
+        let shown = northAngleDegrees.rounded()
         Button(action: action) {
-            Image(systemName: "location.north.line.fill")
-                .font(.system(size: 22, weight: .medium))
+            glyph
                 // Smooths the compass appearing mid-turn and the one-frame
                 // steps a slow render leaves.
-                .rotationEffect(.degrees(northAngleDegrees))
-                .animation(.linear(duration: 0.15), value: northAngleDegrees)
+                .rotationEffect(.degrees(shown))
+                .animation(.linear(duration: 0.15), value: shown)
                 .foregroundStyle(.tint)
                 .frame(width: ControlMetrics.diameter,
                        height: ControlMetrics.diameter)
@@ -1818,6 +1944,59 @@ struct CompassButton: View {
         .tint(isActive ? .accentColor : .primary)
         .accessibilityLabel(label)
         .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        if AppFlavor.current.drawsCompassRose {
+            CompassRose().frame(width: 42, height: 42)
+        } else {
+            Image(systemName: "location.north.line.fill")
+                .font(.system(size: 22, weight: .medium))
+        }
+    }
+}
+
+/// An eight-point compass rose, north up: long cardinal points, short
+/// intercardinal ones, each split light and dark, with a red north point.
+/// The other points take the foreground style, so the button's tint reaches
+/// them.
+struct CompassRose: View {
+    var body: some View {
+        Canvas { context, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            let r = min(size.width, size.height) / 2
+            // Intercardinals first, so the cardinals cover their bases.
+            for (index, degrees) in [45.0, 135, 225, 315, 0, 90, 180, 270].enumerated() {
+                let cardinal = index >= 4
+                let length = cardinal ? r : r * 0.6
+                let half = cardinal ? r * 0.2 : r * 0.14
+                let north = degrees == 0
+                let style: GraphicsContext.Shading = north ? .color(.red) : .style(.foreground)
+                let shade: GraphicsContext.Shading = north
+                    ? .color(Color(red: 0.6, green: 0, blue: 0)) : .style(.foreground.opacity(0.45))
+                context.fill(point(c, degrees, length, half, side: -1), with: style)
+                context.fill(point(c, degrees, length, half, side: 1), with: shade)
+            }
+            context.fill(Path(ellipseIn: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)),
+                         with: .style(.background))
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// One half of a point: centre, tip at `length` along `degrees`
+    /// (clockwise from up), and the base corner `half` to one side.
+    private func point(_ c: CGPoint, _ degrees: Double, _ length: CGFloat,
+                       _ half: CGFloat, side: CGFloat) -> Path {
+        let a = degrees * .pi / 180
+        let tip = CGPoint(x: c.x + length * sin(a), y: c.y - length * cos(a))
+        let base = CGPoint(x: c.x + side * half * cos(a), y: c.y + side * half * sin(a))
+        var p = Path()
+        p.move(to: c)
+        p.addLine(to: tip)
+        p.addLine(to: base)
+        p.closeSubpath()
+        return p
     }
 }
 
@@ -1857,8 +2036,9 @@ struct WindBadge: View {
             if text != "Calm" {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 13, weight: .bold))
-                    .rotationEffect(.degrees(northAngleDegrees + sample.fromDegrees + 180))
-                    .animation(.linear(duration: 0.15), value: northAngleDegrees)
+                    // Whole degrees, as `CompassButton` does and for its reason.
+                    .rotationEffect(.degrees(northAngleDegrees.rounded() + sample.fromDegrees + 180))
+                    .animation(.linear(duration: 0.15), value: northAngleDegrees.rounded())
             }
             Text(text)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
@@ -2039,5 +2219,75 @@ extension SceneVisibility {
         case .background: self = .background
         default: self = .inactive
         }
+    }
+}
+
+/// A small button over the chart, shown while AIS sources are being heard,
+/// that opens the card of credit lines those sources require. The feed
+/// re-publishes many sources, so the full list does not fit on the map.
+private struct AisCreditButton: View {
+    @ObservedObject var feed: AisFeed
+    @State private var showing = false
+
+    var body: some View {
+        if !feed.credits.isEmpty {
+            Button {
+                showing = true
+            } label: {
+                Label("AIS Sources", systemImage: "info.circle")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .sheet(isPresented: $showing) {
+                AisCreditsSheet(feed: feed) { showing = false }
+                    .presentationDetents([.medium, .large])
+            }
+        }
+    }
+}
+
+/// Every credit line of the AIS sources heard in the last half hour.
+private struct AisCreditsSheet: View {
+    @ObservedObject var feed: AisFeed
+    let onClose: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(feed.credits, id: \.self) { Text(Self.linked($0)) }
+                } footer: {
+                    Text("Sources heard in the last half hour.")
+                }
+            }
+            .navigationTitle("AIS Sources")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onClose)
+                }
+            }
+        }
+    }
+
+    /// `text` with each web address as a link; a tap opens it in the browser.
+    static func linked(_ text: String) -> AttributedString {
+        var out = AttributedString(text)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return out }
+        let ns = text as NSString
+        for match in detector.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            guard let url = match.url, url.scheme == "http" || url.scheme == "https",
+                  let r = Range(match.range, in: text),
+                  let lower = AttributedString.Index(r.lowerBound, within: out),
+                  let upper = AttributedString.Index(r.upperBound, within: out)
+            else { continue }
+            out[lower..<upper].link = url
+        }
+        return out
     }
 }

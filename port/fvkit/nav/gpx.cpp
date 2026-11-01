@@ -136,6 +136,9 @@ void FinishPoint(ParseState* state) {
             state->current_track->segments.emplace_back();
           }
           state->current_track->segments.back().points.push_back(state->point);
+          if (state->point_kind == PointKind::kRoutePoint) {
+            state->current_track->point_names.push_back(state->point_name);
+          }
         }
         break;
       case PointKind::kNone:
@@ -690,13 +693,20 @@ void AppendTrack(const GpxTrack& track, const char* track_tag, const char* point
   out->append(">\n");
   AppendTextElement("name", track.name, 2, options, out);
   AppendTextElement("type", track.type, 2, options, out);
+  std::size_t named = 0;
   for (const GpxTrackSegment& segment : track.segments) {
     if (with_segments) {
       AppendIndent(2, options.pretty, out);
       out->append("<trkseg>\n");
     }
     for (const PositionFix& point : segment.points) {
-      AppendPoint(point_tag, point, /*name=*/std::string(), /*description=*/std::string(),
+      // Only a route's points are named; `point_names` runs across the whole
+      // <rte>, however many segments the caller built it from.
+      const std::string name = !with_segments && named < track.point_names.size()
+                                   ? track.point_names[named]
+                                   : std::string();
+      ++named;
+      AppendPoint(point_tag, point, name, /*description=*/std::string(),
                   with_segments ? 3 : 2, options, out);
     }
     if (with_segments) {

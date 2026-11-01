@@ -149,6 +149,12 @@ NmeaType NmeaTypeOf(const std::string& line, std::string* talker = nullptr);
 // undefined. On true, every `has_*` in `out->fix` says what was actually there.
 bool ParseNmeaSentence(const std::string& line, NmeaReading* out);
 
+/// Reads the ship's true heading from an HDT sentence (`$xxHDT,123.4,T*hh`),
+/// any talker. HDT carries no time, so it is not part of a fix group; a caller
+/// that wants it attaches it to the next fix. False when the line is not a
+/// valid HDT or its heading field is empty.
+bool ParseNmeaTrueHeading(const std::string& line, double* heading_deg);
+
 // The original's 2-digit year rule, verbatim (gps.cpp's
 // GPS_get_y2k_compliant_year): 71..99 are 1971..1999, 00..70 are 2000..2070.
 // A year already >= 100 is returned unchanged.

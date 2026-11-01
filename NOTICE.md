@@ -64,6 +64,11 @@ port/MapSeriesStringConverter/fv_map_series_string_converter.{h,cpp}
 port/geoid/fv_geoid.{h,cpp}
 ```
 
+The AIS ship symbols in `port/fvkit/ais/symbols/` are FalconView's `RTT/AIS`
+images and `Symbollist.txt` from the FalconView 5.1.1 data set, downscaled and
+renamed by `port/tools/make_ais_sheet.py`, which also packs them into
+`port/fvkit/ais/ais_sheet.inc`. They are conveyed under the same terms.
+
 These are derivative works of FalconView and are conveyed under FalconView's
 own terms, unchanged. No relicensing takes place anywhere in this repository —
 which is why sections 1, 2 and 3 all name the same license, and why the work as

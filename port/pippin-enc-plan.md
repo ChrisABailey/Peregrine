@@ -216,6 +216,42 @@ first band-4 draw 985 → 29 ms, band 5 1343 → 25 ms; worst Keys frame 42 ms. 
 coastal: `apps/Pippin/docs/ch7-charleston-labels.png`; sim `ch7-charleston-sim.png`. Not done:
 different names still overlap (light descriptions); no collision placement.
 
+*Band fallback (2026-10-28).* Zooming in where no larger-scale cell exists turned the screen
+white: `EncChart::Render` took one band from the scale (`EncBandForScale`) and drew it even with no
+cells in view. New private `EncChart::BandsForView` returns, coarsest first, the scale's band plus
+coarser bands with cells meeting the view, stopping at the first band with a cell whose bounds
+hold the whole view; Render draws them in that order on one canvas, so a finer band's opaque area
+fills cover the coarser chart where it has data (a harbour cell's edge shows the coastal chart
+around it). `ReleaseOtherBands` keeps the drawn set; `FeaturesAt` asks the drawn bands finest
+first and answers from the first with hits; `last_band()` is the finest drawn. `Open` now resets
+the `last_*` pointers (they dangled after a reopen). Test
+`EncChart.AHarbourScaleDrawOutsideTheHarbourCellsFallsBackToCoarserBands`. Limitation: coverage is
+judged by cell bounding boxes, not M_COVR, so a gap inside a bbox can still show ground. Not
+checked visually on the simulator.
+
+*Boundary symbols (2026-10-29).* 16 S-52 line-style names (CTNARE51, ACHRES51, CBLARE51,
+DWRUTE51, FSHRES51, PRCARE51, ...) and 4 pattern names (AIRARE02, FSHFAC03, MARCUL02, QUESMRK1)
+are also point-symbol names in `chartsymbols.xml`, so LC/AP stamps resolved to the point symbol:
+edges vanished and a large mark stamped every period (plain mode too: cable, deep-water route,
+fishing, precautionary and anchoring-restricted areas). The engine now emits LC/AP ids tagged
+`LC:`/`AP:` (`S52LineStyleId`/`S52PatternId`, `fv_s52_style.h`); `Symbol()` resolves the tag and
+`Pixmap()` returns null for tagged ids. `EncChartSettings::symbolized_boundaries` (`PPEncChart.h`)
+selects S-52's symbolized-boundaries table, default false; Chris reviewed it on the iPhone and kept
+plain, no UI toggle yet. Bent line-styles: `PathRun::bend` (`fvkit/vector/style.h`) makes the
+renderer draw a stamp bent along the path (`PathArc`, `BendSymbol`, `DrawSymbolAlongPath` in
+`symbol_draw.{h,cpp}`) instead of straight along the tangent at its anchor, so a symbol longer
+than its segment follows the turn; ink before the start or past the end is cut. Each piece maps
+onto the segment under its midpoint, so a vertex becomes a bevel; ellipses flatten to 24-gons,
+text primitives are skipped, pixmap-only symbols still stamp straight. S-52 LC sets `bend=true`;
+GeoSym SAMI and the GeoDraw/OSM line presets do not (opt-in later, DNC goldens would move). Chosen
+over clip-and-carry-over and over whole symbols plus plain-line filler; a symbol landing on a
+corner is visibly bent, accepted. `kHashCharleston` re-pinned `0xbc8cd62c98a365f2` ->
+`0xba36a46ede505e81` (name fix) -> `0x7430053c764d1145` (bending), each after a visual
+before/after check; the doubled caution circles in earlier renders were overhang from a sliver
+CTNARE ring, gone with bending. Tests `S52Style.ALineStyleIdResolvesToTheLineStyleNotTheSameNamedSymbol`,
+`PathPlacer.ABendingRunCarriesItsArcLengthToTheDrawer`, `SymbolBender` x3 (corner turn, end cut,
+filled ellipse across a corner); suite 3084/3084 on macOS, Osprey simulator build passes.
+
 **CH8 — Download from NOAA (medium).** Region picker (state and Coast Guard district zips),
 background `URLSession` download with progress and resume, then the CH6 import. Confirm the
 current NOAA download URLs when building it.
@@ -406,6 +442,53 @@ it, best match then nearest the last draw. Florida: 40,248 named features → 21
 build on the mac, 2.2 MB, 10 ms to read. Tests: `EncNames.*` (3),
 `ChartStoreTest.ImportWritesTheNameTableWhenGivenACatalogue`,
 `EncChart.SearchFindsNamedObjectsAnywhereInTheSet` (replaces the drawn-band test).
+
+**Osprey energy (2026-10-29) — flat following, compass animation, settle and AIS fixes.** Measured on
+iPad Air 5 (M1) over USB (charging, so CPU s/min is the metric, not battery %), Release build with the
+DEBUG energy log, `devicectl simulate location` route through the Charleston entrance channel at 4 m/s
+(1 Hz fixes), course-up following started by `-PPFollow YES`, scale set by `-PPScale`, stats overlay
+off, ship confirmed on screen by screenshot. "Before" is the same tree with the five changes switched
+back (tilt on, exact settle check, exact rotation check, AIS unbatched, compass keyed on the raw
+angle). Raw logs: `port/apps/Pippin/docs/osprey-energy-chs-{before,after2}-{C40,D40,C250,D250}-2026-10-29.csv`.
+
+| Following | CPU s/min before | after | Frames/min before / after | Base draws/min before / after |
+|---|---|---|---|---|
+| 1:40k, AIS off | 15.9 (11-23, unsteady) | 8.0 steady | 251 / 269 | 18 / 17.5 |
+| 1:40k, AIS on | 17.1 | 11.0 | 284 / 288 | 21.5 / 19 |
+| 1:250k, AIS off | 15.5, climbing 10-21 | 7.6 steady | 70 / 71 | 1.7 / 1.8 |
+| 1:250k, AIS on | 19.4, climbing 15-24 | 10.8 steady | 106 / 97 | 3.5 / 3.2 |
+
+CPU is the mean over 6 rows.
+
+- **Compass animation (the main cost at chart scales).** `CompassButton` and the wind badge keyed
+  `.animation(.linear(0.15), value:)` on the raw north angle, which course-up recomputes on every 20 Hz
+  camera step and which a converging slew never stops changing. SwiftUI merged each new animation into
+  the running ones (`AnimationState.combinedState` / `DefaultCombiningAnimation` in a Time Profiler
+  capture, ~43% of a core on the main thread), and the cost grew the longer following ran. Fix: the
+  angle is rounded to whole degrees for both rotation and animation key. Shared code, so Pippin's
+  course-up gets it too.
+- **No tilt in Osprey** (Chris, 2026-10-29): `AppFlavor.tiltsWhileFollowing` is false for Osprey; at
+  chart scales the tilted band reaches hundreds of km ahead for little readable chart.
+- **Settle loop on tilted views** (commit 92877558): `owesSettle` required pixel alignment, which a
+  tilted band centred far ahead of the camera can never meet at small scales; every frame redrew the
+  identical band. Seen only at 1:2.1M (below); at 1:40k/1:250k base draws were the same before and
+  after. Now alignment is checked only when flat. Still relevant to Pippin, which tilts.
+- **Rotation tolerance in `PixelAligned`**: course-up heading jitter (far below a pixel) failed the
+  exact 1e-9 deg match and forced a full redraw per fix on a flat view; now a turn counts once it moves
+  the screen corners by 0.1 px. gtest `PixelAligned.ATurnTooSmallToMoveAPixelStaysAligned`.
+- **AIS** reaches the renderer at most every 2 s (`aisFlushInterval`), so the overlay band
+  re-rasterises at most that often. AIS on still costs ~3 CPU s/min while following.
+- **Earlier Tampa runs are not representative.** The first measurements (the
+  `osprey-energy-{before,after}-*` logs) had the ship off screen: an open route makes
+  `applyZoomOutRule` widen the view to the route's start on entering GPS mode, and the camera is not
+  persisted across launches, so the view sat at 1:2.1M over Georgia. They found the settle loop but
+  their magnitudes (69 to 1.9 CPU s/min) describe that view only. Test with the route inside the
+  charts and `-PPScale`.
+- **Debug-only aids**: `-PPEnergyLog YES` (logs a `browsing` row while idle), `-PPFollow YES` (GPS
+  mode 5 s after launch), `-PPScale N` (sets 1:N after the zoom-out rule). devicectl needs `--` before
+  app arguments. Time Profiler on the device: `xctrace record --all-processes` (attach by name
+  failed), symbolicate with the build's dSYM and `~/Library/Developer/Xcode/iOS DeviceSupport/<device>
+  <os>/Symbols` via `atos -arch arm64e`.
 
 ## Risks
 

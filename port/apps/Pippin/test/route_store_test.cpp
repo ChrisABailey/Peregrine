@@ -346,6 +346,34 @@ TEST(RouteStore, ARouteFollowsRoadsAndTheStoreTimesIt) {
   EXPECT_GT(store.last_plan_ms(), 0.0);
 }
 
+TEST(RouteStore, TheGpxExportFollowsTheRoadsAndMarksTheStops) {
+  SKIP_WITHOUT_GRAPH();
+  RouteStore store(graph, RulesFile(), "");
+  store.SetWaypoints(TheUsualPair(), "bicycle");
+
+  const fv::GpxDocument gpx = store.ExportGpx("Route to End");
+  ASSERT_EQ(gpx.tracks.size(), 1u);
+  EXPECT_TRUE(gpx.routes.empty());
+  EXPECT_EQ(gpx.tracks[0].name, "Route to End");
+  EXPECT_EQ(gpx.tracks[0].type, "cycling");
+  EXPECT_EQ(gpx.tracks[0].point_count(), store.RoutePath().size());
+  // Two stops would be a straight line; the roads are what a watch needs.
+  EXPECT_GT(gpx.tracks[0].point_count(), 10u);
+  EXPECT_EQ(gpx.waypoint_names, (std::vector<std::string>{"Start", "End"}));
+}
+
+TEST(RouteStore, NoGpxExportWithoutALineToFollow) {
+  RouteStore store("/nonexistent/kiawah.fvroad", RulesFile(), "");
+  EXPECT_TRUE(store.ExportGpx("x").tracks.empty());
+  store.SetWaypoints({RouteWaypoint{"Start", kRuddyTurnstone}}, "bicycle");
+  EXPECT_TRUE(store.ExportGpx("x").tracks.empty());
+  // Two stops and no graph: nothing was planned, so there is no road line.
+  store.SetWaypoints(TheUsualPair(), "bicycle");
+  const fv::GpxDocument gpx = store.ExportGpx("x");
+  EXPECT_TRUE(gpx.tracks.empty());
+  EXPECT_TRUE(gpx.routes.empty());
+}
+
 TEST(RouteStore, ARouteSurvivesARelaunchWITHItsRoads) {
   SKIP_WITHOUT_GRAPH();
   TempDocument doc("relaunch");
@@ -1354,6 +1382,20 @@ TEST(RouteStoreStraight, PathRunsThroughEveryWaypoint) {
   bool hit_via = false;
   for (const GeoPoint& p : path) hit_via |= (p.lat == kNorth.lat && p.lon == kNorth.lon);
   EXPECT_TRUE(hit_via);
+}
+
+TEST(RouteStoreStraight, TheGpxExportIsTheNamedWaypoints) {
+  RouteStore store("", RulesFile(), "");
+  store.SetStraightLegs(true);
+  store.SetWaypoints(TheUsualPair(), "");
+
+  const fv::GpxDocument gpx = store.ExportGpx("Run");
+  EXPECT_TRUE(gpx.tracks.empty());
+  EXPECT_TRUE(gpx.waypoints.empty());
+  ASSERT_EQ(gpx.routes.size(), 1u);
+  ASSERT_EQ(gpx.routes[0].point_count(), 2u);
+  EXPECT_EQ(gpx.routes[0].point_names, (std::vector<std::string>{"Start", "End"}));
+  EXPECT_NEAR(gpx.routes[0].segments[0].points[1].lat, kBeachClub.lat, 1e-9);
 }
 
 TEST(RouteStoreStraight, RelaunchKeepsTheLegs) {

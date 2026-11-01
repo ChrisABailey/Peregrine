@@ -5,6 +5,7 @@
 
 #import "PPMap.h"
 
+#import "PPAis+Internal.h"
 #import "PPFix+Internal.h"
 #import "PPPixelBridge.h"
 #import "PPPoint+Internal.h"
@@ -33,6 +34,7 @@
 #include "fv_osm_vector_source.h"
 #include "fv_enc_vector_source.h"
 #include "fv_route_legend.h"
+#include "fvkit/analysis/measure.h"
 #include "fvkit/app/pick.h"
 #include "fvkit/app/search.h"
 #include "fvkit/canvas/cpu_canvas.h"
@@ -40,6 +42,7 @@
 #include "fvkit/nav/gpx_recorder.h"
 #include "fvkit/nav/scripted_source.h"
 #include "fvkit/nav/tide.h"
+#include "fvkit/overlay/ais_overlay.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
@@ -122,6 +125,9 @@ constexpr double kStyleNominalDpi = 96.0;
 // and not the ink, and a chevron asking for 24 draws 48 points long. Hence
 // 14, a 28-point chevron about 8 points across. The pack can override it.
 constexpr double kOwnshipSizePx = 14.0;
+
+// The most entries the chart info sheet lists for one tap.
+constexpr NSUInteger kMaxChartFeatures = 8;
 
 // How far the map may be from where the camera last put it before it counts
 // as moved by something else (see `tickMovingMap`). A degree of latitude is
@@ -533,6 +539,8 @@ NSString* NSStr(const std::string& s) {
 
 @interface PPChartFeatureInfo ()
 - (instancetype)initWithInfo:(const pippin::EncFeatureInfo&)info;
+/// An AIS target's details sheet, as the chart info sheet lists it.
+- (instancetype)initWithAisSheet:(const fv::app::ItemInfoSheet&)sheet;
 @end
 
 @implementation PPChartFeatureInfo
@@ -553,6 +561,37 @@ NSString* NSStr(const std::string& s) {
   _attributeNames = [names copy];
   _attributeValues = [values copy];
   _source = NSStr(info.source);
+  return self;
+}
+
+- (instancetype)initWithAisSheet:(const fv::app::ItemInfoSheet&)sheet {
+  self = [super init];
+  if (self == nil) return nil;
+  _title = NSStr(sheet.title);
+  _acronym = @"AIS";
+  std::string kind = "AIS target", speed, course, credit, station;
+  NSMutableArray<NSString*>* names = [NSMutableArray array];
+  NSMutableArray<NSString*>* values = [NSMutableArray array];
+  for (const fv::app::InfoRow& row : sheet.rows) {
+    if (row.key == "Type" || row.key == "Kind") kind = row.value;
+    if (row.key == "Speed") speed = row.value;
+    if (row.key == "Course") course = row.value;
+    if (row.key == "Station") station = row.value;
+    if (row.key == "Credit") {
+      credit = row.value;
+      continue;
+    }
+    if (row.key == "Layer") continue;
+    [names addObject:NSStr(row.key)];
+    [values addObject:NSStr(row.value)];
+  }
+  _kind = NSStr(kind);
+  std::string summary = speed;
+  if (!course.empty()) summary += (summary.empty() ? "" : "  ") + course;
+  _summary = NSStr(summary);
+  _attributeNames = [names copy];
+  _attributeValues = [values copy];
+  _source = NSStr(credit.empty() ? station : credit);
   return self;
 }
 
@@ -642,6 +681,8 @@ NSString* NSStr(const std::string& s) {
   // go through. The stack owns overlays and the shell keeps a handle to the
   // one it feeds, as PythonView does.
   std::shared_ptr<fv::MovingMapOverlay> _movingMap;
+  // AIS traffic, hidden until the shell turns it on; owned by the manager.
+  std::shared_ptr<fv::AisOverlay> _ais;
   std::shared_ptr<fv::ScriptedSource> _demoFeed;
   double _lastTickTime;  // CFAbsoluteTime of the previous render, 0 = none
 
@@ -887,6 +928,7 @@ NSString* NSStr(const std::string& s) {
   // newest-on-top. The route goes in first so the ownship draws over it.
   [self buildRoute];
   [self buildPoints];
+  [self buildAis];
   [self buildMovingMap];
   _routeDepartureOverride = NAN;
   [self loadTides];
@@ -983,6 +1025,14 @@ NSString* NSStr(const std::string& s) {
   _pointStore->SetShowLabels(_settings.GetBool("points.show_labels", true));
 
   const fv::Status s = _overlays->Add(_pointStore->overlay());
+  (void)s;  // a fresh manager with no type registry cannot refuse an Add
+}
+
+/// Adds the AIS overlay, hidden, between the points and the ownship.
+- (void)buildAis {
+  _ais = std::make_shared<fv::AisOverlay>("AIS");
+  _ais->SetVisible(false);
+  const fv::Status s = _overlays->Add(_ais);
   (void)s;  // a fresh manager with no type registry cannot refuse an Add
 }
 
@@ -1236,8 +1286,21 @@ NSString* NSStr(const std::string& s) {
   if (z == _symbolZoom) return;
   _symbolZoom = z;
   [self invalidateBaseLayer];
-  _routeStore->overlay()->SetWindArrowScale(z);
+  [self applyWindArrowScale];
   [self overlayContentChanged];
+}
+
+- (void)setOverlaysFollowSymbolZoom:(BOOL)follow {
+  if (follow == _overlaysFollowSymbolZoom) return;
+  _overlaysFollowSymbolZoom = follow;
+  [self applyWindArrowScale];
+  [self overlayContentChanged];
+}
+
+/// The wind arrows' own multiplier. When the route overlay already carries
+/// the symbol zoom in its dpi scale, applying it here again would square it.
+- (void)applyWindArrowScale {
+  _routeStore->overlay()->SetWindArrowScale(_overlaysFollowSymbolZoom ? 1.0 : _symbolZoom);
 }
 
 - (BOOL)hasDarkStyle {
@@ -1351,6 +1414,15 @@ NSString* NSStr(const std::string& s) {
 
 - (void)setChartPalette:(PPChartPalette)palette {
   _chartPalette = palette;
+  [self applyChartSettings];
+}
+
+- (BOOL)chartNavaidNames {
+  return _chartSettings.navaid_names;
+}
+
+- (void)setChartNavaidNames:(BOOL)on {
+  _chartSettings.navaid_names = on;
   [self applyChartSettings];
 }
 
@@ -1826,6 +1898,14 @@ NSString* NSStr(const std::string& s) {
   const fv::MovingMapTick tick = [self tickMovingMap:proj
                                        pixelsPerPoint:pixelsPerPoint];
 
+  // AIS targets age on the wall clock, so a frame with no new reports can
+  // still fade or drop one.
+  if (_ais->IsVisible()) {
+    _ais->SetOwnship(_movingMap->last_fix());
+    if (_ais->Tick(CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970))
+      [self overlayContentChanged];
+  }
+
   // The tick sets the overlays' symbol scale, so the overlay draw follows it.
   const BOOL upright = viewport.pitchDegrees > 0.0 ? YES : NO;
   if (![self drawOverlayIfStale:upright]) {
@@ -1914,6 +1994,10 @@ NSString* NSStr(const std::string& s) {
     const auto& wps = route->waypoints();
     // A route's names are a fixed 12 px, not scaled with the symbols.
     const double reach = 9.0 * 1.6 / 2.0 * route->symbol_dpi_scale() + 6.0;
+    // The image's pixels per point is the screen's, without the symbol zoom
+    // the overlay's dpi scale may carry, so a zoomed marker shows larger.
+    const double routePpp =
+        route->symbol_dpi_scale() / (_overlaysFollowSymbolZoom ? _symbolZoom : 1.0);
     for (size_t i = 0; i < wps.size(); ++i) {
       const std::string& name = route->show_labels() ? wps[i].label : std::string();
       PPBillboard* b = [self billboardAt:wps[i].position
@@ -1921,7 +2005,7 @@ NSString* NSStr(const std::string& s) {
                                    label:name
                                 labelPx:12.0
                              labelStartX:10.0
-                                   scale:route->symbol_dpi_scale()
+                                   scale:routePpp
                                    stamp:[&](const fv::MapProjection& proj,
                                              fv::CpuCanvas& canvas, double x, double y) {
                                      return route->DrawMarkerAt(proj, canvas, i, x, y);
@@ -2058,15 +2142,18 @@ NSString* NSStr(const std::string& s) {
   // The same reference for the route, and not the 0.32 mm chart reference: a
   // route's diamonds are the app's own furniture, sized in the units its
   // buttons are, like the ownship. The hit test scales with this too, so a
-  // marker drawn twice the size is twice the target.
-  _routeStore->overlay()->SetSymbolDpiScale(symbolScale);
+  // marker drawn twice the size is twice the target. Where the shell asks,
+  // the route and AIS also carry the user's symbol size.
+  const double followScale = symbolScale * (_overlaysFollowSymbolZoom ? _symbolZoom : 1.0);
+  _routeStore->overlay()->SetSymbolDpiScale(followScale);
 
   // And again for the points. A `.fvpoints` `size_px` is an authored pixel
   // like everything else this app draws, so a 22-px marker is 22 points wide
   // on any screen, and the hit test scales with it inside the overlay.
   _pointStore->overlay()->SetSymbolDpiScale(symbolScale);
-  if (symbolScale != _overlaySymbolScale) {
-    _overlaySymbolScale = symbolScale;
+  _ais->SetSymbolDpiScale(followScale);
+  if (followScale != _overlaySymbolScale) {
+    _overlaySymbolScale = followScale;
     [self overlayContentChanged];
   }
   _tickRotation = proj.Rotation();
@@ -2571,6 +2658,25 @@ static double PPEpochNow() {
     return nil;
   }
   return [self routeFromSnapshot:_routeStore->Snapshot()];
+}
+
+- (BOOL)writeRouteToGpxURL:(NSURL*)fileURL
+                      name:(NSString*)name
+                     error:(NSError**)error {
+  const fv::GpxDocument document = _routeStore->ExportGpx(name.UTF8String ?: "");
+  if (document.tracks.empty() && document.routes.empty()) {
+    if (error) *error = MakeError(PPErrorRouteFailed, @"The route has no line to follow yet.");
+    return NO;
+  }
+  fv::GpxWriteOptions options;
+  options.creator = "Peregrine Pippin";
+  const fv::Status status =
+      fv::WriteGpxFile(fileURL.fileSystemRepresentation ?: "", document, options);
+  if (!status.ok()) {
+    if (error) *error = ErrorFromStatus(PPErrorRouteFailed, status, @"write route");
+    return NO;
+  }
+  return YES;
 }
 
 - (PPRoute*)currentRoute {
@@ -3287,13 +3393,57 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
   }
   const double scale =
       _baseViewport.displayScale > 0.0 ? _baseViewport.displayScale : 1.0;
+  NSMutableArray<PPChartFeatureInfo*>* out = [NSMutableArray array];
+  if (_ais->IsVisible()) {
+    std::vector<fv::app::HitItem> hits;
+    const fv::PixelPoint at{static_cast<int>(std::lround(sx)), static_cast<int>(std::lround(sy))};
+    _ais->HitTestPoint(_baseViewport.projection, at, tolerance * scale, hits);
+    std::sort(hits.begin(), hits.end(),
+              [](const auto& a, const auto& b) { return a.distance_px < b.distance_px; });
+    for (const fv::app::HitItem& hit : hits) {
+      if (out.count >= kMaxChartFeatures) break;
+      const auto sheet = _ais->Details(static_cast<uint32_t>(hit.feature));
+      if (sheet) [out addObject:[[PPChartFeatureInfo alloc] initWithAisSheet:*sheet]];
+    }
+  }
   const std::vector<pippin::EncFeatureInfo> found = _chart->FeaturesAt(
       sx, sy, tolerance * scale,
       _chartDepthsInFeet ? pippin::EncDepthUnits::kFeet : pippin::EncDepthUnits::kMetres);
-  NSMutableArray<PPChartFeatureInfo*>* out = [NSMutableArray array];
-  for (const pippin::EncFeatureInfo& f : found)
+  for (const pippin::EncFeatureInfo& f : found) {
+    if (out.count >= kMaxChartFeatures) break;
     [out addObject:[[PPChartFeatureInfo alloc] initWithInfo:f]];
+  }
   return out;
+}
+
+#pragma mark - AIS traffic
+
+- (BOOL)aisVisible {
+  return _ais->IsVisible() ? YES : NO;
+}
+
+- (void)setAisVisible:(BOOL)visible {
+  if ((visible ? true : false) == _ais->IsVisible()) return;
+  _ais->SetVisible(visible ? true : false);
+  if (!visible) _ais->table().Clear();
+  [self overlayContentChanged];
+}
+
+- (void)pushOpenWatersFrames:(NSArray<PPOpenWatersFrame*>*)frames {
+  for (PPOpenWatersFrame* f in frames) _ais->PushFrame(f.frame);
+}
+
+- (void)pushAisLines:(NSArray<NSString*>*)lines heardAt:(NSTimeInterval)heardAt {
+  for (NSString* l in lines) {
+    fv::AisOverlay::Input input;
+    input.line = l.UTF8String ?: "";
+    input.heard_s = heardAt;
+    _ais->Push(std::move(input));
+  }
+}
+
+- (NSInteger)aisTargetCount {
+  return static_cast<NSInteger>(_ais->table().size());
 }
 
 - (double)chartFeatureHitTolerance {
@@ -3361,6 +3511,16 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
 
 - (NSUInteger)recordedPointCount {
   return static_cast<NSUInteger>(_recorder.point_count());
+}
+
++ (double)magneticVariationAtLatitude:(double)latitude longitude:(double)longitude {
+  // TrueToMagnetic subtracts the variation from a true bearing; from north
+  // that leaves 360 - variation, folded here into (-180, 180].
+  double north = fv::analysis::TrueToMagnetic(0.0, fv::GeoPoint{latitude, longitude});
+  double variation = -north;
+  while (variation <= -180.0) variation += 360.0;
+  while (variation > 180.0) variation -= 360.0;
+  return variation;
 }
 
 + (BOOL)writePoint:(PPMapPoint*)point

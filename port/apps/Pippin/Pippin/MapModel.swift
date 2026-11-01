@@ -68,6 +68,7 @@ final class MapModel: ObservableObject {
             live.viewport = newValue
             if pickProfile != nil { refreshPickPlace() }
             reconsiderLocationAccuracy()
+            if usesOpenWaters { followAisView() }
         }
     }
     /// The last finished frame, and the viewport it was drawn at.
@@ -333,6 +334,15 @@ final class MapModel: ObservableObject {
             windWatch = WindFeed.shared.$forecast.dropFirst().sink { [weak self] forecast in
                 self?.updateBeachWind(forecast)
             }
+            aisFeed.deliver = { [weak self] frames in self?.pushAis(frames) }
+            aisReceiver.deliverLines = { [weak self] lines, heard in
+                self?.pushAis(lines: lines, heard: heard)
+            }
+            aisReceiver.deliverFix = { [weak self] fix in self?.receive(fix) }
+            if aisTraffic, let renderer {
+                renderQueue.async { renderer.setAisVisible(true) }
+            }
+            if receiverWanted { aisReceiver.start() }
             courseUp = renderer?.initialCourseUp ?? true
             // Centred on the pack with its zoom limits applied; no surface
             // until the view reports one.
@@ -347,6 +357,24 @@ final class MapModel: ObservableObject {
         setSymbolStep(UserDefaults.standard.integer(forKey: Self.symbolStepKey),
                       persist: false)
         startDisplayLink()
+        #if DEBUG
+        energy.update(following: gpsMode, recording: isRecording)
+        // `-PPFollow YES`: enter GPS mode once the receiver has had time to
+        // start, for unattended energy runs on a device. `-PPScale N` then
+        // sets the chart to 1:N, after the zoom-out rule has had its say.
+        if UserDefaults.standard.bool(forKey: "PPFollow") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self else { return }
+                self.setGpsMode(true)
+                let scale = UserDefaults.standard.double(forKey: "PPScale")
+                if scale > 0, let vp = self.viewport {
+                    self.viewport = vp.moved(toCenter: vp.center, scaleDenominator: scale,
+                                             rotationDegrees: vp.rotationDegrees)
+                    self.setNeedsRender()
+                }
+            }
+        }
+        #endif
         if let launchNotice { post(launchNotice) }
         if renderer?.drawsCharts == true {
             attachChartDownloader()
@@ -523,7 +551,7 @@ final class MapModel: ObservableObject {
 
         let source = PPLocationSource()
         let proxy = LocationProxy(
-            onFix: { [weak self] fix in self?.receive(fix) },
+            onFix: { [weak self] fix in self?.receivePhoneFix(fix) },
             onAuthorization: { [weak self] auth in self?.receive(auth) },
             onFailure: { [weak self] error in
                 // Non-fatal. `PPLocationSource` already swallows
@@ -580,11 +608,13 @@ final class MapModel: ObservableObject {
     }
 
     /// Tilts the camera while following course-up and flattens it otherwise.
-    /// North-up following is flat. A pick is flat even while following: its
+    /// North-up following is flat, and so is every view in an app flavor
+    /// that does not tilt. A pick is flat even while following: its
     /// crosshair reads the flat centre.
     private func applyPitch() {
         guard let current = viewport else { return }
-        let tilted = gpsMode && courseUp && pickProfile == nil && !flattenedForDrag
+        let tilted = AppFlavor.current.tiltsWhileFollowing
+            && gpsMode && courseUp && pickProfile == nil && !flattenedForDrag
         let pitch = tilted ? followPitchDegrees : 0
         guard current.pitchDegrees != pitch else { return }
         viewport = current.pitched(pitch)
@@ -930,6 +960,29 @@ final class MapModel: ObservableObject {
                 model.setContentDirty()
             case .failure(let error):
                 model.status = error.localizedDescription
+            }
+        }
+    }
+
+    /// The route has a line a watch or chartplotter could follow: two stops,
+    /// and roads planned unless the legs are straight.
+    var routeExportsGpx: Bool {
+        guard let route, route.waypoints.count >= 2 else { return false }
+        return route.isStraight || route.isCalculated
+    }
+
+    /// Writes the current route as `<title>.gpx` in the temporary directory
+    /// and hands back the share payload; nil with the reason posted on failure.
+    func exportRouteGpx(title: String, done: @escaping @MainActor (SharePayload?) -> Void) {
+        guard renderer != nil else { done(nil); return }
+        let url = RouteShare.temporaryURL(title: title, ext: "gpx")
+        onRenderQueue({ $0.writeRoute(toGpxURL: url, name: title) }) { model, result in
+            switch result {
+            case .success:
+                done(SharePayload(items: [url], subject: title))
+            case .failure(let error):
+                model.post("Route not exported: \(error.localizedDescription)")
+                done(nil)
             }
         }
     }
@@ -1896,6 +1949,176 @@ final class MapModel: ObservableObject {
         }
     }
 
+    // MARK: - AIS traffic
+
+    /// The Open Waters stream; on while `usesOpenWaters` and the app is on screen.
+    let aisFeed = AisFeed()
+
+    /// The AIS overlay is drawn and its sources run. Persisted; only offered on Osprey.
+    @Published private(set) var aisTraffic = AppFlavor.current.offersAisTraffic
+        && UserDefaults.standard.bool(forKey: MapModel.aisTrafficKey)
+    static let aisTrafficKey = "aisTraffic"
+
+    /// Open Waters is a source of AIS traffic. Persisted; on by default.
+    @Published private(set) var aisOpenWaters =
+        UserDefaults.standard.object(forKey: MapModel.aisOpenWatersKey) as? Bool ?? true
+    static let aisOpenWatersKey = "aisOpenWaters"
+
+    /// The local receiver; see `receiverWanted`.
+    let aisReceiver = AisReceiver()
+
+    private var usesOpenWaters: Bool { aisTraffic && aisOpenWaters }
+
+    /// The receiver runs for traffic, or for the boat's position while the
+    /// overlay is off.
+    private var receiverWanted: Bool {
+        let r = aisReceiver.settings
+        return AppFlavor.current.offersAisTraffic && r.enabled && (aisTraffic || r.usePosition)
+    }
+
+    /// Turns AIS traffic on or off, persists it, and starts or stops its sources.
+    func setAisTraffic(_ on: Bool) {
+        guard on != aisTraffic, renderer != nil else { return }
+        aisTraffic = on
+        UserDefaults.standard.set(on, forKey: Self.aisTrafficKey)
+        refreshAisSources()
+        onRenderQueue({ $0.setAisVisible(on) }) { model, _ in
+            model.setContentDirty()
+        }
+    }
+
+    /// Turns the Open Waters source on or off and persists it.
+    func setAisOpenWaters(_ on: Bool) {
+        guard on != aisOpenWaters else { return }
+        aisOpenWaters = on
+        UserDefaults.standard.set(on, forKey: Self.aisOpenWatersKey)
+        refreshAisSources()
+        // The table does not track sources, so its targets are dropped
+        // together; the receiver's return with their next reports.
+        if !on && aisTraffic {
+            onRenderQueue({ $0.setAisVisible(false); $0.setAisVisible(true) }) { model, _ in
+                model.setContentDirty()
+            }
+        }
+    }
+
+    /// Stores the receiver's settings, reconnecting it as needed.
+    func setAisReceiver(_ settings: AisReceiverSettings) {
+        aisReceiver.update(settings)
+        refreshAisSources()
+    }
+
+    /// Starts or stops each source to match the settings. Nothing runs while
+    /// the app is off screen.
+    private func refreshAisSources() {
+        guard renderer != nil else { return }
+        if usesOpenWaters && scenePolicy.draws {
+            followAisView()
+        } else {
+            aisFeed.stop()
+        }
+        if receiverWanted && scenePolicy.draws {
+            aisReceiver.start()
+        } else {
+            aisReceiver.stop()
+        }
+    }
+
+    private func pushAis(lines: [String], heard: Date) {
+        guard aisTraffic else { return }
+        pendingAisLines.append((lines, heard.timeIntervalSince1970))
+        scheduleAisFlush()
+    }
+
+    /// A phone GPS fix, dropped while the boat's receiver supplies the position.
+    private func receivePhoneFix(_ fix: PPFix) {
+        if aisReceiver.suppliesPosition { return }
+        receive(fix)
+    }
+
+    /// Starts the stream for the chart on screen, or tells a running one the
+    /// chart moved. Nothing while the app is off screen.
+    private func followAisView() {
+        guard scenePolicy.draws, let bounds = visibleBounds() else { return }
+        if aisFeed.isOn {
+            aisFeed.viewChanged(bounds)
+        } else {
+            aisFeed.start(view: bounds)
+        }
+    }
+
+    private func pushAis(_ frames: [PPOpenWatersFrame]) {
+        guard usesOpenWaters else { return }
+        pendingOpenWatersFrames.append(contentsOf: frames)
+        scheduleAisFlush()
+    }
+
+    /// Seconds between AIS hand-overs to the renderer. Each one redraws the
+    /// overlay band; targets report every 2 s at the fastest, so the picture
+    /// loses little and an idle chart redraws far less often.
+    private static let aisFlushInterval: TimeInterval = 2
+    private var pendingAisLines: [(lines: [String], heardAt: TimeInterval)] = []
+    private var pendingOpenWatersFrames: [PPOpenWatersFrame] = []
+    private var aisFlushScheduled = false
+    private var lastAisFlush = Date.distantPast
+
+    /// Flushes now when the last flush is old enough, otherwise once at the
+    /// end of the interval.
+    private func scheduleAisFlush() {
+        guard !aisFlushScheduled else { return }
+        let wait = Self.aisFlushInterval - Date().timeIntervalSince(lastAisFlush)
+        guard wait > 0 else { flushAis(); return }
+        aisFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self else { return }
+            self.aisFlushScheduled = false
+            self.flushAis()
+        }
+    }
+
+    /// Hands the buffered AIS input to the renderer. Input buffered for a
+    /// source that has since been turned off is dropped.
+    private func flushAis() {
+        let lines = pendingAisLines
+        let frames = pendingOpenWatersFrames
+        pendingAisLines.removeAll()
+        pendingOpenWatersFrames.removeAll()
+        lastAisFlush = Date()
+        guard let renderer else { return }
+        let sendLines = aisTraffic && !lines.isEmpty
+        let sendFrames = usesOpenWaters && !frames.isEmpty
+        guard sendLines || sendFrames else { return }
+        renderQueue.async {
+            if sendLines {
+                for batch in lines { renderer.push(aisLines: batch.lines, heardAt: batch.heardAt) }
+            }
+            if sendFrames { renderer.push(openWatersFrames: frames) }
+        }
+        setContentDirty()
+    }
+
+    /// The box around the screen's four corners on the ground; corners past
+    /// the horizon of a tilted view are left out. Nil before the first layout.
+    private func visibleBounds() -> PPGeoBounds? {
+        guard let vp = viewport, vp.hasSurface else { return nil }
+        let size = vp.sizeInPoints
+        let corners = [CGPoint.zero, CGPoint(x: size.width, y: 0),
+                       CGPoint(x: 0, y: size.height), CGPoint(x: size.width, y: size.height)]
+            .map { vp.geo(at: $0) }
+            .filter { $0.latitude.isFinite && $0.longitude.isFinite }
+        guard let first = corners.first else { return nil }
+        var south = first.latitude, north = first.latitude
+        var west = first.longitude, east = first.longitude
+        for c in corners.dropFirst() {
+            south = min(south, c.latitude)
+            north = max(north, c.latitude)
+            west = min(west, c.longitude)
+            east = max(east, c.longitude)
+        }
+        return PPGeoBounds(southWest: PPGeoPointMake(south, west),
+                           northEast: PPGeoPointMake(north, east))
+    }
+
     /// The route is drawn coloured by grade on packs with elevation.
     @Published private(set) var routeSlopeColors =
         UserDefaults.standard.bool(forKey: MapModel.routeSlopeColorsKey)
@@ -2191,6 +2414,8 @@ final class MapModel: ObservableObject {
             break
         case .suspend:
             link?.isPaused = true
+            aisFeed.stop()
+            aisReceiver.stop()
             if coast != nil { stopCoast() }
             // Arrived in the foreground and kept riding: leaving the screen
             // ends the recording, as an arrival in the background does.
@@ -2198,6 +2423,7 @@ final class MapModel: ObservableObject {
             reconsiderLocationAccuracy()
         case .resume:
             reconsiderLocationAccuracy()
+            refreshAisSources()
             notices.clear()
             if let renderer { renderQueue.async { renderer.resumeFromBackground() } }
             resumeFrameOwed = true
@@ -2614,13 +2840,19 @@ final class MapModel: ObservableObject {
         return true
     }
 
-    /// True when `frame` needs a settle: its base is not on the screen's
-    /// pixels, or is not the size of the resting band.
+    /// True when `frame` needs a settle: its base is not the size of the
+    /// resting band, or, on a flat view, is not on the screen's pixels.
     private func owesSettle(_ frame: PPFrame) -> Bool {
         guard let renderer else { return false }
         let base = frame.baseViewport
-        if !base.isPixelAligned(to: frame.viewport) { return true }
         let resting = frame.viewport.grown(byMargin: renderer.bandMargin)
+        // A tilted screen always resamples its base through the perspective,
+        // and its band is centred ahead of the camera, where the projection's
+        // x scale differs; alignment can never hold, so a settle would redraw
+        // the same band on every frame.
+        if frame.viewport.pitchDegrees == 0, !base.isPixelAligned(to: frame.viewport) {
+            return true
+        }
         return base.sizeInPoints != resting.sizeInPoints
     }
 
@@ -2829,6 +3061,7 @@ private final class Renderer: @unchecked Sendable {
         map.routeAdjustments = MapModel.savedRouteAdjustments()
             .mapValues { $0.mapValues { NSNumber(value: $0) } }
         if drawsCharts { Self.apply(ChartSettings.load(from: .standard), to: map) }
+        map.overlaysFollowSymbolZoom = AppFlavor.current.overlaysFollowSymbolSize
         routeDefaultProfile = map.routeDefaultProfile
         pointHitTolerance = map.pointHitTolerance
         ownshipSymbolRadius = map.ownshipSymbolRadiusInPoints
@@ -2878,11 +3111,27 @@ private final class Renderer: @unchecked Sendable {
         map.chartCategory = PPChartCategory(rawValue: settings.category.rawValue) ?? .all
         map.chartPalette = PPChartPalette(rawValue: settings.palette.rawValue) ?? .automatic
         map.chartDepthsInFeet = settings.depthUnit == .feet
+        map.chartNavaidNames = !settings.hideNavaidNames
     }
 
     /// Render queue only. See `PPMap.chartFeaturesNear:inViewport:tolerance:`.
     func chartFeatures(near tap: CGPoint, in viewport: PPViewport) -> [PPChartFeatureInfo] {
         map.chartFeatures(near: tap, in: viewport, tolerance: map.chartFeatureHitTolerance)
+    }
+
+    /// Render queue only. See `PPMap.aisVisible`.
+    func setAisVisible(_ on: Bool) {
+        map.aisVisible = on
+    }
+
+    /// Render queue only. See `PPMap.pushOpenWatersFrames:`.
+    func push(openWatersFrames frames: [PPOpenWatersFrame]) {
+        map.push(openWatersFrames: frames)
+    }
+
+    /// Render queue only. See `PPMap.pushAisLines:heardAt:`.
+    func push(aisLines lines: [String], heardAt: TimeInterval) {
+        map.push(aisLines: lines, heardAt: heardAt)
     }
 
     /// Render queue only. See `PPMap.routeSlopeColors`.
@@ -3012,6 +3261,10 @@ private final class Renderer: @unchecked Sendable {
 
     func importRoute(from url: URL) -> Result<PPRoute, Error> {
         Result { try map.importRoute(from: url) }
+    }
+
+    func writeRoute(toGpxURL url: URL, name: String) -> Result<Void, Error> {
+        Result { try map.writeRoute(toGpxURL: url, name: name) }
     }
 
     func setRoute(waypoints: [PPWaypoint], profile: String) -> PPRoute {

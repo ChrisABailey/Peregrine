@@ -44,8 +44,8 @@ enum class EncPalette { kDay, kDusk, kNight };
 /** Depth units for feature summaries. Chart depths are metres in the data. */
 enum class EncDepthUnits { kMetres, kFeet };
 
-/** The mariner's chart settings. Depths are metres. The defaults are S-52's
- *  own and draw the chart exactly as an `EncChart` with no settings applied. */
+/** The mariner's chart settings. Depths are metres. The defaults draw the
+ *  chart exactly as an `EncChart` with no settings applied. */
 struct EncChartSettings {
   double safety_contour = 30.0;  ///< the bold contour; deeper water is unshaded
   double safety_depth = 30.0;    ///< soundings this shallow or shallower print black
@@ -53,6 +53,10 @@ struct EncChartSettings {
   double deep_contour = 30.0;    ///< outer edge of the deep-water shade
   EncDisplayCategory category = EncDisplayCategory::kAll;
   EncPalette palette = EncPalette::kDay;
+  bool navaid_names = true;      ///< draws buoy and beacon names (OBJNAM)
+  /// Area edges carry their class's marks (anchors, T-ticks) rather than plain
+  /// dashed lines: S-52's symbolized-boundaries lookup table.
+  bool symbolized_boundaries = false;
 
   bool operator==(const EncChartSettings& o) const;
   bool operator!=(const EncChartSettings& o) const { return !(*this == o); }
@@ -77,9 +81,10 @@ std::string EncFeatureSummary(const fv::FeatureDescription& d, EncDepthUnits uni
  *  terms; ties go to the larger-scale band. 0 when `bands` is empty. */
 int EncBandForScale(const std::vector<int>& bands, double scale_denominator);
 
-/** An ENC exchange set drawn with S-52 symbology, one usage band at a time.
- *  Only cells that meet the view are parsed; a band change drops the cells
- *  of every other band. */
+/** An ENC exchange set drawn with S-52 symbology. A draw shows the band for
+ *  the scale over coarser bands where that band does not cover the view.
+ *  Only cells that meet the view are parsed; a change in the drawn bands drops
+ *  the cells of every other band. */
 class EncDrawnBandSource;
 
 class EncChart {
@@ -134,7 +139,8 @@ class EncChart {
   void SetSceneMargin(double fraction) { scene_margin_ = fraction; }
   void SetSimplifyPixels(double px) { simplify_px_ = px; }
 
-  /** Clears `canvas` to the chart ground and draws the band for `proj`'s scale.
+  /** Clears `canvas` to the chart ground and draws the band for `proj`'s scale,
+   *  over coarser bands where that band's cells leave part of the view bare.
    *  `device_dpi` is the true pixel pitch, which sizes pens and dashes;
    *  `symbol_scale` is device pixels per authored symbol pixel (symbols, area
    *  patterns, text). */
@@ -155,7 +161,8 @@ class EncChart {
   /** Centre of the last kBase draw; (0, 0) before one. */
   fv::GeoPoint last_center() const { return last_center_; }
 
-  /** The band and renderer of the last kBase draw; 0 / nullptr before one. */
+  /** The finest band of the last kBase draw and its renderer; 0 / nullptr
+   *  before one. */
   int last_band() const { return last_band_; }
   fv::VectorRenderer* last_renderer() const { return last_renderer_; }
   fv::EncVectorSource* last_source() const { return last_source_; }
@@ -163,7 +170,10 @@ class EncChart {
  private:
   struct Band;
   fv::Status OpenBand(int band, Band** out);
-  void ReleaseOtherBands(int keep);
+  void ReleaseOtherBands(const std::vector<int>& keep);
+  /** Bands to draw for `proj`, coarsest first: the band for the scale, then
+   *  coarser bands with cells in view until one cell's bounds hold the view. */
+  std::vector<int> BandsForView(const fv::MapProjection& proj) const;
   void ApplySettings();
 
   std::shared_ptr<fv::S52StyleEngine> style_;
@@ -176,6 +186,8 @@ class EncChart {
   double simplify_px_ = 0.0;
   size_t max_resident_cells_ = 32;
   int last_band_ = 0;
+  std::vector<int> last_bands_;
+  std::vector<Band*> drawn_;  // bands of the last kBase draw, finest first
   fv::VectorRenderer* last_renderer_ = nullptr;
   fv::EncVectorSource* last_source_ = nullptr;
   std::shared_ptr<EncDrawnBandSource> search_source_;

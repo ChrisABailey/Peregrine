@@ -30,6 +30,14 @@ std::string EncRoot() {
   return fs::is_directory(p) ? p : std::string();
 }
 
+/** A TrueType font on this host for label tests; CpuCanvas has none built in. */
+std::string HostFont() {
+  for (const char* f : {"/System/Library/Fonts/Supplemental/Arial.ttf",
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"})
+    if (fs::exists(f)) return f;
+  return {};
+}
+
 fv::MapProjection ProjectionAt(double lat, double lon, double scale) {
   fv::MapProjection proj;
   proj.SetSurfaceSize(400, 400);
@@ -212,6 +220,32 @@ TEST(EncChart, TheSettingsChangeWhatIsDrawn) {
   EXPECT_EQ(0u, DifferingPixels(base, again)) << "back to the defaults, same chart";
 }
 
+/** Hiding buoy and beacon names changes the labelled chart; showing them
+ *  again restores it. */
+TEST(EncChart, NavaidNamesCanBeHidden) {
+  const std::string root = EncRoot();
+  if (root.empty()) GTEST_SKIP() << "no ENC test data";
+  const std::string font = HostFont();
+  if (font.empty()) GTEST_SKIP() << "no host font for labels";
+  pippin::EncChart chart;
+  ASSERT_TRUE(chart.Open(root, root).ok());
+  chart.SetDrawLabels(true);
+  const fv::MapProjection proj = ProjectionAt(32.75, -79.88, 20000);
+  auto draw = [&](bool names, fv::CpuCanvas* c) {
+    ASSERT_TRUE(c->SetDefaultFont(font).ok());
+    pippin::EncChartSettings s;
+    s.navaid_names = names;
+    chart.SetSettings(s);
+    ASSERT_TRUE(chart.Render(proj, 254.0, 1.0, pippin::EncChartPass::kBase, c).ok());
+  };
+  fv::CpuCanvas shown(400, 400), hidden(400, 400), again(400, 400);
+  draw(true, &shown);
+  draw(false, &hidden);
+  draw(true, &again);
+  EXPECT_GT(DifferingPixels(shown, hidden), 200u) << "the names are drawn text";
+  EXPECT_EQ(0u, DifferingPixels(shown, again));
+}
+
 TEST(EncChart, ATapInTheHarbourDescribesWhatIsThere) {
   const std::string root = EncRoot();
   if (root.empty()) GTEST_SKIP() << "no ENC test data";
@@ -363,3 +397,19 @@ TEST(EncChartBench, DISABLED_FloridaFootprint) {
   std::printf("peak footprint %+.0f MB\n", peak);
 }
 #endif  // __APPLE__
+
+TEST(EncChart, AHarbourScaleDrawOutsideTheHarbourCellsFallsBackToCoarserBands) {
+  const std::string root = EncRoot();
+  if (root.empty()) GTEST_SKIP() << "no ENC test data";
+  pippin::EncChart chart;
+  ASSERT_TRUE(chart.Open(root, root).ok());
+  fv::CpuCanvas canvas(400, 400);
+  // Offshore of Charleston: approach cells only, no harbour cell.
+  ASSERT_TRUE(chart.Render(ProjectionAt(32.70, -79.85, 12000), 254.0, 1.0,
+                           pippin::EncChartPass::kBase, &canvas)
+                  .ok());
+  EXPECT_EQ(4, chart.last_band());
+  EXPECT_GT(InkedPixels(canvas), 400u * 400u / 4) << "the approach chart shows";
+  EXPECT_FALSE(chart.FeaturesAt(200, 200, 4, pippin::EncDepthUnits::kMetres).empty())
+      << "a tap answers from the band drawn there";
+}

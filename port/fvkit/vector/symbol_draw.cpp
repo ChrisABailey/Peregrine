@@ -261,4 +261,218 @@ bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
   return true;
 }
 
+PathArc::PathArc(const std::vector<SurfacePoint>& path)
+    : path_(path), cum_(path.size(), 0.0) {
+  for (size_t i = 1; i < path_.size(); ++i) {
+    cum_[i] = cum_[i - 1] + std::hypot(path_[i].x - path_[i - 1].x,
+                                       path_[i].y - path_[i - 1].y);
+  }
+}
+
+size_t PathArc::SegmentAt(double s) const {
+  if (path_.size() < 2) return 0;
+  const size_t last = path_.size() - 2;
+  size_t i = static_cast<size_t>(
+      std::upper_bound(cum_.begin(), cum_.end(), s) - cum_.begin());
+  i = i == 0 ? 0 : (std::min)(i - 1, last);
+  // Zero-length segments carry no direction: step back to the nearest real one,
+  // then forward if the path starts with them.
+  while (i > 0 && !(cum_[i + 1] > cum_[i])) --i;
+  while (i < last && !(cum_[i + 1] > cum_[i])) ++i;
+  return i;
+}
+
+SurfacePoint PathArc::At(double s, double d, double seg_s) const {
+  if (path_.empty()) return SurfacePoint{};
+  if (path_.size() < 2) return path_.front();
+  const size_t i = SegmentAt(seg_s);
+  const SurfacePoint& a = path_[i];
+  const SurfacePoint& b = path_[i + 1];
+  const double len = cum_[i + 1] - cum_[i];
+  if (!(len > 0.0)) return a;
+  const double tx = (b.x - a.x) / len, ty = (b.y - a.y) / len;
+  const double t = s - cum_[i];
+  // (ty, -tx) is the left-hand normal on a y-down surface, the side a
+  // symbol's +y lands on in DrawSymbolAt.
+  return SurfacePoint{a.x + tx * t + d * ty, a.y + ty * t - d * tx};
+}
+
+void PathArc::VerticesBetween(double a, double b,
+                              std::vector<double>* out) const {
+  if (cum_.size() < 3 || !(b > a)) return;
+  auto it = std::upper_bound(cum_.begin() + 1, cum_.end() - 1, a);
+  for (; it != cum_.end() - 1 && *it < b; ++it) out->push_back(*it);
+}
+
+namespace {
+
+/// A symbol point in path space: u is arc length, v the left-hand offset,
+/// both in pixels.
+struct UV {
+  double u = 0.0, v = 0.0;
+};
+
+/// Bends one symbol-space polyline, cutting it at u = 0 and u = arc.length()
+/// and at every path vertex it crosses. Each piece is mapped on the segment
+/// under its midpoint, so a crossing becomes a bevel join.
+void BendRun(const PathArc& arc, const std::vector<UV>& pts, bool closed,
+             bool clip, std::vector<std::vector<SurfacePoint>>* out) {
+  const double total = arc.length();
+  std::vector<SurfacePoint> run;
+  auto push = [&run](const SurfacePoint& p) {
+    if (run.empty() || std::fabs(run.back().x - p.x) > 1e-9 ||
+        std::fabs(run.back().y - p.y) > 1e-9)
+      run.push_back(p);
+  };
+  auto flush = [&] {
+    if (run.size() >= 2) out->push_back(std::move(run));
+    run.clear();
+  };
+  const size_t n = pts.size();
+  const size_t edges = closed ? n : n - 1;
+  std::vector<double> cuts;
+  for (size_t e = 0; e < edges; ++e) {
+    const UV& p = pts[e];
+    const UV& q = pts[(e + 1) % n];
+    const double du = q.u - p.u, dv = q.v - p.v;
+    cuts.assign({0.0, 1.0});
+    if (du != 0.0) {
+      std::vector<double> us;
+      arc.VerticesBetween((std::min)(p.u, q.u), (std::max)(p.u, q.u), &us);
+      if (clip) {
+        if ((std::min)(p.u, q.u) < 0.0 && (std::max)(p.u, q.u) > 0.0)
+          us.push_back(0.0);
+        if ((std::min)(p.u, q.u) < total && (std::max)(p.u, q.u) > total)
+          us.push_back(total);
+      }
+      for (double u : us) cuts.push_back((u - p.u) / du);
+      std::sort(cuts.begin(), cuts.end());
+    }
+    for (size_t k = 0; k + 1 < cuts.size(); ++k) {
+      const double t0 = cuts[k], t1 = cuts[k + 1];
+      if (!(t1 > t0)) continue;
+      const double mid = p.u + du * (t0 + t1) / 2.0;
+      if (clip && (mid < 0.0 || mid > total)) {
+        flush();
+        continue;
+      }
+      push(arc.At(p.u + du * t0, p.v + dv * t0, mid));
+      push(arc.At(p.u + du * t1, p.v + dv * t1, mid));
+    }
+  }
+  flush();
+}
+
+/// Sutherland-Hodgman against one side of u = bound.
+std::vector<UV> ClipU(const std::vector<UV>& ring, double bound, bool keep_above) {
+  std::vector<UV> out;
+  const size_t n = ring.size();
+  auto inside = [&](const UV& p) {
+    return keep_above ? p.u >= bound : p.u <= bound;
+  };
+  for (size_t i = 0; i < n; ++i) {
+    const UV& a = ring[i];
+    const UV& b = ring[(i + 1) % n];
+    const bool ia = inside(a), ib = inside(b);
+    if (ia) out.push_back(a);
+    if (ia != ib) {
+      const double t = (bound - a.u) / (b.u - a.u);
+      out.push_back(UV{bound, a.v + (b.v - a.v) * t});
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+std::vector<BentPrimitive> BendSymbol(const VectorSymbol& sym,
+                                      const PathArc& arc, double along,
+                                      double offset_px,
+                                      double px_per_himetric) {
+  std::vector<BentPrimitive> out;
+  if (!(arc.length() > 0.0)) return out;
+  auto to_uv = [&](const SymbolPoint& p) {
+    return UV{along + p.x * px_per_himetric, offset_px + p.y * px_per_himetric};
+  };
+  for (const SymbolPrimitive& prim : sym.primitives) {
+    std::vector<UV> pts;
+    bool closed = false;
+    switch (prim.type) {
+      case SymbolPrimitiveType::kPolyline:
+        if (prim.points.size() < 2 || !prim.has_stroke) continue;
+        for (const SymbolPoint& p : prim.points) pts.push_back(to_uv(p));
+        break;
+      case SymbolPrimitiveType::kPolygon:
+        if (prim.points.size() < 3) continue;
+        for (const SymbolPoint& p : prim.points) pts.push_back(to_uv(p));
+        closed = true;
+        break;
+      case SymbolPrimitiveType::kEllipse: {
+        // Conjugate radii: c + r1 cos t + r2 sin t traces the ellipse exactly.
+        constexpr int kSides = 24;
+        for (int k = 0; k < kSides; ++k) {
+          const double t = 2.0 * 3.14159265358979323846 * k / kSides;
+          pts.push_back(to_uv(SymbolPoint{
+              prim.center.x + prim.radius1.x * std::cos(t) +
+                  prim.radius2.x * std::sin(t),
+              prim.center.y + prim.radius1.y * std::cos(t) +
+                  prim.radius2.y * std::sin(t)}));
+        }
+        closed = true;
+        break;
+      }
+      case SymbolPrimitiveType::kText:
+        continue;
+    }
+    BentPrimitive bp;
+    bp.source = &prim;
+    if (closed && prim.has_fill) {
+      std::vector<UV> ring = ClipU(ClipU(pts, 0.0, true), arc.length(), false);
+      if (ring.size() >= 3) {
+        std::vector<std::vector<SurfacePoint>> runs;
+        BendRun(arc, ring, true, false, &runs);
+        if (!runs.empty() && runs.front().size() >= 3) bp.ring = runs.front();
+      }
+    }
+    if (prim.has_stroke) BendRun(arc, pts, closed, true, &bp.lines);
+    if (!bp.ring.empty() || !bp.lines.empty()) out.push_back(std::move(bp));
+  }
+  return out;
+}
+
+void DrawSymbolAlongPath(ICanvas* canvas, const VectorSymbol& sym,
+                         const PathArc& arc, double along, double offset_px,
+                         double px_per_himetric, InkBox* ink,
+                         const FvColor* tint) {
+  const PixelSize size = canvas->Size();
+  for (BentPrimitive& bp :
+       BendSymbol(sym, arc, along, offset_px, px_per_himetric)) {
+    const SymbolPrimitive& prim = *bp.source;
+    if (!bp.ring.empty()) {
+      Brush brush;
+      brush.color = tint != nullptr ? *tint : prim.fill_color;
+      std::vector<PixelPoint> ring =
+          ClipPolygon(bp.ring, size.width, size.height);
+      if (ring.size() >= 3) {
+        std::vector<std::vector<PixelPoint>> rings{std::move(ring)};
+        canvas->DrawPolyPolygon(rings, &brush, nullptr);
+      }
+      if (ink != nullptr)
+        for (const SurfacePoint& p : bp.ring) ink->Add(p.x, p.y);
+    }
+    if (!bp.lines.empty()) {
+      Pen pen;
+      pen.color = tint != nullptr ? *tint : prim.stroke_color;
+      pen.width = std::max(1, static_cast<int>(std::lround(
+                                  prim.stroke_width * px_per_himetric)));
+      for (const std::vector<SurfacePoint>& line : bp.lines) {
+        for (auto& run : ClipPolyline(line, size.width, size.height))
+          canvas->DrawLines(run, pen);
+        if (ink != nullptr)
+          for (const SurfacePoint& p : line) ink->Add(p.x, p.y);
+      }
+    }
+  }
+}
+
 }  // namespace fv

@@ -49,7 +49,8 @@ if(FVW_BUILD_TESTS)
   )
   # fv_png: golden-PNG side channel for the E3a chart render, same
   # convention as canvas_test and the GeoSym harbor golden.
-  target_link_libraries(fv_enc_test PRIVATE fv_enc fv_png fv_zlib GTest::gtest_main)
+  # fv_png comes PUBLIC through fv_enc -> fv_fvkit; naming it again makes ld warn.
+  target_link_libraries(fv_enc_test PRIVATE fv_enc fv_zlib GTest::gtest_main)
   gtest_discover_tests(fv_enc_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 

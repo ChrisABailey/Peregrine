@@ -56,8 +56,10 @@ static_assert(kFieldBool == static_cast<int>(app::PropertyType::kBool) &&
                   kFieldPath == static_cast<int>(app::PropertyType::kPath),
               "HostFieldType mirrors PropertyType");
 
-static_assert(kHostPrimary == kPrimary && kHostShift == kShift && kHostAlt == kAlt &&
-                  kHostControl == kControl,
+static_assert(unsigned{kHostPrimary} == unsigned{kPrimary} &&
+                  unsigned{kHostShift} == unsigned{kShift} &&
+                  unsigned{kHostAlt} == unsigned{kAlt} &&
+                  unsigned{kHostControl} == unsigned{kControl},
               "HostModifier mirrors Modifier");
 
 /// The host's DeskShell: questions go to the native shell's request handler,

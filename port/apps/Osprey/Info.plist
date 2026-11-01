@@ -15,6 +15,10 @@
 	<array>
 		<string>location</string>
 	</array>
+	<!-- AIS Receiver: a TCP connection to, or unicast UDP from, the boat's
+	     receiver. Broadcast UDP would also need the multicast entitlement. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Osprey connects to an AIS receiver or NMEA gateway on the boat's network to show nearby vessels and, if you choose, the boat's GPS position.</string>
 	<!-- Only the operating system's HTTPS is used; see Pippin/Info.plist. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

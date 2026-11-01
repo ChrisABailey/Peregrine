@@ -1,0 +1,67 @@
+; Note this list contains the AIS Ship Type ID and a file name of a ship image.  
+; There must be NO SPACES in the filename,  The IS and filenam is delimited by a space, a comma or a pipe(1)
+; data after the number and file name is ignored
+; image files are expected to be in the directory where this file resides
+; images may be png or gif files with alpha for transparent regions
+2102,grey.png
+2002,grey.png
+1102,grey.png
+1002,grey.png
+102,grey.png
+2103,fish.png
+2003,fish.png
+1103,fish.png
+1003,fish.png
+103, fish.png
+2106,RedCross.png
+2006,RedCross.png
+1106,RedCross.png
+1006,RedCross.png
+106, RedCross.png
+90, orange.png
+85, Cargo.png
+84, Grey.png
+83, Grey.png
+82, Grey.png
+81, Grey.png
+80, Grey.png (tanker)
+79, Cargo.png
+74, Cargo.png
+73, Cargo.png
+72, Cargo.png
+71, Cargo.png
+70, Cargo.png
+69, Green.png (passenger Vessel)
+60, Green.png (passenger Vessel)
+58, RedCross.png (Medical transport) 
+55, LE_Red.png (Law enforcement)
+54, environment.png (Anti Pollution)
+53, Tug.png (Port tender)
+52, Tug.png
+51, SAR-red.png
+50, Tug.png (pilot vessel)
+44, blue.png (High Speed Craft)
+43, blue.png (High Speed Craft)
+42, blue.png (High Speed Craft)
+41, blue.png (High Speed Craft)
+40, blue.png (High Speed Craft)
+38, SAR-Red.png
+37, Blue.png (plesure craft)
+36, Sail.png 
+35, military.png (Military operations)
+34, diving.png
+33, dredge.png (dredging or underwater operations)
+32, Tow.png (Towing w length of tow >200m or)
+31, Tow.png (Towing Vessel)
+30, fish.png
+24, Green.png (WIG /Hovercraft?3 – Carrying DG, HS, or MP, IMO hazard or pollutant category D)
+23, Green.png (WIG /Hovercraft?3 – Carrying DG, HS, or MP, IMO hazard or pollutant category C)
+22, Green.png (WIG /Hovercraft?2 – Carrying DG, HS, or MP, IMO hazard or pollutant category B)
+21, Green.png (WIG /Hovercraft?1 – Carrying DG, HS, or MP, IMO hazard or pollutant category A
+20, Green.png (WIG /Hovercraft?)
+
+
+
+
+
+

@@ -513,7 +513,7 @@ struct RouteSheet: View {
                     Text("\(Self.waypointLabel(route, index)) → \(Self.waypointLabel(route, index + 1))")
                         .lineLimit(1)
                     Spacer()
-                    Text(leg.isMeasured ? Course.text(leg.courseDegrees) : "—")
+                    Text(leg.isMeasured ? legCourseText(route, index, leg) : "—")
                         .monospacedDigit()
                     Text(display.units.distance(leg.distanceMeters))
                         .monospacedDigit()
@@ -522,6 +522,13 @@ struct RouteSheet: View {
                 .font(.subheadline)
             }
         }
+    }
+
+    /// A leg's course in the chosen reference, magnetic at the leg's start.
+    private func legCourseText(_ route: PPRoute, _ index: Int, _ leg: PPRouteLeg) -> String {
+        let start = route.waypoints.indices.contains(index)
+            ? route.waypoints[index].coordinate : nil
+        return display.courseText(leg.courseDegrees, at: start)
     }
 
     private static func waypointLabel(_ route: PPRoute, _ index: Int) -> String {

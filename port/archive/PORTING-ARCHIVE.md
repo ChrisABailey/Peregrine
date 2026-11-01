@@ -2779,3 +2779,12 @@ C++ interop; `port/cmake/FvwStaticClosure.cmake` (the static-lib closure helper)
 - Fix: `lidar-shaded` format. The catalog got `testdata/lidar` added as `lidar` and `lidar-shaded` via pyfvw; Generate Coverage also picks it up via the auto-detect table. Registry key count 8 -> 9.
 - Tests: DtedShadedRelief.ShadeGridMatchesTheCellRender, DtedShadedGrid.VoidPostsAreTransparent, GeoTiffDemTest.LidarShaded* (3), DeskData.ElevationMapsReachLidarAndItsOverlaysUseIt. ctest 2828 of 2835, the same 7 Boardwalk 29 failures. Fvrender 1200x900 lidar frame 0.76 s.
 - LX: additive; PeregrineGtk gets it via shared core and map-groups.json.
+
+### 2026-10-26 — Osprey OB5: tides and wind removed
+- Chris chose removal over a station picker (operators have their own tide/weather sources). `stage_data.py` drops `[tides]` and `[wind]` for charleston-enc and tampa-enc and no longer stages tides.json; the app hides the Tides item and wind when the pack has none (the Atlanta-pack path).
+- Parked, not planned: per-region station catalogue with baked tables, nearest-to-map-centre station, wind at the station, tidal currents.
+
+### 2026-10-30 — geo_tool: compiled-in magnetic model is WMM2025 (d2178e47)
+- Mac/iOS leave `FVW_GEODATA_DIR` unset, so `GEO_magnetic_variation` always used the table in `fvw_core/geo_tool/geomag.cpp` `load_mem_mag_data()`: WMM2000 coefficients labelled "WMM-95", epoch 1995 (about 2 degrees off in the US Southeast in 2026). Now WMM2025, epoch 2025.0, valid to 2030.0.
+- Deliberate departure from Windows: new `GEO_magnetic_variation_at(lat, lon, decimal_year, altitude_m, *magvar)`; the year/month form evaluates mid-month `(month-0.5)/12` instead of `year + month/12`. Windows still prefers `GeoData/wmm.dat` when present; the table is only its fallback.
+- `fvw_core/CotGPSFeed` carries a separate WMM2000 copy; not in the port build, left alone.

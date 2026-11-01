@@ -60,7 +60,8 @@ if(NOT FVW_IOS)
     # RouteKit is linked BESIDE fvkit for the invariant this directory's iOS
     # half already states: fvkit does not link port/Routing, and a route needs
     # both.
-    target_link_libraries(fv_pippin_test PRIVATE fv_fvkit fv_enc fv_routekit
+    # fv_fvkit comes PUBLIC through fv_enc; naming it again makes ld warn.
+    target_link_libraries(fv_pippin_test PRIVATE fv_enc fv_routekit
       fv_zlib GTest::gtest_main)
     # The shipped cost rules, as a fixture — the same file the pack stages, kept
     # where its own module keeps it rather than copied here.

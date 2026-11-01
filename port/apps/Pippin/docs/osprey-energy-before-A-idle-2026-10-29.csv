@@ -1,0 +1,8 @@
+time,mode,battery_level,battery_state,thermal_state,frames,base_draws,cache_hits,fixes,cpu_s
+2026-10-29T15:27:14Z,browsing,1.00,full,nominal,0,0,0,0,0.000
+2026-10-29T15:28:14Z,browsing,1.00,full,nominal,2,2,0,3,0.298
+2026-10-29T15:29:14Z,browsing,1.00,full,nominal,0,0,0,0,0.003
+2026-10-29T15:30:14Z,browsing,1.00,full,nominal,0,0,0,0,0.002
+2026-10-29T15:31:14Z,browsing,1.00,full,nominal,0,0,0,0,0.003
+2026-10-29T15:32:14Z,browsing,1.00,full,nominal,0,0,0,0,0.002
+2026-10-29T15:33:14Z,browsing,1.00,full,nominal,0,0,0,0,0.002

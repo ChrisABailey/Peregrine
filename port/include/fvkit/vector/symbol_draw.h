@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
 
 #include "fvkit/canvas/canvas.h"
 #include "fvkit/symbol/library.h"
@@ -168,6 +169,57 @@ bool DrawResolvedSymbol(ICanvas* canvas, const ResolvedSymbol& sym, double ax,
                         double ay, double px_per_himetric, double pixmap_scale,
                         double rotation_rad, InkBox* ink,
                         const FvColor* tint = nullptr);
+
+/// Arc-length parameterisation of a pixel path, built once per path and shared
+/// by every symbol bent along it.
+class PathArc {
+ public:
+  explicit PathArc(const std::vector<SurfacePoint>& path);
+
+  /// Total length in pixels.
+  double length() const { return cum_.empty() ? 0.0 : cum_.back(); }
+
+  /// The point at arc length `s`, displaced `d` pixels along the left-hand
+  /// normal of the segment that contains `seg_s`. Computing the point on a
+  /// named segment (extended past its ends if need be) is what turns a
+  /// vertex into a bevel rather than a smear when the caller passes the
+  /// midpoint of the piece being bent.
+  SurfacePoint At(double s, double d, double seg_s) const;
+
+  /// Arc lengths of the interior vertices strictly between `a` and `b`,
+  /// appended in ascending order.
+  void VerticesBetween(double a, double b, std::vector<double>* out) const;
+
+ private:
+  size_t SegmentAt(double s) const;  // index of the segment's first vertex
+
+  std::vector<SurfacePoint> path_;
+  std::vector<double> cum_;
+};
+
+/// One symbol primitive after bending: stroked runs and an optional filled
+/// ring, in surface pixels.
+struct BentPrimitive {
+  const SymbolPrimitive* source = nullptr;
+  std::vector<std::vector<SurfacePoint>> lines;
+  std::vector<SurfacePoint> ring;
+};
+
+/// Bends a display list along `arc`: symbol +x runs along the path from arc
+/// length `along`, symbol +y lies along the left-hand normal, shifted
+/// `offset_px` further left. Ink before the path's start or past its end is
+/// cut off. Ellipses are flattened; text primitives are skipped.
+std::vector<BentPrimitive> BendSymbol(const VectorSymbol& sym,
+                                      const PathArc& arc, double along,
+                                      double offset_px,
+                                      double px_per_himetric);
+
+/// Draws a display list bent along `arc` (see BendSymbol), so a line-style
+/// stamp follows each turn of its line instead of running straight past it.
+void DrawSymbolAlongPath(ICanvas* canvas, const VectorSymbol& sym,
+                         const PathArc& arc, double along, double offset_px,
+                         double px_per_himetric, InkBox* ink,
+                         const FvColor* tint = nullptr);
 
 }  // namespace fv
 

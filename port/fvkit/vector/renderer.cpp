@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -454,6 +455,9 @@ PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
       ps.y = p.y - r.offset * tx;
       ps.rotation_deg = std::atan2(-ty, tx) * 180.0 / kPi + r.rotation_deg;
       ps.scale = r.symbol_scale > 0.0 ? r.symbol_scale : 1.0;
+      ps.along = s;
+      ps.offset = r.offset;
+      ps.bend = r.bend;
       out.symbols.push_back(std::move(ps));
     }
 
@@ -989,19 +993,26 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
             if (pick_enabled_) pick_.AddStroke(it.ref, sr.priority, run, half);
           }
         }
+        std::unique_ptr<PathArc> arc;  // built on the first bent stamp
         for (const PlacedSymbol& ps : placed.symbols) {
           if (ps.x < -1e3 || ps.y < -1e3 || ps.x > size.width + 1e3 ||
               ps.y > size.height + 1e3)
             continue;
           InkBox ink;
           // Resolved per stamp: a pattern's runs can name different symbols.
-          if (!DrawResolvedSymbol(canvas,
-                                  ResolveSymbol(style_.get(), ps.symbol_id),
-                                  ps.x, ps.y, px_per_himetric * ps.scale,
-                                  pixmap_scale * ps.scale,
-                                  ps.rotation_deg * kPi / 180.0,
-                                  pick_enabled_ ? &ink : nullptr))
+          const ResolvedSymbol rs = ResolveSymbol(style_.get(), ps.symbol_id);
+          if (ps.bend && rs.vec != nullptr) {
+            if (!arc) arc = std::make_unique<PathArc>(proj_part);
+            DrawSymbolAlongPath(canvas, *rs.vec, *arc, ps.along, ps.offset,
+                                px_per_himetric * ps.scale,
+                                pick_enabled_ ? &ink : nullptr);
+          } else if (!DrawResolvedSymbol(canvas, rs, ps.x, ps.y,
+                                         px_per_himetric * ps.scale,
+                                         pixmap_scale * ps.scale,
+                                         ps.rotation_deg * kPi / 180.0,
+                                         pick_enabled_ ? &ink : nullptr)) {
             continue;
+          }
           ++draws_emitted_;
           if (pick_enabled_) {
             ink.Add(ps.x, ps.y);

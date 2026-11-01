@@ -38,9 +38,11 @@
 		AA010001000000000000001F /* PPTrip.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000024 /* PPTrip.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000060 /* PPTide.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000060 /* PPTide.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000070 /* PPWind.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000070 /* PPWind.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		AA01000100000000000000F7 /* PPAis.h in Headers */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000F8 /* PPAis.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000020 /* PPTrip.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000026 /* PPTrip.mm */; };
 		AA0100010000000000000061 /* PPTide.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000062 /* PPTide.mm */; };
 		AA0100010000000000000071 /* PPWind.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000072 /* PPWind.mm */; };
+		AA01000100000000000000F8 /* PPAis.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000FA /* PPAis.mm */; };
 		AA0100010000000000000021 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000027 /* Assets.xcassets */; };
 		AA0100010000000000000022 /* PPPoint.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000028 /* PPPoint.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		AA0100010000000000000023 /* PPPoint.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000002A /* PPPoint.mm */; };
@@ -93,6 +95,9 @@
 		AA0100010000000000000F32 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
 		AA0100010000000000000F33 /* PippinActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA030001000000000000000D /* PippinActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA0100010000000000000F40 /* AppFlavor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F40 /* AppFlavor.swift */; };
+		AA0100010000000000000F50 /* AisFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F50 /* AisFeed.swift */; };
+		AA0100010000000000000F60 /* AisReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F60 /* AisReceiver.swift */; };
+		AA0100010000000000000F51 /* OpenWatersIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F51 /* OpenWatersIdentity.swift */; };
 		AA0100010000000000000F41 /* Course.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F41 /* Course.swift */; };
 		AA0100010000000000000F42 /* ChartSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F42 /* ChartSettings.swift */; };
 		AA0100010000000000000F45 /* ChartDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F45 /* ChartDownloader.swift */; };
@@ -101,6 +106,9 @@
 		AB0100010000000000000007 /* PippinApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000007 /* PippinApp.swift */; };
 		AB0100010000000000000032 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
 		AB0100010000000000000F40 /* AppFlavor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F40 /* AppFlavor.swift */; };
+		AB0100010000000000000F50 /* AisFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F50 /* AisFeed.swift */; };
+		AB0100010000000000000F60 /* AisReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F60 /* AisReceiver.swift */; };
+		AB0100010000000000000F51 /* OpenWatersIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F51 /* OpenWatersIdentity.swift */; };
 		AB0100010000000000000F41 /* Course.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F41 /* Course.swift */; };
 		AB0100010000000000000F42 /* ChartSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F42 /* ChartSettings.swift */; };
 		AB0100010000000000000F45 /* ChartDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F45 /* ChartDownloader.swift */; };
@@ -219,6 +227,9 @@
 
 /* Begin PBXFileReference section */
 		AA0200010000000000000F40 /* AppFlavor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFlavor.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F50 /* AisFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AisFeed.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F60 /* AisReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AisReceiver.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F51 /* OpenWatersIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenWatersIdentity.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F41 /* Course.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Course.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F42 /* ChartSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartSettings.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F45 /* ChartDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartDownloader.swift; sourceTree = "<group>"; };
@@ -271,6 +282,9 @@
 		AA0200010000000000000070 /* PPWind.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPWind.h; sourceTree = "<group>"; };
 		AA0200010000000000000071 /* PPWind+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPWind+Internal.h"; sourceTree = "<group>"; };
 		AA0200010000000000000072 /* PPWind.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPWind.mm; sourceTree = "<group>"; };
+		AA02000100000000000000F8 /* PPAis.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPAis.h; sourceTree = "<group>"; };
+		AA02000100000000000000F9 /* PPAis+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPAis+Internal.h"; sourceTree = "<group>"; };
+		AA02000100000000000000FA /* PPAis.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PPAis.mm; sourceTree = "<group>"; };
 		AA0200010000000000000027 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA0200010000000000000028 /* PPPoint.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PPPoint.h; sourceTree = "<group>"; };
 		AA0200010000000000000029 /* PPPoint+Internal.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "PPPoint+Internal.h"; sourceTree = "<group>"; };
@@ -424,6 +438,9 @@
 				AA0200010000000000000070 /* PPWind.h */,
 				AA0200010000000000000071 /* PPWind+Internal.h */,
 				AA0200010000000000000072 /* PPWind.mm */,
+				AA02000100000000000000F8 /* PPAis.h */,
+				AA02000100000000000000F9 /* PPAis+Internal.h */,
+				AA02000100000000000000FA /* PPAis.mm */,
 				AA0200010000000000000020 /* PPRouteStore.h */,
 				AA0200010000000000000021 /* PPRouteStore.cpp */,
 				AA0200010000000000000028 /* PPPoint.h */,
@@ -454,6 +471,9 @@
 				AA0200010000000000000007 /* PippinApp.swift */,
 				AA020001000000000000003B /* AppName.swift */,
 				AA0200010000000000000F40 /* AppFlavor.swift */,
+				AA0200010000000000000F50 /* AisFeed.swift */,
+				AA0200010000000000000F60 /* AisReceiver.swift */,
+				AA0200010000000000000F51 /* OpenWatersIdentity.swift */,
 				AA0200010000000000000F41 /* Course.swift */,
 				AA0200010000000000000F42 /* ChartSettings.swift */,
 				AA0200010000000000000F45 /* ChartDownloader.swift */,
@@ -569,6 +589,7 @@
 				AA010001000000000000001F /* PPTrip.h in Headers */,
 				AA0100010000000000000060 /* PPTide.h in Headers */,
 				AA0100010000000000000070 /* PPWind.h in Headers */,
+				AA01000100000000000000F7 /* PPAis.h in Headers */,
 				AA0100010000000000000022 /* PPPoint.h in Headers */,
 				AA0100010000000000000006 /* PPPixelProbe.h in Headers */,
 			);
@@ -809,6 +830,7 @@
 				AA0100010000000000000020 /* PPTrip.mm in Sources */,
 				AA0100010000000000000061 /* PPTide.mm in Sources */,
 				AA0100010000000000000071 /* PPWind.mm in Sources */,
+				AA01000100000000000000F8 /* PPAis.mm in Sources */,
 				AA010001000000000000001D /* PPRouteStore.cpp in Sources */,
 				AA0100010000000000000023 /* PPPoint.mm in Sources */,
 				AA0100010000000000000024 /* PPPointStore.cpp in Sources */,
@@ -827,6 +849,9 @@
 				AA0100010000000000000007 /* PippinApp.swift in Sources */,
 				AA0100010000000000000032 /* AppName.swift in Sources */,
 				AA0100010000000000000F40 /* AppFlavor.swift in Sources */,
+				AA0100010000000000000F50 /* AisFeed.swift in Sources */,
+				AA0100010000000000000F60 /* AisReceiver.swift in Sources */,
+				AA0100010000000000000F51 /* OpenWatersIdentity.swift in Sources */,
 				AA0100010000000000000F41 /* Course.swift in Sources */,
 				AA0100010000000000000F42 /* ChartSettings.swift in Sources */,
 				AA0100010000000000000F45 /* ChartDownloader.swift in Sources */,
@@ -897,6 +922,9 @@
 				AB0100010000000000000007 /* PippinApp.swift in Sources */,
 				AB0100010000000000000032 /* AppName.swift in Sources */,
 				AB0100010000000000000F40 /* AppFlavor.swift in Sources */,
+				AB0100010000000000000F50 /* AisFeed.swift in Sources */,
+				AB0100010000000000000F60 /* AisReceiver.swift in Sources */,
+				AB0100010000000000000F51 /* OpenWatersIdentity.swift in Sources */,
 				AB0100010000000000000F41 /* Course.swift in Sources */,
 				AB0100010000000000000F42 /* ChartSettings.swift in Sources */,
 				AB0100010000000000000F45 /* ChartDownloader.swift in Sources */,

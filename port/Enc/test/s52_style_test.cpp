@@ -492,6 +492,14 @@ TEST(S52Style, BuoyNamesCanBeHiddenWithoutHidingTheBuoy) {
   out.clear();
   ASSERT_TRUE(e->Style(beacon, Ctx(), &out).ok());
   EXPECT_TRUE(has(out, true));
+
+  // The beacon switch is separate and likewise keeps the symbol.
+  ASSERT_TRUE(e->show_beacon_names());
+  e->SetShowBeaconNames(false);
+  out.clear();
+  ASSERT_TRUE(e->Style(beacon, Ctx(), &out).ok());
+  EXPECT_TRUE(has(out, false));
+  EXPECT_FALSE(has(out, true));
 }
 
 // TX/TE carry HJUST, VJUST, XOFFS and YOFFS for every string in the library and
@@ -885,7 +893,7 @@ TEST(S52Style, FloodAndStripLightsTakeTheirOwnSymbolNotAFlare) {
   EXPECT_EQ(FirstSymbol(out), "LIGHTS81");  // "strip light"
 }
 
-TEST(S52Style, SectorLightIsDrawnAsAFlareAndTheDeviationIsCounted) {
+TEST(S52Style, SectorLightDrawsLegsAndArcInsteadOfAFlare) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
   ASSERT_NE(e, nullptr);
@@ -896,11 +904,100 @@ TEST(S52Style, SectorLightIsDrawnAsAFlareAndTheDeviationIsCounted) {
   SetAttr(&sector, "SECTR2", "135");
   std::vector<fv::StyleResult> out;
   ASSERT_TRUE(e->Style(sector, Ctx(), &out).ok());
-  // It still draws — a sector light must never vanish — but the legs and arc
-  // the spec draws are not expressible as an instruction string, so the
-  // simplification is counted instead of forgotten.
-  EXPECT_EQ(FirstSymbol(out), "LIGHTS11");
+  EXPECT_EQ(AllSymbols(out),
+            std::vector<std::string>{"LTSECT_45_135_20_LITRD"});
+  EXPECT_EQ(e->sector_lights_simplified(), 0u);
+
+  const fv::VectorSymbol* s = e->Symbol("LTSECT_45_135_20_LITRD");
+  ASSERT_NE(s, nullptr);
+  EXPECT_EQ(e->Symbol("LTSECT_45_135_20_LITRD"), s);
+  // Dashed legs, then the arc twice: the OUTLW pen and the light colour.
+  ASSERT_GE(s->primitives.size(), 4u);
+  const fv::SymbolPrimitive& arc = s->primitives.back();
+  const fv::SymbolPrimitive& outline = s->primitives[s->primitives.size() - 2];
+  EXPECT_GT(outline.stroke_width, arc.stroke_width);
+  ASSERT_GE(arc.points.size(), 3u);
+  // The limits are bearings from seaward: the arc runs 225 -> 315 degrees,
+  // i.e. from south-west round through west, at 20 mm (2000 HIMETRIC).
+  EXPECT_NEAR(arc.points.front().x, -1414.2, 0.5);
+  EXPECT_NEAR(arc.points.front().y, -1414.2, 0.5);
+  EXPECT_NEAR(arc.points.back().x, -1414.2, 0.5);
+  EXPECT_NEAR(arc.points.back().y, 1414.2, 0.5);
+  // 45 two-degree steps; the point nearest the middle bears 268 or 272.
+  ASSERT_EQ(arc.points.size(), 46u);
+  const fv::SymbolPoint mid = arc.points[arc.points.size() / 2];
+  EXPECT_NEAR(mid.x, -2000.0, 5.0);
+  EXPECT_NEAR(mid.y, 0.0, 70.0);
+  // The first leg dash starts at the light and heads south-west.
+  const fv::SymbolPrimitive& leg = s->primitives.front();
+  EXPECT_NEAR(leg.points[0].x, 0.0, 1e-9);
+  EXPECT_LT(leg.points[1].x, 0.0);
+  EXPECT_LT(leg.points[1].y, 0.0);
+}
+
+TEST(S52Style, SectorThatWrapsNorthTakesTheShortWayRound) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  // Charleston Light: SECTR1 217, SECTR2 71 is a 214-degree sector.
+  const fv::VectorSymbol* s = e->Symbol("LTSECT_217_71_20_LITYW");
+  ASSERT_NE(s, nullptr);
+  const fv::SymbolPrimitive& arc = s->primitives.back();
+  // 214 degrees in 2-degree steps.
+  EXPECT_EQ(arc.points.size(), 108u);
+  // It runs 37 -> 251 clockwise, so its middle bears 144, south-east of the
+  // light.
+  const fv::SymbolPoint mid = arc.points[arc.points.size() / 2];
+  EXPECT_GT(mid.x, 0.0);
+  EXPECT_LT(mid.y, 0.0);
+}
+
+TEST(S52Style, MajorAllRoundLightIsRingedAndMinorIsNot) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  fv::VectorFeature major = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&major, "COLOUR", "1");
+  SetAttr(&major, "VALNMR", "20");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(major, Ctx(), &out).ok());
+  EXPECT_EQ(AllSymbols(out),
+            (std::vector<std::string>{"LIGHTS13", "LTSECT_0_360_25_LITYW"}));
+  const fv::VectorSymbol* ring = e->Symbol("LTSECT_0_360_25_LITYW");
+  ASSERT_NE(ring, nullptr);
+  EXPECT_EQ(ring->primitives.size(), 2u);  // no legs
+
+  fv::VectorFeature minor = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&minor, "COLOUR", "1");
+  SetAttr(&minor, "VALNMR", "6");
+  out.clear();
+  ASSERT_TRUE(e->Style(minor, Ctx(), &out).ok());
+  EXPECT_EQ(AllSymbols(out), std::vector<std::string>{"LIGHTS13"});
+
+  // SECTR1/SECTR2 covering the full circle is an all-round light.
+  fv::VectorFeature full = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&full, "COLOUR", "1");
+  SetAttr(&full, "SECTR1", "0");
+  SetAttr(&full, "SECTR2", "360");
+  out.clear();
+  ASSERT_TRUE(e->Style(full, Ctx(), &out).ok());
+  EXPECT_EQ(FirstSymbol(out), "LIGHTS13");
+}
+
+TEST(S52Style, LightWithOneSectorLimitFallsBackToAFlare) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&f, "COLOUR", "4");
+  SetAttr(&f, "SECTR1", "045");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(f, Ctx(), &out).ok());
+  EXPECT_EQ(FirstSymbol(out), "LIGHTS12");
   EXPECT_EQ(e->sector_lights_simplified(), 1u);
+  EXPECT_EQ(e->Symbol("LTSECT_bad"), nullptr);
 }
 
 TEST(S52Style, ObstructionDangerFollowsTheMarinersSafetyContour) {
@@ -1033,6 +1130,19 @@ TEST(S52Style, TopmarkShapeSelectsTheTopmarkSymbol) {
   EXPECT_NE(e->Pixmap("TOPMAR01"), nullptr);
 }
 
+TEST(S52Style, ALineStyleIdResolvesToTheLineStyleNotTheSameNamedSymbol) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  // CTNARE51 is both the caution boundary and the caution mark.
+  const fv::VectorSymbol* line = e->Symbol(fv::S52LineStyleId("CTNARE51"));
+  ASSERT_NE(line, nullptr);
+  EXPECT_NE(line, e->Symbol("CTNARE51"));
+  EXPECT_EQ(e->Pixmap(fv::S52LineStyleId("CTNARE51")), nullptr);
+  ASSERT_NE(e->Symbol(fv::S52PatternId("AIRARE02")), nullptr);
+  EXPECT_NE(e->Symbol(fv::S52PatternId("AIRARE02")), e->Symbol("AIRARE02"));
+}
+
 TEST(S52Style, RestrictionFamilyFollowsRestrn) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
@@ -1064,7 +1174,7 @@ TEST(S52Style, RestrictionFamilyFollowsRestrn) {
     bool boundary = false;
     for (const auto& r : out)
       if (r.line_pattern.valid && !r.line_pattern.runs.empty() &&
-          r.line_pattern.runs[0].symbol_id == c.line_style)
+          r.line_pattern.runs[0].symbol_id == fv::S52LineStyleId(c.line_style))
         boundary = true;
     EXPECT_TRUE(boundary) << "RESTRN " << c.restrn << " drew no " << c.line_style;
     // ...and deliberately no centred symbol (see the procedure's comment).
@@ -1089,7 +1199,7 @@ TEST(S52Style, AreaPatternBecomesAGridStampNotATint) {
   for (const auto& r : out) {
     if (!r.area_pattern.valid) continue;
     patterned = true;
-    EXPECT_EQ(r.area_pattern.symbol_id, "NODATA03");
+    EXPECT_EQ(r.area_pattern.symbol_id, fv::S52PatternId("NODATA03"));
     EXPECT_GE(r.area_pattern.spacing_x, 2.0);
     EXPECT_GE(r.area_pattern.spacing_y, 2.0);
   }
@@ -1124,7 +1234,7 @@ TEST(S52Style, QuaposLowAccuracyChangesTheLineSymbolization) {
     if (!r.line_pattern.valid) continue;
     ASSERT_EQ(r.line_pattern.runs.size(), 1u);
     EXPECT_EQ(r.line_pattern.runs[0].type, fv::PathRunType::kSymbol);
-    EXPECT_EQ(r.line_pattern.runs[0].symbol_id, "LOWACC21");
+    EXPECT_EQ(r.line_pattern.runs[0].symbol_id, fv::S52LineStyleId("LOWACC21"));
     EXPECT_GT(r.line_pattern.runs[0].length, 0.5);
     patterned = true;
   }
@@ -1445,7 +1555,9 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // the update files removed the old hash reproduces exactly; with them, 848 px
 // change in 28 clusters, all inside updated cells (a pier redrawn beside the
 // light, one new symbol, one dashed line removed).
-constexpr uint64_t kHashCharleston = 0xf4f4a09bb8902ea3ull;
+// Sector lights draw legs and arc instead of a flare: 1734 px change, all at
+// the range lights (0xf4f4a09bb8902ea3 -> 0xbc8cd62c98a365f2).
+constexpr uint64_t kHashCharleston = 0x7430053c764d1145ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();
@@ -1478,6 +1590,55 @@ TEST(S52Render, CharlestonHarborViewport) {
   else
     EXPECT_EQ(h, kHashCharleston);
   WritePng(canvas.Buffer(), "s52_charleston");
+}
+
+/// Charleston Light (SECTR1 217, SECTR2 71, white) and the Mount Pleasant
+/// range lights, close enough in to see the sectors. Asserts the light's arc
+/// is drawn in LITYW on the side the sector faces and not on the other.
+TEST(S52Render, CharlestonLightSectors) {
+  SKIP_WITHOUT_PRESLIB();
+  auto source = std::make_shared<fv::EncVectorSource>();
+  ASSERT_TRUE(source->Open(enc_root).ok());
+  auto style = std::make_shared<fv::S52StyleEngine>();
+  ASSERT_TRUE(style->Open(enc_root).ok());
+
+  fv::MapProjection proj;
+  ASSERT_TRUE(proj.SetSurfaceSize(512, 512).ok());
+  ASSERT_TRUE(proj.SetCenter(fv::GeoPoint{32.765, -79.872}).ok());
+  ASSERT_TRUE(proj.SetResolution(0.00013, 0.00013).ok());
+
+  fv::CpuCanvas canvas(512, 512);
+  canvas.Clear(fv::FvColor{255, 255, 255, 255});
+  fv::VectorRenderer r(source, style);
+  ASSERT_TRUE(r.Render(proj, &canvas).ok());
+  WritePng(canvas.Buffer(), "s52_charleston_lights");
+
+  fv::FvColor lityw;
+  ASSERT_TRUE(style->library().Color("LITYW", &lityw));
+  double lx = 0.0, ly = 0.0;
+  ASSERT_TRUE(
+      proj.GeoToSurface(fv::GeoPoint{32.7579516, -79.843283}, &lx, &ly).ok());
+  // Counts LITYW pixels on the 20 mm arc (2000 HIMETRIC at 32 per pixel)
+  // whose bearing from the light lies in [from, to].
+  const fv::PixelBuffer& b = canvas.Buffer();
+  const double radius_px = 2000.0 / 32.0;
+  auto count = [&](double from, double to) {
+    size_t n = 0;
+    for (int y = 0; y < b.Height(); ++y)
+      for (int x = 0; x < b.Width(); ++x) {
+        const unsigned char* px = b.Row(y) + x * 4;
+        if (px[0] != lityw.r || px[1] != lityw.g || px[2] != lityw.b) continue;
+        const double dx = x - lx, dy = y - ly;
+        if (std::fabs(std::hypot(dx, dy) - radius_px) > 4.0) continue;
+        double brg = std::atan2(dx, -dy) * 180.0 / 3.14159265358979323846;
+        if (brg < 0.0) brg += 360.0;
+        if (brg >= from && brg <= to) ++n;
+      }
+    return n;
+  };
+  // The sector's reciprocal bearings run 37 -> 251 clockwise.
+  EXPECT_GT(count(100.0, 190.0), 50u);
+  EXPECT_EQ(count(270.0, 359.0), 0u);
 }
 
 // R3c. THE TEST THE CRAWLING MARSH GRASS SHOULD HAVE HAD.
@@ -1772,10 +1933,8 @@ TEST(S52Render, EveryFeatureInTheCellsIsSymbolizedOrCounted) {
                            "SLCONS03", "SOUNDG02", "TOPMAR01", "WRECKS02"})
     EXPECT_EQ(e->unhandled_cs().count(done), 0u) << done << " regressed";
 
-  // LIGHTS05's one deviation is measured, not remembered: these cells carry
-  // sector lights, and each was drawn as a plain flare (see the procedure).
-  EXPECT_GT(e->sector_lights_simplified(), 0u)
-      << "no sector lights in the cells — re-derive this expectation";
+  // Every sector light in these cells states both limits.
+  EXPECT_EQ(e->sector_lights_simplified(), 0u);
 
   // E3a's finding was that every unresolved name in this data set is a
   // RASTER-ONLY definition — the library defines it with no HPGL — rather than

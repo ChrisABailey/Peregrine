@@ -3,6 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
+import PippinKit
 import SwiftUI
 
 /// The map menu and the settings behind it.
@@ -16,7 +17,7 @@ import SwiftUI
 /// renders as a submenu showing its current value, so a row is both the
 /// control and its readout.
 
-/// The app's unit preference, persisted in user defaults.
+/// The app's unit and bearing preferences, persisted in user defaults.
 ///
 /// A singleton because the two views that format distances sit on opposite
 /// sides of a sheet boundary: the ride bar owns the model, and the search
@@ -28,11 +29,19 @@ final class DisplayUnits: ObservableObject {
     static let shared = DisplayUnits()
 
     private static let key = "PPDistanceUnits"
+    private static let bearingsKey = "PPBearingReference"
 
     @Published var units: DistanceUnits {
         didSet {
             guard units != oldValue else { return }
             UserDefaults.standard.set(units.rawValue, forKey: Self.key)
+        }
+    }
+
+    @Published var bearings: BearingReference {
+        didSet {
+            guard bearings != oldValue else { return }
+            UserDefaults.standard.set(bearings.rawValue, forKey: Self.bearingsKey)
         }
     }
 
@@ -43,6 +52,18 @@ final class DisplayUnits: ObservableObject {
         units = stored.flatMap(DistanceUnits.init(rawValue:)).flatMap {
             offered.contains($0) ? $0 : nil
         } ?? AppFlavor.current.defaultUnits
+        bearings = UserDefaults.standard.string(forKey: Self.bearingsKey)
+            .flatMap(BearingReference.init(rawValue:)) ?? .trueNorth
+    }
+
+    /// A course for display in the chosen reference, using the variation at
+    /// `position`. With no position a magnetic choice falls back to true,
+    /// labelled T, rather than guess a variation.
+    func courseText(_ degrees: Double, at position: PPGeoPoint?) -> String {
+        guard bearings == .magnetic, let position else { return Course.text(degrees) }
+        let variation = PPMap.magneticVariation(latitude: position.latitude,
+                                                longitude: position.longitude)
+        return Course.text(degrees, reference: .magnetic, variation: variation)
     }
 }
 
@@ -56,9 +77,13 @@ struct MapMenuButton: View, Equatable {
     @Binding var symbolStep: Int
     let symbolStepLabels: [String]
     @Binding var units: DistanceUnits
+    /// Shows live AIS traffic; nil hides the item.
+    let aisTraffic: Binding<Bool>?
+    /// Opens the AIS source settings; nil hides the item.
+    let onAisSettings: (() -> Void)?
     /// Opens the rides sheet, the same one the record button's long press
     /// opens, under the name a rider would look for.
-    let onExportRide: () -> Void
+    let onExport: () -> Void
     /// Opens the tide card; nil hides the item, for a pack with no table.
     let onTides: (() -> Void)?
     /// Opens the map key; nil hides the item, for a style with no legend.
@@ -69,30 +94,48 @@ struct MapMenuButton: View, Equatable {
     let onImportCharts: (() -> Void)?
     /// Checks NOAA for chart updates; nil hides the item.
     let onCheckChartUpdates: (() -> Void)?
-    /// Opens the chart settings; nil hides the item.
-    let onChartSettings: (() -> Void)?
+    /// Opens the settings sheet; nil hides the item. When present, the sheet
+    /// owns symbol size and units and the menu leaves them out.
+    let onSettings: (() -> Void)?
     /// Opens the chart help; nil hides the item.
     let onChartHelp: (() -> Void)?
     let onAbout: () -> Void
     let onReportProblem: () -> Void
+
+    /// Whether the Charts submenu has anything in it.
+    private var hasChartItems: Bool {
+        onDownloadCharts != nil || onCheckChartUpdates != nil || onImportCharts != nil
+    }
 
     var body: some View {
         Menu {
             // `.menu` puts each picker behind its own title. The default
             // flattens a picker into an unheaded section, leaving "Small /
             // Medium / Large" with nothing to say what it sizes.
-            Picker("Symbol Size", selection: $symbolStep) {
-                ForEach(symbolStepLabels.indices, id: \.self) { index in
-                    Text(symbolStepLabels[index]).tag(index)
+            if onSettings == nil {
+                Picker("Symbol Size", selection: $symbolStep) {
+                    ForEach(symbolStepLabels.indices, id: \.self) { index in
+                        Text(symbolStepLabels[index]).tag(index)
+                    }
+                }
+                .pickerStyle(.menu)
+                Picker("Distance Units", selection: $units) {
+                    ForEach(AppFlavor.current.offeredUnits) { unit in
+                        Text(unit.menuName).tag(unit)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+            if let aisTraffic {
+                Toggle(isOn: aisTraffic) {
+                    Label("AIS Traffic", systemImage: "ferry")
                 }
             }
-            .pickerStyle(.menu)
-            Picker("Distance Units", selection: $units) {
-                ForEach(AppFlavor.current.offeredUnits) { unit in
-                    Text(unit.menuName).tag(unit)
+            if let onAisSettings {
+                Button(action: onAisSettings) {
+                    Label("AIS Settings…", systemImage: "antenna.radiowaves.left.and.right")
                 }
             }
-            .pickerStyle(.menu)
             if let onTides {
                 Button(action: onTides) {
                     Label("Tides", systemImage: "water.waves")
@@ -103,33 +146,40 @@ struct MapMenuButton: View, Equatable {
                     Label("Map Key", systemImage: "list.bullet.rectangle")
                 }
             }
-            if let onChartSettings {
-                Button(action: onChartSettings) {
-                    Label("Chart Settings", systemImage: "slider.horizontal.3")
+            if let onSettings {
+                Button(action: onSettings) {
+                    Label("Settings", systemImage: "gearshape")
                 }
             }
-            if let onDownloadCharts {
-                Button(action: onDownloadCharts) {
-                    Label("Download Charts", systemImage: "icloud.and.arrow.down")
-                }
-            }
-            if let onCheckChartUpdates {
-                Button(action: onCheckChartUpdates) {
-                    Label("Check for Chart Updates", systemImage: "arrow.triangle.2.circlepath")
-                }
-            }
-            if let onImportCharts {
-                Button(action: onImportCharts) {
-                    Label("Import Charts", systemImage: "square.and.arrow.down")
+            if hasChartItems {
+                Menu {
+                    if let onDownloadCharts {
+                        Button(action: onDownloadCharts) {
+                            Label("Download Charts", systemImage: "icloud.and.arrow.down")
+                        }
+                    }
+                    if let onCheckChartUpdates {
+                        Button(action: onCheckChartUpdates) {
+                            Label("Check for Chart Updates",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    if let onImportCharts {
+                        Button(action: onImportCharts) {
+                            Label("Import Charts", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                } label: {
+                    Label("Charts", systemImage: "map")
                 }
             }
             if let onChartHelp {
                 Button(action: onChartHelp) {
-                    Label("Chart Help", systemImage: "questionmark.circle")
+                    Label("Help", systemImage: "questionmark.circle")
                 }
             }
-            Button(action: onExportRide) {
-                Label(AppFlavor.current.exportTracksTitle, systemImage: "square.and.arrow.up")
+            Button(action: onExport) {
+                Label("Export\u{2026}", systemImage: "square.and.arrow.up")
             }
             Button(action: onAbout) {
                 Label("About", systemImage: "info.circle")
@@ -166,12 +216,14 @@ struct MapMenuButton: View, Equatable {
         a.symbolStep == b.symbolStep
             && a.symbolStepLabels == b.symbolStepLabels
             && a.units == b.units
+            && a.aisTraffic?.wrappedValue == b.aisTraffic?.wrappedValue
+            && (a.onAisSettings == nil) == (b.onAisSettings == nil)
             && (a.onTides == nil) == (b.onTides == nil)
             && (a.onMapKey == nil) == (b.onMapKey == nil)
             && (a.onImportCharts == nil) == (b.onImportCharts == nil)
             && (a.onDownloadCharts == nil) == (b.onDownloadCharts == nil)
             && (a.onCheckChartUpdates == nil) == (b.onCheckChartUpdates == nil)
-            && (a.onChartSettings == nil) == (b.onChartSettings == nil)
+            && (a.onSettings == nil) == (b.onSettings == nil)
             && (a.onChartHelp == nil) == (b.onChartHelp == nil)
     }
 }
@@ -210,7 +262,7 @@ struct ReportProblemSheet: View {
                 Section {
                     // `axis: .vertical` grows the field with what is typed
                     // instead of scrolling one line sideways.
-                    TextField("A path that is not there, a gate that is, a name that is wrong\u{2026}",
+                    TextField(AppFlavor.current.reportPrompt,
                               text: $text, axis: .vertical)
                         .lineLimit(3...8)
                     LabeledContent("Map Center") {
@@ -344,14 +396,16 @@ enum AppVersion {
 /// What the app is, whose data it draws, and what it does not promise.
 ///
 /// The three legal items are obligations, not decoration. The OpenStreetMap
-/// credit is required by its licence. The licence block is LGPL-3.0 §4c: an
+/// credit is required by its licence; Osprey credits NOAA, whose charts it
+/// draws instead. The licence block is LGPL-3.0 §4c: an
 /// application linking FvKit must carry the FalconView and Peregrine
 /// copyright notices wherever it displays its own, and the row above displays
 /// Chris Bailey's, so deleting the Georgia Tech notice means deleting both.
 /// §4a and §4b are met by `COPYING` and `COPYING.LESSER` shipping in the
 /// bundle; the non-endorsement sentence is `NOTICE.md` §7, owed because the
-/// paragraph names the mark. The disclaimer covers the route as well as the
-/// map: a wrong route puts a rider on a road they should not be on.
+/// paragraph names the mark. Pippin's disclaimer covers the route as well as
+/// the map: a wrong route puts a rider on a road they should not be on.
+/// Osprey's follows the first-launch notice and adds AIS.
 struct AboutSheet: View {
     let onClose: () -> Void
 
@@ -359,8 +413,11 @@ struct AboutSheet: View {
     /// `Text` initialiser takes a key, and only a literal becomes one.
     /// Splitting a sentence with `+` to fit the column silently selects the
     /// verbatim `String` overload, which prints the brackets and the URL.
-    private static let credit: LocalizedStringKey =
+    private static let osmCredit: LocalizedStringKey =
         "Map and Routing data from [OpenStreetMap](https://www.openstreetmap.org/copyright)"
+
+    private static let encCredit: LocalizedStringKey =
+        "Maps are rendered from NOAA Electronic Navigational Charts, available from [charts.noaa.gov](https://charts.noaa.gov)."
 
     private static let licence: LocalizedStringKey =
         "Built on [Peregrine](https://github.com/ChrisABailey/Peregrine), used under the GNU Lesser General Public License, version 3 or later. Copies of the licence ship inside this app and are available on the website."
@@ -368,7 +425,11 @@ struct AboutSheet: View {
     private static let upstream: LocalizedStringKey =
         "Peregrine is a cross-platform port of FalconView\u{2122}, Copyright \u{00A9} 1994\u{2013}2011 Georgia Tech Research Corporation. It is an independent port, and is neither endorsed by nor affiliated with Georgia Tech Research Corporation."
 
-    private static let disclaimer: LocalizedStringKey =
+    private static var encDisclaimer: LocalizedStringKey {
+        "**\(AppName.display) is not a certified ECDIS or chart plotter.** Positions, depths, routes and AIS reports may be wrong or out of date. Do not rely on this app to navigate; use official charts and your own judgement."
+    }
+
+    private static let osmDisclaimer: LocalizedStringKey =
         "**The map may be wrong.** A path shown here may not exist, may be private, or may be impassable. A path that exists may be missing. A suggested route may not be safe or legal for the way you are travelling. Always observe local laws and regulations, trust what is in front of you over what is on the screen, and watch out for alligators."
 
     var body: some View {
@@ -382,7 +443,7 @@ struct AboutSheet: View {
                 Section {
                     // Markdown, so the link renders inside the sentence
                     // rather than as a URL bolted underneath.
-                    Text(Self.credit)
+                    Text(AppFlavor.current == .osprey ? Self.encCredit : Self.osmCredit)
                 }
                 // One section, because §4c binds the two paragraphs together.
                 Section {
@@ -392,7 +453,7 @@ struct AboutSheet: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 Section {
-                    Text(Self.disclaimer)
+                    Text(AppFlavor.current == .osprey ? Self.encDisclaimer : Self.osmDisclaimer)
                 }
                 .font(.footnote)
             }

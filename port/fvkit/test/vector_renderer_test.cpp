@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "fvkit/canvas/cpu_canvas.h"
+#include "fvkit/vector/symbol_draw.h"
 #include "fvkit/vector/text_draw.h"
 
 namespace {
@@ -385,6 +386,85 @@ TEST(PathPlacer, SymbolsAreSpacedByArcLengthAcrossACorner) {
   EXPECT_DOUBLE_EQ(placed.symbols[2].x, 30.0);
   EXPECT_DOUBLE_EQ(placed.symbols[2].y, 10.0);
   EXPECT_NEAR(placed.symbols[2].rotation_deg, -90.0, 1e-9);
+}
+
+TEST(PathPlacer, ABendingRunCarriesItsArcLengthToTheDrawer) {
+  std::vector<SurfacePoint> path{{0, 0}, {30, 0}, {30, 30}};
+  PathRun r = Sym("s", 20);
+  r.bend = true;
+  r.offset = 2.0;
+  const auto placed = PlaceAlongPath(path, {r}, 0.0);
+  ASSERT_EQ(placed.symbols.size(), 3u);
+  EXPECT_TRUE(placed.symbols[2].bend);
+  EXPECT_DOUBLE_EQ(placed.symbols[2].along, 40.0);
+  EXPECT_DOUBLE_EQ(placed.symbols[2].offset, 2.0);
+}
+
+// A 30 px symbol: a baseline along +x and a 5 px tick to its left at x = 25.
+// Drawn at one pixel per HIMETRIC unit so symbol units read as pixels.
+fv::VectorSymbol BaselineWithTick() {
+  fv::VectorSymbol sym;
+  fv::SymbolPrimitive base;
+  base.type = fv::SymbolPrimitiveType::kPolyline;
+  base.has_stroke = true;
+  base.points = {{0, 0}, {30, 0}};
+  fv::SymbolPrimitive tick = base;
+  tick.points = {{25, 0}, {25, 5}};
+  sym.primitives = {base, tick};
+  return sym;
+}
+
+TEST(SymbolBender, ASymbolLongerThanItsSegmentTurnsTheCorner) {
+  // East 20 px, then south (screen +y). Straight, the baseline would reach
+  // (30, 0); bent, it turns at (20, 0) and ends 10 px down the second leg.
+  const fv::PathArc arc({{0, 0}, {20, 0}, {20, 40}});
+  const auto bent = fv::BendSymbol(BaselineWithTick(), arc, 0.0, 0.0, 1.0);
+  ASSERT_EQ(bent.size(), 2u);
+  ASSERT_EQ(bent[0].lines.size(), 1u);
+  const auto& base = bent[0].lines[0];
+  ASSERT_EQ(base.size(), 3u);
+  EXPECT_NEAR(base[1].x, 20.0, 1e-9);
+  EXPECT_NEAR(base[1].y, 0.0, 1e-9);
+  EXPECT_NEAR(base[2].x, 20.0, 1e-9);
+  EXPECT_NEAR(base[2].y, 10.0, 1e-9);
+  for (const auto& line : bent[0].lines)
+    for (const SurfacePoint& p : line) EXPECT_LE(p.x, 20.0 + 1e-9);
+  // Travelling south, the left-hand side is screen +x: the tick at arc
+  // length 25 runs from (20, 5) to (25, 5).
+  ASSERT_EQ(bent[1].lines.size(), 1u);
+  const auto& tick = bent[1].lines[0];
+  ASSERT_EQ(tick.size(), 2u);
+  EXPECT_NEAR(tick[0].x, 20.0, 1e-9);
+  EXPECT_NEAR(tick[0].y, 5.0, 1e-9);
+  EXPECT_NEAR(tick[1].x, 25.0, 1e-9);
+  EXPECT_NEAR(tick[1].y, 5.0, 1e-9);
+}
+
+TEST(SymbolBender, InkPastTheEndOfThePathIsCutOff) {
+  const fv::PathArc arc({{0, 0}, {20, 0}});
+  const auto bent = fv::BendSymbol(BaselineWithTick(), arc, 0.0, 0.0, 1.0);
+  // The tick at 25 lies wholly past the end, so only the baseline survives.
+  ASSERT_EQ(bent.size(), 1u);
+  ASSERT_EQ(bent[0].lines.size(), 1u);
+  EXPECT_NEAR(bent[0].lines[0].back().x, 20.0, 1e-9);
+}
+
+TEST(SymbolBender, AFilledEllipseAcrossACornerKeepsAClosedRing) {
+  fv::VectorSymbol sym;
+  fv::SymbolPrimitive dot;
+  dot.type = fv::SymbolPrimitiveType::kEllipse;
+  dot.has_fill = true;
+  dot.center = {20, 0};
+  dot.radius1 = {3, 0};
+  dot.radius2 = {0, 3};
+  sym.primitives = {dot};
+  const fv::PathArc arc({{0, 0}, {20, 0}, {20, 40}});
+  const auto bent = fv::BendSymbol(sym, arc, 0.0, 0.0, 1.0);
+  ASSERT_EQ(bent.size(), 1u);
+  ASSERT_GE(bent[0].ring.size(), 3u);
+  for (const SurfacePoint& p : bent[0].ring) {
+    EXPECT_LE(std::hypot(p.x - 20.0, p.y), 3.0 * std::sqrt(2.0) + 1e-6);
+  }
 }
 
 TEST(PathPlacer, DegenerateInputsProduceNothingRatherThanHanging) {

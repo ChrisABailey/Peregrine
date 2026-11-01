@@ -50,7 +50,8 @@ if(FVW_BUILD_TESTS)
   # compressor the reader only ever inflates with.
   # fv_png: golden-PNG side channel for the Atlanta render (O3), the same
   # convention as canvas_test, the GeoSym harbor golden and E3a's Charleston.
-  target_link_libraries(fv_osm_test PRIVATE fv_osm fv_zlib fv_png GTest::gtest_main)
+  # fv_png comes PUBLIC through fv_osm -> fv_fvkit; naming it again makes ld warn.
+  target_link_libraries(fv_osm_test PRIVATE fv_osm fv_zlib GTest::gtest_main)
   # FVW_OSM_STYLE_DIR: the reference style ships with the source (styles/), not
   # with TestData — it is a deliverable of this module, not sample data.
   # One variable per single-valued property: CMake 3.28-3.30 split an escaped

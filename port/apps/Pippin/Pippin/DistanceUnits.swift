@@ -30,6 +30,15 @@ enum DistanceUnits: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The short name on the settings sheet's segmented control.
+    var settingsName: String {
+        switch self {
+        case .kilometres: return "Metric"
+        case .miles: return "Standard"
+        case .nauticalMiles: return "Nautical"
+        }
+    }
+
     /// Formats a distance for reading at arm's length: the small unit close
     /// in, the big one further out, one decimal at most. The changeover is
     /// where the big unit gets its first digit, since "0.06 mi" is not a

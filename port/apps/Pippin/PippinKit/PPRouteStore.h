@@ -48,6 +48,7 @@
 #include "fv_route_planner.h"
 #include "fvkit/analysis/path.h"
 #include "fvkit/geo.h"
+#include "fvkit/nav/gpx.h"
 #include "fvkit/nav/road_snap.h"
 #include "fvkit/nav/tide.h"
 
@@ -292,6 +293,12 @@ class RouteStore {
   // length sum ignores, so it is harmless once checked; this way nobody checks
   // twice.
   std::vector<fv::GeoPoint> RoutePath() const;
+
+  /// The route as GPX for a watch or bike computer, named `name`. With roads,
+  /// one <trk> along `RoutePath()` with each stop as a <wpt>; with straight
+  /// legs, one <rte> whose <rtept>s are the stops. Empty when there is no
+  /// line to follow: fewer than two stops, or roads that were never planned.
+  fv::GpxDocument ExportGpx(const std::string& name) const;
 
   // The turn list along that same line (GD1), or empty when nothing has been
   // planned or the plan fell back to straight legs. Empty is the "no

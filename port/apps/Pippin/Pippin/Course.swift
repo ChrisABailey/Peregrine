@@ -9,12 +9,25 @@
 
 import Foundation
 
+/// Which north courses and bearings are given from. Chart data is always true.
+enum BearingReference: String, CaseIterable, Identifiable {
+    case trueNorth = "true"
+    case magnetic
+
+    var id: String { rawValue }
+
+    var menuName: String { self == .trueNorth ? "True" : "Magnetic" }
+}
+
 enum Course {
-    /// A true course as three digits and a T, "047°T".
-    static func text(_ degrees: Double) -> String {
-        var whole = Int(degrees.rounded()) % 360
+    /// A course as three digits and its reference, "047°T" or "055°M".
+    /// `variation` is degrees east positive and is read only for magnetic.
+    static func text(_ degrees: Double, reference: BearingReference = .trueNorth,
+                     variation: Double = 0) -> String {
+        let shown = reference == .magnetic ? degrees - variation : degrees
+        var whole = Int(shown.rounded()) % 360
         if whole < 0 { whole += 360 }
-        return String(format: "%03d°T", whole)
+        return String(format: reference == .magnetic ? "%03d°M" : "%03d°T", whole)
     }
 
     /// How far ahead the COG vector reaches: the distance made good in six

@@ -29,6 +29,9 @@ expect(Course.text(47.2), "047°T", "pads to three digits")
 expect(Course.text(359.6), "000°T", "rounds up through north")
 expect(Course.text(-10), "350°T", "negative wraps")
 expect(Course.text(720 + 5), "005°T", "multiple turns wrap")
+expect(Course.text(50, reference: .magnetic, variation: -5.7), "056°M", "west variation adds")
+expect(Course.text(3, reference: .magnetic, variation: 10), "353°M", "east variation wraps below north")
+expect(Course.text(50, reference: .trueNorth, variation: -5.7), "050°T", "true ignores variation")
 
 let knot = 1852.0 / 3600.0
 let degPerNm = 1852.0 / (6_371_008.8 * .pi / 180)

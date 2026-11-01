@@ -74,6 +74,10 @@ struct GpxTrack {
   std::string type;  // GPX 1.1's <type>, e.g. "cycling"
   std::vector<GpxTrackSegment> segments;
 
+  // A route's <rtept><name>s, one per point of its single segment; empty for
+  // a track, and where shorter than the points the rest are unnamed.
+  std::vector<std::string> point_names;
+
   std::size_t point_count() const;
 };
 

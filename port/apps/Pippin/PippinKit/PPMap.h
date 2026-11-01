@@ -36,6 +36,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
+#import <PippinKit/PPAis.h>
 #import <PippinKit/PPFix.h>
 #import <PippinKit/PPGeometry.h>
 #import <PippinKit/PPPoint.h>
@@ -756,6 +757,15 @@ NS_SWIFT_SENDABLE
 - (nullable PPRoute *)importRouteFromURL:(NSURL *)url error:(NSError **)error
     NS_SWIFT_NAME(importRoute(from:));
 
+/// Writes the current route as GPX for a watch, bike computer or
+/// chartplotter: the planned line along the roads, or the stops as a route
+/// where legs are straight (`fv::GpxDocument` via `RouteStore::ExportGpx`).
+/// Throws when there is no line to follow yet. Render queue.
+- (BOOL)writeRouteToGpxURL:(NSURL *)fileURL
+                      name:(NSString *)name
+                     error:(NSError **)error
+    NS_SWIFT_NAME(writeRoute(toGpxURL:name:));
+
 /// The route as it stands. Never nil: an empty route is `exists` = NO rather
 /// than an absent object, so the sheet has something to bind to.
 - (PPRoute *)currentRoute;
@@ -1220,13 +1230,33 @@ NS_SWIFT_SENDABLE
 /// (`points.feature_hit_tolerance`, 12 by default).
 @property(nonatomic, readonly) double chartFeatureHitTolerance;
 
-/// The ENC features the last base map render drew under `screenPoint`,
-/// topmost first, at most eight; empty when the pack does not draw charts.
+/// The AIS targets under `screenPoint`, nearest first, then the ENC features
+/// the last base map render drew there, topmost first, at most eight; empty
+/// when the pack does not draw charts. A target's `acronym` is "AIS".
 /// Render queue only; coordinates as in `chartFeatureNear:inViewport:tolerance:`.
 - (NSArray<PPChartFeatureInfo *> *)chartFeaturesNear:(CGPoint)screenPoint
                                          inViewport:(PPViewport *)viewport
                                           tolerance:(double)tolerance
     NS_SWIFT_NAME(chartFeatures(near:in:tolerance:));
+
+#pragma mark - AIS traffic
+// The `fv.ais` overlay, drawn with the route and points. Render queue only.
+
+/// Draws AIS targets. Turning it off also forgets every target.
+@property(nonatomic) BOOL aisVisible;
+
+/// Queues Open Waters frames for the next render; frames other than events
+/// are ignored. The caller asks for a frame afterwards.
+- (void)pushOpenWatersFrames:(NSArray<PPOpenWatersFrame *> *)frames
+    NS_SWIFT_NAME(push(openWatersFrames:));
+
+/// Queues AIS sentences from a local receiver, heard at `heardAt` (epoch
+/// seconds). The caller asks for a frame afterwards.
+- (void)pushAisLines:(NSArray<NSString *> *)lines heardAt:(NSTimeInterval)heardAt
+    NS_SWIFT_NAME(push(aisLines:heardAt:));
+
+/// Targets in the table, drawn or not.
+@property(nonatomic, readonly) NSInteger aisTargetCount;
 
 #pragma mark - Chart settings
 // Mariner settings for a chart pack. Each setter drops the cached base map;
@@ -1239,6 +1269,8 @@ NS_SWIFT_SENDABLE
 @property(nonatomic) double chartSafetyDepth;
 @property(nonatomic) PPChartCategory chartCategory;
 @property(nonatomic) PPChartPalette chartPalette;
+/// Draws buoy and beacon names on the chart (YES by default, S-52's own).
+@property(nonatomic) BOOL chartNavaidNames;
 /// Depths in `chartFeaturesNear:` summaries are in feet rather than metres.
 @property(nonatomic) BOOL chartDepthsInFeet;
 
@@ -1289,6 +1321,13 @@ NS_SWIFT_SENDABLE
              error:(NSError **)error
     NS_SWIFT_NAME(writePoint(_:toGpxURL:));
 
+/// Magnetic variation at a position today, degrees, east positive, from the
+/// compiled-in world magnetic model. Zero when the model has no answer.
+/// A class method: it reads nothing from the map.
++ (double)magneticVariationAtLatitude:(double)latitude
+                            longitude:(double)longitude
+    NS_SWIFT_NAME(magneticVariation(latitude:longitude:));
+
 #pragma mark - Symbol size
 
 /// How big the map draws itself: a multiplier on everything the style authors
@@ -1307,14 +1346,17 @@ NS_SWIFT_SENDABLE
 /// renderer multiplies again by `symbol_scale_`, so setting both would give
 /// point symbols the square of what lines and text got.
 ///
-/// The overlays do not follow it, except the route's beach wind arrows. The
-/// route, points and ownship draw through
-/// `GeoDraw`, which has its own `SetSymbolScale`; when they should grow with
-/// the map, that is where it goes and this is the number to hand it.
+/// The overlays follow it only where `overlaysFollowSymbolZoom` says so; the
+/// route's beach wind arrows follow it either way.
 ///
 /// Setting it drops the cached base map, because those pixels were rasterized
 /// at the old size and the coverage test only asks about the camera.
 @property(nonatomic) double symbolZoom;
+
+/// Whether the route's markers and the AIS targets grow with `symbolZoom`.
+/// NO (the default) keeps them at their authored size in points. Points and
+/// the ownship stay at their authored size either way.
+@property(nonatomic) BOOL overlaysFollowSymbolZoom;
 
 /// The sizes the app's menu offers, smallest first, from
 /// `display.symbol_zoom_steps`. Always at least one entry, the first being

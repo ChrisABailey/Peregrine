@@ -313,6 +313,13 @@ GEO_TOOL_DECLSPEC int GEO_magnetic_variation(double dlat, double dlon,  // IN  -
                             int altitude,               // IN  - altitude in meters
                      double *magvar);        // OUT - in degrees, + = East, - = West
 
+/// Magnetic variation (declination) at a decimal-year date, e.g. 2025.5 for
+/// 1 July 2025. Outside the model's validity (2025.0-2030.0) it extrapolates.
+GEO_TOOL_DECLSPEC int GEO_magnetic_variation_at(double dlat, double dlon,  // IN  - in degrees
+                     double decimal_year,    // IN  - e.g. 2025.5
+                     double altitude,        // IN  - altitude in meters
+                     double *magvar);        // OUT - in degrees, + = East, - = West
+
 GEO_TOOL_DECLSPEC int GEO_current_magnetic_variation( double dlat, double dlon, 
                            int altitude,  // IN  - altitude in meters
                            double *magvar);

@@ -89,6 +89,13 @@ enum class S52ColorScheme { kDay = 0, kDusk, kNight };
 // and restricted-area marks dwarfed its buoys — the buoys are tiles.
 constexpr double kS52HimetricPerSymbolPixel = 32.0;
 
+/// The symbol id an LC line-style or AP pattern is emitted under. The library
+/// reuses 16 line-style and 4 pattern names for point symbols (CTNARE51 is both
+/// a boundary and the caution mark), so an untagged name resolved to the point
+/// symbol.
+inline std::string S52LineStyleId(const std::string& name) { return "LC:" + name; }
+inline std::string S52PatternId(const std::string& name) { return "AP:" + name; }
+
 // The two mutually exclusive point tables, and the two area tables. Which pair
 // is in force is a display setting, which is why E2 loads all five.
 enum class S52PointStyle { kPaperChart = 0, kSimplified };
@@ -127,6 +134,10 @@ class S52StyleEngine : public LookupTableStyleEngine {
   /// specifies; the buoy symbol and its identify record are unaffected.
   void SetShowBuoyNames(bool on);
   bool show_buoy_names() const;
+  /// Draws the OBJNAM text of beacons (BCNxxx classes). On by default; the
+  /// beacon symbol and its identify record are unaffected.
+  void SetShowBeaconNames(bool on);
+  bool show_beacon_names() const;
 
   void SetPointStyle(S52PointStyle s);
   void SetAreaStyle(S52AreaStyle s);
@@ -178,9 +189,8 @@ class S52StyleEngine : public LookupTableStyleEngine {
   // 24 such names) are counted the same way, by the shared core's
   // unresolved_symbols().
   size_t placeholders_drawn() const;
-  // Sector lights LIGHTS05 drew as a plain flare because the seam cannot
-  // express the sector legs and arc (see the procedure's comment). Counted so
-  // the deviation is measurable rather than remembered.
+  // Lights with only one of SECTR1/SECTR2, which LIGHTS05 draws as a plain
+  // flare because the sector is undefined.
   size_t sector_lights_simplified() const;
   void ResetDiagnostics();
 
