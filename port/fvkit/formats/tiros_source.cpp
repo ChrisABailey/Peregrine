@@ -21,7 +21,8 @@ namespace fv {
 struct TirosRasterSource::Impl {
   std::string path;
   TirosFrameProperties props;
-  CJpeg jpeg;       // load() in Open reads the header (real dims); get_jpeg_
+  TirosEdgeExtent edges;  // outer pixel edges; pixel (0,0) starts at NW
+  CJpeg jpeg;      // load() in Open reads the header (real dims); get_jpeg_
                     // image() in Decode() runs on the same object
   int width = 0;    // actual JPEG dimensions (not assumed 1350)
   int height = 0;
@@ -67,6 +68,7 @@ Status TirosRasterSource::Open(const std::string& path) {
   if (impl_->jpeg.load(path.c_str(), w, h, err) != 0)
     return Status::Error(kIoError,
                          "CJpeg load failed: " + std::string((LPCSTR)err));
+  impl_->edges = TirosPixelEdges(impl_->props);
   impl_->width = w;
   impl_->height = h;
   impl_->path = path;
@@ -76,8 +78,8 @@ Status TirosRasterSource::Open(const std::string& path) {
 
 GeoRect TirosRasterSource::Bounds() const {
   if (!impl_->is_open) return GeoRect{};
-  const auto& p = impl_->props;
-  return GeoRect{{p.ll_lat, p.ll_lon}, {p.ur_lat, p.ur_lon}};
+  const auto& e = impl_->edges;
+  return GeoRect{{e.south, e.west}, {e.north, e.east}};
 }
 
 Status TirosRasterSource::Info(ImageInfo* info) const {
@@ -107,13 +109,13 @@ Status TirosRasterSource::ReadBlock(const PixelRect& r, PixelBuffer* out) {
   return Status::Ok();
 }
 
-// Equal-arc: pixel (0,0) is the NW corner; lon east with column, lat south
-// with row (same convention as the CADRG adapter).
+// Equal-arc: pixel coordinate (0,0) is the NW corner of the NW pixel; lon east
+// with column, lat south with row (same convention as the CADRG adapter).
 Status TirosRasterSource::PixelToGeo(double px, double py, GeoPoint* p) const {
   if (p == nullptr) return Status::Error(kInvalidArg, "p is null");
   if (!impl_->is_open) return Status::Error(kInvalidArg, "not open");
-  p->lon = impl_->props.ll_lon + px * impl_->props.deg_per_pixel_lon;
-  p->lat = impl_->props.ur_lat - py * impl_->props.deg_per_pixel_lat;
+  p->lon = impl_->edges.west + px * impl_->props.deg_per_pixel_lon;
+  p->lat = impl_->edges.north - py * impl_->props.deg_per_pixel_lat;
   return Status::Ok();
 }
 
@@ -122,8 +124,8 @@ Status TirosRasterSource::GeoToPixel(const GeoPoint& p, double* px,
   if (px == nullptr || py == nullptr)
     return Status::Error(kInvalidArg, "px/py is null");
   if (!impl_->is_open) return Status::Error(kInvalidArg, "not open");
-  *px = (p.lon - impl_->props.ll_lon) / impl_->props.deg_per_pixel_lon;
-  *py = (impl_->props.ur_lat - p.lat) / impl_->props.deg_per_pixel_lat;
+  *px = (p.lon - impl_->edges.west) / impl_->props.deg_per_pixel_lon;
+  *py = (impl_->edges.north - p.lat) / impl_->props.deg_per_pixel_lat;
   return Status::Ok();
 }
 
