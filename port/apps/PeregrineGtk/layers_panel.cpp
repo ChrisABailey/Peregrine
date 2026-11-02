@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-#include "layers_window.h"
+#include "layers_panel.h"
 
 #include <string>
 #include <utility>
@@ -52,14 +52,9 @@ void SetMargins(Gtk::Widget& w, int margin) {
 
 }  // namespace
 
-LayersWindow::LayersWindow(fv::desk::DeskHost& host, Gtk::Window& parent,
-                           std::function<void(const std::string&)> execute)
-    : host_(host), execute_(std::move(execute)) {
-  set_title("Layers");
-  set_transient_for(parent);
-  set_default_size(380, 360);
-  set_size_request(280, 200);
-  set_hide_on_close(true);
+LayersPanel::LayersPanel(fv::desk::DeskHost& host, std::function<void(const std::string&)> execute)
+    : Gtk::Box(Gtk::Orientation::VERTICAL, 8), host_(host), execute_(std::move(execute)) {
+  set_size_request(300, -1);
 
   // Layers: the drawing order. A row dropped on another lands above it, or
   // below it in its lower half.
@@ -113,10 +108,10 @@ LayersWindow::LayersWindow(fv::desk::DeskHost& host, Gtk::Window& parent,
   switcher_.set_stack(views_);
   switcher_.set_halign(Gtk::Align::CENTER);
 
-  // The menu is parented to the box, which does not lay out popovers.
+  // The menu is parented to the panel, which does not lay out popovers.
   menu_.set_has_arrow(false);
   menu_.set_halign(Gtk::Align::START);
-  menu_.set_parent(box_);
+  menu_.set_parent(*this);
 
   up_.signal_clicked().connect([this] {
     if (views_.get_visible_child_name() == "sources") {
@@ -137,27 +132,16 @@ LayersWindow::LayersWindow(fv::desk::DeskHost& host, Gtk::Window& parent,
   buttons_.append(up_);
   buttons_.append(down_);
 
-  SetMargins(box_, 12);
-  box_.append(switcher_);
-  box_.append(views_);
-  box_.append(buttons_);
-  set_child(box_);
-
-  auto keys = Gtk::EventControllerKey::create();
-  keys->signal_key_pressed().connect(
-      [this](guint keyval, guint, Gdk::ModifierType) {
-        if (keyval != GDK_KEY_Escape) return false;
-        close();
-        return true;
-      },
-      false);
-  add_controller(keys);
+  SetMargins(*this, 8);
+  append(switcher_);
+  append(views_);
+  append(buttons_);
   Reload();
 }
 
-LayersWindow::~LayersWindow() { menu_.unparent(); }
+LayersPanel::~LayersPanel() { menu_.unparent(); }
 
-void LayersWindow::Reload() {
+void LayersPanel::Reload() {
   reloading_ = true;
   ReloadLayers();
   ReloadSources();
@@ -165,7 +149,7 @@ void LayersWindow::Reload() {
   UpdateButtons();
 }
 
-void LayersWindow::ReloadLayers() {
+void LayersPanel::ReloadLayers() {
   while (Gtk::Widget* row = list_.get_first_child()) list_.remove(*row);
   const int count = host_.LayerCount();
   int current = -1;
@@ -177,7 +161,7 @@ void LayersWindow::ReloadLayers() {
   else list_.unselect_all();
 }
 
-void LayersWindow::ReloadSources() {
+void LayersPanel::ReloadSources() {
   while (Gtk::Widget* row = sources_.get_first_child()) sources_.remove(*row);
   entries_.clear();
   int keep = -1, current = -1;
@@ -205,12 +189,12 @@ void LayersWindow::ReloadSources() {
   else sources_.unselect_all();
 }
 
-std::string LayersWindow::SourceKey(int source) const {
+std::string LayersPanel::SourceKey(int source) const {
   const std::string path = host_.SourcePath(source);
   return path.empty() ? host_.SourceName(source) : path;
 }
 
-std::pair<int, int> LayersWindow::SourceEntry(int index) const {
+std::pair<int, int> LayersPanel::SourceEntry(int index) const {
   if (index < 0 || index >= static_cast<int>(entries_.size())) return {-1, -1};
   return {entries_[index].source, entries_[index].layer};
 }
@@ -218,7 +202,7 @@ std::pair<int, int> LayersWindow::SourceEntry(int index) const {
 /// One layer: visibility, icon and name (bold when current, a bullet when
 /// unsaved), and an opacity slider where the layer has one. Indented under
 /// its source in the Sources view.
-Gtk::Widget* LayersWindow::MakeLayerRow(int row, bool indented, int drag_value) {
+Gtk::Widget* LayersPanel::MakeLayerRow(int row, bool indented, int drag_value) {
   auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
   if (indented) box->set_margin_start(28);
   auto* visible = Gtk::make_managed<Gtk::CheckButton>();
@@ -227,7 +211,7 @@ Gtk::Widget* LayersWindow::MakeLayerRow(int row, bool indented, int drag_value) 
   visible->signal_toggled().connect([this, row, visible] {
     host_.SetLayerVisible(row, visible->get_active());
     // The source's check box follows its layers.
-    Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersWindow::Reload));
+    Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersPanel::Reload));
   });
   box->append(*visible);
 
@@ -262,7 +246,7 @@ Gtk::Widget* LayersWindow::MakeLayerRow(int row, bool indented, int drag_value) 
 
 /// One source: an expander, a check box that is mixed while only some of its
 /// layers are shown, its icon and its name.
-Gtk::Widget* LayersWindow::MakeSourceRow(int source, int drag_value) {
+Gtk::Widget* LayersPanel::MakeSourceRow(int source, int drag_value) {
   auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
   const std::string key = SourceKey(source);
   const bool expanded = collapsed_.count(key) == 0;
@@ -285,7 +269,7 @@ Gtk::Widget* LayersWindow::MakeSourceRow(int source, int drag_value) {
   visible->signal_toggled().connect([this, source, visible] {
     if (reloading_) return;
     host_.SetSourceVisible(source, visible->get_active());
-    Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersWindow::Reload));
+    Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersPanel::Reload));
   });
   box->append(*visible);
 
@@ -308,7 +292,7 @@ Gtk::Widget* LayersWindow::MakeSourceRow(int source, int drag_value) {
   return box;
 }
 
-void LayersWindow::SetExpanded(int source, bool expanded) {
+void LayersPanel::SetExpanded(int source, bool expanded) {
   const std::string key = SourceKey(source);
   if (expanded) collapsed_.erase(key);
   else collapsed_.insert(key);
@@ -317,7 +301,7 @@ void LayersWindow::SetExpanded(int source, bool expanded) {
   Reload();
 }
 
-bool LayersWindow::Move(int from, int to) {
+bool LayersPanel::Move(int from, int to) {
   const std::string error = host_.MoveLayer(from, to);
   if (!error.empty()) error_bell();
   Reload();
@@ -326,7 +310,7 @@ bool LayersWindow::Move(int from, int to) {
 
 /// Moves Sources row `from_entry` to where row `to_entry` is: a source to
 /// another source's place, or a layer to another layer's place in the same source.
-bool LayersWindow::MoveSourceRow(int from_entry, int to_entry) {
+bool LayersPanel::MoveSourceRow(int from_entry, int to_entry) {
   const int n = static_cast<int>(entries_.size());
   if (from_entry < 0 || from_entry >= n || to_entry < 0 || to_entry >= n || from_entry == to_entry)
     return false;
@@ -350,7 +334,7 @@ bool LayersWindow::MoveSourceRow(int from_entry, int to_entry) {
   return error.empty();
 }
 
-bool LayersWindow::MoveSelectedSourceRow(int delta) {
+bool LayersPanel::MoveSelectedSourceRow(int delta) {
   const Gtk::ListBoxRow* row = sources_.get_selected_row();
   if (!row) return false;
   const int index = row->get_index();
@@ -374,7 +358,7 @@ bool LayersWindow::MoveSelectedSourceRow(int delta) {
   return error.empty();
 }
 
-void LayersWindow::ShowMenuAt(int index, double x, double y) {
+void LayersPanel::ShowMenuAt(int index, double x, double y) {
   if (index < 0 || index >= static_cast<int>(entries_.size())) return;
   if (Gtk::ListBoxRow* row = sources_.get_row_at_index(index)) sources_.select_row(*row);
   const Entry e = entries_[index];
@@ -406,12 +390,12 @@ void LayersWindow::ShowMenuAt(int index, double x, double y) {
   menu_.set_menu_model(model);
 
   double bx = x, by = y;
-  sources_.translate_coordinates(box_, x, y, bx, by);
+  sources_.translate_coordinates(*this, x, y, bx, by);
   menu_.set_pointing_to(Gdk::Rectangle(static_cast<int>(bx), static_cast<int>(by), 1, 1));
   menu_.popup();
 }
 
-void LayersWindow::UpdateButtons() {
+void LayersPanel::UpdateButtons() {
   if (views_.get_visible_child_name() == "sources") {
     const Gtk::ListBoxRow* selected = sources_.get_selected_row();
     const int index = selected ? selected->get_index() : -1;
@@ -433,7 +417,7 @@ void LayersWindow::UpdateButtons() {
   down_.set_sensitive(row >= 0 && row + 1 < host_.LayerCount());
 }
 
-void LayersWindow::OnSelected() {
+void LayersPanel::OnSelected() {
   UpdateButtons();
   const Gtk::ListBoxRow* selected = list_.get_selected_row();
   if (reloading_ || !selected) return;
@@ -442,10 +426,10 @@ void LayersWindow::OnSelected() {
   if (host_.LayerCurrent(row)) return;
   host_.SelectLayer(row);
   // Rebuilt after the click has finished with the row it landed on.
-  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersWindow::Reload));
+  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersPanel::Reload));
 }
 
-void LayersWindow::OnSourceSelected() {
+void LayersPanel::OnSourceSelected() {
   UpdateButtons();
   const Gtk::ListBoxRow* selected = sources_.get_selected_row();
   if (reloading_ || !selected) return;
@@ -456,7 +440,7 @@ void LayersWindow::OnSourceSelected() {
   if (e.layer >= 0 ? host_.LayerCurrent(e.layer) : host_.SourceCurrent(e.source)) return;
   if (e.layer >= 0) host_.SelectLayer(e.layer);
   else host_.SelectSource(e.source);
-  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersWindow::Reload));
+  Glib::signal_idle().connect_once(sigc::mem_fun(*this, &LayersPanel::Reload));
 }
 
 }  // namespace peregrine

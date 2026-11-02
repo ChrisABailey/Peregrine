@@ -23,7 +23,7 @@ set(PEREGRINE_GTK_WINDOWS
   find_window.cpp
   layer_fields_panel.cpp
   layer_style_window.cpp
-  layers_window.cpp
+  layers_panel.cpp
   properties_window.cpp
   query_builder_panel.cpp
   main_menu.cpp

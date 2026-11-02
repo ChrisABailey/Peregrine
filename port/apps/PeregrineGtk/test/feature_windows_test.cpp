@@ -63,9 +63,8 @@ TEST_F(FeatureWindowsTest, TitleNamesTheOpenFile) {
 
 TEST_F(FeatureWindowsTest, LayersPanelListsTheStackAndHidesALayer) {
   window().Execute("overlay.layers");
-  ASSERT_TRUE(SpinUntil([&] { return window().layers_window() != nullptr; }));
-  LayersWindow& layers = *window().layers_window();
-  EXPECT_TRUE(layers.get_visible());
+  LayersPanel& layers = window().layers_panel();
+  ASSERT_TRUE(SpinUntil([&] { return layers.get_visible(); }));
   const int count = host().LayerCount();
   ASSERT_GE(count, 1);
   EXPECT_NE(layers.list().get_row_at_index(count - 1), nullptr);
@@ -83,16 +82,42 @@ TEST_F(FeatureWindowsTest, LayersPanelListsTheStackAndHidesALayer) {
   visible->set_active(false);
   EXPECT_FALSE(host().LayerVisible(row));
 
-  layers.close();
+}
+
+TEST_F(FeatureWindowsTest, LayersPanelDocksAtTheRightAndTogglesFromTheToolbar) {
+  LayersPanel& layers = window().layers_panel();
+  EXPECT_EQ(window().split().get_end_child(), &layers);
+  // Earlier tests leave the remembered state showing.
+  window().SetLayersShown(false);
   EXPECT_FALSE(layers.get_visible());
-  window().Execute("overlay.layers");
+  EXPECT_FALSE(host().IsChecked("overlay.layers_panel"));
+
+  window().Execute("overlay.layers_panel");
   ASSERT_TRUE(SpinUntil([&] { return layers.get_visible(); }));
+  EXPECT_TRUE(host().IsChecked("overlay.layers_panel"));
+  ASSERT_TRUE(SpinUntil([&] { return layers.get_width() > 0; }));
+  // The panel sits right of the map, inside the window.
+  EXPECT_GE(window().split().get_position(), window().canvas().get_width());
+  EXPECT_LE(window().split().get_position() + layers.get_width(), window().get_width());
+
+  // A new window opens with the panel the last one left showing.
+  {
+    MapWindow next;
+    EXPECT_TRUE(next.layers_panel().get_visible());
+  }
+  window().Execute("overlay.layers_panel");
+  ASSERT_TRUE(SpinUntil([&] { return !layers.get_visible(); }));
+  EXPECT_FALSE(host().IsChecked("overlay.layers_panel"));
+  {
+    MapWindow next;
+    EXPECT_FALSE(next.layers_panel().get_visible());
+  }
 }
 
 TEST_F(FeatureWindowsTest, SourcesViewGroupsLayersUnderTheirFile) {
   window().Execute("overlay.layers");
-  ASSERT_TRUE(SpinUntil([&] { return window().layers_window() != nullptr; }));
-  LayersWindow& layers = *window().layers_window();
+  LayersPanel& layers = window().layers_panel();
+  ASSERT_TRUE(SpinUntil([&] { return layers.get_visible(); }));
   layers.ShowView("sources");
   ASSERT_GE(host().SourceCount(), 1);
   EXPECT_EQ(host().SourceName(0), "rivers.geojson");

@@ -38,6 +38,50 @@ void SetUpLabel(Gtk::Label& label) {
 /// The version the log's first line names; the app has no release number yet.
 constexpr char kAppVersion[] = "(unversioned)";
 
+/// The shell's own state, which DeskKit's settings do not hold; the macOS app
+/// keeps the same key in its user defaults.
+constexpr char kShellGroup[] = "Peregrine";
+constexpr char kLayersShownKey[] = "LayersPanelShown";
+
+std::string ShellStatePath() {
+  return Glib::build_filename(Glib::get_user_config_dir(), "peregrine", "shell.ini");
+}
+
+/// The remembered layers panel state; false when none was saved.
+bool ReadLayersShown() {
+  try {
+    auto file = Glib::KeyFile::create();
+    file->load_from_file(ShellStatePath());
+    return file->get_boolean(kShellGroup, kLayersShownKey);
+  } catch (const Glib::Error&) {
+    return false;
+  }
+}
+
+/// Saves `shown` into the shell state file, keeping its other keys. Failures
+/// are reported on stderr: the panel state is a convenience.
+void WriteLayersShown(bool shown) {
+  const std::string path = ShellStatePath();
+  auto file = Glib::KeyFile::create();
+  try {
+    file->load_from_file(path, Glib::KeyFile::Flags::KEEP_COMMENTS);
+  } catch (const Glib::Error&) {
+  }
+  try {
+    if (file->has_key(kShellGroup, kLayersShownKey) && file->get_boolean(kShellGroup, kLayersShownKey) == shown)
+      return;
+  } catch (const Glib::Error&) {
+  }
+  file->set_boolean(kShellGroup, kLayersShownKey, shown);
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+  try {
+    file->save_to_file(path);
+  } catch (const Glib::Error& e) {
+    std::cerr << "Peregrine: could not save " << path << ": " << e.what() << "\n";
+  }
+}
+
 }  // namespace
 
 MapWindow::MapWindow()
@@ -82,8 +126,17 @@ MapWindow::MapWindow()
   status_bar_.append(status_left_);
   status_bar_.append(status_centre_);
   status_bar_.append(status_right_);
+  // The map and the layers panel docked at its right; the map takes the slack.
+  layers_ = std::make_unique<LayersPanel>(*host_, [this](const std::string& id) { Execute(id); });
+  split_.set_start_child(canvas_);
+  split_.set_end_child(*layers_);
+  split_.set_resize_start_child(true);
+  split_.set_shrink_start_child(false);
+  split_.set_resize_end_child(false);
+  split_.set_shrink_end_child(false);
+  split_.set_vexpand(true);
   content_.append(menu_bar_);
-  content_.append(canvas_);
+  content_.append(split_);
   content_.append(status_bar_);
   set_child(content_);
   canvas_.grab_focus();
@@ -94,6 +147,7 @@ MapWindow::MapWindow()
   signal_close_request().connect(sigc::mem_fun(*this, &MapWindow::OnCloseRequest), false);
   host_->SetRequestHandler(
       [](void* context) { static_cast<MapWindow*>(context)->AnswerRequest(); }, this);
+  SetLayersShown(ReadLayersShown());
   RefreshStatus();
   UpdateMenus();
   if (!settings_error.empty()) {
@@ -171,11 +225,9 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
   if (t.profile_requested && host_->TakeRouteProfileRequest())
     ShowPanel(profile_, [this] { return std::make_unique<ProfileWindow>(*host_, *this); });
   if (t.profile_changed && profile_ && profile_->get_visible()) profile_->Reload();
-  if (t.layers_requested && host_->TakeLayersRequest())
-    ShowPanel(layers_, [this] {
-      return std::make_unique<LayersWindow>(*host_, *this, [this](const std::string& id) { Execute(id); });
-    });
-  if (t.layers_changed && layers_ && layers_->get_visible()) layers_->Reload();
+  if (t.layers_requested && host_->TakeLayersRequest()) SetLayersShown(true);
+  if (t.layers_hide_requested && host_->TakeLayersHideRequest()) SetLayersShown(false);
+  if (t.layers_changed && layers_->get_visible()) layers_->Reload();
   if (t.find_requested && host_->TakeFindRequest()) ShowFind();
   if (t.form_requested && host_->TakeFeatureFormRequest())
     ShowPanel(feature_form_, [this] { return std::make_unique<FeatureFormWindow>(*host_, *this); });
@@ -192,6 +244,14 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
     menus_.Refresh();
   const std::string notice = host_->TakeNotice();
   if (!notice.empty()) PresentNotice(notice);
+}
+
+void MapWindow::SetLayersShown(bool shown) {
+  if (shown) layers_->Reload();
+  layers_->set_visible(shown);
+  host_->SetLayersShown(shown);
+  menus_.Refresh();
+  WriteLayersShown(shown);
 }
 
 template <typename W, typename Make>

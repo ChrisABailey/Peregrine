@@ -20,7 +20,7 @@
 #include "fv_desk_host.h"
 #include "properties_window.h"
 #include "layer_style_window.h"
-#include "layers_window.h"
+#include "layers_panel.h"
 #include "main_menu.h"
 #include "map_canvas.h"
 #include "new_layer_window.h"
@@ -34,11 +34,11 @@ struct DeskHostRelease {
   void operator()(fv::desk::DeskHost* host) const { fv_desk_host_release(host); }
 };
 
-/// The map widget over a status bar (feedback from the map and overlays on
-/// the left, scale and series in the centre, position and terrain height
-/// under the cursor on the right), under the menu bar and with the toolbar in
-/// the header bar, both generated from DeskKit's model, and the dialogs the
-/// model calls for.
+/// The map widget, with the layers panel docked at its right, over a status
+/// bar (feedback from the map and overlays on the left, scale and series in
+/// the centre, position and terrain height under the cursor on the right),
+/// under the menu bar and with the toolbar in the header bar, both generated
+/// from DeskKit's model, and the dialogs the model calls for.
 class MapWindow : public Gtk::ApplicationWindow {
  public:
   MapWindow();
@@ -65,9 +65,15 @@ class MapWindow : public Gtk::ApplicationWindow {
   void ShowFind();
   /// The Map Data Sources window, or null when it is not open.
   DataSourcesWindow* data_sources_window() { return data_sources_.get(); }
-  /// The panels and dialogs the core opened, or null before the first time
-  /// each is shown; a closed one is hidden, not destroyed.
-  LayersWindow* layers_window() { return layers_.get(); }
+  /// The docked layers panel; hidden until shown.
+  LayersPanel& layers_panel() { return *layers_; }
+  /// Shows or hides the layers panel, tells the core (the toolbar toggle's
+  /// checked state) and remembers the choice for the next launch.
+  void SetLayersShown(bool shown);
+  /// The divider between the map and the layers panel.
+  Gtk::Paned& split() { return split_; }
+  /// The dialogs the core opened, or null before the first time each is
+  /// shown; a closed one is hidden, not destroyed.
   FindWindow* find_window() { return find_.get(); }
   FeatureFormWindow* feature_form_window() { return feature_form_.get(); }
   AttributeTableWindow* attribute_table_window() { return attribute_table_.get(); }
@@ -110,6 +116,7 @@ class MapWindow : public Gtk::ApplicationWindow {
   std::vector<std::string> accelerated_actions_;
   Gtk::Box content_{Gtk::Orientation::VERTICAL};
   Gtk::PopoverMenuBar menu_bar_;
+  Gtk::Paned split_{Gtk::Orientation::HORIZONTAL};
   Gtk::Box status_bar_{Gtk::Orientation::HORIZONTAL, 16};
   Gtk::Box status_left_{Gtk::Orientation::HORIZONTAL, 16};
   Gtk::Box status_centre_{Gtk::Orientation::HORIZONTAL, 16};
@@ -124,7 +131,7 @@ class MapWindow : public Gtk::ApplicationWindow {
   std::string tooltip_;
   std::unique_ptr<JobDialog> job_dialog_;
   std::unique_ptr<DataSourcesWindow> data_sources_;
-  std::unique_ptr<LayersWindow> layers_;
+  std::unique_ptr<LayersPanel> layers_;
   std::unique_ptr<FindWindow> find_;
   std::unique_ptr<FeatureFormWindow> feature_form_;
   std::unique_ptr<AttributeTableWindow> attribute_table_;
