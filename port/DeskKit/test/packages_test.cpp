@@ -512,9 +512,12 @@ TEST_F(PackagesTest, ADirectoryNotNamedAfterItsIdFails) {
 // MARK: Loading
 
 TEST_F(PackagesTest, KindsAndVersionsThisBuildLacksAreUnavailable) {
+  // A library for every platform, so this one is missing rather than unavailable.
   WritePackage(User(), "com.example.clib",
                Manifest("com.example.clib", "1", R"({"library": "rings"})", "r1",
-                        R"("requires": {"plugin_api": 1}, "libraries": {"macos": "lib/r.dylib"},)"));
+                        R"("requires": {"plugin_api": 1}, "libraries": {"macos": "lib/r.dylib",
+                           "linux-x86_64": "lib/r.so", "linux-aarch64": "lib/r.so",
+                           "windows-x86_64": "lib/r.dll"},)"));
   WritePackage(User(), "com.example.api2",
                Manifest("com.example.api2", "1", R"({"library": "rings"})", "r2",
                         R"("requires": {"plugin_api": 2}, "libraries": {"macos": "lib/r.dylib"},)"));
