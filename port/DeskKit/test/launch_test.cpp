@@ -74,3 +74,14 @@ TEST(LaunchOptions, OpenCollectsFilesInOrder) {
   EXPECT_EQ(o.open[0], "a.gpkg");
   EXPECT_EQ(o.open[1], "b.geojson");
 }
+
+TEST(LaunchOptions, ArgumentsThatAreNotOptionsAreFiles) {
+  const LaunchOptions o = ParseLaunchOptions(
+      {"p", "/tmp/a.pgpkg", "--catalog", "c.sqlite", "-v", "b.gpkg", "--open", "d.geojson"});
+  ASSERT_EQ(o.files.size(), 2u);
+  EXPECT_EQ(o.files[0], "/tmp/a.pgpkg");
+  EXPECT_EQ(o.files[1], "b.gpkg");
+  EXPECT_EQ(o.catalog, "c.sqlite");
+  ASSERT_EQ(o.open.size(), 1u);
+  EXPECT_TRUE(ParseLaunchOptions({"p", "--catalog", "c"}).files.empty());
+}

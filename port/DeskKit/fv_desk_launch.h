@@ -31,11 +31,15 @@ struct LaunchOptions {
   std::vector<std::string> run;
   /// Overlay files (`--open`, repeatable) to open after the commands, in order.
   std::vector<std::string> open;
+  /// Arguments that are not options, in order: the files a desktop launcher
+  /// passes (`Exec=… %F`). The shell decides what each one is.
+  std::vector<std::string> files;
 };
 
 /// Parses `argv` (argv[0] is the program and is skipped). A later option
 /// replaces an earlier one; a `--center` that does not hold two or three
-/// numbers is ignored.
+/// numbers is ignored. An argument starting with '-' that is not an option
+/// above is skipped; any other argument is a file.
 LaunchOptions ParseLaunchOptions(const std::vector<std::string>& argv);
 
 }  // namespace desk

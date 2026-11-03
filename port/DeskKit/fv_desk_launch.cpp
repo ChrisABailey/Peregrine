@@ -60,6 +60,8 @@ LaunchOptions ParseLaunchOptions(const std::vector<std::string>& argv) {
       o.run.push_back(argv[++i]);
     } else if (a == "--open" && has_value) {
       o.open.push_back(argv[++i]);
+    } else if (!a.empty() && a[0] != '-') {
+      o.files.push_back(a);
     }
   }
   return o;
