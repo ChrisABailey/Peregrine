@@ -108,6 +108,49 @@ TEST(TirosSource, DecodeAndTransform) {
   ASSERT_TRUE(src.GeoToPixel(p, &px, &py).ok());
   EXPECT_NEAR(px, 600, 1e-6);
   EXPECT_NEAR(py, 700, 1e-6);
+  ASSERT_TRUE(src.PixelToGeo(info.size.width, info.size.height, &p).ok());
+  EXPECT_NEAR(p.lat, b.ll.lat, 1e-9);  // SE corner of the last pixel
+  EXPECT_NEAR(p.lon, b.ur.lon, 1e-9);
+}
+
+/// Tiles of one series tile the world: neighbours share an edge, with no
+/// one-pixel gap between them, and the 16 km pair spans -180..180 exactly.
+TEST(TirosEnumerate, NeighboursAbut) {
+  std::string root = TirosDir();
+  if (root.empty() || !fs::exists(root + "/topobath/16km") ||
+      !fs::exists(root + "/topobath/8km/TopoBath_008k_0101.wld"))
+    GTEST_SKIP();
+  fv::TirosFrameEnumerator e;
+  ASSERT_TRUE(e.Begin(root + "/topobath/16km").ok());
+  std::vector<fv::FrameInfo> f;
+  fv::FrameInfo info;
+  while (e.Next(&info)) f.push_back(info);
+  ASSERT_EQ(f.size(), 2u);  // sorted: col 00, then col 01
+  EXPECT_NEAR(f[0].bounds.ll.lon, -180.0, 1e-9);
+  EXPECT_NEAR(f[0].bounds.ur.lon, f[1].bounds.ll.lon, 1e-9);
+  EXPECT_NEAR(f[1].bounds.ur.lon, 180.0, 1e-9);
+  EXPECT_NEAR(f[0].bounds.ur.lat, 90.0, 1e-9);
+  EXPECT_NEAR(f[0].bounds.ll.lat, -90.0, 1e-9);
+
+  ASSERT_TRUE(e.Begin(root + "/topobath/8km").ok());
+  f.clear();
+  while (e.Next(&info)) f.push_back(info);
+  const fv::FrameInfo* r0 = nullptr;
+  const fv::FrameInfo* r1 = nullptr;
+  for (const auto& x : f) {
+    if (x.path.find("_0100.") != std::string::npos) r0 = &x;  // col 01 row 00
+    if (x.path.find("_0101.") != std::string::npos) r1 = &x;  // col 01 row 01
+  }
+  ASSERT_TRUE(r0 && r1);
+  EXPECT_NEAR(r0->bounds.ll.lat, r1->bounds.ur.lat, 1e-9);
+  EXPECT_NEAR(r0->bounds.ll.lat, 0.0, 1e-9);
+
+  // The source agrees with the catalog row.
+  fv::TirosRasterSource src;
+  ASSERT_TRUE(src.Open(r0->path).ok());
+  fv::GeoRect b = src.Bounds();
+  EXPECT_NEAR(b.ll.lon, r0->bounds.ll.lon, 1e-12);
+  EXPECT_NEAR(b.ur.lat, r0->bounds.ur.lat, 1e-12);
 }
 
 }  // namespace

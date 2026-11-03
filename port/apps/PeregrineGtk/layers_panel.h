@@ -3,7 +3,7 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-/// layers_window.h — the layer manager, the counterpart of LayersWindow.swift.
+/// layers_panel.h — the layer manager docked in the map window, the counterpart of LayersPanel.swift.
 #pragma once
 
 #include <gtkmm.h>
@@ -24,12 +24,12 @@ namespace peregrine {
 /// slider. Selecting a row makes its layer current; Move Up/Down and dragging
 /// reorder sources, layers within a source, or (in Layers) any layer. A right
 /// click shows the row's menu from DeskKit. Rows come from `DeskHost`'s snapshot.
-class LayersWindow : public Gtk::Window {
+/// The map window docks the panel at its right.
+class LayersPanel : public Gtk::Box {
  public:
-  /// `host` must outlive the window; `execute` runs a menu's command.
-  LayersWindow(fv::desk::DeskHost& host, Gtk::Window& parent,
-               std::function<void(const std::string&)> execute);
-  ~LayersWindow() override;
+  /// `host` must outlive the panel; `execute` runs a menu's command.
+  LayersPanel(fv::desk::DeskHost& host, std::function<void(const std::string&)> execute);
+  ~LayersPanel() override;
 
   /// Re-reads both views; the selection is kept where it still exists, else
   /// the current layer's row is selected.
@@ -80,7 +80,6 @@ class LayersWindow : public Gtk::Window {
 
   fv::desk::DeskHost& host_;
   std::function<void(const std::string&)> execute_;
-  Gtk::Box box_{Gtk::Orientation::VERTICAL, 8};
   Gtk::StackSwitcher switcher_;
   Gtk::Stack views_;
   Gtk::ScrolledWindow scroll_;

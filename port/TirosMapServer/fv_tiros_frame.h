@@ -39,6 +39,23 @@ struct TirosFrameProperties {
 // The TIROS tile is always this many pixels square.
 constexpr int kTirosCellPix = 1350;
 
+/// Outer extent of a tiros3 tile, in degrees, to the edges of its outermost pixels.
+///
+/// The ll/ur corners in TirosFrameProperties are the centres of the corner
+/// pixels, so adjacent tiles' corners sit one pixel apart; these edges meet
+/// exactly. Placeholder and unsupported frames return their corners unchanged.
+struct TirosEdgeExtent {
+  double south = 0, west = 0, north = 0, east = 0;
+};
+
+/// Returns the pixel-edge extent of the frame described by props.
+inline TirosEdgeExtent TirosPixelEdges(const TirosFrameProperties& props) {
+  const double half_lat = props.deg_per_pixel_lat / 2.0;
+  const double half_lon = props.deg_per_pixel_lon / 2.0;
+  return TirosEdgeExtent{props.ll_lat - half_lat, props.ll_lon - half_lon,
+                         props.ur_lat + half_lat, props.ur_lon + half_lon};
+}
+
 class TirosFrame {
  public:
   // path may be a full path or a bare name; only the basename is used, and

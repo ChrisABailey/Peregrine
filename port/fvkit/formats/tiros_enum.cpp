@@ -55,8 +55,9 @@ Status TirosFrameEnumerator::Begin(const std::string& dir) {
 
     FrameInfo info;
     info.path = it->path().string();
-    info.bounds = GeoRect{{props.ll_lat, props.ll_lon},
-                          {props.ur_lat, props.ur_lon}};
+    // Pixel edges, not the corner-pixel centres, so neighbouring tiles abut.
+    const TirosEdgeExtent edges = TirosPixelEdges(props);
+    info.bounds = GeoRect{{edges.south, edges.west}, {edges.north, edges.east}};
     info.series_key = props.series;
     info.scale = props.scale;
     info.scale_units = props.scale_is_meters ? 4 : 3;  // MAP_SCALE_METERS : _KILOMETER
