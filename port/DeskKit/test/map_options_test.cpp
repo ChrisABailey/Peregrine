@@ -12,9 +12,12 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 #include "fv_desk_fake.h"
 #include "fv_desk_user_settings.h"
+#include "fv_desk_vector_map.h"
 #include "fvkit/formats/dted_shaded.h"
 #include "fvkit/settings.h"
 
@@ -128,6 +131,53 @@ TEST(MapOptions, TheDataPageComesLastAndPointsGeoTransAtItsDirectory) {
   // Empty leaves the environment alone.
   fv::desk::SetGeoTransDataDir("");
   EXPECT_STREQ(std::getenv("MSPCCS_DATA"), "/opt/peregrine/geotrans");
+#ifdef _WIN32
+  _putenv_s("MSPCCS_DATA", saved.c_str());
+#else
+  if (saved.empty()) unsetenv("MSPCCS_DATA");
+  else setenv("MSPCCS_DATA", saved.c_str(), 1);
+#endif
+}
+
+TEST(MapOptions, TheAppDataDirSuppliesTheDatumTablesAndTheOsmStyle) {
+  namespace fs = std::filesystem;
+  const char* was = std::getenv("MSPCCS_DATA");
+  const std::string saved = was != nullptr ? was : "";
+  const fs::path dir = fs::temp_directory_path() / "fv_app_data_dir_test";
+  fs::remove_all(dir);
+  fs::create_directories(dir / "geotrans");
+  fs::create_directories(dir / "osm-styles");
+  std::ofstream(dir / "osm-styles" / "peregrine-osm.json") << "{}";
+
+  fv::desk::SetAppDataDir("");
+  EXPECT_EQ(fv::desk::DefaultOsmStyle(), "");
+  fv::desk::SetAppDataDir(dir.string());
+  EXPECT_EQ(fv::desk::DefaultOsmStyle(), (dir / "osm-styles" / "peregrine-osm.json").string());
+
+#ifndef _WIN32
+  unsetenv("MSPCCS_DATA");
+  fv::desk::SetGeoTransDataDir("");
+  ASSERT_NE(std::getenv("MSPCCS_DATA"), nullptr);
+  EXPECT_EQ(std::string(std::getenv("MSPCCS_DATA")), (dir / "geotrans").string());
+  // A set environment wins over the shipped tables.
+  setenv("MSPCCS_DATA", "/elsewhere", 1);
+  fv::desk::SetGeoTransDataDir("");
+  EXPECT_STREQ(std::getenv("MSPCCS_DATA"), "/elsewhere");
+#endif
+
+  // An empty osm.style draws with the shipped sheet; a set one is kept.
+  {
+    fv::desk::FakeDesk fake;
+    fake.desk().SettingsLoaded();
+    EXPECT_EQ(fv::desk::CurrentVectorMapConfig().osm_style, fv::desk::DefaultOsmStyle());
+    fake.settings().Set("osm.style", "/data/style.json");
+    fake.desk().SettingsLoaded();
+    EXPECT_EQ(fv::desk::CurrentVectorMapConfig().osm_style, "/data/style.json");
+  }
+
+  fv::desk::SetAppDataDir("");
+  fv::desk::SetVectorMapConfig(fv::desk::VectorMapConfig());
+  fs::remove_all(dir);
 #ifdef _WIN32
   _putenv_s("MSPCCS_DATA", saved.c_str());
 #else

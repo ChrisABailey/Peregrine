@@ -138,7 +138,8 @@ bool ParseEntry(const json& j, const std::string& base_dir, OverlayManifestEntry
       j["implementation"].size() != 1)
     return *why = at + "implementation must be an object with one key", false;
   const auto impl = j["implementation"].begin();
-  if (impl.key() != "builtin" && impl.key() != "library" && impl.key() != "python")
+  if (impl.key() != "builtin" && impl.key() != "library" && impl.key() != "native" &&
+      impl.key() != "python")
     return *why = at + "unknown implementation kind '" + impl.key() + "'", false;
   if (!impl.value().is_string() || impl.value().get<std::string>().empty())
     return *why = at + "implementation." + impl.key() + " must name something", false;

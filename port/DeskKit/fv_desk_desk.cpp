@@ -14,6 +14,7 @@
 #include <system_error>
 
 #include "fv_desk_base_map.h"
+#include "fv_desk_enc_import.h"
 #include "fv_desk_map_options.h"
 #include "fv_desk_overlay_manifest.h"
 #include "fv_desk_feature_editor.h"
@@ -274,6 +275,7 @@ Desk::~Desk() {
 void Desk::Refresh() {
   RegisterGroupCommands();
   RegisterOverlayTypeCommands();
+  RegisterToolCommands();
   RegisterInstanceCommands();
   RegisterRecentCommands();
   RegisterEditorCommands();
@@ -284,6 +286,94 @@ std::vector<app::TypeId> Desk::LoadOverlayManifests(const std::vector<std::strin
   std::vector<app::TypeId> ids = RegisterOverlayManifests(types_, dirs, &warnings_);
   Refresh();
   return ids;
+}
+
+void Desk::LoadPackages(const PackageDirs& dirs, const std::string& host_version) {
+  packages_ = std::make_unique<PackageManager>(dirs, types_, tools_, host_version);
+  packages_->SetEditorManager(editors_.get());
+  packages_->Scan(&warnings_);
+  packages_->LoadAll();
+  for (const PackageInfo& p : packages_->packages())
+    if (p.state == PackageState::kFailed || p.state == PackageState::kUnavailable)
+      Warn(p.id + ": " + p.reason);
+  Refresh();
+}
+
+Status Desk::LoadToolConfig(const std::string& path) {
+  ToolConfig config;
+  Status s = ReadToolConfig(path, &config);
+  if (!s.ok()) {
+    Warn(s.message);
+    return s;
+  }
+  for (const ToolManifestEntry& e : config.tools) {
+    const ToolRun* run = FindBuiltinTool(e.implementation_name);
+    if (run == nullptr) {
+      s = Status::Error(kNotFound, path + ": tool '" + e.desc.id + "': no builtin tool named '" +
+                                       e.implementation_name + "'");
+      Warn(s.message);
+      continue;
+    }
+    if (tools_.Find(e.desc.id) != nullptr) continue;  // a second call
+    ToolDesc d = e.desc;
+    d.run = *run;
+    const Status r = tools_.Register(std::move(d));
+    if (!r.ok()) {
+      s = r;
+      Warn(r.message);
+    }
+  }
+  tool_config_ = std::move(config);
+  Refresh();
+  return s;
+}
+
+Status Desk::InstallPackage(const std::string& path, InstallResult* result) {
+  if (packages_ == nullptr) return Status::Error(kUnsupported, "packages are not loaded");
+  const Status s = packages_->Install(path, result);
+  if (s.ok() && result->live) Refresh();
+  return s;
+}
+
+Status Desk::LinkPackage(const std::string& dir, InstallResult* result) {
+  if (packages_ == nullptr) return Status::Error(kUnsupported, "packages are not loaded");
+  const Status s = packages_->Link(dir, result);
+  if (s.ok() && result->live) Refresh();
+  return s;
+}
+
+Status Desk::SetPackageEnabled(const std::string& id, bool enabled) {
+  if (packages_ == nullptr) return Status::Error(kUnsupported, "packages are not loaded");
+  const Status s = packages_->SetEnabled(id, enabled);
+  if (s.ok()) Refresh();
+  return s;
+}
+
+Status Desk::RemovePackage(const std::string& id) {
+  if (packages_ == nullptr) return Status::Error(kUnsupported, "packages are not loaded");
+  return packages_->Remove(id);
+}
+
+void Desk::RegisterToolCommands() {
+  commands_.RemovePrefix("tools.run.");
+  for (const ToolDesc* t : tools_.All()) {
+    if (tool_config_.Excludes(t->id)) continue;
+    Command c;
+    c.id = "tools.run." + t->id;
+    c.label = t->title;
+    c.icon = t->icon;
+    c.submenu = t->submenu;
+    const std::string id = t->id;
+    c.action = [this, id] {
+      const ToolDesc* tool = tools_.Find(id);
+      if (tool == nullptr) return;
+      ToolContext ctx(*this);
+      const Status s = tool->run(ctx);
+      if (!s.ok() && s.code != kInterrupted) Report(s);
+    };
+    const Status s = commands_.Register(std::move(c));
+    if (!s.ok()) Warn(s.message);
+  }
 }
 
 Status Desk::Execute(const std::string& id) { return commands_.Execute(id); }
@@ -330,6 +420,8 @@ void Desk::RegisterStaticCommands() {
     const std::vector<std::string> files = shell_.ChooseFilesToOpen(WorkspaceFileType());
     if (!files.empty()) OpenWorkspace(files.front());
   });
+  add("tools.overlay_manager", "Overlay Manager…", "", [this] { shell_.ShowOverlayManager(); },
+      [this] { return shell_.ProvidesOverlayManager(); });
   add("file.save_workspace", "Save Workspace…", "", [this] {
     const auto spec = shell_.ChooseSaveSpec(WorkspaceFileType(),
                                             std::string("Untitled.") + kWorkspaceExtension);
@@ -774,6 +866,24 @@ void Desk::RegisterCatalogCommands() {
     const Status s = GenerateCoverage();
     if (!s.ok()) Report(s);
   }, [this] { return !Building() && IsCatalogFile(catalog_path_) && catalog_ != nullptr; });
+
+  // The ENC options page's buttons; not in any menu.
+  auto can_import = [this] { return !Building() && IsCatalogFile(catalog_path_) && catalog_ != nullptr; };
+  add("enc.import_zip", "Import ENC Zip…", "", [this] {
+    app::FileTypeDesc zips;
+    zips.default_extension = "zip";
+    zips.open_filters = {{"ENC Zip Files (*.zip)", "*.zip"}};
+    const std::vector<std::string> files = shell_.ChooseFilesToOpen(zips);
+    if (files.empty()) return;
+    const Status s = ImportEncCharts(files);
+    if (!s.ok()) Report(s);
+  }, can_import);
+  add("enc.import_folder", "Import ENC Folder…", "", [this] {
+    const std::string dir = shell_.ChooseDirectory("Choose an ENC_ROOT folder");
+    if (dir.empty()) return;
+    const Status s = ImportEncCharts({dir});
+    if (!s.ok()) Report(s);
+  }, can_import);
 }
 
 void Desk::Recenter() {
@@ -1161,11 +1271,76 @@ Status Desk::GenerateCoverage() {
 
 void Desk::CancelCatalogBuild() {
   if (build_) build_->Cancel();
+  if (enc_import_) enc_import_->Cancel();
+}
+
+bool Desk::JobFinished() const {
+  if (enc_import_) return enc_import_->Progress().finished;
+  return build_ && build_->Progress().finished;
+}
+
+std::string Desk::EncChartsDir() const {
+  const std::string dir = settings_.GetString(kEncChartsDirKey, "");
+  if (!dir.empty()) return AbsolutePath(dir);
+  const std::string def = DefaultChartsDir();
+  return def.empty() ? def : AbsolutePath(def);
+}
+
+Status Desk::ImportEncCharts(const std::vector<std::string>& sources) {
+  if (Building()) return Status::Error(kUnsupported, "a catalog build or import is already running");
+  if (sources.empty()) return Status::Error(kInvalidArg, "nothing to import");
+  if (!catalog_ || !IsCatalogFile(catalog_path_))
+    return Status::Error(kInvalidArg, "open or create a map catalog first (Map ▸ Map Data Sources…)");
+  const std::string charts = EncChartsDir();
+  if (charts.empty()) return Status::Error(kInvalidArg, "set the imported charts directory first");
+  bool listed = false;
+  for (const std::string& r : ScanRoots()) {
+    if (r == charts) listed = true;
+    else if (PathWithin(charts, r))
+      return Status::Error(kInvalidArg, "the charts directory " + charts + " lies inside " + r +
+                                            ", which Generate Coverage scans; choose " + r +
+                                            " or a directory outside it");
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(charts, ec);
+  if (ec) return Status::Error(kIoError, "cannot create " + charts + ": " + ec.message());
+  if (!listed) {
+    const Status s = AddScanRoot(charts);
+    if (!s.ok()) return s;
+  }
+  build_had_data_ = !available_.empty();
+  enc_import_ = std::make_unique<EncImportJob>(sources, charts,
+                                               settings_.GetString("enc.data_dir", ""));
+  return Status::Ok();
 }
 
 bool Desk::PollCatalogBuild() {
+  if (enc_import_) {
+    if (!enc_import_->Progress().finished) return false;
+    std::string summary = enc_import_->Summary();
+    const bool installed = enc_import_->AnyInstalled();
+    enc_import_.reset();
+    std::vector<ScanStep> steps;
+    if (installed)
+      for (ScanStep& step : PlanScan(EncChartsDir()))
+        if (step.format == "enc") steps.push_back(std::move(step));
+    if (steps.empty()) {
+      FV_LOG_INFO(summary);
+      shell_.ShowNotice(summary);
+      return true;
+    }
+    // The rescan replaces only the enc source's coverage; nothing else is touched.
+    steps.front().keep_if_empty = true;
+    import_summary_ = std::move(summary);
+    build_ = std::make_unique<CatalogBuild>(catalog_path_, std::move(steps), false);
+    return true;
+  }
   if (!build_ || !build_->Progress().finished) return false;
-  const std::string summary = build_->Summary();
+  std::string summary = build_->Summary();
+  if (!import_summary_.empty()) {
+    summary = import_summary_ + "\n" + summary;
+    import_summary_.clear();
+  }
   // The build thread logged these as they happened.
   for (const std::string& e : build_->Errors()) warnings_.push_back("catalog build: " + e);
   build_.reset();

@@ -312,7 +312,7 @@ TEST(DeskHost, MenusFlattenInPreorderWithShortcuts) {
       ++projections;
     }
   }
-  EXPECT_EQ(tops, (std::vector<std::string>{"File", "Edit", "Map", "Overlay"}));
+  EXPECT_EQ(tops, (std::vector<std::string>{"File", "Edit", "Map", "Overlay", "Tools"}));
   EXPECT_EQ(projections, 5);
 
   const HostMenuEntry save = MenuEntry(h.host, "file.save");
@@ -414,6 +414,52 @@ TEST(DeskHost, QuitIsRequestedOnceEverythingIsClosed) {
   EXPECT_FALSE(h->QuitRequested());
   EXPECT_EQ(h->Execute("app.quit"), "");
   EXPECT_TRUE(h->QuitRequested());
+}
+
+TEST(DeskHost, TheEncPageImportsAFolderThroughItsButton) {
+  const char* data = std::getenv("FVW_TESTDATA_DIR");
+  if (data == nullptr || !std::filesystem::exists(std::string(data) + "/enc/US4SC1BO"))
+    GTEST_SKIP() << "testdata/enc not present";
+  Scratch dir;
+  EmptyIni ini(dir);
+  const std::filesystem::path src = dir.Path("SC/ENC_ROOT/US4SC1BO");
+  std::filesystem::create_directories(src);
+  for (const auto& f : std::filesystem::directory_iterator(std::string(data) + "/enc/US4SC1BO"))
+    std::filesystem::copy_file(f.path(), src / f.path().filename());
+  HostRef h;
+  ASSERT_EQ(h->LoadSettings(dir.Path("user-settings.json")), "");
+  Answers a;
+  a.host = h.host;
+  a.path = dir.Path("catalog.sqlite");
+  a.directory = dir.Path("SC/ENC_ROOT");
+  h->SetRequestHandler(&Answer, &a);
+  ASSERT_EQ(h->Execute("map.sources"), "");
+
+  ASSERT_EQ(h->Execute("map.options"), "");
+  ASSERT_EQ(h->TakeOptionsRequest(), fv::desk::kOptionsMap);
+  const int kind = fv::desk::kOptionsMap;
+  const int page = PageWith(h.host, kind, "enc.charts_dir");
+  ASSERT_GE(page, 0);
+  ASSERT_EQ(h->OptionsActionCount(kind, page), 2);
+  const fv::desk::HostOptionsAction folder = h->OptionsActionAt(kind, page, 1);
+  EXPECT_EQ(folder.command, "enc.import_folder");
+  EXPECT_EQ(folder.label, "Import Folder…");
+  EXPECT_EQ(h->OptionsActionAt(kind, page, 2).command, "");
+  ASSERT_EQ(h->SetOptionValue(kind, page, "enc.charts_dir", dir.Path("charts")), "");
+  ASSERT_EQ(h->ApplyOptions(kind), "");
+
+  ASSERT_TRUE(h->IsEnabled(folder.command));
+  ASSERT_EQ(h->Execute(folder.command), "");
+  EXPECT_TRUE(h->JobActive());
+  for (int i = 0; i < 4000 && h->JobActive(); ++i) {
+    h->Tick();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_FALSE(h->JobActive());
+  const std::string notice = h->TakeNotice();
+  EXPECT_EQ(notice.rfind("SC: 1 cell, 0 updates applied\n", 0), 0u) << notice;
+  EXPECT_TRUE(std::filesystem::exists(dir.Path("charts/enc/SC/US4SC1BO/US4SC1BO.000")));
+  h->SetRequestHandler(nullptr, nullptr);
 }
 
 TEST_F(DeskHostStub, ACatalogBuildReportsProgressThroughTick) {
@@ -681,6 +727,37 @@ TEST_F(DeskHostDrawn, AMapOptionChangeRedrawsTheBaseMap) {
   ASSERT_EQ(next->LoadSettings(dir.Path("user-settings.json")), "");
   EXPECT_EQ(fv::DtedShadedElevationBands(), (std::vector<int>{2500, 5000}));
   fv::SetDtedShadedElevationBands({});
+}
+
+TEST_F(DeskHostStub, ShellStateSurvivesARelaunchInTheUserSettingsFile) {
+  Scratch dir;
+  EmptyIni ini(dir);
+  const std::string path = MakeCatalog(dir);
+  {
+    HostRef h;
+    ASSERT_EQ(h->LoadSettings(dir.Path("user-settings.json")), "");
+    EXPECT_EQ(h->LastCatalog(), "");
+    EXPECT_FALSE(h->RestoreView());
+    EXPECT_TRUE(h->ShellFlag("find.map_view_only", true));
+    h->Resize(400, 300, 1.0, 0.25);
+    ASSERT_EQ(h->OpenCatalog(path), "");
+    h->GoTo(32.5, -80.5, 5e5);
+    h->RememberView();
+    h->SetShellFlag("layers_panel.shown", true);
+    h->SetShellFlag("find.map_view_only", false);
+    EXPECT_EQ(h->SaveUserSettings(), "");
+  }
+  HostRef next;
+  ASSERT_EQ(next->LoadSettings(dir.Path("user-settings.json")), "");
+  EXPECT_EQ(next->LastCatalog(), path);
+  EXPECT_TRUE(next->ShellFlag("layers_panel.shown", false));
+  EXPECT_FALSE(next->ShellFlag("find.map_view_only", true));
+  next->Resize(400, 300, 1.0, 0.25);
+  ASSERT_EQ(next->OpenCatalog(path), "");
+  ASSERT_TRUE(next->RestoreView());
+  EXPECT_NEAR(next->CenterLat(), 32.5, 1e-6);
+  EXPECT_NEAR(next->CenterLon(), -80.5, 1e-6);
+  EXPECT_NEAR(next->ScaleDenom(), 5e5, 1.0);
 }
 
 TEST(DeskHost, AnUnreadableUserSettingsFileIsNeverOverwritten) {

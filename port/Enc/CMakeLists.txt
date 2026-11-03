@@ -28,6 +28,7 @@ add_library(fv_enc STATIC
   fv_enc_catalog.cpp
   fv_enc_names.cpp
   fv_zip_reader.cpp
+  fv_enc_import.cpp
 )
 target_include_directories(fv_enc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(fv_enc PUBLIC fv_compat fv_fvkit PRIVATE expat fv_zlib)
@@ -46,6 +47,7 @@ if(FVW_BUILD_TESTS)
     test/enc_catalog_test.cpp
     test/enc_names_test.cpp
     test/zip_reader_test.cpp
+    test/enc_import_test.cpp
   )
   # fv_png: golden-PNG side channel for the E3a chart render, same
   # convention as canvas_test and the GeoSym harbor golden.

@@ -33,10 +33,12 @@
 #include "fv_desk_map_groups.h"
 #include "fv_desk_menu_model.h"
 #include "fv_desk_options.h"
+#include "fv_desk_packages.h"
 #include "fv_desk_profile.h"
 #include "fv_desk_query.h"
 #include "fv_desk_rule_style.h"
 #include "fv_desk_search.h"
+#include "fv_desk_tools.h"
 #include "fv_desk_workspace.h"
 #include "fv_view_map_view.h"
 #include "fvkit/app/capabilities.h"
@@ -56,6 +58,8 @@ struct KeyEvent;
 class RoutePlanner;
 
 namespace desk {
+
+class EncImportJob;
 
 /// The native shell: every `AppShell` question plus the desktop extras.
 class DeskShell : public app::AppShell {
@@ -128,6 +132,12 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the rule style pages over `Desk::rule_style()`;
   /// the shell applies them through `Desk::ApplyRuleStyle`.
   virtual void ShowRuleStyle() {}
+  /// True when the shell has an Overlay Manager window; Tools ▸ Overlay
+  /// Manager… is disabled otherwise.
+  virtual bool ProvidesOverlayManager() const { return false; }
+  /// Show (or bring forward) the Overlay Manager over `Desk::packages()`; it
+  /// works through `Desk::InstallPackage`, `SetPackageEnabled` and `RemovePackage`.
+  virtual void ShowOverlayManager() {}
 };
 
 /// The status bar content (port/desktop-plan.md §1d), as text.
@@ -153,8 +163,10 @@ class Desk {
 
   // MARK: Parts
   app::OverlayTypeRegistry& types() { return types_; }
+  ToolRegistry& tools() { return tools_; }
   OverlayManager& overlays() { return overlays_; }
   app::OverlaySession& session() { return *session_; }
+  DeskShell& shell() { return shell_; }
   app::EditorManager& editors() { return *editors_; }
   CommandRegistry& commands() { return commands_; }
   const MenuModel& menus() const { return menus_; }
@@ -168,6 +180,27 @@ class Desk {
   /// (fv_desk_overlay_manifest.h) and refreshes. Problems go to `warnings()`.
   /// Returns the ids registered.
   std::vector<app::TypeId> LoadOverlayManifests(const std::vector<std::string>& dirs);
+
+  // MARK: Packages (port/extensions-plan.md)
+  /// Scans the package locations, applies changes left for this launch,
+  /// loads every enabled package and refreshes. Problems go to `warnings()`.
+  /// `host_version` is checked against a package's `requires.peregrine`.
+  void LoadPackages(const PackageDirs& dirs, const std::string& host_version = std::string());
+  /// Null until `LoadPackages`.
+  const PackageManager* packages() const { return packages_.get(); }
+  /// Applies the user's tools.json (`ToolConfig`): registers its added tools
+  /// and hides the excluded ones from the Tools menu, then refreshes. Call
+  /// after `LoadPackages`; a problem goes to `warnings()` and is returned.
+  Status LoadToolConfig(const std::string& path);
+  const ToolConfig& tool_config() const { return tool_config_; }
+  /// `PackageManager::Install`, then refreshes the menus when it loaded.
+  Status InstallPackage(const std::string& path, InstallResult* result);
+  /// `PackageManager::Link`, then refreshes the menus.
+  Status LinkPackage(const std::string& dir, InstallResult* result);
+  /// `PackageManager::SetEnabled`, then refreshes the menus.
+  Status SetPackageEnabled(const std::string& id, bool enabled);
+  /// `PackageManager::Remove`.
+  Status RemovePackage(const std::string& id);
   /// `commands().Execute(id)`.
   Status Execute(const std::string& id);
 
@@ -218,12 +251,29 @@ class Desk {
   Status GenerateCoverage();
   /// The running or just-finished build, or null.
   const CatalogBuild* catalog_build() const { return build_.get(); }
-  bool Building() const { return build_ != nullptr; }
+  /// True while a catalog build or an ENC import runs.
+  bool Building() const { return build_ != nullptr || enc_import_ != nullptr; }
+  /// True when the running job has finished and waits for `PollCatalogBuild`.
+  bool JobFinished() const;
+  /// Cancels the catalog build or ENC import in progress.
   void CancelCatalogBuild();
-  /// Picks up a finished build: refreshes the catalog's groups, recentres if
-  /// the catalog had no map data before, and shows the build's summary. Call
-  /// from the UI thread; true when a build finished.
+  /// Picks up a finished job. A finished build refreshes the catalog's
+  /// groups, recentres if the catalog had no map data before, and shows the
+  /// build's summary. A finished import that installed a set starts a rescan
+  /// of the charts directory's `enc` folder, and its summary waits for that
+  /// rescan. Call from the UI thread; true when a job finished.
   bool PollCatalogBuild();
+
+  /// Imports ENC sets (NOAA zips or ENC_ROOT folders) into the charts
+  /// directory (`enc.charts_dir`, else `DefaultChartsDir()`) in the
+  /// background, adding that directory to the scan roots first. Needs a
+  /// catalog file; refused while a job runs, and when the charts directory
+  /// lies inside a scan root other than itself.
+  Status ImportEncCharts(const std::vector<std::string>& sources);
+  /// The running or just-finished import, or null.
+  const EncImportJob* enc_import() const { return enc_import_.get(); }
+  /// The charts directory imports go to, absolute; empty when none is known.
+  std::string EncChartsDir() const;
   /// Blocks until a running build finishes, then polls it; for tests.
   void WaitForCatalogBuild();
 
@@ -574,6 +624,8 @@ class Desk {
   void RegisterGroupCommands();
   void RegisterProjectionCommands();
   void RegisterOverlayTypeCommands();
+  /// `tools.run.<id>` for every registered tool.
+  void RegisterToolCommands();
   void RegisterInstanceCommands();
   /// One `file.recent.<n>` command per recent overlay.
   void RegisterRecentCommands();
@@ -633,6 +685,9 @@ class Desk {
   MapGroups groups_;
   std::unique_ptr<ShellTap> tap_;
   app::OverlayTypeRegistry types_;
+  ToolRegistry tools_;
+  /// Registers into `types_` and `tools_`, so it is declared after them.
+  std::unique_ptr<PackageManager> packages_;
   /// Declared before the stack so it outlives every overlay that feeds it.
   app::UndoStack undo_;
   OverlayManager overlays_;
@@ -686,6 +741,9 @@ class Desk {
   uint64_t map_style_gen_ = 0;
   std::unique_ptr<CatalogBuild> build_;
   bool build_had_data_ = false;
+  std::unique_ptr<EncImportJob> enc_import_;
+  ToolConfig tool_config_;
+  std::string import_summary_;  ///< a finished import's lines, shown with its rescan
   std::shared_ptr<IElevationSource> elevation_;
   std::unique_ptr<IElevationSource> pointer_elevation_;  ///< the UI thread's own cells
   std::string feedback_;

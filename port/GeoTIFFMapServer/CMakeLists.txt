@@ -19,9 +19,17 @@ target_include_directories(fv_projsp PUBLIC
 )
 target_link_libraries(fv_projsp PUBLIC fv_compat)
 
+# The GeoTIFF key-name tables. ImageLib's geotiff.inc defines the same
+# symbols with the same values, so this archive is left out of the
+# whole-archive link of libperegrine_core (port/sdk/CMakeLists.txt).
+add_library(fv_geotiff_names STATIC
+  ${CMAKE_SOURCE_DIR}/fvw_core/MapDataServer/GeoTIFFMapServer/GeoTiff_defines.cpp)
+target_include_directories(fv_geotiff_names PRIVATE
+  ${CMAKE_SOURCE_DIR}/fvw_core/MapDataServer/GeoTIFFMapServer)
+target_link_libraries(fv_geotiff_names PUBLIC fv_compat)
+
 add_library(fv_geotiff_frame STATIC
   ${CMAKE_SOURCE_DIR}/fvw_core/MapDataServer/GeoTIFFMapServer/GeoTiffFrameFile.cpp
-  ${CMAKE_SOURCE_DIR}/fvw_core/MapDataServer/GeoTIFFMapServer/GeoTiff_defines.cpp
   fv_geotiff_frame.cpp
   fv_datum_convert_geotrans.cpp
 )
@@ -30,7 +38,7 @@ target_include_directories(fv_geotiff_frame PUBLIC
   ${CMAKE_SOURCE_DIR}/fvw_core/MapDataServer/GeoTIFFMapServer
   ${CMAKE_SOURCE_DIR}/fvw_core/geo_tool
 )
-target_link_libraries(fv_geotiff_frame PUBLIC fv_projsp fv_geo3 fv_compat)
+target_link_libraries(fv_geotiff_frame PUBLIC fv_projsp fv_geo3 fv_geotiff_names fv_compat)
 
 if(FVW_BUILD_TESTS)
   add_executable(fv_geotiff_frame_test test/geotiff_frame_test.cpp)

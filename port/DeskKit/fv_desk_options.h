@@ -40,6 +40,13 @@ class UserSettings;
 /// A property set kept in the settings under `prefix`, and what applying it
 /// does. It is either a map group's page or a section of an overlay type's
 /// page, for settings the shell rather than each overlay acts on.
+/// A button on an options page that runs a Desk command, such as an importer.
+struct OptionsAction {
+  std::string command;  ///< the command id; the shell disables the button when it is
+  std::string label;    ///< button text, "Import Zip…"
+  std::string help;     ///< tooltip; may be empty
+};
+
 struct MapOptionsSource {
   std::string group_id;  ///< the map group, or the overlay type for an overlay page
   std::string prefix;  ///< "dted."
@@ -50,6 +57,8 @@ struct MapOptionsSource {
   /// Pushes the values into process-wide state. Called on Apply (from the UI
   /// thread) and, for a map group, when settings load.
   std::function<void(const app::Properties&)> apply;
+  /// Buttons shown below a map group's page; ignored on an overlay page.
+  std::vector<OptionsAction> actions;
 };
 
 /// One control: its declaration, the value shown and the value last applied.
@@ -87,6 +96,7 @@ class OptionsPage {
   /// Sections in first-appearance order of their group.
   const std::vector<OptionsSection>& sections() const { return sections_; }
   const OptionsField* Field(const std::string& key) const;
+  const std::vector<OptionsAction>& actions() const { return actions_; }
 
   /// Sets the shown value. The overlay's own `SetProperty` decides: a rejected
   /// value changes nothing and its Status is returned; an accepted one is
@@ -128,6 +138,7 @@ class OptionsPage {
   std::vector<OptionsField> fields_;
   std::vector<size_t> field_part_;  ///< parallel to `fields_`
   std::vector<OptionsSection> sections_;
+  std::vector<OptionsAction> actions_;
 };
 
 class OptionsModel {

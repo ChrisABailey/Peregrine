@@ -64,6 +64,8 @@
 				A1000000000000000000C001 /* Sources */,
 				A1000000000000000000C002 /* Frameworks */,
 				A1000000000000000000C003 /* Resources */,
+				A1000000000000000000C005 /* Copy the shipped data */,
+				A1000000000000000000C006 /* Embed the Peregrine core */,
 			);
 			buildRules = (
 			);
@@ -134,7 +136,45 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# The core is built by CMake; this phase checks that its archive exists\n# and is newer than the sources it is built from.\nset -e\nROOT=\"$PROJECT_DIR/../../..\"\nCORE=\"$ROOT/build/port/apps/Peregrine/libperegrine_core.a\"\nif [ ! -f \"$CORE\" ]; then\n  echo \"error: build/port/apps/Peregrine/libperegrine_core.a is missing.\"\n  echo \"note: cmake -B build && cmake --build build -j --target peregrine_core\"\n  exit 1\nfi\nSTALE=$(find \"$ROOT/port\" -path \"$ROOT/port/apps\" -prune -o -name test -type d -prune -o \\( -name '*.cpp' -o -name '*.h' -o -name '*.json' \\) -newer \"$CORE\" -print 2>/dev/null | head -1)\nif [ -n \"$STALE\" ]; then\n  echo \"error: libperegrine_core.a is older than the core it is built from.\"\n  echo \"note: $STALE is newer. Run: cmake --build build -j --target peregrine_core\"\n  exit 1\nfi\n";
+			shellScript = "# The core is built by CMake; this phase checks that its library exists\n# and is newer than the sources it is built from.\nset -e\nROOT=\"$PROJECT_DIR/../../..\"\nCORE=\"$ROOT/build/port/sdk/libperegrine_core.dylib\"\nif [ ! -f \"$CORE\" ]; then\n  echo \"error: build/port/sdk/libperegrine_core.dylib is missing.\"\n  echo \"note: cmake -B build && cmake --build build -j --target peregrine_core\"\n  exit 1\nfi\nSTALE=$(find \"$ROOT/port\" -path \"$ROOT/port/apps\" -prune -o -path \"$ROOT/port/sdk/examples\" -prune -o -path \"$ROOT/port/sdk/python\" -prune -o -path \"$ROOT/port/bindings\" -prune -o -name test -type d -prune -o \\( -name '*.cpp' -o -name '*.h' -o -name '*.json' \\) -newer \"$CORE\" -print 2>/dev/null | head -1)\nif [ -n \"$STALE\" ]; then\n  echo \"error: libperegrine_core.dylib is older than the core it is built from.\"\n  echo \"note: $STALE is newer. Run: cmake --build build -j --target peregrine_core\"\n  exit 1\nfi\n";
+		};
+		A1000000000000000000C005 /* Copy the shipped data */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy the shipped data";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Datum tables and OSM style sheets, which DeskKit finds through\n# DeskHost::SetAppDataDir(Bundle.main.resourcePath).\nset -e\nROOT=\"$PROJECT_DIR/../../..\"\nDEST=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\nmkdir -p \"$DEST/geotrans\" \"$DEST/osm-styles\"\nfor f in ellips.dat 3_param.dat 7_param.dat egm96.grd; do\n  cp \"$ROOT/fvw_core/PdfLib/sdk/lib/$f\" \"$DEST/geotrans/\"\ndone\nrsync -a --delete --exclude style-readme.md \"$ROOT/port/Osm/styles/\" \"$DEST/osm-styles/\"\n";
+		};
+		A1000000000000000000C006 /* Embed the Peregrine core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed the Peregrine core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# libperegrine_core goes in Contents/Frameworks, where the app and native\n# plugins find it through @rpath, and is signed with the app's identity.\nset -e\nROOT=\"$PROJECT_DIR/../../..\"\nDEST=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST\"\ncp -fL \"$ROOT/build/port/sdk/libperegrine_core.0.dylib\" \"$DEST/\"\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$DEST/libperegrine_core.0.dylib\"\n# The Python bridge is optional: without it python packages list as unavailable.\n# Its build-tree rpath is replaced so it binds to the core beside it.\nPY=\"$ROOT/build/port/sdk/python/libperegrine_python.dylib\"\nrm -f \"$DEST/libperegrine_python.dylib\"\nif [ -f \"$PY\" ]; then\n  cp -fL \"$PY\" \"$DEST/\"\n  for R in $(otool -l \"$DEST/libperegrine_python.dylib\" | awk '/LC_RPATH/ {getline; getline; print $2}'); do\n    install_name_tool -delete_rpath \"$R\" \"$DEST/libperegrine_python.dylib\"\n  done\n  install_name_tool -add_rpath @loader_path \"$DEST/libperegrine_python.dylib\"\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" \"$DEST/libperegrine_python.dylib\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -191,10 +231,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_ENTITLEMENTS = Peregrine.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Peregrine;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 Chris Bailey. LGPL-3.0-or-later.";
@@ -203,7 +245,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../../../build/port/apps/Peregrine";
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../../../build/port/sdk";
 				MARKETING_VERSION = 0.1;
 				OTHER_LDFLAGS = (
 					"-lperegrine_core",
@@ -221,10 +263,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_ENTITLEMENTS = Peregrine.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Peregrine;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright (C) 2026 Chris Bailey. LGPL-3.0-or-later.";
@@ -233,7 +277,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../../../build/port/apps/Peregrine";
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/../../../build/port/sdk";
 				MARKETING_VERSION = 0.1;
 				OTHER_LDFLAGS = (
 					"-lperegrine_core",

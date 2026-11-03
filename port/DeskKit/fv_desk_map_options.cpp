@@ -9,9 +9,11 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <memory>
 
+#include "fv_desk_enc_import.h"
 #include "fv_desk_vector_map.h"
 #include "fv_route_overlay.h"
 #include "fvkit/formats/dted_shaded.h"
@@ -278,6 +280,10 @@ MapOptionsSource EncMapOptions() {
     meta.default_value = app::PropertyValue::Bool(false);
     meta.help = "Draw M_QUAL, M_COVR, M_NSYS and M_NPUB, which describe the dataset.";
     specs.push_back(std::move(meta));
+    specs.push_back(PathSpec(kEncChartsDirKey, "Imported charts directory",
+                             app::PathKind::kDirectory,
+                             "Where Import adds chart sets, in its enc folder; empty uses " +
+                                 DefaultChartsDir() + ". It is added to Map Data Sources."));
     AddMarinerSpecs(&specs);
     return std::make_unique<SpecProperties>(std::move(specs));
   };
@@ -288,6 +294,11 @@ MapOptionsSource EncMapOptions() {
       c.mariner = MarinerFrom(p);
     });
   };
+  src.actions = {
+      {"enc.import_zip", "Import Zip…", "Add the charts in NOAA ENC zips to the charts directory."},
+      {"enc.import_folder", "Import Folder…",
+       "Add the charts in an ENC_ROOT folder to the charts directory."},
+  };
   return src;
 }
 
@@ -297,10 +308,13 @@ MapOptionsSource OsmMapOptions() {
   src.make = [] {
     return std::make_unique<SpecProperties>(std::vector<app::PropertySpec>{
         PathSpec("osm.style", "Style sheet", app::PathKind::kFile,
-                 "The MapLibre GL style sheet OpenStreetMap is drawn with.")});
+                 "The MapLibre GL style sheet OpenStreetMap is drawn with; empty "
+                 "uses the Peregrine style that ships with the app.")});
   };
   src.apply = [](const app::Properties& p) {
-    EditVectorConfig([&p](VectorMapConfig& c) { c.osm_style = p.GetString("osm.style"); });
+    std::string style = p.GetString("osm.style");
+    if (style.empty()) style = DefaultOsmStyle();
+    EditVectorConfig([&style](VectorMapConfig& c) { c.osm_style = style; });
   };
   return src;
 }
@@ -345,12 +359,40 @@ MapOptionsSource RoutingOptions(std::function<void()> changed) {
   return src;
 }
 
+namespace {
+
+std::string& AppDataDirStorage() {
+  static std::string dir;
+  return dir;
+}
+
+/// `<AppDataDir()>/<relative>` when it exists, else "".
+std::string AppDataPath(const char* relative) {
+  if (AppDataDirStorage().empty()) return {};
+  const std::filesystem::path p = std::filesystem::path(AppDataDirStorage()) / relative;
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) ? p.string() : std::string();
+}
+
+}  // namespace
+
+void SetAppDataDir(const std::string& dir) { AppDataDirStorage() = dir; }
+
+std::string AppDataDir() { return AppDataDirStorage(); }
+
+std::string DefaultOsmStyle() { return AppDataPath("osm-styles/peregrine-osm.json"); }
+
 void SetGeoTransDataDir(const std::string& dir) {
-  if (dir.empty()) return;
+  std::string use = dir;
+  if (use.empty()) {
+    if (std::getenv("MSPCCS_DATA") != nullptr) return;
+    use = AppDataPath("geotrans");
+    if (use.empty()) return;
+  }
 #ifdef _WIN32
-  _putenv_s("MSPCCS_DATA", dir.c_str());
+  _putenv_s("MSPCCS_DATA", use.c_str());
 #else
-  setenv("MSPCCS_DATA", dir.c_str(), 1);
+  setenv("MSPCCS_DATA", use.c_str(), 1);
 #endif
 }
 
@@ -363,7 +405,8 @@ MapOptionsSource DataOptions() {
         PathSpec("geotrans.data_dir", "GeoTrans data", app::PathKind::kDirectory,
                  "The directory holding the GeoTrans datum and ellipsoid tables "
                  "(ellips.dat, 3_param.dat, 7_param.dat, egm96.grd). Needed to enter "
-                 "MGRS in Go To / Find. Takes effect the next time Peregrine starts.")});
+                 "MGRS in Go To / Find; empty uses the tables that ship with the app. "
+                 "Takes effect the next time Peregrine starts.")});
   };
   src.apply = [](const app::Properties& p) { SetGeoTransDataDir(p.GetString("geotrans.data_dir")); };
   return src;

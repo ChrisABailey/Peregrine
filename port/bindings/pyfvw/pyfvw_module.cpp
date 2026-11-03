@@ -98,7 +98,14 @@ void BindNav(py::module_& m);
 void BindRoute(py::module_& m);
 // pyfvw_analysis.cpp -- the Analysis tools (AN1-AN4), headless.
 void BindAnalysis(py::module_& m);
+/// Fills the pyfvw module; the extension and the embedded bridge both call it.
+void DefineModule(py::module_& m);
 }  // namespace pyfvw
+
+// Defined with the property bindings below; the trampoline converts with them.
+py::object PropertyToPy(const fv::app::PropertyValue& v);
+fv::app::PropertyValue PropertyFromPy(const fv::app::PropertySpec& spec,
+                                      const py::object& o);
 
 namespace {
 
@@ -123,6 +130,7 @@ namespace {
 // find confusing if it half-worked.
 class PyOverlay : public fv::Overlay,
                   public fv::app::Persistence,
+                  public fv::app::Properties,
                   public fv::app::HitTest,
                   public fv::app::SnapTo,
                   public fv::app::ContextMenu,
@@ -138,6 +146,11 @@ class PyOverlay : public fv::Overlay,
     return Capable(kCapPersistence, {"file_open", "file_new", "file_save_as"})
                ? this
                : nullptr;
+  }
+  fv::app::Properties* AsProperties() override {
+    if (!Capable(kCapProperties, {"properties_schema"})) return nullptr;
+    if (!specs_read_) ReadSchema();
+    return this;
   }
   fv::app::HitTest* AsHitTest() override {
     return Capable(kCapHitTest, {"hit_test_point"}) ? this : nullptr;
@@ -176,6 +189,58 @@ class PyOverlay : public fv::Overlay,
   }
   fv::Status Revert(const std::string& spec) override {
     return CallStatus("revert", spec);
+  }
+
+  // --- Properties -------------------------------------------------------
+  //
+  // A subclass declares `properties_schema()` (a list of dicts shaped like
+  // describe_properties' rows) and implements `read_property(key)` and
+  // `write_property(key, value)`. The public get_property/set_property stay
+  // the C++ ones, so a Python caller is type- and range-checked like a shell.
+
+  const std::vector<fv::app::PropertySpec>& Describe() const override {
+    return specs_;
+  }
+
+  fv::Status GetProperty(const std::string& key,
+                         fv::app::PropertyValue* out) const override {
+    const fv::app::PropertySpec* spec = FindSpec(key);
+    if (spec == nullptr)
+      return fv::Status::Error(fv::kNotFound, "no property '" + key + "'");
+    py::gil_scoped_acquire gil;
+    py::function o = py::get_override(this, "read_property");
+    if (!o)
+      return fv::Status::Error(fv::kUnsupported,
+                               "overlay '" + Name() + "' has no read_property");
+    try {
+      *out = PropertyFromPy(*spec, o(key));
+      return fv::Status::Ok();
+    } catch (py::error_already_set& e) {
+      return fv::Status::Error(fv::kInternal,
+                               "python read_property " + key + ": " + e.what());
+    } catch (const py::cast_error& e) {
+      return fv::Status::Error(fv::kInternal, "python read_property " + key +
+                                                  ": wrong type: " + e.what());
+    } catch (const FvErrorCpp& e) {
+      return e.status;
+    }
+  }
+
+  fv::Status SetProperty(const std::string& key,
+                         const fv::app::PropertyValue& value) override {
+    const fv::app::PropertySpec* spec = FindSpec(key);
+    if (spec == nullptr)
+      return fv::Status::Error(fv::kNotFound, "no property '" + key + "'");
+    const fv::Status valid = Validate(*spec, value);
+    if (!valid.ok()) return valid;
+    fv::Status s;
+    {
+      py::gil_scoped_acquire gil;
+      s = CallStatus("write_property", key, PropertyToPy(value));
+    }
+    // As the C plugin adapter does: a changed property is an edit to the document.
+    if (s.ok() && AsPersistence() != nullptr) set_dirty(true);
+    return s;
   }
 
   // --- HitTest / SnapTo / ContextMenu -----------------------------------
@@ -340,8 +405,80 @@ class PyOverlay : public fv::Overlay,
     kCapRouting,
     kCapEditTarget,
     kCapSearch,
+    kCapProperties,
     kCapCount,
   };
+
+  /// Reads `properties_schema()` once. Rows without a key or a known type
+  /// are skipped; the schema then stays fixed for the overlay's life.
+  void ReadSchema() {
+    specs_read_ = true;
+    py::gil_scoped_acquire gil;
+    py::function o = py::get_override(this, "properties_schema");
+    if (!o) return;
+    try {
+      py::object rows = o();
+      if (rows.is_none()) return;
+      for (py::handle h : rows) {
+        py::dict d = py::reinterpret_borrow<py::dict>(h);
+        fv::app::PropertySpec spec;
+        if (!d.contains("key") || !d.contains("type") ||
+            !ParseTypeName(py::cast<std::string>(d["type"]), &spec.type))
+          continue;
+        spec.key = py::cast<std::string>(d["key"]);
+        spec.label = d.contains("label") ? py::cast<std::string>(d["label"])
+                                         : spec.key;
+        if (d.contains("group")) spec.group = py::cast<std::string>(d["group"]);
+        if (d.contains("help")) spec.help = py::cast<std::string>(d["help"]);
+        if (d.contains("min")) spec.min = py::cast<double>(d["min"]);
+        if (d.contains("max")) spec.max = py::cast<double>(d["max"]);
+        if (d.contains("choices"))
+          spec.choices = py::cast<std::vector<std::string>>(d["choices"]);
+        spec.default_value.type = spec.type;
+        if (d.contains("default"))
+          spec.default_value = PropertyFromPy(spec, d["default"]);
+        specs_.push_back(std::move(spec));
+      }
+    } catch (py::error_already_set&) {
+      PyErr_Clear();
+    } catch (const py::cast_error&) {
+    } catch (const FvErrorCpp&) {
+    }
+  }
+
+  /// describe_properties' names, plus the C schema's "double" and "string".
+  static bool ParseTypeName(const std::string& n, fv::app::PropertyType* out) {
+    using T = fv::app::PropertyType;
+    static const std::map<std::string, T> kNames = {
+        {"bool", T::kBool},     {"int", T::kInt},      {"float", T::kDouble},
+        {"double", T::kDouble}, {"str", T::kString},   {"string", T::kString},
+        {"color", T::kColor},   {"choice", T::kChoice}, {"path", T::kPath}};
+    auto it = kNames.find(n);
+    if (it == kNames.end()) return false;
+    *out = it->second;
+    return true;
+  }
+
+  /// kInvalidArg for a value of the wrong type or outside the declared range.
+  static fv::Status Validate(const fv::app::PropertySpec& spec,
+                             const fv::app::PropertyValue& v) {
+    if (v.type != spec.type)
+      return fv::Status::Error(fv::kInvalidArg,
+                               "property '" + spec.key + "': wrong type");
+    const bool numeric = v.type == fv::app::PropertyType::kInt ||
+                         v.type == fv::app::PropertyType::kDouble;
+    const double x = v.type == fv::app::PropertyType::kInt
+                         ? static_cast<double>(v.i)
+                         : v.d;
+    if (numeric && spec.min < spec.max && (x < spec.min || x > spec.max))
+      return fv::Status::Error(fv::kInvalidArg,
+                               "property '" + spec.key + "': out of range");
+    if (v.type == fv::app::PropertyType::kChoice &&
+        (v.i < 0 || v.i >= static_cast<long long>(spec.choices.size())))
+      return fv::Status::Error(fv::kInvalidArg,
+                               "property '" + spec.key + "': no such choice");
+    return fv::Status::Ok();
+  }
 
   bool Event(const char* name, const fv::MouseEvent& e) {
     py::gil_scoped_acquire gil;
@@ -392,6 +529,8 @@ class PyOverlay : public fv::Overlay,
       try {
         if (py::hasattr(e.value(), "code"))
           code = e.value().attr("code").cast<int>();
+        else if (e.matches(PyExc_OSError))
+          code = fv::kIoError;  // open() failing reads as the I/O error it is
       } catch (py::error_already_set&) {
         PyErr_Clear();
       }
@@ -424,7 +563,9 @@ class PyOverlay : public fv::Overlay,
   }
 
   // -1 = not asked yet. Mutable-free: every accessor is non-const.
-  signed char cap_[kCapCount] = {-1, -1, -1, -1, -1, -1, -1};
+  signed char cap_[kCapCount] = {-1, -1, -1, -1, -1, -1, -1, -1};
+  std::vector<fv::app::PropertySpec> specs_;
+  bool specs_read_ = false;
 };
 
 PyObject* g_fv_error = nullptr;  // pyfvw.FvError type (owned by the module)
@@ -683,7 +824,7 @@ fv::app::PropertyValue PropertyFromPy(const fv::app::PropertySpec& spec,
   return spec.default_value;
 }
 
-PYBIND11_MODULE(pyfvw, m) {
+void pyfvw::DefineModule(py::module_& m) {
   m.doc() =
       "FalconView portable core (FvKit) bindings — slice 1: geo primitives, "
       "DTED elevation, GeoTIFF rasters.";
@@ -1292,6 +1433,9 @@ PYBIND11_MODULE(pyfvw, m) {
       "  file_new() / file_open(spec) / file_save_as(spec, format_index) "
       "[/ revert(spec)] -> a FILE overlay, with .dirty, .file_spec and the "
       "OverlaySession flows. Report a failure by raising.\n"
+      "  properties_schema() -> [dict] with read_property(key) and "
+      "write_property(key, value) -> a property page (get_property / "
+      "set_property check type and range first)\n"
       "  hit_test_point(proj, x, y, tolerance_px) -> [app.HitItem] -> "
       "pickable (hover, click, context menu). `overlay` is stamped for you.\n"
       "  snap_to_point(proj, x, y, tolerance_px) -> [app.SnapToItem]\n"
@@ -2294,6 +2438,11 @@ PYBIND11_MODULE(pyfvw, m) {
       // Constructable + configurable from Python so a vector viewer can drive
       // the projection directly (the raster path gets one from the engine).
       .def(py::init<>())
+      // The projection an on_draw receives is borrowed for the call; an
+      // overlay that hit-tests mouse events against the last frame keeps a copy.
+      .def("__copy__", [](const fv::MapProjection& p) { return p; })
+      .def("__deepcopy__",
+           [](const fv::MapProjection& p, py::dict) { return p; }, "memo"_a)
       .def("set_surface_size",
            [](fv::MapProjection& p, int w, int h) {
              ThrowIfError(p.SetSurfaceSize(w, h));
@@ -3512,3 +3661,11 @@ PYBIND11_MODULE(pyfvw, m) {
   pyfvw::BindAnalysis(m);
 
 }
+
+#ifdef PYFVW_EMBEDDED
+// Inside Peregrine's Python bridge: `import pyfvw` is the app's own build.
+#include <pybind11/embed.h>
+PYBIND11_EMBEDDED_MODULE(pyfvw, m) { pyfvw::DefineModule(m); }
+#else
+PYBIND11_MODULE(pyfvw, m) { pyfvw::DefineModule(m); }
+#endif

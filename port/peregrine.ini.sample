@@ -144,7 +144,8 @@ simplify_pixels = 0.5
 # Directory holding the GeoTrans tables: ellips.dat, 3_param.dat, 7_param.dat
 # and egm96.grd (testdata/geotrans in the repo and the sample set). Peregrine
 # sets MSPCCS_DATA to it at launch; MGRS entry in Go To / Find needs it.
-# Default: unset, which leaves MSPCCS_DATA as the environment has it.
+# Default: unset, which leaves MSPCCS_DATA as the environment has it, or, when
+# that is unset too, uses the tables shipped with the app (geotrans/).
 # data_dir = "/path/to/testdata/geotrans"
 
 [geosym]
@@ -196,7 +197,8 @@ simplify_pixels = 0.5
 # outside it FAILS TO LOAD, naming the layer and the property, and the
 # previously loaded one stays in force. Also on Tools > Options.
 #
-# Default: port/Osm/styles/peregrine-osm.json in the repo.
+# Default: peregrine-osm.json from the app's own data (osm-styles/ in the mac
+# bundle's Resources, /usr/share/peregrine/osm-styles on Linux).
 # style = "/path/to/style.json"
 
 # The sheet used when OSM is drawn as an OVERLAY (Overlays > Vector Map

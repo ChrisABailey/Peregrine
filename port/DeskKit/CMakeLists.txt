@@ -38,22 +38,30 @@ add_library(fv_deskkit STATIC
   fv_desk_feature_editor.cpp
   fv_desk_host.cpp
   fv_desk_launch.cpp
+  fv_desk_library_plugin.cpp
   fv_desk_map_groups.cpp
   fv_desk_map_options.cpp
   fv_desk_menu_model.cpp
+  fv_desk_native_plugin.cpp
   fv_desk_options.cpp
   fv_desk_overlay_manifest.cpp
+  fv_desk_packages.cpp
   fv_desk_point_editor.cpp
+  fv_desk_python_plugin.cpp
   fv_desk_profile.cpp
   fv_desk_search.cpp
+  fv_desk_tools.cpp
+  fv_desk_enc_import.cpp
   fv_desk_user_settings.cpp
   fv_desk_vector_map.cpp
   fv_desk_workspace.cpp
 )
+# The C plugin API (fv_plugin.h) is the SDK's own header, shared with plugins.
 target_include_directories(fv_deskkit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-  PRIVATE ${FV_DESK_GEN_DIR})
+  ${CMAKE_SOURCE_DIR}/port/sdk/include
+  PRIVATE ${FV_DESK_GEN_DIR} ${FVW_SDK_GEN_DIR})
 target_link_libraries(fv_deskkit PUBLIC fv_viewkit fv_fvkit fv_routekit
-  PRIVATE fv_vpf fv_geosym fv_enc fv_osm fv_json fv_png fv_geo_tool)
+  PRIVATE fv_vpf fv_geosym fv_enc fv_osm fv_json fv_png fv_geo_tool ${CMAKE_DL_LIBS})
 target_compile_features(fv_deskkit PUBLIC cxx_std_17)
 
 if(FVW_BUILD_TESTS)
@@ -75,12 +83,16 @@ if(FVW_BUILD_TESTS)
     test/query_test.cpp
     test/recent_overlays_test.cpp
     test/host_test.cpp
+    test/host_packages_test.cpp
+    test/enc_import_test.cpp
     test/launch_test.cpp
+    test/library_plugin_test.cpp
     test/map_groups_test.cpp
     test/map_options_test.cpp
     test/menu_model_test.cpp
     test/options_test.cpp
     test/overlay_manifest_test.cpp
+    test/packages_test.cpp
     test/profile_test.cpp
     test/search_test.cpp
     test/user_settings_test.cpp
@@ -88,12 +100,22 @@ if(FVW_BUILD_TESTS)
     test/workspace_test.cpp
   )
   target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm fv_json fv_libtiff GTest::gtest_main)
-  # dem_fixture.h: the libtiff DEM writer shared with the fvkit tests.
-  target_include_directories(fv_deskkit_test PRIVATE ${CMAKE_SOURCE_DIR}/port/fvkit/test)
+  # dem_fixture.h: the libtiff DEM writer shared with the fvkit tests;
+  # zip_test_writer.h: builds the .pgpkg archives in packages_test.
+  target_include_directories(fv_deskkit_test PRIVATE ${CMAKE_SOURCE_DIR}/port/fvkit/test
+    ${CMAKE_SOURCE_DIR}/port/Enc/test)
   target_compile_definitions(fv_deskkit_test PRIVATE
     FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson"
     FV_MAP_GROUPS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/map-groups.json"
     FV_OSM_STYLE_JSON="${CMAKE_SOURCE_DIR}/port/Osm/styles/peregrine-osm.json")
+  # A plugin built for API 2, which the loader must refuse.
+  add_library(fv_test_api2_plugin SHARED test/plugins/api2_plugin.c)
+  target_include_directories(fv_test_api2_plugin PRIVATE ${CMAKE_SOURCE_DIR}/port/sdk/include)
+  set_target_properties(fv_test_api2_plugin PROPERTIES C_VISIBILITY_PRESET hidden)
+  add_dependencies(fv_deskkit_test fv_test_api2_plugin rangerings_pgpkg)
+  target_compile_definitions(fv_deskkit_test PRIVATE
+    FV_RANGERINGS_PGPKG="${CMAKE_BINARY_DIR}/port/sdk/examples/rangerings-c/com.example.rangerings.pgpkg"
+    FV_API2_PLUGIN="$<TARGET_FILE:fv_test_api2_plugin>")
   gtest_discover_tests(fv_deskkit_test
     PROPERTIES
     ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata"

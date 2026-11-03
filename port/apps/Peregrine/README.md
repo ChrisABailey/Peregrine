@@ -26,8 +26,10 @@ build-xcode-peregrine/Debug/Peregrine.app/Contents/MacOS/Peregrine --catalog <ca
 ```
 
 Xcode never builds the core. Its "Check the Peregrine core" phase fails, with
-the command to run, when `build/port/apps/Peregrine/libperegrine_core.a` is
-missing or older than the sources under `port/`.
+the command to run, when `build/port/sdk/libperegrine_core.dylib` is missing or
+older than the sources under `port/`. The core is a shared library (extensions
+plan EX-D8) that the "Embed the Peregrine core" phase copies into
+`Contents/Frameworks` and signs; native plugins link the same file.
 
 A catalog whose paths are relative (PythonView's `build/pythonview.sqlite`)
 resolves them against the working directory; start the binary from the

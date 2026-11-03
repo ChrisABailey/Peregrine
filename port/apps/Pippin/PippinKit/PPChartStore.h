@@ -20,22 +20,13 @@
 #include <vector>
 
 #include "fv_enc_catalog.h"
+#include "fv_enc_import.h"
 #include "fvkit/geo.h"
 
 namespace pippin {
 
-/** What an import installed. */
-struct ChartImportResult {
-  std::string set_dir;  // the new set's directory, now current
-  size_t cell_count = 0;  // cells drawn: readable and not cancelled
-  std::vector<int> bands;  // usage bands present, ascending
-  std::vector<std::string> unreadable;  // cells skipped, relative to set_dir
-  std::vector<std::string> cancelled;   // cell names withdrawn by an update
-  std::vector<std::string> outdated;    // cell names drawn without some updates
-  size_t updates_applied = 0;  // update files applied, over every cell
-  size_t updates_failed = 0;   // update files that did not apply
-  fv::GeoRect bounds;  // union of the drawn cells' bounds
-};
+/** What an import installed; `set_dir` is the new set, now current. */
+using ChartImportResult = fv::EncImportResult;
 
 class ChartStore {
  public:

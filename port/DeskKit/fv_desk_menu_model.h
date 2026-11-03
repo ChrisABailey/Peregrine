@@ -69,8 +69,9 @@ struct MenuSpec {
   std::vector<MenuSlot> items;
 };
 
-/// File · Map · Overlay (port/desktop-plan.md §1a). The ‹Editor› menu is
-/// supplied per editor to `MenuModel::Rebuild`.
+/// File · Edit · Map · Overlay · Tools (port/desktop-plan.md §1a,
+/// port/extensions-plan.md §4). The ‹Editor› menu is supplied per editor to
+/// `MenuModel::Rebuild`.
 std::vector<MenuSpec> DefaultMenuLayout();
 
 /// Zoom and recenter, the editor modes, then the active editor's tools.

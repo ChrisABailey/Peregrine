@@ -8,10 +8,11 @@
 ///
 /// A manifest entry fills an `app::OverlayTypeDesc` with everything but the
 /// factories; its `implementation` names where those come from. Only the
-/// `builtin` kind exists: C++ code in the process registers a factory under a
-/// name with `RegisterBuiltinOverlay` (or a `BuiltinOverlayRegistrar` at file
-/// scope), and the manifest refers to it by that name. `library` and `python`
-/// entries parse but are reported as unsupported when registered.
+/// `builtin` kind registers: C++ code in the process registers a factory under
+/// a name with `RegisterBuiltinOverlay` (or a `BuiltinOverlayRegistrar` at
+/// file scope), and the manifest refers to it by that name. `library`,
+/// `native` and `python` entries parse but are reported as unsupported when
+/// registered (port/extensions-plan.md §2–§3).
 ///
 /// A manifest file holds either one entry object or `{"overlays": [ ... ]}`:
 ///
@@ -61,7 +62,7 @@ struct BuiltinOverlayRegistrar {
 /// One parsed manifest entry.
 struct OverlayManifestEntry {
   app::OverlayTypeDesc desc;        ///< factories empty
-  std::string implementation_kind;  ///< "builtin", "library" or "python"
+  std::string implementation_kind;  ///< "builtin", "library", "native" or "python"
   std::string implementation_name;  ///< the value under that key
   std::string source;               ///< the file (or name) it was read from
 };

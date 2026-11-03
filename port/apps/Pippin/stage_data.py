@@ -500,16 +500,14 @@ ICONS = [
 # navigates to, and a point that snaps a waypoint is the requirement's own
 # example of what this set is for.
 POINTS = [
-    ("Ruddy Turnstone", 32.6044007, -80.1083007, "diamond", "#c82828",
-     "junction", "great place to live", "", "", "lodging"),
     ("Beach Access 12", 32.5957369, -80.1097501, "diamond", "#c82828",
      "junction", "east end of the demo route", "", "", "beach"),
     ("Freshfields Village", 32.60710, -80.14820, "circle", "#8246a0",
      "services", "shops, coffee, and the only cash machine",
-     "+1 843-555-0142", "https://freshfields.example.invalid/", "shop"),
+     "+1 843-555-0142", "https://freshfieldsvillage.com", "shop"),
     ("Beachwalker Park", +32.58778, -80.13069, "circle", "#1e8c46",
      "park", "public beach showers and a car park at the west end",
-     "+1 843-555-0177", "https://beachwalker.example.invalid/", "picnic-site"),
+     "+1 843-555-0177", "https://www.ccprc.com/listing/kiawah-beachwalker-park/12/", "picnic-site"),
     ("The Ocean Course", +32.61203, -80.02327, "circle", "#1e8c46",
      "landmark", "", "+1 800-576-1570", "https://kiawahresort.com/golf/the-ocean-course/",
      "golf"),

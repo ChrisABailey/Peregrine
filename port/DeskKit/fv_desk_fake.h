@@ -50,6 +50,8 @@ class FakeDeskShell : public DeskShell {
   std::vector<std::vector<std::string>> lists;  ///< every list offered, in order
   std::vector<std::string> notices;
   int data_sources_shown = 0;
+  bool provides_overlay_manager = false;
+  int overlay_manager_shown = 0;
   int route_profile_shown = 0;
   int layers_shown = 0;
   int layers_hidden = 0;
@@ -88,6 +90,8 @@ class FakeDeskShell : public DeskShell {
     map_options_shown = std::move(model);
   }
   void ShowDataSources() override { ++data_sources_shown; }
+  bool ProvidesOverlayManager() const override { return provides_overlay_manager; }
+  void ShowOverlayManager() override { ++overlay_manager_shown; }
   void ShowRouteProfile() override { ++route_profile_shown; }
   void ShowLayers() override { ++layers_shown; }
   void HideLayers() override { ++layers_hidden; }

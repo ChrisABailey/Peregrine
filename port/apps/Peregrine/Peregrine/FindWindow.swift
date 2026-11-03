@@ -27,7 +27,7 @@ final class FindWindowController: NSWindowController, NSWindowDelegate, NSTableV
         case result(Int32)
     }
 
-    private static let viewOnlyKey = "FindMapViewOnly"
+    private static let viewOnlyKey = "find.map_view_only"
     private let field = NSSearchField()
     private let viewOnly = NSButton(checkboxWithTitle: "Search the map in this view only",
                                     target: nil, action: nil)
@@ -60,8 +60,7 @@ final class FindWindowController: NSWindowController, NSWindowDelegate, NSTableV
         field.target = self
         field.action = #selector(searchNow)
 
-        let defaults = UserDefaults.standard
-        viewOnly.state = defaults.object(forKey: Self.viewOnlyKey) as? Bool ?? true ? .on : .off
+        viewOnly.state = host.ShellFlag(std.string(Self.viewOnlyKey), true) ? .on : .off
         viewOnly.target = self
         viewOnly.action = #selector(viewOnlyChanged)
 
@@ -157,7 +156,7 @@ final class FindWindowController: NSWindowController, NSWindowDelegate, NSTableV
     }
 
     @objc private func viewOnlyChanged() {
-        UserDefaults.standard.set(viewOnly.state == .on, forKey: Self.viewOnlyKey)
+        host.SetShellFlag(std.string(Self.viewOnlyKey), viewOnly.state == .on)
         runSearch()
     }
 

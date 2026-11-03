@@ -118,19 +118,27 @@ add_subdirectory(port/fvkit)
 add_subdirectory(port/RouteKit)
 # The interactive map view shared by the desktop shells.
 add_subdirectory(port/ViewKit)
+# The native plugin build id (extensions plan §2b), which DeskKit compiles in.
+include(port/cmake/PeregrineBuildId.cmake)
 # The desktop application model over ViewKit and fv::app.
 add_subdirectory(port/DeskKit)
 # pyfvw embeds CPython; there is none on a phone.
 if(NOT FVW_IOS)
   add_subdirectory(port/bindings/pyfvw)
+  # libperegrine_core, the shared core the desktop apps and native plugins link.
+  add_subdirectory(port/sdk)
+  # The C plugin example; DeskKit's tests install the .pgpkg it packs.
+  add_subdirectory(port/sdk/examples/rangerings-c)
+  # The native C++ plugin example, against the shared core.
+  add_subdirectory(port/sdk/examples/rangerings-cpp)
+  # The Python package example; packed only, nothing compiled.
+  add_subdirectory(port/sdk/examples/rangerings-py)
 endif()
 
 # Pippin, the iOS app. On iOS this builds the umbrella library the app links
 # (`cmake --preset ios`); on the mac it builds one thing — the gtest over the
 # pure-C++ half of PippinKit — and returns.
 add_subdirectory(port/apps/Pippin)
-# The macOS desktop app's core archive (the app is an Xcode project over it).
-add_subdirectory(port/apps/Peregrine)
 # The Linux desktop app (GTK4), port/linux-plan.md.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND EXISTS ${CMAKE_SOURCE_DIR}/port/apps/PeregrineGtk/CMakeLists.txt)
   add_subdirectory(port/apps/PeregrineGtk)

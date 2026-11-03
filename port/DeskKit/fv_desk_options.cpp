@@ -93,6 +93,7 @@ std::unique_ptr<OptionsPage> OptionsPage::ForMapGroup(const std::string& title,
   if (!page->AddPart(std::shared_ptr<app::Properties>(source.make()), source.prefix,
                      source.apply, settings))
     return nullptr;
+  page->actions_ = source.actions;
   return page;
 }
 

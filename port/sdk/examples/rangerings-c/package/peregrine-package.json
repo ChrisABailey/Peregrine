@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "id": "com.example.rangerings",
+  "name": "Range Rings",
+  "version": "1.0.0",
+  "publisher": "Peregrine SDK example",
+  "license": "LGPL-3.0-or-later",
+  "description": "Concentric range rings about a point you click. Written in C against fv_plugin.h.",
+  "requires": { "peregrine": "0.1", "plugin_api": 1 },
+  "libraries": {
+    "macos": "lib/macos/librangerings.dylib",
+    "linux-x86_64": "lib/linux-x86_64/librangerings.so",
+    "linux-aarch64": "lib/linux-aarch64/librangerings.so",
+    "windows-x86_64": "lib/windows-x86_64/rangerings.dll"
+  },
+  "overlays": [
+    { "id": "com.example.rangerings.rings", "display_name": "Range Rings",
+      "kind": "file", "display_order": 40,
+      "file": { "extension": "rng", "filters": [["Range Rings", "*.rng"]] },
+      "implementation": { "library": "rings" } }
+  ],
+  "tools": [
+    { "id": "com.example.rangerings.open_sample", "title": "Open Sample Rings",
+      "submenu": "Range Rings",
+      "implementation": { "library": "open_sample" } }
+  ]
+}

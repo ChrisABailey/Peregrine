@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "id": "com.example.pyrings",
+  "name": "Range Rings (Python)",
+  "version": "1.0.0",
+  "publisher": "Peregrine SDK example",
+  "license": "LGPL-3.0-or-later",
+  "description": "Concentric range rings about a point you click. The rangerings-c example, written in Python against pyfvw.",
+  "requires": { "peregrine": "0.1", "python": "3.10" },
+  "python_path": "python",
+  "overlays": [
+    { "id": "com.example.pyrings.rings", "display_name": "Range Rings (Python)",
+      "kind": "file", "display_order": 41,
+      "file": { "extension": "prng", "filters": [["Range Rings (Python)", "*.prng"]] },
+      "implementation": { "python": "pyrings:Rings" } }
+  ],
+  "tools": [
+    { "id": "com.example.pyrings.open_sample", "title": "Open Sample Rings",
+      "submenu": "Range Rings (Python)",
+      "implementation": { "python": "pyrings:open_sample" } }
+  ]
+}

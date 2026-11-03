@@ -1,0 +1,26 @@
+{
+  "format": 1,
+  "id": "com.example.nativerings",
+  "name": "Range Rings (C++)",
+  "version": "1.0.0",
+  "publisher": "Peregrine SDK example",
+  "license": "LGPL-3.0-or-later",
+  "description": "Concentric range rings placed by clicking, with an editor palette. Written in C++ against the native SDK; rebuild it for each Peregrine release.",
+  "requires": { "peregrine": "0.1" },
+  "libraries": {
+    "macos": "lib/macos/libnativerings.dylib",
+    "linux-x86_64": "lib/linux-x86_64/libnativerings.so",
+    "linux-aarch64": "lib/linux-aarch64/libnativerings.so",
+    "windows-x86_64": "lib/windows-x86_64/nativerings.dll"
+  },
+  "overlays": [
+    { "id": "com.example.nativerings.rings", "display_name": "Range Rings (C++)",
+      "kind": "static", "display_order": 41,
+      "implementation": { "native": "rings" } }
+  ],
+  "tools": [
+    { "id": "com.example.nativerings.at_center", "title": "Rings at View Centre",
+      "submenu": "Range Rings (C++)",
+      "implementation": { "native": "at_center" } }
+  ]
+}

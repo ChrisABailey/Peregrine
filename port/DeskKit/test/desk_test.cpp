@@ -14,6 +14,7 @@
 #include "dem_fixture.h"
 #include "fv_desk_catalog_build.h"
 #include "fv_desk_fake.h"
+#include "fv_desk_map_options.h"
 #include "fv_map_enums.h"
 #include "fvkit/app/capabilities.h"
 #include "fvkit/catalog/catalog.h"
@@ -840,6 +841,9 @@ TEST_F(DeskTest, EveryCommandIsReachableFromTheMenusToolbarOrLayerMenus) {
     reachable.insert(id);
   // An alias of Overlay ▸ New ▸ Feature Layer… that PeregrineGtk runs by id.
   reachable.insert("overlay.new_layer");
+  // Buttons on the Map ▸ Options pages.
+  for (const fv::desk::MapOptionsSource& src : fv::desk::BuiltinMapOptions())
+    for (const fv::desk::OptionsAction& a : src.actions) reachable.insert(a.command);
   for (const std::string& id : desk.commands().Ids())
     EXPECT_TRUE(reachable.count(id)) << id << " is in no menu and not on the toolbar";
 }

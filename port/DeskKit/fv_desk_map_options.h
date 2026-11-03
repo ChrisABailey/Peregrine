@@ -50,17 +50,27 @@ MapOptionsSource DncMapOptions();
 /// which DNC is drawn with too.
 MapOptionsSource EncMapOptions();
 
-/// OpenStreetMap: `osm.style`.
+/// OpenStreetMap: `osm.style`; empty draws with `DefaultOsmStyle()`.
 MapOptionsSource OsmMapOptions();
 
 /// The app-wide "Data" page: `geotrans.data_dir`, the GeoTrans datum and
 /// ellipsoid tables (ellips.dat, 3_param.dat, 7_param.dat, egm96.grd).
 MapOptionsSource DataOptions();
 
-/// Points GeoTrans at `dir` by setting `MSPCCS_DATA`; empty leaves the
-/// environment as it is. GeoTrans reads its tables once per process, so a
-/// change after the first coordinate conversion takes effect on the next launch.
+/// Points GeoTrans at `dir` by setting `MSPCCS_DATA`. Empty leaves a set
+/// `MSPCCS_DATA` as it is, else uses `<AppDataDir()>/geotrans` when present.
+/// GeoTrans reads its tables once per process, so a change after the first
+/// coordinate conversion takes effect on the next launch.
 void SetGeoTransDataDir(const std::string& dir);
+
+/// The directory of data shipped with the app: `geotrans/` (datum tables) and
+/// `osm-styles/` (style sheets). The mac bundle's Resources, or
+/// `<prefix>/share/peregrine` on Linux. Process-wide; set before settings load.
+void SetAppDataDir(const std::string& dir);
+std::string AppDataDir();
+
+/// `<AppDataDir()>/osm-styles/peregrine-osm.json`, or "" when it is not there.
+std::string DefaultOsmStyle();
 
 /// The Route page's Routing section: `routing.graph`, `routing.rules` and
 /// `routing.profile`, which the shell's one planner reads rather than each

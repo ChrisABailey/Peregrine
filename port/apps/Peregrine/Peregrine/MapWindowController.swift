@@ -26,9 +26,10 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     /// Open options windows, by HostOptionsKind.
     private var optionsWindows: [Int32: OptionsWindowController] = [:]
     private var dataSourcesWindow: DataSourcesWindowController?
+    private var overlayManagerWindow: OverlayManagerWindowController?
     private var profileWindow: ProfileWindowController?
     private var layersPanel: LayersPanelController?
-    private static let layersShownKey = "LayersPanelShown"
+    private static let layersShownKey = "layers_panel.shown"
     private var findWindow: FindWindowController?
     private var featureFormWindow: FeatureFormWindowController?
     private var attributeTableWindow: AttributeTableWindowController?
@@ -45,12 +46,24 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     init() {
         host = fv.desk.DeskHost.Create()
         host.SetPropertiesTabs(true)
+        host.SetAppDataDir(std.string(Bundle.main.resourcePath ?? ""))
         let settingsError = String(host.LoadSettings(std.string("")))
+        Self.adoptUserDefaults(host)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
             as? String ?? "(unversioned)"
         let logError = String(host.StartLog(std.string(""), std.string(version)))
         if !logError.isEmpty {
             FileHandle.standardError.write(Data("Peregrine: no log file: \(logError)\n".utf8))
+        }
+        // Overlay packages: the bundle's own, then the user's (port/extensions-plan.md §1c).
+        let systemPackages = Bundle.main.resourceURL?.appendingPathComponent("packages").path ?? ""
+        let hostVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? ""
+        host.LoadPackages(std.string(systemPackages), std.string(""), std.string(hostVersion))
+        // The user's tools.json: tools added to or hidden from the Tools menu.
+        let toolsError = String(host.LoadToolConfig(std.string("")))
+        if !toolsError.isEmpty {
+            FileHandle.standardError.write(Data("Peregrine: \(toolsError)\n".utf8))
         }
         canvas = MapCanvasView(host: host)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
@@ -101,7 +114,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         layersPanel = layers
         split.addArrangedSubview(layers.view)
         split.setHoldingPriority(.defaultLow + 10, forSubviewAt: 1)
-        setLayersShown(UserDefaults.standard.bool(forKey: Self.layersShownKey))
+        setLayersShown(host.ShellFlag(std.string(Self.layersShownKey), false))
         canvas.onStatusChange = { [weak self] in self?.refreshStatus() }
         canvas.onError = { [weak self] in self?.present(error: "Peregrine", detail: $0) }
         canvas.onTick = { [weak self] in self?.handle($0) }
@@ -171,7 +184,6 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         updateTitle()
         window?.representedURL = url
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
-        UserDefaults.standard.set(path, forKey: "LastCatalog")
     }
 
     /// Titles the window after the current or topmost overlay file, or the
@@ -197,6 +209,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
             if kind >= 0 { showOptions(kind) }
         }
         if t.sources_requested && host.TakeSourcesRequest() { showDataSources() }
+        if t.overlay_manager_requested && host.TakeOverlayManagerRequest() { showOverlayManager() }
         if t.profile_requested && host.TakeRouteProfileRequest() { showRouteProfile() }
         if t.profile_changed { profileWindow?.reload() }
         if t.layers_requested && host.TakeLayersRequest() { setLayersShown(true) }
@@ -264,6 +277,28 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         controller.showWindow(nil)
     }
 
+    /// Brings up the Overlay Manager, reusing it when it is showing.
+    @discardableResult
+    func showOverlayManager() -> OverlayManagerWindowController {
+        if let existing = overlayManagerWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return existing
+        }
+        let controller = OverlayManagerWindowController(host: host)
+        controller.onClose = { [weak self] in self?.overlayManagerWindow = nil }
+        overlayManagerWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+        return controller
+    }
+
+    /// Opens the Overlay Manager on the install confirmation for `path`, as a
+    /// double-clicked .pgpkg does.
+    func installPackage(path: String) {
+        showOverlayManager().confirmInstall(path: path)
+    }
+
     /// Brings up the route elevation profile window, reusing it when it is showing.
     private func showRouteProfile() {
         if let existing = profileWindow {
@@ -304,7 +339,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         if shown { panel.reload() }
         panel.view.isHidden = !shown
         host.SetLayersShown(shown)
-        UserDefaults.standard.set(shown, forKey: Self.layersShownKey)
+        host.SetShellFlag(std.string(Self.layersShownKey), shown)
     }
 
     /// Brings up the feature form on the model the core just opened.
@@ -476,17 +511,34 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
 
     /// Remembers the camera for the next launch with the same catalog.
     func saveView() {
-        let d = UserDefaults.standard
-        d.set([host.CenterLat(), host.CenterLon(), host.ScaleDenom()], forKey: "LastView")
+        host.RememberView()
+        _ = host.SaveUserSettings()
     }
 
     /// Returns to the camera saved by `saveView()`; false when there is none.
     @discardableResult
-    func restoreView() -> Bool {
-        guard let v = UserDefaults.standard.array(forKey: "LastView") as? [Double], v.count == 3
-        else { return false }
-        goTo(lat: v[0], lon: v[1], scale: v[2])
-        return true
+    func restoreView() -> Bool { host.RestoreView() }
+
+    /// Moves interface state an earlier build kept in UserDefaults into the
+    /// shared shell state, once, then removes it from UserDefaults.
+    private static func adoptUserDefaults(_ host: fv.desk.DeskHost) {
+        let d = UserDefaults.standard
+        if let path = d.string(forKey: "LastCatalog"), String(host.LastCatalog()).isEmpty {
+            host.SetShellState(std.string("last_catalog"), std.string(path))
+        }
+        if let v = d.array(forKey: "LastView") as? [Double], v.count == 3,
+           String(host.ShellState(std.string("last_view"))).isEmpty {
+            host.SetShellState(std.string("last_view"), std.string("\(v[0]),\(v[1]),\(v[2])"))
+        }
+        if d.object(forKey: "LayersPanelShown") != nil {
+            host.SetShellFlag(std.string(layersShownKey), d.bool(forKey: "LayersPanelShown"))
+        }
+        if let viewOnly = d.object(forKey: "FindMapViewOnly") as? Bool {
+            host.SetShellFlag(std.string("find.map_view_only"), viewOnly)
+        }
+        for key in ["LastCatalog", "LastView", "LayersPanelShown", "FindMapViewOnly"] {
+            d.removeObject(forKey: key)
+        }
     }
 
     func execute(_ command: String) {

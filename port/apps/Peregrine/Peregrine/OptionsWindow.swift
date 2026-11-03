@@ -204,7 +204,38 @@ final class OptionsWindowController: NSWindowController, NSWindowDelegate,
                 ? .none : .firstBaseline
             row.yPlacement = .center
         }
+        let actions = host.OptionsActionCount(kind, page)
+        if actions > 0 {
+            let buttons = NSStackView()
+            buttons.orientation = .horizontal
+            buttons.spacing = 8
+            for i in 0..<actions {
+                let a = host.OptionsActionAt(kind, page, i)
+                let button = NSButton(title: String(a.label), target: self,
+                                      action: #selector(runAction(_:)))
+                button.identifier = NSUserInterfaceItemIdentifier(String(a.command))
+                button.toolTip = a.help.empty() ? nil : String(a.help)
+                button.isEnabled = host.IsEnabled(a.command)
+                buttons.addArrangedSubview(button)
+            }
+            let row = grid.addRow(with: [NSGridCell.emptyContentView, buttons])
+            row.topPadding = 12
+        }
         updateApply()
+    }
+
+    /// Runs a page button's command. Pending changes are applied first, so the
+    /// command sees the values the page shows.
+    @objc private func runAction(_ sender: NSButton) {
+        guard let command = sender.identifier?.rawValue else { return }
+        if host.OptionsDirty(kind) && !applyChanges() { return }
+        let error = String(host.Execute(std.string(command)))
+        if !error.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = error
+            alert.beginSheetModal(for: window!)
+        }
+        showPage()
     }
 
     /// One control for a field, its value set and its action wired.

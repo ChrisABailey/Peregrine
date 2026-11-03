@@ -5,7 +5,7 @@
 
 # fvw_collect_static_libs(<target> <out_var>) — the static libraries in a
 # target's link closure, for merging into the one archive an Xcode app links
-# (Pippin's libpippin_core.a, Peregrine's libperegrine_core.a).
+# (Pippin's libpippin_core.a), or for linking whole into libperegrine_core.
 # Walk the link graph and collect every static library in it. CMake has no
 # "give me the transitive closure" query, so this is the closure — visited
 # set and all — computed at configure time. Anything that is not a static

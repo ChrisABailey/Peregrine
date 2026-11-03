@@ -78,6 +78,7 @@ struct HostTick {
   bool rule_type_requested = false;    ///< ask for a rule type; see TakeRuleTypeRequest
   bool rule_filter_requested = false;  ///< show the rule filter builder; see TakeRuleFilterRequest
   bool rule_style_requested = false;   ///< show the rule style pages; see TakeRuleStyleRequest
+  bool overlay_manager_requested = false;  ///< show the Overlay Manager; see TakeOverlayManagerRequest
   /// A feature dialog (form, table, style, fields, new layer) opened, closed
   /// or reloaded, or the table's selection moved; re-read them (a closed one
   /// reads as not open).
@@ -170,6 +171,42 @@ struct HostOptionsField {
   int choice_count = 0;    ///< kFieldChoice; labels from OptionsChoiceLabel
   bool directory = false;  ///< kFieldPath names a directory
   std::string path_patterns;  ///< kFieldPath file filters, "*.gpx;*.json"; "" = any
+};
+
+/// A button on an options page (`OptionsAction`).
+struct HostOptionsAction {
+  std::string command;
+  std::string label;
+  std::string help;
+};
+
+/// One package as the Overlay Manager lists it (`PackageInfo`, as text).
+struct HostPackage {
+  std::string id;
+  std::string name;
+  std::string version;
+  std::string publisher;
+  std::string license;
+  std::string description;
+  std::string location;   ///< "System", "User" or "Linked"
+  std::string state;      ///< "Loaded", "Disabled", "Shadowed", "Failed", "Unavailable", "Not loaded"
+  std::string reason;     ///< why it failed or is unavailable; "" otherwise
+  std::string pending;    ///< what waits for the next launch ("Removed at relaunch"); "" for nothing
+  std::string code_kinds; ///< "C library, Python"; "" when every entry is builtin
+  std::string overlays;   ///< contributed overlay names, one per line
+  std::string tools;      ///< contributed tool titles, one per line
+  std::string dir;
+  bool enabled = true;
+  bool removable = false;  ///< a user or linked package not already pending removal
+  std::string error;       ///< `InspectPackage` only: why the file is not a package
+};
+
+/// What an install did.
+struct HostInstallOutcome {
+  std::string error;  ///< "" on success
+  std::string id;
+  bool live = false;  ///< registered now; false: replaces the installed copy at the next launch
+  std::string replaced_version;
 };
 
 /// Where the shown frame belongs under the live view, in points:
@@ -267,6 +304,10 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   int OptionsFieldCount(int kind, int page) const;
   HostOptionsField OptionsFieldAt(int kind, int page, int field) const;
   std::string OptionsChoiceLabel(int kind, int page, int field, int choice) const;
+  /// The buttons below the page; each runs its command through `Execute`,
+  /// enabled while `IsEnabled(command)`.
+  int OptionsActionCount(int kind, int page) const;
+  HostOptionsAction OptionsActionAt(int kind, int page, int action) const;
   /// Parses `value` as the field's type and offers it to the page; the
   /// accepted value may be clamped (re-read the field). Returns the error
   /// message, or "".
@@ -875,6 +916,31 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// are saved to that file, unless it exists and would not read. Returns the
   /// first error message, or "".
   std::string LoadSettings(const std::string& user_settings_path);
+  /// The data shipped with the app (`SetAppDataDir`): the datum tables and
+  /// the default OSM style are found there. Call before LoadSettings.
+  void SetAppDataDir(const std::string& dir);
+
+  // MARK: Shell state
+
+  /// Interface state both shells keep in the user settings file as
+  /// `shell.<key>`, so the mac and Linux apps share keys and file. Keys in use:
+  /// `last_catalog` (written by OpenCatalog), `last_view` ("lat,lon,scale",
+  /// RememberView), `find.map_view_only` and `layers_panel.shown` ("1"/"0").
+  /// Changes are written on the next Tick or by SaveUserSettings.
+  std::string ShellState(const std::string& key) const;
+  void SetShellState(const std::string& key, const std::string& value);
+  /// `ShellState(key)` read as "1"/"0"; `def` when the key is absent.
+  bool ShellFlag(const std::string& key, bool def) const;
+  void SetShellFlag(const std::string& key, bool value);
+  /// The catalog last opened successfully, or "".
+  std::string LastCatalog() const;
+  /// Stores the camera as `last_view`.
+  void RememberView();
+  /// Moves to the camera stored by RememberView; false when there is none.
+  bool RestoreView();
+  /// Writes the user settings file now if anything changed (as at quit).
+  /// Returns the error message, or "".
+  std::string SaveUserSettings();
 
   // MARK: Application log
 
@@ -886,9 +952,38 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// The file the log is writing now, or "" before StartLog.
   std::string LogFilePath() const;
 
+  // MARK: Overlay Manager (port/extensions-plan.md §5)
+
+  /// Scans the package directories and loads every enabled package; call
+  /// once at launch. `user_dir` "" uses the per-user default. Enables the
+  /// Tools ▸ Overlay Manager command.
+  void LoadPackages(const std::string& system_dir, const std::string& user_dir,
+                    const std::string& host_version);
+  /// Applies the user's tools.json (`Desk::LoadToolConfig`) at `path`, ""
+  /// for `DefaultToolConfigPath()`. Call after `LoadPackages`. Returns the
+  /// error message, or "".
+  std::string LoadToolConfig(const std::string& path);
+  /// True once after the core asked to show the Overlay Manager.
+  bool TakeOverlayManagerRequest();
+  /// Every package found, the winning copy of an id first, in scan order.
+  int PackageCount() const;
+  HostPackage PackageAt(int index) const;
+  /// True while an install, disable or removal waits for the next launch.
+  bool PackagesRestartPending() const;
+  /// Reads a .pgpkg or package directory for the install confirmation;
+  /// `error` is set when it is not an installable package.
+  HostPackage InspectPackage(const std::string& path) const;
+  /// Installs a .pgpkg (copied into the user directory).
+  HostInstallOutcome InstallPackage(const std::string& path);
+  /// Uses a package directory in place.
+  HostInstallOutcome LinkPackage(const std::string& dir);
+  /// Each returns the error message, or "".
+  std::string SetPackageEnabled(const std::string& id, bool enabled);
+  std::string RemovePackage(const std::string& id);
+
   // MARK: Background jobs
 
-  /// True while a catalog build runs.
+  /// True while a catalog build or ENC import runs.
   bool JobActive() const;
   /// 0…1, by data sources finished.
   double JobFraction() const;

@@ -22,6 +22,9 @@
 
 #include "fv_desk_base_map.h"
 #include "fv_desk_desk.h"
+#include "fv_desk_enc_import.h"
+#include "fv_desk_map_options.h"
+#include "fv_desk_packages.h"
 #include "fv_desk_user_settings.h"
 #include "fv_enc_format.h"
 #include "fv_osm_format.h"
@@ -92,6 +95,8 @@ class HostShell : public DeskShell {
   bool rule_type_requested = false;
   bool rule_filter_requested = false;
   bool rule_style_requested = false;
+  bool overlay_manager = false;  ///< packages are loaded, so the window has something to show
+  bool overlay_manager_requested = false;
 
   HostRequestFn handler = nullptr;
   void* handler_context = nullptr;
@@ -165,6 +170,8 @@ class HostShell : public DeskShell {
     options_requested = kOptionsOverlay;
   }
   void ShowDataSources() override { sources_requested = true; }
+  bool ProvidesOverlayManager() const override { return overlay_manager; }
+  void ShowOverlayManager() override { overlay_manager_requested = true; }
   void ShowRouteProfile() override { profile_requested = true; }
   void ShowLayers() override { layers_requested = true; }
   void HideLayers() override { layers_hide_requested = true; }
@@ -457,6 +464,10 @@ void DeskHost::Impl::SyncMenus() {
 }
 
 std::string DeskHost::Impl::JobLine() const {
+  if (const EncImportJob* j = desk->enc_import()) {
+    const EncImportProgress p = j->Progress();
+    return "import " + std::to_string(static_cast<int>(p.fraction * 100)) + "% " + p.current;
+  }
   const CatalogBuild* b = desk->catalog_build();
   if (b == nullptr) return std::string();
   const BuildProgress p = b->Progress();
@@ -651,6 +662,7 @@ std::string DeskHost::OpenCatalog(const std::string& path) {
     return s.message;
   }
   FV_LOG_INFO("catalog opened: " << path);
+  SetShellState("last_catalog", path);
   if (impl_->desk->CurrentGroup() != nullptr) return Execute("map.recenter");
   return std::string();
 }
@@ -861,6 +873,18 @@ std::string DeskHost::OptionsChoiceLabel(int kind, int page, int field, int choi
   return choices[static_cast<size_t>(choice)];
 }
 
+int DeskHost::OptionsActionCount(int kind, int page) const {
+  const OptionsPage* p = impl_->OptionsPageAt(kind, page);
+  return p == nullptr ? 0 : static_cast<int>(p->actions().size());
+}
+
+HostOptionsAction DeskHost::OptionsActionAt(int kind, int page, int action) const {
+  const OptionsPage* p = impl_->OptionsPageAt(kind, page);
+  if (p == nullptr || action < 0 || action >= static_cast<int>(p->actions().size())) return {};
+  const OptionsAction& a = p->actions()[static_cast<size_t>(action)];
+  return HostOptionsAction{a.command, a.label, a.help};
+}
+
 std::string DeskHost::SetOptionValue(int kind, int page, const std::string& key,
                                      const std::string& value) {
   OptionsPage* p = impl_->OptionsPageAt(kind, page);
@@ -910,6 +934,56 @@ void DeskHost::CloseOptions(int kind) {
 }
 
 // MARK: Settings
+
+void DeskHost::SetAppDataDir(const std::string& dir) { desk::SetAppDataDir(dir); }
+
+// MARK: Shell state
+
+namespace {
+constexpr char kShellPrefix[] = "shell.";
+}  // namespace
+
+std::string DeskHost::ShellState(const std::string& key) const {
+  return impl_->user.Get(kShellPrefix + key);
+}
+
+void DeskHost::SetShellState(const std::string& key, const std::string& value) {
+  impl_->user.Set(kShellPrefix + key, value);
+}
+
+bool DeskHost::ShellFlag(const std::string& key, bool def) const {
+  if (!impl_->user.Has(kShellPrefix + key)) return def;
+  return ShellState(key) == "1";
+}
+
+void DeskHost::SetShellFlag(const std::string& key, bool value) {
+  SetShellState(key, value ? "1" : "0");
+}
+
+std::string DeskHost::LastCatalog() const { return ShellState("last_catalog"); }
+
+void DeskHost::RememberView() {
+  char text[96];
+  std::snprintf(text, sizeof text, "%.9f,%.9f,%.3f", CenterLat(), CenterLon(), ScaleDenom());
+  SetShellState("last_view", text);
+}
+
+bool DeskHost::RestoreView() {
+  double lat = 0, lon = 0, scale = 0;
+  if (std::sscanf(ShellState("last_view").c_str(), "%lf,%lf,%lf", &lat, &lon, &scale) != 3 ||
+      !(scale > 0))
+    return false;
+  GoTo(lat, lon, scale);
+  return true;
+}
+
+std::string DeskHost::SaveUserSettings() {
+  Impl& m = *impl_;
+  if (m.user_path.empty() || m.user.Generation() == m.saved_user_gen) return std::string();
+  m.saved_user_gen = m.user.Generation();
+  const Status saved = m.user.Save(m.user_path);
+  return saved.ok() ? std::string() : saved.message;
+}
 
 std::string DeskHost::LoadSettings(const std::string& user_settings_path) {
   Impl& m = *impl_;
@@ -2939,11 +3013,162 @@ std::string DeskHost::GenerateCoverage() {
   return impl_->desk->GenerateCoverage().message;
 }
 
+// MARK: Overlay Manager
+
+namespace {
+
+const char* LocationText(PackageLocation l) {
+  switch (l) {
+    case PackageLocation::kSystem: return "System";
+    case PackageLocation::kUser: return "User";
+    case PackageLocation::kLinked: return "Linked";
+  }
+  return "";
+}
+
+const char* StateText(PackageState s) {
+  switch (s) {
+    case PackageState::kNotLoaded: return "Not loaded";
+    case PackageState::kLoaded: return "Loaded";
+    case PackageState::kDisabled: return "Disabled";
+    case PackageState::kShadowed: return "Shadowed";
+    case PackageState::kFailed: return "Failed";
+    case PackageState::kUnavailable: return "Unavailable";
+  }
+  return "";
+}
+
+std::string Join(const std::vector<std::string>& parts, const char* sep) {
+  std::string out;
+  for (const std::string& p : parts) out += (out.empty() ? "" : sep) + p;
+  return out;
+}
+
+/// The manifest's fields of a HostPackage.
+void FillFromManifest(const PackageManifest& m, HostPackage* out) {
+  out->name = m.name;
+  out->version = m.version;
+  out->publisher = m.publisher;
+  out->license = m.license;
+  out->description = m.description;
+  out->code_kinds = Join(m.CodeKinds(), ", ");
+  std::vector<std::string> overlays, tools;
+  for (const OverlayManifestEntry& e : m.overlays) overlays.push_back(e.desc.display_name);
+  for (const ToolManifestEntry& e : m.tools) tools.push_back(e.desc.title);
+  out->overlays = Join(overlays, "\n");
+  out->tools = Join(tools, "\n");
+}
+
+HostInstallOutcome Outcome(const Status& s, const InstallResult& r) {
+  HostInstallOutcome o;
+  o.error = s.ok() ? std::string() : s.message;
+  o.id = r.id;
+  o.live = r.live;
+  o.replaced_version = r.replaced_version;
+  return o;
+}
+
+}  // namespace
+
+void DeskHost::LoadPackages(const std::string& system_dir, const std::string& user_dir,
+                            const std::string& host_version) {
+  Impl::StackEdit edit(*impl_);
+  impl_->desk->LoadPackages(
+      PackageDirs{system_dir, user_dir.empty() ? DefaultUserPackageDir() : user_dir}, host_version);
+  impl_->shell.overlay_manager = true;
+  impl_->desk->Refresh();
+}
+
+std::string DeskHost::LoadToolConfig(const std::string& path) {
+  Impl::StackEdit edit(*impl_);
+  return impl_->desk->LoadToolConfig(path.empty() ? DefaultToolConfigPath() : path).message;
+}
+
+bool DeskHost::TakeOverlayManagerRequest() {
+  const bool asked = impl_->shell.overlay_manager_requested;
+  impl_->shell.overlay_manager_requested = false;
+  return asked;
+}
+
+int DeskHost::PackageCount() const {
+  const PackageManager* pm = impl_->desk->packages();
+  return pm == nullptr ? 0 : static_cast<int>(pm->packages().size());
+}
+
+HostPackage DeskHost::PackageAt(int index) const {
+  HostPackage out;
+  const PackageManager* pm = impl_->desk->packages();
+  if (pm == nullptr || index < 0 || index >= static_cast<int>(pm->packages().size())) return out;
+  const PackageInfo& p = pm->packages()[static_cast<size_t>(index)];
+  FillFromManifest(p.manifest, &out);
+  out.id = p.id;
+  if (out.name.empty()) out.name = p.id;
+  out.location = LocationText(p.location);
+  out.state = StateText(p.state);
+  out.reason = p.reason;
+  if (p.pending_removal)
+    out.pending = "Removed at relaunch";
+  else if (!p.pending_version.empty())
+    out.pending = "Version " + p.pending_version + " at relaunch";
+  else if (!p.enabled && p.state == PackageState::kLoaded)
+    out.pending = "Disabled at relaunch";
+  out.dir = p.dir;
+  out.enabled = p.enabled;
+  out.removable = p.location != PackageLocation::kSystem && !p.pending_removal &&
+                  p.state != PackageState::kShadowed;
+  return out;
+}
+
+bool DeskHost::PackagesRestartPending() const {
+  const PackageManager* pm = impl_->desk->packages();
+  return pm != nullptr && pm->RestartPending();
+}
+
+HostPackage DeskHost::InspectPackage(const std::string& path) const {
+  HostPackage out;
+  const PackageManager* pm = impl_->desk->packages();
+  if (pm == nullptr) {
+    out.error = "packages are not loaded";
+    return out;
+  }
+  PackageManifest m;
+  const Status s = pm->Inspect(path, &m);
+  if (!s.ok()) {
+    out.error = s.message;
+    return out;
+  }
+  FillFromManifest(m, &out);
+  out.id = m.id;
+  return out;
+}
+
+HostInstallOutcome DeskHost::InstallPackage(const std::string& path) {
+  Impl::StackEdit edit(*impl_);
+  InstallResult r;
+  return Outcome(impl_->desk->InstallPackage(path, &r), r);
+}
+
+HostInstallOutcome DeskHost::LinkPackage(const std::string& dir) {
+  Impl::StackEdit edit(*impl_);
+  InstallResult r;
+  return Outcome(impl_->desk->LinkPackage(dir, &r), r);
+}
+
+std::string DeskHost::SetPackageEnabled(const std::string& id, bool enabled) {
+  Impl::StackEdit edit(*impl_);
+  return impl_->desk->SetPackageEnabled(id, enabled).message;
+}
+
+std::string DeskHost::RemovePackage(const std::string& id) {
+  return impl_->desk->RemovePackage(id).message;
+}
+
 // MARK: Background jobs
 
 bool DeskHost::JobActive() const { return impl_->desk->Building(); }
 
 double DeskHost::JobFraction() const {
+  if (const EncImportJob* j = impl_->desk->enc_import()) return j->Progress().fraction;
   const CatalogBuild* b = impl_->desk->catalog_build();
   if (b == nullptr) return 0.0;
   const BuildProgress p = b->Progress();
@@ -2951,6 +3176,10 @@ double DeskHost::JobFraction() const {
 }
 
 std::string DeskHost::JobText() const {
+  if (const EncImportJob* j = impl_->desk->enc_import()) {
+    const EncImportProgress p = j->Progress();
+    return p.current.empty() ? std::string("Importing ENC charts") : "Importing " + p.current;
+  }
   const CatalogBuild* b = impl_->desk->catalog_build();
   if (b == nullptr) return std::string();
   const BuildProgress p = b->Progress();
@@ -3185,8 +3414,7 @@ void DeskHost::Step(int direction) { impl_->desk->map_view().Step(direction); }
 HostTick DeskHost::Tick() {
   HostTick t;
   Impl& m = *impl_;
-  const CatalogBuild* build = m.desk->catalog_build();
-  if (build != nullptr && build->Progress().finished) {
+  if (m.desk->JobFinished()) {
     // Picking up the build re-resolves the elevation overlays' source.
     Impl::StackEdit edit(m);
     m.desk->PollCatalogBuild();
@@ -3229,6 +3457,7 @@ HostTick DeskHost::Tick() {
   if (m.shell.rule_type_requested) t.rule_type_requested = true;
   if (m.shell.rule_filter_requested) t.rule_filter_requested = true;
   if (m.shell.rule_style_requested) t.rule_style_requested = true;
+  if (m.shell.overlay_manager_requested) t.overlay_manager_requested = true;
   const int table_row = m.desk->SelectedTableRow();
   if (m.desk->FeatureViewsGeneration() != m.ticked_features_gen || table_row != m.ticked_table_row) {
     m.ticked_features_gen = m.desk->FeatureViewsGeneration();

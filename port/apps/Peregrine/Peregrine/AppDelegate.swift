@@ -17,6 +17,8 @@ import PeregrineCore
 @main @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var main: MapWindowController!
+    /// .pgpkg files opened before the window existed.
+    private var pendingPackages: [String] = []
 
     static func main() {
         let app = NSApplication.shared
@@ -38,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
 
         let args = Arguments(CommandLine.arguments)
-        let last = UserDefaults.standard.string(forKey: "LastCatalog")
+        let stored = String(main.host.LastCatalog())
+        let last: String? = stored.isEmpty ? nil : stored
         var groupsRun = false
         if let path = args.catalog ?? last, FileManager.default.fileExists(atPath: path),
            main.openCatalog(URL(fileURLWithPath: path)) {
@@ -52,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 main.restoreView()
             }
         }
+        for path in pendingPackages { DispatchQueue.main.async { [main] in main!.installPackage(path: path) } }
+        pendingPackages = []
         for path in args.open {
             let error = String(main.host.OpenOverlayFile(std.string(path)))
             if !error.isEmpty { FileHandle.standardError.write(Data("--open \(path): \(error)\n".utf8)) }
@@ -91,6 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        if filename.lowercased().hasSuffix(".pgpkg") {
+            // A launch by double-click delivers the file before the window exists.
+            guard let main else {
+                pendingPackages.append(filename)
+                return true
+            }
+            DispatchQueue.main.async { main.installPackage(path: filename) }
+            return true
+        }
         guard let main else { return false }
         if main.host.OpensAsOverlay(std.string(filename)) {
             return String(main.host.OpenOverlayFile(std.string(filename))).isEmpty

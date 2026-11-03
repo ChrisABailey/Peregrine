@@ -94,6 +94,7 @@ std::vector<MenuSpec> DefaultMenuLayout() {
        {S::Expand("overlay.toggle."), S::Sep(), S::Sub("Edit", {S::Expand("editor.mode.")}), S::Sep(),
         S::Expand("overlay.instance."), S::Sep(),
         S::Cmd("overlay.layers"), S::Cmd("overlay.options")}},
+      {"tools", "Tools", {S::Cmd("tools.overlay_manager"), S::Sep(), S::Expand("tools.run.")}},
   };
 }
 
