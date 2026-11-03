@@ -78,7 +78,7 @@ Layer Fields) and adds the Feature Layer menu.
 | Test | What it proves |
 |---|---|
 | `peregrine_gtk_test` (gtest) | every command in DeskKit's menu bar has one menu item and one action; shortcuts map to GTK accelerators, and a bare key (an arrow) is not one; actions follow the commands' enabled and checked state; the menus rebuild when a catalog with data opens; every icon the macOS toolbar draws has a symbolic icon; GDK keys map to the core's key codes; the frame placement is a transform every GSK renderer draws |
-| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; the Display tab sets opacity and a hyperlink field and the Selection tab refuses a bad width, then applies its own colour; the Definition Query tab builds a clause, verifies it, and splits a typed expression into clauses; Style This Feature… takes the style tabs away and Layer Style… takes them back; Go To / Find lists results under group headings, steps the selection over a heading and goes to a coordinate on Enter; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme |
+| `peregrine_gtk.dialogs` (gtest under its own Xvfb) | a choice dialog returns its button from a nested main loop, and closing it is the cancel; the save prompt's buttons map to the host's answers; a file request's filters reach the file dialog; Map Data Sources on `testdata/` creates the catalog, lists the folder, generates coverage behind the progress dialog and draws. On the rivers sample: the title names the file; the layers panel lists the stack and hides a layer; the Sources view groups a layer under its file, collapses, hides a source and opens the layer's Properties from its menu; the table filters, selects and opens the form, which refuses a bad value and applies a good one; Properties opens at Symbology for Layer Style…, classifies graduated, sets a label on the Labels tab and applies; at Fields for Layer Fields…, adds a field and asks before dropping one; the General tab refuses a scale range that never draws, then renames the layer and sets its range; the Display tab sets opacity and a hyperlink field and the Selection tab refuses a bad width, then applies its own colour; the Definition Query tab builds a clause, verifies it, and splits a typed expression into clauses; Style This Feature… takes the style tabs away and Layer Style… takes them back; Go To / Find lists results under group headings, steps the selection over a heading and goes to a coordinate on Enter; New Layer creates and opens a GeoPackage; the options window marks its model dirty and discards it on close; the profile window shows its message without a route; every mapped icon is in the icon theme. Tools ▸ Overlay Manager opens on an empty list; the C example `.pgpkg` installs only after its confirmation, loads live with its overlay type and tool, and is described in the detail pane; disabling shows the restart banner; Remove asks first; an opened `.pgpkg` shows the confirmation and a file that is not a package is refused without asking; the ENC options page shows Import Zip… and Import Folder…, which ask the core's directory request |
 | `peregrine_gtk.shot_empty_catalog` | `--shot` writes a PNG and the status line reports the empty catalog |
 | `peregrine_gtk.shot_testdata` | a catalog built from `testdata/` opens at `--center` on the orthophoto, the status line names it, GEOTRANS finds its datum tables, and the PNG holds the picture |
 | `peregrine_gtk.installed_shot` | the same, from a copy installed into a scratch prefix with `MSPCCS_DATA` unset: the installed app finds the datum tables installed beside it |
@@ -94,6 +94,9 @@ app and what it reads at run time:
 | Path under the prefix | Contents |
 |---|---|
 | `bin/peregrine-gtk` | the app |
+| `lib/peregrine/` | `libperegrine_core.so.0`, the shared core the app and `native` overlay packages link (extensions plan EX-D8), and `libperegrine_python.so`, the Python bridge, when the build found Python |
+| `share/peregrine/packages/` | the system overlay packages, empty as shipped (extensions plan §1c) |
+| `share/mime/packages/` | the `application/x-peregrine-package` type for `*.pgpkg`, which the launcher entry opens |
 | `share/applications/`, `share/icons/hicolor/scalable/apps/`, `share/metainfo/` | the launcher entry, icon and AppStream metadata (`data/`) |
 | `share/peregrine/geotrans/` | the GEOTRANS datum tables (`fvw_core/PdfLib/sdk/lib`) |
 | `share/peregrine/osm-styles/` | the OpenStreetMap style sheets (`port/Osm/styles`), for the `osm.style` option |
@@ -102,11 +105,16 @@ app and what it reads at run time:
 When `MSPCCS_DATA` is unset, the app sets it to `../share/peregrine/geotrans`
 relative to its own executable, so an install under any prefix needs no
 environment. A build-tree binary has no such directory and still needs
-`MSPCCS_DATA`, as above.
+`MSPCCS_DATA`, as above. The system packages directory is found the same way;
+the user's are in `$XDG_DATA_HOME/peregrine/packages`. The core's third-party
+libraries (libpng 1.2, libjpeg, zlib, expat, libtiff) are not exported from
+`libperegrine_core`, so they do not interpose the system copies GTK loads.
 
 `cd build && cpack --config CPackConfig.cmake` builds
 `peregrine_<version>_<arch>.deb` from that component; the version is the
-`PEREGRINE_VERSION` cache variable (default `0.0.0`). CI builds the package on
+`PEREGRINE_VERSION` cache variable (default `0.0.0`, which also checks no
+package's `requires.peregrine`). The package depends on `python3` for python
+overlay packages; without it they list as unavailable. CI builds the package on
 every run and attaches it to a GitHub Release for a tag `v<version>`; see the
 root `README.md`.
 
@@ -121,6 +129,7 @@ The same options as the macOS app, parsed by DeskKit (`fv_desk_launch.h`):
 | `--open <file>` | Opens an overlay file (repeatable), after the camera is placed. |
 | `--run <command-id>` | Executes a command (repeatable): `map.group.*` before the camera is placed, so `--center`'s scale settles on that group's ladder; the rest after `--open`. |
 | `--shot <png>` | Writes the window's content (map and status bar) once the first frame is drawn, prints the status line to stderr, and quits. |
+| `<file>…` | Opened once the window is up, as the macOS app opens a file from Finder: a `.pgpkg` on the Overlay Manager's install confirmation, an overlay file as an overlay, anything else as a catalog. The launcher entry passes files this way (`%F`). |
 
 Reopening the last catalog at the last view when `--catalog` is not given is
 not implemented yet. The macOS app's Edit ▸ Cut/Copy/Paste and Window menu
@@ -188,8 +197,18 @@ a control re-reads the model after each edit.
 
 - **Map ▸ Options, Overlay ▸ Options** (`OptionsWindow`): pages in a sidebar,
   fields generated by type (check box, colour button, drop-down, path with
-  Choose…, spin button for a bounded integer, entry otherwise); Restore
-  Defaults, Cancel, Apply, OK. Closing discards what was not applied.
+  Choose…, spin button for a bounded integer, entry otherwise), then the
+  page's buttons (`OptionsActionAt`: the ENC page's Import Zip… and Import
+  Folder…), which apply pending changes before running their command; Restore
+  Defaults, Cancel, Apply, OK. Closing discards what was not applied. An ENC
+  import runs behind the same progress dialog as a catalog build.
+- **Tools ▸ Overlay Manager…** (`OverlayManagerWindow`, `overlay_manager_requested`):
+  the packages DeskKit's `PackageManager` found (name, version, location,
+  state), the selected one's details, and Install…, Install from Folder…,
+  Enable/Disable, Remove and Show in Files. Install asks first, naming the
+  publisher and the kinds of code the package runs (EX-D6). A banner asks for
+  a restart while a change waits for the next launch. Packages load at window
+  creation (`LoadPackages`, then the user's `tools.json`).
 - **Overlay ▸ Layers…** (`LayersPanel`): docked at the right of the map
   window behind a draggable divider; Overlay ▸ Layers… shows it, the toolbar's
   Layers toggle shows or hides it, and whether it shows is remembered in

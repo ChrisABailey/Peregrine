@@ -5,6 +5,7 @@
 
 #include "application.h"
 
+#include <cctype>
 #include <iostream>
 #include <utility>
 
@@ -14,6 +15,16 @@ namespace peregrine {
 namespace {
 
 bool IsMapGroup(const std::string& command_id) { return command_id.rfind("map.group.", 0) == 0; }
+
+/// True for an overlay package file, which installs rather than opens.
+bool IsPackageFile(const std::string& path) {
+  constexpr char kSuffix[] = ".pgpkg";
+  constexpr size_t n = sizeof kSuffix - 1;
+  if (path.size() < n) return false;
+  std::string tail = path.substr(path.size() - n);
+  for (char& c : tail) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return tail == kSuffix;
+}
 
 }  // namespace
 
@@ -56,8 +67,31 @@ void Application::on_activate() {
   // After --open, so a command can act on the overlay just opened.
   for (const std::string& id : options_.run)
     if (!(groups_run && IsMapGroup(id))) Run(id);
+  // Files from the desktop launcher; the window is up, so an install can ask.
+  if (!options_.files.empty() && options_.shot.empty()) {
+    Glib::signal_idle().connect_once([this] {
+      for (const std::string& path : options_.files) OpenFile(path);
+    });
+  }
   if (!options_.shot.empty())
     window_->canvas().add_tick_callback(sigc::mem_fun(*this, &Application::ShotWhenReady));
+}
+
+/// Opens a file the way the macOS app opens one from Finder: a .pgpkg on the
+/// Overlay Manager's install confirmation, an overlay file as an overlay,
+/// anything else as a catalog.
+void Application::OpenFile(const std::string& path) {
+  if (IsPackageFile(path)) {
+    window_->InstallPackage(path);
+    return;
+  }
+  fv::desk::DeskHost& host = window_->host();
+  if (host.OpensAsOverlay(path)) {
+    const std::string error = host.OpenOverlayFile(path);
+    if (!error.empty()) std::cerr << path << ": " << error << "\n";
+    return;
+  }
+  window_->OpenCatalog(path);
 }
 
 /// Executes a `--run` command, reporting a failure on stderr.
@@ -71,6 +105,10 @@ void Application::Run(const std::string& command_id) {
 bool Application::ShotWhenReady(const Glib::RefPtr<Gdk::FrameClock>&) {
   if (window_->canvas().get_width() <= 0) return G_SOURCE_CONTINUE;
   const std::string error = window_->WriteSnapshot(options_.shot);
+  // A window a `--run` command opens takes the main window's focus, and its
+  // content waits one frame for a new allocation; snapshot on a later frame.
+  constexpr int kShotAttempts = 10;
+  if (!error.empty() && ++shot_attempts_ < kShotAttempts) return G_SOURCE_CONTINUE;
   if (!error.empty()) {
     std::cerr << "--shot: " << error << "\n";
     exit_status_ = 1;

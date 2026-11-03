@@ -35,8 +35,28 @@ void SetUpLabel(Gtk::Label& label) {
   label.set_single_line_mode(true);
 }
 
-/// The version the log's first line names; the app has no release number yet.
-constexpr char kAppVersion[] = "(unversioned)";
+/// The release (PEREGRINE_VERSION), or "" for a build without one: the log's
+/// first line names it and a package's `requires.peregrine` is checked
+/// against it, so an unversioned build loads every package.
+std::string AppVersion() {
+#ifdef PEREGRINE_GTK_VERSION
+  const std::string version = PEREGRINE_GTK_VERSION;
+  if (version != "0.0.0") return version;
+#endif
+  return std::string();
+}
+
+/// The packages installed with the app (`<prefix>/share/peregrine/packages`),
+/// found relative to the executable as main.cpp finds the datum tables.
+std::string SystemPackageDir() {
+#ifdef PEREGRINE_DATA_FROM_BIN
+  std::error_code ec;
+  const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (!ec)
+    return (exe.parent_path() / PEREGRINE_DATA_FROM_BIN / "packages").lexically_normal().string();
+#endif
+  return std::string();
+}
 
 /// The shell's own state, which DeskKit's settings do not hold; the macOS app
 /// keeps the same key in its user defaults.
@@ -90,8 +110,15 @@ MapWindow::MapWindow()
       menus_(*host_, [this](const std::string& id) { Execute(id); }) {
   host_->SetPropertiesTabs(true);
   const std::string settings_error = host_->LoadSettings(std::string());
-  const std::string log_error = host_->StartLog(std::string(), kAppVersion);
+  const std::string version = AppVersion();
+  const std::string log_error =
+      host_->StartLog(std::string(), version.empty() ? "(unversioned)" : version);
   if (!log_error.empty()) std::cerr << "Peregrine: no log file: " << log_error << "\n";
+  // Overlay packages: the installed ones, then the user's (port/extensions-plan.md §1c).
+  host_->LoadPackages(SystemPackageDir(), std::string(), version);
+  // The user's tools.json: tools added to or hidden from the Tools menu.
+  const std::string tools_error = host_->LoadToolConfig(std::string());
+  if (!tools_error.empty()) std::cerr << "Peregrine: " << tools_error << "\n";
   InstallCss();
   set_title("Peregrine");
   set_default_size(1100, 750);
@@ -222,6 +249,7 @@ void MapWindow::Handle(const fv::desk::HostTick& t) {
     }
   }
   if (t.sources_requested && host_->TakeSourcesRequest()) ShowDataSources();
+  if (t.overlay_manager_requested && host_->TakeOverlayManagerRequest()) ShowOverlayManager();
   if (t.profile_requested && host_->TakeRouteProfileRequest())
     ShowPanel(profile_, [this] { return std::make_unique<ProfileWindow>(*host_, *this); });
   if (t.profile_changed && profile_ && profile_->get_visible()) profile_->Reload();
@@ -310,6 +338,18 @@ void MapWindow::ShowDataSources() {
         PresentError(message, detail, parent);
       });
   data_sources_->present();
+}
+
+OverlayManagerWindow& MapWindow::ShowOverlayManager() {
+  if (overlay_manager_) overlay_manager_->Reload();
+  else overlay_manager_ = std::make_unique<OverlayManagerWindow>(*host_, *this);
+  overlay_manager_->present();
+  return *overlay_manager_;
+}
+
+void MapWindow::InstallPackage(const std::string& path) {
+  ShowOverlayManager().ConfirmInstall(path);
+  menus_.Refresh();
 }
 
 void MapWindow::ShowFind() {

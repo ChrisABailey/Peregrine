@@ -118,6 +118,7 @@ void OptionsWindow::ShowPage() {
   controls_.clear();
   field_index_.clear();
   fill_.clear();
+  actions_.clear();
   auto* form = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
   form->set_margin_top(16);
   form->set_margin_bottom(16);
@@ -165,6 +166,21 @@ void OptionsWindow::ShowPage() {
     fill_[f.key](f.value);
   }
   loading_ = false;
+  const int actions = host_.OptionsActionCount(kind_, page_);
+  if (actions > 0) {
+    auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    row->set_margin_top(12);
+    for (int i = 0; i < actions; ++i) {
+      const fv::desk::HostOptionsAction a = host_.OptionsActionAt(kind_, page_, i);
+      auto* button = Gtk::make_managed<Gtk::Button>(a.label);
+      if (!a.help.empty()) button->set_tooltip_text(a.help);
+      button->set_sensitive(host_.IsEnabled(a.command));
+      button->signal_clicked().connect([this, command = a.command] { RunAction(command); });
+      actions_[a.command] = button;
+      row->append(*button);
+    }
+    grid->attach(*row, 1, line++);
+  }
   form_scroll_.set_child(*form);
   UpdateApply();
 }
@@ -297,6 +313,20 @@ void OptionsWindow::ChoosePath(const std::string& key) {
   };
   if (f.directory) dialog->select_folder(*this, done);
   else dialog->open(*this, done);
+}
+
+/// Runs a page button's command. Pending changes are applied first, so the
+/// command sees the values the page shows.
+void OptionsWindow::RunAction(const std::string& command) {
+  if (host_.OptionsDirty(kind_) && !Apply()) return;
+  const std::string error = host_.Execute(command);
+  if (!error.empty()) Gtk::AlertDialog::create(error)->show(*this);
+  ShowPage();
+}
+
+Gtk::Button* OptionsWindow::action_button(const std::string& command) const {
+  const auto it = actions_.find(command);
+  return it == actions_.end() ? nullptr : it->second;
 }
 
 /// Offers a value to the model, then shows what it kept.

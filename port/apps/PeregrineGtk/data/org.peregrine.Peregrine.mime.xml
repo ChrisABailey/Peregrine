@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: LGPL-3.0-or-later
+     Copyright (C) 2026 Chris Bailey
+     Part of Peregrine, a cross-platform port of FalconView(tm).
+     See COPYING.LESSER and NOTICE.md for the full licensing picture. -->
+<!-- The overlay package type (port/extensions-plan.md EX-D5), the counterpart
+     of the macOS app's UTI org.peregrine.package. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-peregrine-package">
+    <comment>Peregrine overlay package</comment>
+    <sub-class-of type="application/zip"/>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.pgpkg"/>
+  </mime-type>
+</mime-info>

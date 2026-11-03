@@ -31,19 +31,30 @@ set(PEREGRINE_GTK_WINDOWS
   map_window.cpp
   new_layer_window.cpp
   options_window.cpp
+  overlay_manager_window.cpp
   profile_window.cpp
 )
 add_executable(peregrine-gtk application.cpp main.cpp ${PEREGRINE_GTK_WINDOWS})
-target_link_libraries(peregrine-gtk PRIVATE fv_deskkit PkgConfig::GTKMM4)
-# The core links the frozen libpng 1.2 fork (fv_png) statically. Without this
-# its png_* symbols are exported from the executable and interpose the system
-# libpng16 that GTK loads, which crashes the first PNG GTK reads or writes.
+# The app links the shared core (extensions plan EX-D8), so a `native` overlay
+# package binds to the same copy of every process-wide table. The core keeps
+# its third-party libraries (libpng 1.2, libjpeg, zlib, expat, libtiff) local,
+# so they do not interpose the system copies GTK loads.
+if(TARGET peregrine_core)
+  target_link_libraries(peregrine-gtk PRIVATE peregrine_core PkgConfig::GTKMM4)
+else()
+  target_link_libraries(peregrine-gtk PRIVATE fv_deskkit PkgConfig::GTKMM4)
+endif()
+# Anything still linked statically stays out of the executable's exports, for
+# the same reason.
 target_link_options(peregrine-gtk PRIVATE "LINKER:--exclude-libs,ALL")
+# The release a package's `requires.peregrine` is checked against; 0.0.0 is
+# an unversioned build, which checks nothing.
+target_compile_definitions(peregrine-gtk PRIVATE PEREGRINE_GTK_VERSION="${PEREGRINE_VERSION}")
 
 # Installation, as the `peregrine` component the root CPack configuration packages:
 # the app, its launcher entry and icon, the GEOTRANS datum tables (MSPCCS_DATA) and
-# the OpenStreetMap style sheets. main.cpp finds the data directory relative to the
-# executable, so the layout works under any prefix.
+# the OpenStreetMap style sheets. main.cpp and map_window.cpp find the data
+# directory relative to the executable, so the layout works under any prefix.
 include(GNUInstallDirs)
 set(PEREGRINE_GTK_DATADIR ${CMAKE_INSTALL_DATADIR}/peregrine)
 file(RELATIVE_PATH _peregrine_data_from_bin
@@ -52,6 +63,34 @@ target_compile_definitions(peregrine-gtk PRIVATE
   PEREGRINE_DATA_FROM_BIN="${_peregrine_data_from_bin}")
 
 install(TARGETS peregrine-gtk RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  COMPONENT peregrine)
+
+# The shared core and the Python bridge live in <libdir>/peregrine. DeskKit
+# looks for the bridge beside the core, so the build tree gets a link to it
+# there as well; without the bridge, python packages list as unavailable.
+if(TARGET peregrine_core)
+  set(PEREGRINE_GTK_LIBDIR ${CMAKE_INSTALL_LIBDIR}/peregrine)
+  file(RELATIVE_PATH _peregrine_lib_from_bin
+    /${CMAKE_INSTALL_BINDIR} /${PEREGRINE_GTK_LIBDIR})
+  set_target_properties(peregrine-gtk PROPERTIES
+    INSTALL_RPATH "$ORIGIN/${_peregrine_lib_from_bin}")
+  install(TARGETS peregrine_core LIBRARY DESTINATION ${PEREGRINE_GTK_LIBDIR}
+    COMPONENT peregrine NAMELINK_SKIP)
+  if(TARGET peregrine_python)
+    add_dependencies(peregrine-gtk peregrine_python)
+    add_custom_command(TARGET peregrine-gtk POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:peregrine_python>
+        $<TARGET_FILE_DIR:peregrine_core>/$<TARGET_FILE_NAME:peregrine_python>
+      VERBATIM)
+    install(TARGETS peregrine_python LIBRARY DESTINATION ${PEREGRINE_GTK_LIBDIR}
+      COMPONENT peregrine)
+  endif()
+endif()
+# The system packages directory (extensions plan §1c), empty as shipped, and
+# the .pgpkg MIME type the launcher entry opens.
+install(DIRECTORY DESTINATION ${PEREGRINE_GTK_DATADIR}/packages COMPONENT peregrine)
+install(FILES data/org.peregrine.Peregrine.mime.xml
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages RENAME org.peregrine.Peregrine.xml
   COMPONENT peregrine)
 install(FILES data/org.peregrine.Peregrine.desktop
   DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT peregrine)
@@ -86,10 +125,12 @@ if(FVW_BUILD_TESTS)
   if(XVFB_RUN)
     # The dialog tests show windows, so the whole binary runs under its own Xvfb.
     add_executable(peregrine_gtk_dialogs_test test/dialogs_test.cpp test/feature_windows_test.cpp
-      ${PEREGRINE_GTK_WINDOWS})
+      test/overlay_manager_test.cpp ${PEREGRINE_GTK_WINDOWS})
     target_include_directories(peregrine_gtk_dialogs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_definitions(peregrine_gtk_dialogs_test PRIVATE
-      FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson")
+      FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson"
+      FV_RANGERINGS_PGPKG="${CMAKE_BINARY_DIR}/port/sdk/examples/rangerings-c/com.example.rangerings.pgpkg")
+    add_dependencies(peregrine_gtk_dialogs_test rangerings_pgpkg)
     target_link_libraries(peregrine_gtk_dialogs_test PRIVATE
       fv_deskkit PkgConfig::GTKMM4 GTest::gtest_main)
     target_link_options(peregrine_gtk_dialogs_test PRIVATE "LINKER:--exclude-libs,ALL")

@@ -170,8 +170,13 @@ if(TARGET peregrine-gtk)
   set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
   set(CPACK_DEBIAN_PACKAGE_SECTION science)
   set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-  # The label font DeskKit looks for, and the symbolic icons the toolbar names.
-  set(CPACK_DEBIAN_PACKAGE_DEPENDS "fonts-dejavu-core")
+  include(GNUInstallDirs)
+  # The shared core and the Python bridge are private libraries of the package.
+  set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS
+    ${CPACK_PACKAGING_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/peregrine)
+  # The label font DeskKit looks for, and the symbolic icons the toolbar names;
+  # python3 for python overlay packages (extensions plan EX-D2).
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "fonts-dejavu-core, python3")
   set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "adwaita-icon-theme")
   include(CPack)
 endif()

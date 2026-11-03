@@ -21,7 +21,7 @@ class MapWindow;
 /// catalog, `--center` moves the camera, `--open` opens overlay files,
 /// `--run` executes commands (map groups before the camera, the rest after
 /// `--open`), `--shot` writes the window once the first frame is drawn and
-/// quits.
+/// quits. Other arguments are files, opened once the window is up.
 class Application : public Gtk::Application {
  public:
   static Glib::RefPtr<Application> create(fv::desk::LaunchOptions options);
@@ -33,11 +33,13 @@ class Application : public Gtk::Application {
 
  private:
   void Run(const std::string& command_id);
+  void OpenFile(const std::string& path);
   bool ShotWhenReady(const Glib::RefPtr<Gdk::FrameClock>& clock);
 
   fv::desk::LaunchOptions options_;
   std::unique_ptr<MapWindow> window_;
   int exit_status_ = 0;
+  int shot_attempts_ = 0;
 
  public:
   /// Non-zero when `--shot` failed.

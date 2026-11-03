@@ -25,6 +25,7 @@
 #include "map_canvas.h"
 #include "new_layer_window.h"
 #include "options_window.h"
+#include "overlay_manager_window.h"
 #include "profile_window.h"
 
 namespace peregrine {
@@ -83,6 +84,13 @@ class MapWindow : public Gtk::ApplicationWindow {
   ProfileWindow* profile_window() { return profile_.get(); }
   /// The options window of `kind` (a `fv::desk::HostOptionsKind`), or null.
   OptionsWindow* options_window(int kind) { return kind == 0 ? map_options_.get() : overlay_options_.get(); }
+  /// Brings up the Overlay Manager, reusing it when it is showing.
+  OverlayManagerWindow& ShowOverlayManager();
+  /// Opens the Overlay Manager on the install confirmation for `path`, as an
+  /// opened .pgpkg does.
+  void InstallPackage(const std::string& path);
+  /// The Overlay Manager, or null before it is first shown.
+  OverlayManagerWindow* overlay_manager_window() { return overlay_manager_.get(); }
   /// The progress dialog of a running job, or null.
   JobDialog* job_dialog() { return job_dialog_.get(); }
   /// Renders the current view and writes the window's content (map and
@@ -141,6 +149,7 @@ class MapWindow : public Gtk::ApplicationWindow {
   std::unique_ptr<ProfileWindow> profile_;
   std::unique_ptr<OptionsWindow> map_options_;
   std::unique_ptr<OptionsWindow> overlay_options_;
+  std::unique_ptr<OverlayManagerWindow> overlay_manager_;
 };
 
 }  // namespace peregrine
