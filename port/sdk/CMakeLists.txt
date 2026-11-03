@@ -32,6 +32,28 @@ if(APPLE)
 else()
   target_link_options(peregrine_core PRIVATE "LINKER:--whole-archive" ${_whole} "LINKER:--no-whole-archive")
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Exported, the third-party copies inside the core (libpng 1.2, libjpeg 6b,
+  # zlib, expat, libtiff) would interpose the system libraries GTK loads.
+  # Plugins reach none of them directly, so they stay local to the core.
+  set(_third_party_names fv_png fv_jpeg expat zlibstatic zlib tiff)
+  set(_third_party "")
+  foreach(_l IN LISTS PEREGRINE_CORE_STATIC_LIBS)
+    # The closure names some libraries by alias (TIFF::tiff).
+    get_target_property(_real ${_l} ALIASED_TARGET)
+    if(NOT _real)
+      set(_real ${_l})
+    endif()
+    if(_real IN_LIST _third_party_names)
+      list(APPEND _third_party "$<TARGET_FILE_NAME:${_real}>")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _third_party)
+  if(_third_party)
+    string(JOIN ":" _excluded ${_third_party})
+    target_link_options(peregrine_core PRIVATE "LINKER:--exclude-libs,${_excluded}")
+  endif()
+endif()
 add_dependencies(peregrine_core ${PEREGRINE_CORE_STATIC_LIBS})
 # The normal link brings the closure's system libraries and frameworks; its
 # archives add nothing after the whole-archive pass above.
