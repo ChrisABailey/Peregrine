@@ -136,6 +136,10 @@ class MapView {
   void SetView(const Viewport& v);
   /// Moves the camera by a pan of (dx, dy) content points to `v`.
   void PanTo(const Viewport& v, double dx, double dy);
+  /// `next`, or failing that the x-only or y-only part of the (dx, dy) pan,
+  /// whichever first leaves no more of the surface uncovered than the
+  /// current view does. The current view when none does.
+  Viewport Covering(const Viewport& next, double dx, double dy) const;
   void StopCoast() { coasting_ = false; }
   void Apply(const LadderStep& s, const PointF& anchor);
   PointF KeyAnchor() const;

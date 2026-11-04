@@ -15,6 +15,7 @@
 #include "fv_desk_catalog_build.h"
 #include "fv_desk_fake.h"
 #include "fv_desk_map_options.h"
+#include "fv_desk_user_settings.h"
 #include "fv_map_enums.h"
 #include "fvkit/app/capabilities.h"
 #include "fvkit/catalog/catalog.h"
@@ -896,6 +897,12 @@ TEST_F(DeskTest, ShortcutsFollowThePlatformConventions) {
   EXPECT_EQ(bound("Primary+="), "map.zoom_in");
   EXPECT_EQ(bound("Primary+-"), "map.zoom_out");
   EXPECT_EQ(bound("Primary+Alt+O"), "map.catalog_open");
+  EXPECT_EQ(bound("Alt+Left"), "map.rotate.left");
+  EXPECT_EQ(bound("Alt+Right"), "map.rotate.right");
+  EXPECT_EQ(bound("Primary+Shift+Up"), "map.rotate.north");
+  EXPECT_EQ(bound("Primary+]"), "view.symbols_larger");
+  EXPECT_EQ(bound("Primary+["), "view.symbols_smaller");
+  EXPECT_EQ(bound("Primary+0"), "view.symbols_actual");
   // Held by the system or the app menu on macOS (hide, hide others,
   // minimise, settings, cycle windows) or by the map widget (Page Up/Down).
   for (const char* reserved :
@@ -945,6 +952,56 @@ TEST_F(DeskTest, AnArrowPansHalfAScreen) {
   EXPECT_NEAR(desk.map_view().View().Center().lon, 0, 1e-6);
 }
 
+// Rotate Right turns the chart clockwise in 15 degree steps about the centre;
+// North Up is available only while the chart is turned, and undoes it.
+TEST_F(DeskTest, RotateStepsAndNorthUpReturns) {
+  FakeDesk fd(200, 100);
+  fv::desk::Desk& desk = fd.desk();
+  desk.GoTo(GeoPoint{32.0, -80.0}, 1e6);
+  EXPECT_FALSE(desk.commands().IsEnabled("map.rotate.north"));
+  ASSERT_TRUE(desk.Execute("map.rotate.right").ok());
+  ASSERT_TRUE(desk.Execute("map.rotate.right").ok());
+  EXPECT_DOUBLE_EQ(desk.map_view().View().Rotation(), 30.0);
+  EXPECT_NEAR(desk.map_view().View().Center().lat, 32.0, 1e-9);
+  EXPECT_NEAR(desk.map_view().View().Center().lon, -80.0, 1e-9);
+  ASSERT_TRUE(desk.Execute("map.rotate.left").ok());
+  ASSERT_TRUE(desk.Execute("map.rotate.left").ok());
+  ASSERT_TRUE(desk.Execute("map.rotate.left").ok());
+  EXPECT_DOUBLE_EQ(desk.map_view().View().Rotation(), 345.0);
+  EXPECT_TRUE(desk.commands().IsEnabled("map.rotate.north"));
+  ASSERT_TRUE(desk.Execute("map.rotate.north").ok());
+  EXPECT_DOUBLE_EQ(desk.map_view().View().Rotation(), 0.0);
+  EXPECT_NEAR(desk.map_view().View().Center().lat, 32.0, 1e-9);
+}
+
+// Larger and Smaller Chart Symbols step by 1.25 within [0.2, 8], Actual
+// Symbol Size returns to 1, and the scale survives in the user settings.
+TEST_F(DeskTest, ChartSymbolScaleStepsClampsAndPersists) {
+  fv::desk::UserSettings user;
+  FakeDesk fd;
+  fv::desk::Desk& desk = fd.desk();
+  desk.SetUserSettings(&user);
+  EXPECT_DOUBLE_EQ(desk.SymbolScale(), 1.0);
+  EXPECT_FALSE(desk.commands().IsEnabled("view.symbols_actual"));
+  ASSERT_TRUE(desk.Execute("view.symbols_larger").ok());
+  EXPECT_DOUBLE_EQ(desk.SymbolScale(), 1.25);
+  ASSERT_TRUE(desk.Execute("view.symbols_smaller").ok());
+  EXPECT_DOUBLE_EQ(desk.SymbolScale(), 1.0);
+  for (int i = 0; i < 20; ++i) desk.Execute("view.symbols_larger");
+  EXPECT_DOUBLE_EQ(desk.SymbolScale(), 8.0);
+  EXPECT_FALSE(desk.commands().IsEnabled("view.symbols_larger"));
+  for (int i = 0; i < 40; ++i) desk.Execute("view.symbols_smaller");
+  EXPECT_DOUBLE_EQ(desk.SymbolScale(), 0.2);
+  ASSERT_TRUE(desk.Execute("view.symbols_larger").ok());
+  EXPECT_TRUE(desk.commands().IsEnabled("view.symbols_actual"));
+
+  FakeDesk again;
+  again.desk().SetUserSettings(&user);
+  EXPECT_DOUBLE_EQ(again.desk().SymbolScale(), 0.25);
+  ASSERT_TRUE(again.desk().Execute("view.symbols_actual").ok());
+  EXPECT_DOUBLE_EQ(again.desk().SymbolScale(), 1.0);
+}
+
 TEST_F(DeskTest, FeedbackReachesTheStatusBarAndElevationNeedsDted) {
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
@@ -982,7 +1039,8 @@ TEST_F(DeskTest, MapDataSourcesCreatesACatalogAndGeneratesCoverage) {
 
   ASSERT_TRUE(desk.AddScanRoot(root + "/").ok());
   EXPECT_EQ(desk.ScanRoots(), std::vector<std::string>{root});
-  EXPECT_FALSE(desk.AddScanRoot(root + "/sub").ok());
+  // A format folder the root's scan reads is refused.
+  EXPECT_FALSE(desk.AddScanRoot(root + "/rpf").ok());
   EXPECT_FALSE(desk.AddScanRoot(dir.Path("missing")).ok());
   EXPECT_EQ(desk.ScanRoots(), std::vector<std::string>{root});
 
@@ -1066,18 +1124,22 @@ TEST_F(DeskTest, AnOldCatalogOffersItsSourceDirectories) {
 
 TEST_F(DeskTest, AddingAParentReplacesTheDirectoriesInsideIt) {
   Scratch dir;
-  std::filesystem::create_directories(dir.Path("data/a"));
-  std::filesystem::create_directories(dir.Path("data/b"));
+  std::filesystem::create_directories(dir.Path("data/enc/a"));
+  std::filesystem::create_directories(dir.Path("data/regions"));
   std::filesystem::create_directories(dir.Path("other"));
   FakeDesk fd;
   fv::desk::Desk& desk = fd.desk();
   fd.shell().save_spec = dir.Path("new.sqlite");
   ASSERT_TRUE(fd.Run({"map.sources"}).ok());
-  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data/b")).ok());
+  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data/enc/a")).ok());
   ASSERT_TRUE(desk.AddScanRoot(dir.Path("other")).ok());
-  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data/a")).ok());
+  ASSERT_TRUE(desk.AddScanRoot(dir.Path("data/regions")).ok());
+  // data's scan reads data/enc, which holds data/enc/a; data/regions is beside
+  // the format folders and keeps its own entry.
   ASSERT_TRUE(desk.AddScanRoot(dir.Path("data")).ok());
-  EXPECT_EQ(desk.ScanRoots(), (std::vector<std::string>{dir.Path("data"), dir.Path("other")}));
+  EXPECT_EQ(desk.ScanRoots(), (std::vector<std::string>{dir.Path("data"), dir.Path("data/regions"),
+                                                         dir.Path("other")}));
+  EXPECT_FALSE(desk.AddScanRoot(dir.Path("data/enc/a")).ok());
 }
 
 TEST_F(DeskTest, OpenMapCatalogReportsAFileThatIsNotACatalog) {

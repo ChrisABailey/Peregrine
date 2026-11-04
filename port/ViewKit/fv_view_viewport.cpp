@@ -112,6 +112,24 @@ bool Viewport::PointFor(const GeoPoint& g, PointF* out) const {
   return true;
 }
 
+int Viewport::UncoveredSamples() const {
+  if (!HasSurface()) return 0;
+  constexpr int kSteps = 8;
+  int uncovered = 0;
+  for (int j = 0; j <= kSteps; ++j) {
+    for (int i = 0; i <= kSteps; ++i) {
+      const double sx = (pixel_width_ - 1) * static_cast<double>(i) / kSteps;
+      const double sy = (pixel_height_ - 1) * static_cast<double>(j) / kSteps;
+      GeoPoint g;
+      // Equal Arc answers past a pole with a latitude beyond 90 rather than
+      // an error.
+      if (!proj_.SurfaceToGeo(sx, sy, &g).ok() || !(std::fabs(g.lat) <= 90.0))
+        ++uncovered;
+    }
+  }
+  return uncovered;
+}
+
 Viewport Viewport::Panned(double dx_pt, double dy_pt) const {
   if (!HasSurface()) return *this;
   // Ask the projection which position ends up under the centre pixel; this
@@ -121,7 +139,20 @@ Viewport Viewport::Panned(double dx_pt, double dy_pt) const {
   GeoPoint g;
   if (!proj_.SurfaceToGeo(p.x * display_scale_, p.y * display_scale_, &g).ok())
     return *this;
-  return WithCamera(g, scale_denom_, rotation_deg_);
+  return WithCamera(g, scale_denom_, rotation_deg_ + PanTurn(g));
+}
+
+double Viewport::PanTurn(const GeoPoint& g) const {
+  // Lambert keeps north up at the centre, so a centre moved to another
+  // meridian turns the whole chart by the convergence there. Near a pole that
+  // is most of a turn for a short drag; carrying it into the rotation keeps
+  // the drawing still under the pointer. Away from the poles north stays up.
+  if (type_ != ProjectionType::kLambert) return 0.0;
+  bool north = false, south = false;
+  if (!proj_.PoleOnSurface(&north, &south).ok() || !(north || south)) return 0.0;
+  MapProjection::LocalScale ls;
+  if (!proj_.LocalScaleAt(g, &ls).ok()) return 0.0;
+  return -ls.convergence_deg;
 }
 
 Viewport Viewport::WithGeoAt(const GeoPoint& g, const PointF& p) const {

@@ -120,6 +120,72 @@ TEST(MapView, DragPansAndBumpsTheGeneration) {
   EXPECT_GT(mv.Generation(), g0);
 }
 
+// A drag that would pull a pole into view stops at the edge of the map and
+// keeps only the part of the move along it.
+TEST(MapView, ADragStopsWhereTheMapWouldStopCoveringTheSurface) {
+  // 1600 px of surface over a world about 3200 px tall.
+  const Viewport v = Viewport::Make(GeoPoint{0.0, 0.0}, 5e7)
+                         .WithSurface(1200, 800, 2.0, 0.25);
+  ASSERT_EQ(v.UncoveredSamples(), 0);
+  MapView mv(v, LadderKind::kUniform, ProductsAt());
+  PointF p{600, 100};
+  mv.PointerDown(p);
+  for (int i = 0; i < 40; ++i) {
+    p.x += 5;
+    p.y += 50;
+    mv.PointerDrag(p);
+    EXPECT_EQ(mv.View().UncoveredSamples(), 0);
+  }
+  mv.PointerUp(p);
+  EXPECT_GT(mv.View().Center().lat, 30.0);
+  EXPECT_LT(mv.View().Center().lat, 90.0);
+  EXPECT_LT(mv.View().Center().lon, -1.0);  // the sideways part still moved
+  // Dragging back moves the map at once.
+  const double lat = mv.View().Center().lat;
+  mv.PointerDown(p);
+  mv.PointerDrag(PointF{p.x, p.y - 50});
+  EXPECT_LT(mv.View().Center().lat, lat);
+}
+
+// A Lambert view centred on the pole pans off it in any direction, and the
+// chart moves under the pointer without turning; it does not only spin.
+TEST(MapView, ALambertDragLeavesThePole) {
+  const Viewport v = Viewport::Make(GeoPoint{90.0, 0.0}, 2e7)
+                         .WithSurface(1200, 800, 2.0, 0.25)
+                         .WithProjectionType(fv::ProjectionType::kLambert);
+  MapView mv(v, LadderKind::kUniform, ProductsAt());
+  const GeoPoint pole{90.0, 0.0};
+  const GeoPoint grab = mv.View().GeoAt(PointF{600, 300});
+  const GeoPoint other = mv.View().GeoAt(PointF{450, 350});
+  mv.PointerDown(PointF{600, 300});
+  PointF p{600, 300};
+  for (int i = 0; i < 20; ++i) mv.PointerDrag(p = PointF{p.x, p.y + 10});
+  for (int i = 0; i < 20; ++i) mv.PointerDrag(p = PointF{p.x + 10, p.y});
+  mv.PointerUp(p);  // (800, 500): moved 200 right and 200 down
+  PointF q;
+  ASSERT_TRUE(mv.View().PointFor(grab, &q));
+  EXPECT_NEAR(q.x, 800, 0.5);
+  EXPECT_NEAR(q.y, 500, 0.5);
+  ASSERT_TRUE(mv.View().PointFor(other, &q));
+  EXPECT_NEAR(q.x, 650, 2.0);
+  EXPECT_NEAR(q.y, 550, 2.0);
+  ASSERT_TRUE(mv.View().PointFor(pole, &q));
+  EXPECT_NEAR(q.x, 800, 2.0);
+  EXPECT_NEAR(q.y, 600, 2.0);
+
+  // Further across than half the height: the turned chart still holds the
+  // pole on its polar cone, so nothing jumps.
+  mv.PointerDown(p);
+  for (int i = 0; i < 30; ++i) mv.PointerDrag(p = PointF{p.x + 10, p.y});
+  mv.PointerUp(p);
+  ASSERT_TRUE(mv.View().PointFor(pole, &q));
+  EXPECT_NEAR(q.x, 1100, 2.0);
+  EXPECT_NEAR(q.y, 600, 2.0);
+  ASSERT_TRUE(mv.View().PointFor(other, &q));
+  EXPECT_NEAR(q.x, 950, 3.0);
+  EXPECT_NEAR(q.y, 550, 3.0);
+}
+
 TEST(MapView, APanKeepsTheFrameGeneration) {
   MapView mv = EncView();
   const uint64_t f0 = mv.FrameGeneration();

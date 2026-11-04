@@ -146,7 +146,10 @@ Status MapProjection::SetRotation(double degrees) {
     rot_cos_ = std::cos(rad);
     rot_sin_ = std::sin(rad);
   }
-  return Status::Ok();  // rotation feeds no dpp; nothing to recompute
+  // Rotation feeds no dpp. Lambert's pole test looks at where the pole lands
+  // on the turned surface, so its constants follow the turn.
+  if (ready_ && type_ == ProjectionType::kLambert) return UpdateProjectionConstants();
+  return Status::Ok();
 }
 
 Status MapProjection::SetProjectionType(ProjectionType type) {
@@ -337,10 +340,16 @@ void MapProjection::MercatorInverseRaw(double dx, double dy, double* lat,
 }
 
 /** Ports LambertProj::validate_center and
- *  initialize_projection_specific_parameters: the centre snaps to the pole
- *  when the pole is on the surface, the two standard parallels are the centre
- *  latitude plus and minus a third of the surface height in degrees, and the
- *  cone constant and its two companions follow from them.
+ *  initialize_projection_specific_parameters: the cone is derived from the
+ *  pole when the pole is on the surface, the two standard parallels are the
+ *  centre latitude plus and minus a third of the surface height in degrees,
+ *  and the cone constant and its two companions follow from them.
+ *
+ *  Departure from Windows: there the visible pole also becomes the projection
+ *  centre, so the pole always draws at the surface centre and a drag that
+ *  starts on it can only turn the map. Here rho_0 is taken at the requested
+ *  centre latitude, so the requested centre stays at the surface centre and
+ *  the polar cone is only the shape.
  *
  *  Within one pixel of latitude of the equator the cone constant goes to zero
  *  and the Mercator equations take over. That fallback is the Lambert file's
@@ -362,7 +371,11 @@ Status MapProjection::UpdateLambertConstants() {
     // Windows compares the rounded pixel distance against the integer half
     // height, so a pole exactly half a surface away stays where it is.
     const double pixels_center_to_pole = degrees_center_to_pole / dpp_lat_;
-    if (static_cast<int>(pixels_center_to_pole + 0.5) < height_ / 2)
+    // Turned, the pole is off the vertical through the centre; it is on the
+    // surface when both of its offsets are. Unturned, this is Windows' test.
+    const double across = pixels_center_to_pole * std::fabs(rot_sin_);
+    const double down = pixels_center_to_pole * std::fabs(rot_cos_);
+    if (static_cast<int>(down + 0.5) < height_ / 2 && across < width_ / 2.0)
       calc_lat = center_.lat >= 0.0 ? 89.999999 : -89.999999;
   }
   pc_.center_lat_for_calculations = calc_lat;
@@ -421,7 +434,7 @@ Status MapProjection::UpdateLambertConstants() {
                            n) / n;
   pc_.lambert_rho_0 =
       WGS84_a_METERS * pc_.lambert_F /
-      std::pow(std::tan(0.25 * M_PI + 0.5 * (calc_lat * M_PI / 180.0)), n);
+      std::pow(std::tan(0.25 * M_PI + 0.5 * (center_.lat * M_PI / 180.0)), n);
   return Status::Ok();
 }
 

@@ -351,6 +351,13 @@ final class MapCanvasView: NSView {
             host.Magnify(p.x, p.y, 1 + e.magnification)
         }
     }
+
+    /// The trackpad's two-finger turn. AppKit reports counter-clockwise as
+    /// positive; the host turns the chart clockwise for positive degrees.
+    override func rotate(with e: NSEvent) {
+        let p = point(e)
+        host.Rotate(p.x, p.y, -Double(e.rotation))
+    }
 }
 
 extension MapCanvasView: NSMenuItemValidation {
@@ -362,5 +369,76 @@ extension MapCanvasView: NSMenuItemValidation {
         case Selector(("redo:")): return host.IsEnabled(std.string("edit.redo"))
         default: return true
         }
+    }
+}
+
+/// The round north button at the top right of the map, shown only while the
+/// chart is turned. Its needle points at north on the screen, red end north;
+/// a click runs North Up.
+final class CompassButton: NSView {
+    static let diameter: CGFloat = 36
+    var onClick: (() -> Void)?
+    /// The chart's clockwise turn in degrees; north turns with it.
+    private var northDegrees: Double = 0
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        toolTip = "North Up"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("North Up")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func show(northAt degrees: Double) {
+        guard degrees != northDegrees else { return }
+        northDegrees = degrees
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let disc = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
+        NSColor.windowBackgroundColor.withAlphaComponent(0.9).setFill()
+        disc.fill()
+        NSColor.separatorColor.setStroke()
+        disc.lineWidth = 1
+        disc.stroke()
+
+        let r = bounds.width / 2 - 6
+        let half = r * 0.3
+        let turn = NSAffineTransform()
+        turn.translateX(by: bounds.midX, yBy: bounds.midY)
+        // AppKit turns counter-clockwise for positive degrees.
+        turn.rotate(byDegrees: CGFloat(-northDegrees))
+        NSGraphicsContext.current?.saveGraphicsState()
+        turn.concat()
+        let north = NSBezierPath()
+        north.move(to: NSPoint(x: 0, y: r))
+        north.line(to: NSPoint(x: half, y: 0))
+        north.line(to: NSPoint(x: -half, y: 0))
+        north.close()
+        NSColor.systemRed.setFill()
+        north.fill()
+        let south = NSBezierPath()
+        south.move(to: NSPoint(x: 0, y: -r))
+        south.line(to: NSPoint(x: half, y: 0))
+        south.line(to: NSPoint(x: -half, y: 0))
+        south.close()
+        NSColor.secondaryLabelColor.setFill()
+        south.fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick?()
+        return true
     }
 }

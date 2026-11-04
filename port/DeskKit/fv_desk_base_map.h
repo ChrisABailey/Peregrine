@@ -56,6 +56,9 @@ class BaseMapRenderer {
                 ICanvas& canvas, const std::function<bool()>& interrupted = {},
                 std::vector<SkippedFrame>* skipped = nullptr);
 
+  /// The vector products' symbol scale (`VectorBaseMap::SetSymbolScale`).
+  void SetSymbolScale(double scale) { vector_.SetSymbolScale(scale); }
+
   /// What the last vector render drew under `p` (that render's pixels);
   /// empty for a raster product.
   app::HintText HintAt(PixelPoint p) { return last_vector_ ? vector_.HintAt(p) : app::HintText(); }

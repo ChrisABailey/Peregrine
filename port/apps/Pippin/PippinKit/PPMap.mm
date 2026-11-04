@@ -116,6 +116,11 @@ constexpr double kRefLatStep = 0.5;
 // wrong.
 constexpr double kStyleNominalDpi = 96.0;
 
+/// The DPI at which an S-52 pen unit (0.32 mm) is one symbol pixel. Pens
+/// converted at this times the symbol scale keep the proportions S-52 draws
+/// lines and symbols in, whatever the screen.
+constexpr double kS52SymbolPixelDpi = 2540.0 / 32.0;
+
 // The ownship's size in authored pixels, which `pixelsPerPoint` turns into
 // points. MM4's default is 24, which is the drawn width for `fv.ownship`,
 // whose ring fits its shape box exactly.
@@ -1712,11 +1717,10 @@ NSString* NSStr(const std::string& s) {
   fv::CpuCanvas canvas(under.pixelWidth, under.pixelHeight);
   if (_hasLabelFont) canvas.SetDefaultFont(_fontPath);
   canvas.Clear(bg);
-  // A chart's 96-dpi pixel is a point, as the OSM style's is, so S-52 pens
-  // are drawn at Peregrine's weight rather than at full ECDIS millimetres.
+  // Pens on the symbols' own grid, so lines keep their weight against them.
   const double chartScale = pixelsPerPoint * _symbolZoom / pippin::kUnderlayZoomOut;
   const fv::Status rs =
-      _chart ? _chart->Render(under.projection, kStyleNominalDpi * chartScale,
+      _chart ? _chart->Render(under.projection, kS52SymbolPixelDpi * chartScale,
                               chartScale,
                               pippin::EncChartPass::kUnderlay, &canvas)
              : _underlayRenderer->Render(under.projection, &canvas);
@@ -1847,7 +1851,7 @@ NSString* NSStr(const std::string& s) {
     if (_style) _style->ResetDiagnostics();
     const fv::Status rs =
         _chart ? _chart->Render(bandProj,
-                                kStyleNominalDpi * pixelsPerPoint * _symbolZoom,
+                                kS52SymbolPixelDpi * pixelsPerPoint * _symbolZoom,
                                 pixelsPerPoint * _symbolZoom,
                                 pippin::EncChartPass::kBase, _baseCanvas.get())
                : _renderer->Render(bandProj, _baseCanvas.get());

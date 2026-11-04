@@ -125,6 +125,20 @@ void MapView::PanTo(const Viewport& v, double dx, double dy) {
   ++generation_;
 }
 
+Viewport MapView::Covering(const Viewport& next, double dx, double dy) const {
+  const int now = view_.UncoveredSamples();
+  if (next.UncoveredSamples() <= now) return next;
+  // Slide along the edge of the map rather than stop dead against it.
+  const bool x_first = std::fabs(dx) >= std::fabs(dy);
+  for (int i = 0; i < 2; ++i) {
+    const bool along_x = (i == 0) == x_first;
+    if ((along_x ? dx : dy) == 0.0) continue;
+    const Viewport part = along_x ? view_.Panned(dx, 0) : view_.Panned(0, dy);
+    if (part.UncoveredSamples() <= now) return part;
+  }
+  return view_;
+}
+
 void MapView::SetClock(std::function<double()> clock) {
   clock_ = clock ? std::move(clock) : std::function<double()>(SteadySeconds);
 }
@@ -161,7 +175,7 @@ bool MapView::Advance() {
   const PointF at{coast_v_.x * k, coast_v_.y * k};
   const double dx = at.x - coast_travelled_.x, dy = at.y - coast_travelled_.y;
   coast_travelled_ = at;
-  const Viewport next = view_.Panned(dx, dy);
+  const Viewport next = Covering(view_.Panned(dx, dy), dx, dy);
   const double speed = std::hypot(coast_v_.x, coast_v_.y) * std::exp(-t / tau);
   // An unchanged camera means the pan was refused, at the edge of the world.
   const bool stuck = next == view_ && std::hypot(dx, dy) > 0.5;
@@ -193,7 +207,12 @@ void MapView::PointerDrag(const PointF& p) {
   const double dx = p.x - drag_last_.x, dy = p.y - drag_last_.y;
   drag_last_ = p;
   if (dx != 0.0 || dy != 0.0) dragged_ = true;
-  PanTo(view_.WithGeoAt(drag_grab_, p), dx, dy);
+  const Viewport target = view_.WithGeoAt(drag_grab_, p);
+  const Viewport next = Covering(target, dx, dy);
+  // Held at the edge of the map, the map slips under the pointer, so moving
+  // back takes effect at once.
+  if (next != target) drag_grab_ = next.GeoAt(p);
+  PanTo(next, dx, dy);
   Hover(p);
 }
 
@@ -217,7 +236,7 @@ void MapView::Scroll(const PointF& at, double dx, double dy, bool precise) {
   Hover(at);
   StopCoast();
   if (precise) {
-    PanTo(view_.Panned(dx, dy), dx, dy);
+    PanTo(Covering(view_.Panned(dx, dy), dx, dy), dx, dy);
     return;
   }
   if (dy == 0.0 || !std::isfinite(dy)) return;

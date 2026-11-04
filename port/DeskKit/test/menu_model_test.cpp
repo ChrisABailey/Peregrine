@@ -85,17 +85,18 @@ TEST(MenuModel, EditorMenuComesLast) {
   EXPECT_EQ(m.Find("editor"), nullptr);
 }
 
-TEST(MenuModel, DefaultLayoutHasTheFiveMenus) {
+TEST(MenuModel, DefaultLayoutHasTheSixMenus) {
   CommandRegistry r;
   MenuModel m(r);
   m.Rebuild();
-  ASSERT_EQ(m.Menus().size(), 5u);
+  ASSERT_EQ(m.Menus().size(), 6u);
   EXPECT_EQ(m.Menus()[0].title, "File");
   EXPECT_EQ(m.Menus()[1].title, "Edit");
-  EXPECT_EQ(m.Menus()[2].title, "Map");
-  EXPECT_EQ(m.Menus()[3].title, "Overlay");
-  EXPECT_EQ(m.Menus()[4].title, "Tools");
-  EXPECT_TRUE(m.Menus()[2].items.empty());
+  EXPECT_EQ(m.Menus()[2].title, "View");
+  EXPECT_EQ(m.Menus()[3].title, "Map");
+  EXPECT_EQ(m.Menus()[4].title, "Overlay");
+  EXPECT_EQ(m.Menus()[5].title, "Tools");
+  EXPECT_TRUE(m.Menus()[3].items.empty());
 }
 
 }  // namespace

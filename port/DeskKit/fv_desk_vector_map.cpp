@@ -32,6 +32,8 @@ VectorMapConfig g_config;
 
 /// What a GL style's `px` is authored against (a CSS pixel).
 constexpr double kStyleNominalDpi = 96.0;
+/// The DPI at which an S-52 pen unit (0.32 mm) is one symbol pixel.
+constexpr double kS52SymbolPixelDpi = 2540.0 / 32.0;
 /// Fraction of the window kept styled beyond it, so a pan re-projects.
 constexpr double kSceneMargin = 0.25;
 /// Step of the OSM style's reference latitude; a finer one would rebuild
@@ -200,12 +202,24 @@ Status VectorBaseMap::Render(const view::Viewport& v, const view::LadderProduct&
       osm_->SetReferenceLatitude(lat);
       osm_ref_lat_ = lat;
     }
-    r.SetDeviceDpi(kStyleNominalDpi * v.DisplayScale());
+    r.SetDeviceDpi(kStyleNominalDpi * v.DisplayScale() * symbol_scale_);
+    r.SetSymbolScale(symbol_scale_);
     osm_->background(proj.Scale(), &ground);
     ground.a = 255;
   } else {
-    // Chart symbology is sized in physical units at the true pixel pitch.
-    r.SetDeviceDpi(25.4 * v.DisplayScale() / v.MmPerPoint());
+    // Symbols and their labels are sized by the symbol scale alone, so the
+    // display scale goes into it or they shrink on a Retina screen.
+    const double symbols = symbol_scale_ * v.DisplayScale();
+    if (product.format == "enc") {
+      // S-52 pens on the symbols' own 0.32 mm grid, so lines keep the weight
+      // S-52 gives them against the symbols whatever the screen's density.
+      r.SetDeviceDpi(kS52SymbolPixelDpi * symbols);
+    } else {
+      // GeoSym line widths multiply the symbol scale and the DPI both, so the
+      // display scale goes in once, through the symbol scale.
+      r.SetDeviceDpi(25.4 / v.MmPerPoint() * symbol_scale_);
+    }
+    r.SetSymbolScale(symbols);
   }
   canvas.Clear(ground);
   last_ = &it->second;

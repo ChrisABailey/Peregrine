@@ -84,6 +84,11 @@ class Viewport {
   /// image in the display projection or there is no surface.
   bool PointFor(const GeoPoint& g, PointF* out) const;
 
+  /// How many of a 9 x 9 grid of surface samples, edges included, show no
+  /// part of the earth: past a pole in Equal Arc, past Mercator's limit, off
+  /// an azimuthal disc. Zero when the map covers the whole surface.
+  int UncoveredSamples() const;
+
   bool HasSurface() const { return pixel_width_ > 0 && pixel_height_ > 0; }
   GeoPoint Center() const { return center_; }
   double ScaleDenom() const { return scale_denom_; }
@@ -109,6 +114,8 @@ class Viewport {
 
  private:
   void Reconfigure();
+  /// The rotation a pan to `g` adds so the chart moves without turning.
+  double PanTurn(const GeoPoint& g) const;
 
   GeoPoint center_;
   double scale_denom_ = 1.0e6;

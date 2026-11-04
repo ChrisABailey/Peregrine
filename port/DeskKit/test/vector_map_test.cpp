@@ -11,6 +11,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <cstring>
+
 #include <cstdlib>
 #include <filesystem>
 
@@ -235,6 +238,107 @@ TEST(VectorBaseMap, DrawsAnEncBandThroughS52) {
   const fv::Status s = r.Render(v, f.product, canvas);
   ASSERT_TRUE(s.ok()) << s.message;
   EXPECT_GT(Inked(canvas), v.PixelWidth() * v.PixelHeight() / 20);
+}
+
+// A larger symbol scale redraws the same chart with its symbology bigger.
+TEST(VectorBaseMap, SymbolScaleRedrawsTheSymbology) {
+  const std::string dir = TestData("enc");
+  if (dir.empty()) GTEST_SKIP() << "no testdata/enc";
+  ConfigGuard guard;
+  VectorMapConfig c;
+  c.enc_dir = dir;
+  fv::desk::SetVectorMapConfig(c);
+  VectorFixture f;
+  ASSERT_NO_FATAL_FAILURE(f.Load(dir, "enc", ""));
+  BaseMapRenderer r;
+  r.SetCatalog(f.catalog);
+  const auto v = f.ViewAt({32.765, -79.91}, 40000);
+  fv::CpuCanvas plain(v.PixelWidth(), v.PixelHeight());
+  ASSERT_TRUE(r.Render(v, f.product, plain).ok());
+  r.SetSymbolScale(2.0);
+  fv::CpuCanvas large(v.PixelWidth(), v.PixelHeight());
+  ASSERT_TRUE(r.Render(v, f.product, large).ok());
+  const unsigned char* a = plain.Buffer().Data();
+  const unsigned char* b = large.Buffer().Data();
+  const size_t size = static_cast<size_t>(v.PixelWidth()) * v.PixelHeight() * 4;
+  int changed = 0;
+  for (size_t i = 0; i < size; i += 4) changed += std::memcmp(a + i, b + i, 4) != 0;
+  EXPECT_GT(changed, v.PixelWidth() * v.PixelHeight() / 100);
+  // Back to 1 draws the original pixels again.
+  r.SetSymbolScale(1.0);
+  fv::CpuCanvas again(v.PixelWidth(), v.PixelHeight());
+  ASSERT_TRUE(r.Render(v, f.product, again).ok());
+  EXPECT_EQ(std::memcmp(a, again.Buffer().Data(), size), 0);
+}
+
+/// Mean absolute channel difference between `one` and `two` box-shrunk by 2.
+double ShrunkDifference(const fv::CpuCanvas& one, const fv::CpuCanvas& two) {
+  const fv::PixelBuffer& a = one.Buffer();
+  const fv::PixelBuffer& b = two.Buffer();
+  const int w = a.Width(), h = a.Height();
+  double sum = 0;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      for (int c = 0; c < 3; ++c) {
+        double box = 0;
+        for (int dy = 0; dy < 2; ++dy)
+          for (int dx = 0; dx < 2; ++dx)
+            box += b.Data()[((2 * y + dy) * b.Width() + 2 * x + dx) * 4 + c];
+        sum += std::fabs(box / 4 - a.Data()[(y * w + x) * 4 + c]);
+      }
+    }
+  }
+  return sum / (w * h * 3.0);
+}
+
+// On a 2x display a chart draws the 1x picture at twice the pixels: symbols
+// and labels grow with the line widths rather than staying at 1x size.
+TEST(VectorBaseMap, AnEncChartKeepsItsProportionsOnA2xDisplay) {
+  const std::string dir = TestData("enc");
+  if (dir.empty()) GTEST_SKIP() << "no testdata/enc";
+  ConfigGuard guard;
+  VectorMapConfig c;
+  c.enc_dir = dir;
+  fv::desk::SetVectorMapConfig(c);
+  VectorFixture f;
+  ASSERT_NO_FATAL_FAILURE(f.Load(dir, "enc", ""));
+  BaseMapRenderer r;
+  r.SetCatalog(f.catalog);
+  const auto at = fv::view::Viewport::Make({32.765, -79.91}, 40000);
+  const auto v1 = at.WithSurface(200, 150, 1.0, 0.25);
+  const auto v2 = at.WithSurface(200, 150, 2.0, 0.25);
+  fv::CpuCanvas one(v1.PixelWidth(), v1.PixelHeight());
+  fv::CpuCanvas two(v2.PixelWidth(), v2.PixelHeight());
+  ASSERT_TRUE(r.Render(v1, f.product, one).ok());
+  ASSERT_TRUE(r.Render(v2, f.product, two).ok());
+  // 2.9 with the symbols left at 1x size.
+  EXPECT_LT(ShrunkDifference(one, two), 2.2);
+}
+
+// The same for DNC, whose GeoSym line widths take the symbol scale and the
+// DPI both.
+TEST(VectorBaseMap, ADncChartKeepsItsProportionsOnA2xDisplay) {
+  const std::string dir = TestData("vpf/dnc17");
+  const std::string geosym = TestData("GeoSymbol");
+  if (dir.empty() || geosym.empty()) GTEST_SKIP() << "no testdata/vpf/dnc17 or GeoSymbol";
+  ConfigGuard guard;
+  VectorMapConfig c;
+  c.geosym_dir = std::filesystem::path(geosym).parent_path().string();
+  fv::desk::SetVectorMapConfig(c);
+  VectorFixture f;
+  ASSERT_NO_FATAL_FAILURE(f.Load(dir, "vpf", "h1707300"));
+  BaseMapRenderer r;
+  r.SetCatalog(f.catalog);
+  const auto at = fv::view::Viewport::Make({41.70, -69.90}, 300000);
+  const auto v1 = at.WithSurface(200, 150, 1.0, 0.25);
+  const auto v2 = at.WithSurface(200, 150, 2.0, 0.25);
+  fv::CpuCanvas one(v1.PixelWidth(), v1.PixelHeight());
+  fv::CpuCanvas two(v2.PixelWidth(), v2.PixelHeight());
+  ASSERT_TRUE(r.Render(v1, f.product, one).ok());
+  ASSERT_TRUE(r.Render(v2, f.product, two).ok());
+  // 32.6 with the symbols left at 1x size; what remains is thin lines held
+  // at one pixel at 1x.
+  EXPECT_LT(ShrunkDifference(one, two), 20.0);
 }
 
 TEST(VectorBaseMap, DrawsOsmWithItsStyleSheet) {

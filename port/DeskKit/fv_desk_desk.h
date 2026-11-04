@@ -585,6 +585,11 @@ class Desk {
   void SettingsLoaded();
   /// Changes whenever map options change what a base map looks like.
   uint64_t MapStyleGeneration() const { return map_style_gen_; }
+  /// How much larger than designed the vector charts' symbology draws
+  /// (View ▸ Larger / Smaller Chart Symbols), [0.2, 8]; 1 is as designed.
+  double SymbolScale() const { return symbol_scale_; }
+  /// Sets the symbol scale, clamped, and keeps it in the user settings.
+  void SetSymbolScale(double scale);
   /// Where applied options and the recent overlays persist. Null (the
   /// default) keeps them in memory. Setting a store reads its recent list.
   void SetUserSettings(UserSettings* user);
@@ -621,6 +626,8 @@ class Desk {
   /// Moves the camera by fractions of the surface: (0.5, 0) brings the point
   /// half a screen to the right into the centre.
   void PanScreens(double fx, double fy);
+  /// Turns the chart clockwise by `degrees` about the surface centre.
+  void RotateChart(double degrees);
   void RegisterGroupCommands();
   void RegisterProjectionCommands();
   void RegisterOverlayTypeCommands();
@@ -739,6 +746,7 @@ class Desk {
   /// Overlay-page sections the Desk acts on, keyed by type id.
   std::vector<MapOptionsSource> overlay_options_;
   uint64_t map_style_gen_ = 0;
+  double symbol_scale_ = 1.0;
   std::unique_ptr<CatalogBuild> build_;
   bool build_had_data_ = false;
   std::unique_ptr<EncImportJob> enc_import_;

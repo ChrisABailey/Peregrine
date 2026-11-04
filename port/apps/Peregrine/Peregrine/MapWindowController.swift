@@ -14,6 +14,7 @@ import PeregrineCore
 final class MapWindowController: NSWindowController, NSMenuItemValidation {
     let host: fv.desk.DeskHost
     let canvas: MapCanvasView
+    private let compass = CompassButton()
     /// The window title when no overlay file is open: the app and the catalog.
     private var catalogTitle = "Peregrine"
     private let scaleLabel = MapWindowController.label()
@@ -110,6 +111,16 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         ])
         window.contentView = content
         window.initialFirstResponder = canvas
+        compass.translatesAutoresizingMaskIntoConstraints = false
+        compass.isHidden = true
+        compass.onClick = { [weak self] in self?.execute("map.rotate.north") }
+        content.addSubview(compass, positioned: .above, relativeTo: split)
+        NSLayoutConstraint.activate([
+            compass.topAnchor.constraint(equalTo: canvas.topAnchor, constant: 12),
+            compass.trailingAnchor.constraint(equalTo: canvas.trailingAnchor, constant: -12),
+            compass.widthAnchor.constraint(equalToConstant: CompassButton.diameter),
+            compass.heightAnchor.constraint(equalToConstant: CompassButton.diameter),
+        ])
         let layers = LayersPanelController(host: host) { [weak self] in self?.execute($0) }
         layersPanel = layers
         split.addArrangedSubview(layers.view)
@@ -145,6 +156,13 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         l.lineBreakMode = .byTruncatingTail
         l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return l
+    }
+
+    /// Shows the compass while the chart is turned, its arrow on north.
+    private func updateCompass() {
+        let degrees = host.Rotation()
+        compass.isHidden = degrees == 0
+        if degrees != 0 { compass.show(northAt: degrees) }
     }
 
     /// Copies the host's status bar text and hover tool tip into the window.
@@ -198,6 +216,7 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     /// catalog, a background job and notices.
     private func handle(_ t: fv.desk.HostTick) {
         updateTitle()
+        updateCompass()
         if t.menus_changed {
             if let window { toolbar.update(window) }
             onMenusChanged?()
@@ -560,6 +579,10 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     /// The action of every generated menu item and toolbar button: the
     /// command id is the menu item's represented object or the button's
     /// identifier.
+    private static let arrowKeys: Set<String> = Set(
+        [NSLeftArrowFunctionKey, NSRightArrowFunctionKey, NSUpArrowFunctionKey, NSDownArrowFunctionKey]
+            .map { String(UnicodeScalar(UInt32($0))!) })
+
     @objc func runCommand(_ sender: Any?) {
         if let item = sender as? NSMenuItem, let id = item.representedObject as? String {
             execute(id)
@@ -570,6 +593,13 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let id = item.representedObject as? String else { return true }
+        // A modified arrow (Rotate's Option-Left) is also line and word motion
+        // in text. A disabled item does not take its key equivalent, so the
+        // key reaches the field that has focus.
+        if Self.arrowKeys.contains(item.keyEquivalent),
+           NSApp.keyWindow?.firstResponder is NSTextView {
+            return false
+        }
         item.state = host.IsChecked(std.string(id)) ? .on : .off
         return host.IsEnabled(std.string(id))
     }

@@ -243,16 +243,19 @@ TEST(ProjLambert, SwitchesToMercatorWithinOnePixelOfTheEquator) {
   EXPECT_NEAR(x0, x1, 1e-9);
 }
 
-// A visible pole pulls the projection centre onto it, so the pole lands at the
-// surface centre and the requested centre does not. Center() still reports
-// what the caller asked for.
-TEST(ProjLambert, AVisiblePoleTakesTheCentre) {
+// A visible pole gives the projection a polar cone, but the requested centre
+// stays at the surface centre and the pole draws where it is, above it. This
+// departs from Windows, which moves the centre onto the pole.
+TEST(ProjLambert, AVisiblePoleKeepsTheRequestedCentre) {
   fv::MapProjection p = Make(80.0, 20.0, 0.1);  // 600 px * 0.1 = 60 deg tall
   EXPECT_DOUBLE_EQ(p.Center().lat, 80.0);
   double sx = 0, sy = 0;
-  ASSERT_TRUE(p.GeoToSurface({89.999999, 20.0}, &sx, &sy).ok());
+  ASSERT_TRUE(p.GeoToSurface({80.0, 20.0}, &sx, &sy).ok());
   EXPECT_NEAR(sx, (800 - 1) / 2.0, 1e-6);
   EXPECT_NEAR(sy, (600 - 1) / 2.0, 1e-6);
+  ASSERT_TRUE(p.GeoToSurface({89.999999, 20.0}, &sx, &sy).ok());
+  EXPECT_NEAR(sx, (800 - 1) / 2.0, 1e-6);
+  EXPECT_NEAR(sy, (600 - 1) / 2.0 - 100.0, 2.0);  // 10 deg at 0.1 deg/px
 
   // The pole is on the surface, so the bounds open to every longitude and
   // reach the pole itself.
@@ -267,7 +270,7 @@ TEST(ProjLambert, AVisiblePoleTakesTheCentre) {
   // South pole, same rule.
   fv::MapProjection s = Make(-80.0, 20.0, 0.1);
   ASSERT_TRUE(s.GeoToSurface({-89.999999, 20.0}, &sx, &sy).ok());
-  EXPECT_NEAR(sy, (600 - 1) / 2.0, 1e-6);
+  EXPECT_NEAR(sy, (600 - 1) / 2.0 + 100.0, 2.0);
 }
 
 // A centre far from the poles is left where the caller put it.

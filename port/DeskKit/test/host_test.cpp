@@ -312,7 +312,7 @@ TEST(DeskHost, MenusFlattenInPreorderWithShortcuts) {
       ++projections;
     }
   }
-  EXPECT_EQ(tops, (std::vector<std::string>{"File", "Edit", "Map", "Overlay", "Tools"}));
+  EXPECT_EQ(tops, (std::vector<std::string>{"File", "Edit", "View", "Map", "Overlay", "Tools"}));
   EXPECT_EQ(projections, 5);
 
   const HostMenuEntry save = MenuEntry(h.host, "file.save");

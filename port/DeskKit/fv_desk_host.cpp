@@ -246,6 +246,7 @@ struct Job {
   uint64_t base_seq = 0;       ///< requests with the same value share a base map
   uint64_t overlay_epoch = 0;  ///< `Impl::overlay_epoch` when requested
   uint64_t map_style = 0;      ///< `Desk::MapStyleGeneration()` when requested
+  double symbol_scale = 1.0;   ///< `Desk::SymbolScale()` when requested
   bool pan = false;            ///< a band drawn while the map pans
 };
 
@@ -259,10 +260,12 @@ struct BaseKey {
   std::string catalog_path;
   uint64_t catalog_epoch = 0;
   uint64_t map_style = 0;
+  double symbol_scale = 1.0;
 
   bool operator==(const BaseKey& o) const {
     return view_gen == o.view_gen && catalog_path == o.catalog_path &&
-           catalog_epoch == o.catalog_epoch && map_style == o.map_style;
+           catalog_epoch == o.catalog_epoch && map_style == o.map_style &&
+           symbol_scale == o.symbol_scale;
   }
   bool operator!=(const BaseKey& o) const { return !(*this == o); }
 };
@@ -517,6 +520,7 @@ std::shared_ptr<const view::Frame> DeskHost::Impl::Render(const view::Viewport& 
     if (job.has_product) {
       const auto stale = [this, &job] { return latest_base_seq.load() != job.base_seq; };
       std::vector<SkippedFrame> skipped;
+      base.SetSymbolScale(job.symbol_scale);
       const Status s = base.Render(v, job.product, canvas, stale, &skipped);
       if (s.code == kInterrupted) return nullptr;
       // Each unreadable file is logged once per catalog, not once per frame.
@@ -678,6 +682,7 @@ void DeskHost::GoTo(double lat, double lon, double scale_denom) {
 double DeskHost::CenterLat() const { return impl_->desk->map_view().View().Center().lat; }
 double DeskHost::CenterLon() const { return impl_->desk->map_view().View().Center().lon; }
 double DeskHost::ScaleDenom() const { return impl_->desk->map_view().View().ScaleDenom(); }
+double DeskHost::Rotation() const { return impl_->desk->map_view().View().Rotation(); }
 
 std::string DeskHost::Execute(const std::string& command_id) {
   Impl::StackEdit edit(*impl_);
@@ -3407,6 +3412,10 @@ void DeskHost::MagnifyEnd(double x, double y) {
   impl_->desk->map_view().MagnifyEnd(view::PointF{x, y});
 }
 
+void DeskHost::Rotate(double x, double y, double degrees) {
+  impl_->desk->map_view().Rotate(view::PointF{x, y}, degrees);
+}
+
 void DeskHost::Step(int direction) { impl_->desk->map_view().Step(direction); }
 
 // MARK: Frames
@@ -3481,7 +3490,7 @@ HostTick DeskHost::Tick() {
     t.redraw = true;  // the placement moved
   }
   const BaseKey key{mv.FrameGeneration(), m.desk->catalog_path(), m.catalog_epoch,
-                    m.desk->MapStyleGeneration()};
+                    m.desk->MapStyleGeneration(), m.desk->SymbolScale()};
   const uint64_t epoch = m.overlay_epoch.load();
   // What to draw: the live view at rest; while panning, a band larger than
   // the screen, replaced one draw ahead of the screen leaving it. A pan
@@ -3528,6 +3537,7 @@ HostTick DeskHost::Tick() {
     job.base_seq = m.base_seq;
     job.overlay_epoch = epoch;
     job.map_style = key.map_style;
+    job.symbol_scale = key.symbol_scale;
     job.pan = pan;
     {
       std::lock_guard<std::mutex> lock(m.jobs_mu);

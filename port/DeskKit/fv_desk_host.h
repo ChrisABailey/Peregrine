@@ -247,6 +247,8 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   double CenterLat() const;
   double CenterLon() const;
   double ScaleDenom() const;
+  /// The chart's clockwise turn in degrees, [0, 360); 0 is north up.
+  double Rotation() const;
   /// Executes a DeskKit command by id; returns the error message or "".
   std::string Execute(const std::string& command_id);
   /// True when an overlay type opens `path` by its extension.
@@ -1052,6 +1054,9 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   /// `factor` > 1 zooms in, relative to the previous event of the pinch.
   void Magnify(double x, double y, double factor);
   void MagnifyEnd(double x, double y);
+  /// Turns the chart clockwise by `degrees` about (x, y), relative to the
+  /// previous event of a rotate gesture.
+  void Rotate(double x, double y, double degrees);
   /// One ladder step about the cursor (Page Up is +1).
   void Step(int direction);
 

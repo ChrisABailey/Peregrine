@@ -164,10 +164,19 @@ TEST_F(EncImportTest, ChartsDirInsideAScanRootIsRefused) {
   Prepare(fd, dir);
   fs::create_directories(dir.Path("data"));
   ASSERT_TRUE(desk.AddScanRoot(dir.Path("data")).ok());
-  fd.settings().Set(fv::desk::kEncChartsDirKey, dir.Path("data/charts"));
+  // Inside data/enc, which data's scan reads: the cells would be catalogued twice.
+  fd.settings().Set(fv::desk::kEncChartsDirKey, dir.Path("data/enc/charts"));
   const fv::Status s = desk.ImportEncCharts({MakeZip(dir.Path("SC_ENCs.zip"), {"US4SC1BO"})});
   EXPECT_EQ(s.code, fv::kInvalidArg);
   EXPECT_FALSE(desk.Building());
+
+  // Beside the format folders is fine: it becomes a root of its own.
+  fd.settings().Set(fv::desk::kEncChartsDirKey, dir.Path("data/enc-regions"));
+  ASSERT_TRUE(desk.ImportEncCharts({dir.Path("SC_ENCs.zip")}).ok());
+  Finish(desk);
+  EXPECT_EQ(desk.ScanRoots(),
+            (std::vector<std::string>{dir.Path("data"), dir.Path("data/enc-regions")}));
+  ASSERT_TRUE(desk.RemoveScanRoot(dir.Path("data/enc-regions")).ok());
 
   // The scan root itself is fine and is not listed twice.
   fd.settings().Set(fv::desk::kEncChartsDirKey, dir.Path("data"));

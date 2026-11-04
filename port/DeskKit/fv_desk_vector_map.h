@@ -86,6 +86,10 @@ class VectorBaseMap {
   Status Render(const view::Viewport& view, const view::LadderProduct& product,
                 ICanvas& canvas);
 
+  /// Enlarges the chart symbology by `scale` (1 = as designed): device
+  /// resolution and symbol size both, as View ▸ Larger Chart Symbols sets it.
+  void SetSymbolScale(double scale) { symbol_scale_ = scale > 0 ? scale : 1.0; }
+
   /// What the last `Render` drew under `p`, in that render's pixels: the
   /// topmost named feature's name, else the topmost feature's class (status
   /// only). Empty when nothing was drawn there.
@@ -108,6 +112,7 @@ class VectorBaseMap {
   std::shared_ptr<S52StyleEngine> s52_;
   std::shared_ptr<OsmStyleEngine> osm_;
   std::optional<double> osm_ref_lat_;
+  double symbol_scale_ = 1.0;
 };
 
 }  // namespace desk

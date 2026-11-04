@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -43,6 +44,12 @@ namespace {
 
 /// Opacity of the overlays that are not being edited while an editor is active.
 constexpr int kDimmedOverlayPercent = 50;
+/// One press of Rotate Left or Rotate Right, in degrees.
+constexpr double kRotateStepDeg = 15.0;
+/// One press of Larger or Smaller Chart Symbols, and the range they keep to.
+constexpr double kSymbolScaleStep = 1.25;
+constexpr double kMinSymbolScale = 0.2, kMaxSymbolScale = 8.0;
+constexpr char kSymbolScaleKey[] = "view.symbol_scale";
 
 constexpr char kWorkspaceConfig[] = "workspace";
 constexpr char kWorkspacePrefix[] = "session.workspace.";
@@ -450,6 +457,19 @@ void Desk::RegisterStaticCommands() {
   add("map.pan.south", "South", "Down", [this] { PanScreens(0, 0.5); });
   add("map.pan.east", "East", "Right", [this] { PanScreens(0.5, 0); });
   add("map.pan.west", "West", "Left", [this] { PanScreens(-0.5, 0); });
+  add("view.symbols_larger", "Larger Chart Symbols", "Primary+]",
+      [this] { SetSymbolScale(symbol_scale_ * kSymbolScaleStep); },
+      [this] { return symbol_scale_ < kMaxSymbolScale; });
+  add("view.symbols_smaller", "Smaller Chart Symbols", "Primary+[",
+      [this] { SetSymbolScale(symbol_scale_ / kSymbolScaleStep); },
+      [this] { return symbol_scale_ > kMinSymbolScale; });
+  add("view.symbols_actual", "Actual Symbol Size", "Primary+0", [this] { SetSymbolScale(1.0); },
+      [this] { return symbol_scale_ != 1.0; });
+  add("map.rotate.left", "Rotate Left", "Alt+Left", [this] { RotateChart(-kRotateStepDeg); });
+  add("map.rotate.right", "Rotate Right", "Alt+Right", [this] { RotateChart(kRotateStepDeg); });
+  add("map.rotate.north", "North Up", "Primary+Shift+Up",
+      [this] { RotateChart(-view_->View().Rotation()); },
+      [this] { return view_->View().Rotation() != 0.0; });
 
   size_t n = 0;
   const ProjectionType* types = AllProjectionTypes(&n);
@@ -1048,6 +1068,13 @@ void Desk::StoreRecent() {
 void Desk::SetUserSettings(UserSettings* user) {
   user_settings_ = user;
   if (user == nullptr) return;
+  const std::string scale = user->Get(kSymbolScaleKey);
+  if (!scale.empty()) {
+    char* end = nullptr;
+    const double s = std::strtod(scale.c_str(), &end);
+    if (end != scale.c_str() && std::isfinite(s) && s > 0)
+      symbol_scale_ = std::clamp(s, kMinSymbolScale, kMaxSymbolScale);
+  }
   recent_.clear();
   for (size_t i = 0; i < kMaxRecentOverlays; ++i) {
     const std::string key = kRecentPrefix + std::to_string(i);
@@ -1216,11 +1243,11 @@ Status Desk::AddScanRoot(const std::string& path) {
     return Status::Error(kNotFound, "no directory at " + root);
   std::vector<std::string> roots = ScanRoots();
   for (const std::string& r : roots) {
-    if (PathWithin(root, r))
+    if (ScanReaches(r, root))
       return Status::Error(kInvalidArg, root + " is already scanned as part of " + r);
   }
   roots.erase(std::remove_if(roots.begin(), roots.end(),
-                             [&](const std::string& r) { return PathWithin(r, root); }),
+                             [&](const std::string& r) { return ScanReaches(root, r); }),
               roots.end());
   roots.push_back(root);
   std::sort(roots.begin(), roots.end());
@@ -1293,13 +1320,16 @@ Status Desk::ImportEncCharts(const std::vector<std::string>& sources) {
     return Status::Error(kInvalidArg, "open or create a map catalog first (Map ▸ Map Data Sources…)");
   const std::string charts = EncChartsDir();
   if (charts.empty()) return Status::Error(kInvalidArg, "set the imported charts directory first");
+  // Cells install into <charts>/enc; a scan root that already reads that
+  // folder would catalogue them twice.
+  const std::string installs = (std::filesystem::path(charts) / "enc").string();
   bool listed = false;
   for (const std::string& r : ScanRoots()) {
     if (r == charts) listed = true;
-    else if (PathWithin(charts, r))
-      return Status::Error(kInvalidArg, "the charts directory " + charts + " lies inside " + r +
-                                            ", which Generate Coverage scans; choose " + r +
-                                            " or a directory outside it");
+    else if (ScanReaches(r, installs))
+      return Status::Error(kInvalidArg, "the charts directory " + charts +
+                                            " is inside a folder Generate Coverage reads from " +
+                                            r + "; choose " + r + " or a directory outside it");
   }
   std::error_code ec;
   std::filesystem::create_directories(charts, ec);
@@ -1962,6 +1992,25 @@ Status Desk::SelectGroup(const std::string& id) {
   group_id_ = id;
   ApplyGroupToView();
   return Status::Ok();
+}
+
+void Desk::SetSymbolScale(double scale) {
+  if (!std::isfinite(scale) || scale <= 0) return;
+  scale = std::clamp(scale, kMinSymbolScale, kMaxSymbolScale);
+  // Steps of 1.25 from 1 drift off it in floating point; land back on it.
+  if (std::fabs(scale - 1.0) < 1e-9) scale = 1.0;
+  if (scale == symbol_scale_) return;
+  symbol_scale_ = scale;
+  if (user_settings_ != nullptr) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.17g", scale);
+    user_settings_->Set(kSymbolScaleKey, text);
+  }
+}
+
+void Desk::RotateChart(double degrees) {
+  const view::Viewport& v = view_->View();
+  view_->SetViewport(v.RotatedBy(degrees, v.SurfaceCenter()));
 }
 
 void Desk::PanScreens(double fx, double fy) {

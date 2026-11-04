@@ -73,6 +73,11 @@ std::string AbsolutePath(const std::string& path);
 /// case match when both exist and name the same directory.
 bool PathWithin(const std::string& path, const std::string& root);
 
+/// True when scanning `root` reads `path`: `path` is `root`, or lies in one of
+/// the per-format folders `PlanScan` reads there ("enc", "rpf", …), whether or
+/// not that folder exists yet. A folder beside those is not read.
+bool ScanReaches(const std::string& root, const std::string& path);
+
 /// The directories to scan for an existing catalog's data sources, given as
 /// (path, format): each made absolute, a format's conventional subdirectory
 /// ("…/dted" for dted) replaced by its parent, and any path inside another

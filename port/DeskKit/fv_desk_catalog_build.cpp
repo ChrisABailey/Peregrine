@@ -122,6 +122,20 @@ bool PathWithin(const std::string& path, const std::string& root) {
   return false;
 }
 
+bool ScanReaches(const std::string& root, const std::string& path) {
+  if (PathWithin(path, root) && PathWithin(root, path)) return true;
+  const std::map<std::string, std::string> children = ChildDirs(root);
+  std::vector<std::string> subdirs{"vpf"};
+  for (const ScanFormat& f : DefaultScanFormats()) subdirs.push_back(f.subdir);
+  for (const std::string& subdir : subdirs) {
+    if (subdir.empty()) continue;
+    std::string dir = FormatDir(root, children, subdir);
+    if (dir.empty()) dir = (fs::path(root) / subdir).string();
+    if (PathWithin(path, dir)) return true;
+  }
+  return false;
+}
+
 std::vector<std::string> RootsFromSources(
     const std::vector<std::pair<std::string, std::string>>& path_format) {
   std::vector<std::string> abs;
