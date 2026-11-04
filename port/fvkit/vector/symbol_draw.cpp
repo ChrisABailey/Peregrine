@@ -9,6 +9,7 @@
 
 #include "fvkit/vector/symbol_draw.h"
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -210,12 +211,16 @@ void DrawPixmapSymbolAt(ICanvas* canvas, const SymbolPixmap& sym, double ax,
       // tile's own grid; nearest sample. floor(t + 0.5), NOT lround: they
       // differ at exactly -0.5, which is where a 2x upscale puts the first
       // column of the tile, and lround's round-half-away-from-zero drops it.
-      const double px = rx * cs - ry * sn;
-      const double py = rx * sn + ry * cs;
+      // Explicit fma: at 45 degrees cs and sn differ by an ulp and samples
+      // land on exact ties, so the result would otherwise depend on whether
+      // the compiler contracts a*b+c (clang on arm64 does, x86-64 cannot);
+      // these are the contractions arm64 makes, so its output is unchanged.
+      const double px = std::fma(rx, cs, -(ry * sn));
+      const double py = std::fma(rx, sn, ry * cs);
       const int sx =
-          static_cast<int>(std::floor(px * inv + sym.pivot_x + 0.5));
+          static_cast<int>(std::floor(std::fma(px, inv, sym.pivot_x) + 0.5));
       const int sy =
-          static_cast<int>(std::floor(py * inv + sym.pivot_y + 0.5));
+          static_cast<int>(std::floor(std::fma(py, inv, sym.pivot_y) + 0.5));
       if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) continue;
       std::memcpy(drow + x * 4, sym.tile.Row(sy) + sx * 4, 4);
     }
