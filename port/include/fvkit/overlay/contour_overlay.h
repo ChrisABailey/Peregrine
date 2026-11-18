@@ -60,6 +60,7 @@
 #include <string>
 #include <vector>
 
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/properties.h"
 #include "fvkit/formats/source.h"
 #include "fvkit/geo/elevation_tiling.h"
@@ -73,8 +74,13 @@ class LabelPlacer;    // fvkit/canvas/label_placer.h
 struct GeoLineStyle;  // fvkit/canvas/geo_draw.h
 struct LabelStyle;    // fvkit/vector/style.h
 
-class ContourOverlay : public Overlay, public app::Properties {
+class ContourOverlay : public Overlay, public app::Properties, public app::HostAware {
  public:
+  app::HostAware* AsHostAware() override { return this; }
+  /// Opens its own elevation source from the host (null without one).
+  void SetHost(app::OverlayHost* host) override;
+  /// kNotFound while bound to a host whose catalog has no elevation data.
+  Status HostStatus() const override;
   ContourOverlay();
 
   static const char kTypeId[];  // "fv.contour"

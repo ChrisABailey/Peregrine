@@ -68,6 +68,9 @@ struct EncVectorSource::Impl {
     uint64_t last_use = 0;
     // record_id -> feature index, built on first Describe of this cell.
     std::unordered_map<int32_t, size_t> feature_index;
+    // The cell's distinct DEPCNT VALDCO values, ascending, with the text
+    // each was read from. Filled whenever the cell is parsed.
+    std::vector<std::pair<double, std::string>> contours;
   };
 
   bool open = false;
@@ -90,6 +93,8 @@ struct EncVectorSource::Impl {
   // 133 in the delivered Appendix A, but a number spelled out here would be
   // exactly the kind of from-memory constant E1 refused to write.
   int scamin_code = -1;
+  int depcnt_code = -1;
+  int valdco_code = -1;
 
   // Acronym for an OBJL, or the number as text when the producer emitted a
   // code outside Appendix A. A visible "OBJL 17999" beats an invented acronym
@@ -125,6 +130,10 @@ struct EncVectorSource::Impl {
     if (!s.ok()) return s;
     const S57AttributeDef* scamin = catalog.AttributeByAcronym("SCAMIN");
     if (scamin != nullptr) scamin_code = scamin->code;
+    const S57ObjectClass* depcnt = catalog.ObjectClassByAcronym("DEPCNT");
+    if (depcnt != nullptr) depcnt_code = depcnt->code;
+    const S57AttributeDef* valdco = catalog.AttributeByAcronym("VALDCO");
+    if (valdco != nullptr) valdco_code = valdco->code;
     return Status::Ok();
   }
 
@@ -144,7 +153,38 @@ struct EncVectorSource::Impl {
       return false;
     }
     slot->cell = std::move(cell);
+    IndexContours(slot);
     return true;
+  }
+
+  /** Collects the distinct contour depths of a freshly parsed cell. */
+  void IndexContours(Slot* slot) const {
+    slot->contours.clear();
+    if (depcnt_code < 0 || valdco_code < 0) return;
+    for (const S57Feature& f : slot->cell->features()) {
+      if (f.object_class != depcnt_code) continue;
+      const S57Attribute* a = f.FindAttribute(valdco_code);
+      if (a == nullptr || a->value.empty()) continue;
+      char* end = nullptr;
+      const double v = std::strtod(a->value.c_str(), &end);
+      if (end == a->value.c_str()) continue;
+      slot->contours.emplace_back(v, a->value);
+    }
+    std::sort(slot->contours.begin(), slot->contours.end());
+    slot->contours.erase(
+        std::unique(slot->contours.begin(), slot->contours.end(),
+                    [](const auto& x, const auto& y) { return x.first == y.first; }),
+        slot->contours.end());
+  }
+
+  /** The text of the deepest contour in `slot` shoaler than `valdco`, or
+   *  nullptr when `valdco` is the cell's shoalest. */
+  static const std::string* ShoalerContour(const Slot& slot, double valdco) {
+    auto it = std::lower_bound(
+        slot.contours.begin(), slot.contours.end(), valdco,
+        [](const std::pair<double, std::string>& c, double v) { return c.first < v; });
+    if (it == slot.contours.begin()) return nullptr;
+    return &std::prev(it)->second;
   }
 
   /** Drops the least recently used cells beyond `max_resident`, keeping any
@@ -378,6 +418,18 @@ Status EncVectorSource::QueryCells(const VectorQuery& q,
       for (const S57Attribute& a : f.attributes)
         vf.attributes.emplace_back(impl_->AttributeAcronym(a.code), a.value);
 
+      // DEPCNT02 needs the cell's next shoaler contour to pick the safety
+      // contour when the mariner's value is not one the cell carries.
+      if (f.object_class == impl_->depcnt_code) {
+        const S57Attribute* valdco = f.FindAttribute(impl_->valdco_code);
+        if (valdco != nullptr && !valdco->value.empty()) {
+          const std::string* shoaler = Impl::ShoalerContour(
+              slot, std::strtod(valdco->value.c_str(), nullptr));
+          if (shoaler != nullptr)
+            vf.attributes.emplace_back(kEncShoalerContourAttribute, *shoaler);
+        }
+      }
+
       // A sounding feature is a cloud of 3-D vertices, each its own depth.
       // Each becomes one point feature carrying its value as the
       // pseudo-attribute DEPTH (Appendix A has no attribute for it), so every
@@ -407,13 +459,33 @@ Status EncVectorSource::QueryCells(const VectorQuery& q,
         continue;
       }
 
-      vf.parts.reserve(f.geometry.parts.size());
-      for (const std::vector<S57Vertex>& part : f.geometry.parts) {
+      // Exterior rings before holes: VectorFeature puts an area's outer ring
+      // in parts[0], and a producer may list an interior boundary first.
+      const S57Geometry& g = f.geometry;
+      std::vector<size_t> order;
+      order.reserve(g.parts.size());
+      for (int pass = 0; pass < 2; ++pass)
+        for (size_t k = 0; k < g.parts.size(); ++k) {
+          const bool hole = k < g.part_is_hole.size() && g.part_is_hole[k];
+          if (hole == (pass == 1)) order.push_back(k);
+        }
+      vf.parts.reserve(g.parts.size());
+      for (size_t k : order) {
         std::vector<GeoPoint> run;
-        run.reserve(part.size());
-        for (const S57Vertex& v : part) run.push_back(GeoPoint{v.lat, v.lon});
+        run.reserve(g.parts[k].size());
+        for (const S57Vertex& v : g.parts[k])
+          run.push_back(GeoPoint{v.lat, v.lon});
         vf.parts.push_back(std::move(run));
       }
+      for (const std::vector<uint8_t>& e : g.unstroked_edges)
+        if (!e.empty()) {
+          vf.unstroked_edges.reserve(order.size());
+          for (size_t k : order)
+            vf.unstroked_edges.push_back(k < g.unstroked_edges.size()
+                                             ? g.unstroked_edges[k]
+                                             : std::vector<uint8_t>());
+          break;
+        }
 
       out->push_back(std::move(vf));
       if (q.max_features != 0 && out->size() >= q.max_features)

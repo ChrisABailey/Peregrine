@@ -13,11 +13,12 @@
 //    its own dialogs. Rule R1 says the core never opens one; from Python that
 //    reads as "the core calls you back".
 //
-// 2. AN EDITOR IS DUCK-TYPED, and it is a PROXY rather than a trampoline. The
-//    C++ side wants a `std::unique_ptr<OverlayEditor>` out of the factory, and
-//    ownership of a Python-constructed object cannot be handed to C++ that way.
-//    So `PyEditorProxy` holds the Python object and forwards the six calls by
-//    name; anything with `activate`/`deactivate` is an editor. Where the API
+// 2. AN EDITOR SUBCLASSES pyfvw.app.OverlayEditor, and C++ holds it through a
+//    PROXY rather than a trampoline. The C++ side wants a
+//    `std::unique_ptr<OverlayEditor>` out of the factory, and ownership of a
+//    Python-constructed object cannot be handed to C++ that way. So
+//    `PyEditorProxy` holds the Python object and forwards the six calls by
+//    name; the base class supplies the defaults and `edited`. Where the API
 //    hands an editor BACK (EditorManager.current_editor, AppShell.
 //    on_editor_changed) the proxy is unwrapped again, so Python always sees the
 //    object it created and never a wrapper.
@@ -85,14 +86,26 @@ using fv::app::SearchSession;
 using fv::app::SnapToItem;
 
 // ---------------------------------------------------------------------------
-// Editors: a proxy over a duck-typed Python object
+// Editors: a proxy over a pyfvw.app.OverlayEditor instance
 // ---------------------------------------------------------------------------
+
+class PyEditorProxy;
+
+/// The C++ half of pyfvw.app.OverlayEditor: the proxy that holds the instance.
+struct PyEditorBase {
+  PyEditorProxy* proxy = nullptr;
+};
 
 class PyEditorProxy : public OverlayEditor {
  public:
-  explicit PyEditorProxy(py::object obj) : obj_(std::move(obj)) {}
+  /// `obj` must be a pyfvw.app.OverlayEditor; the GIL must be held.
+  explicit PyEditorProxy(py::object obj) : obj_(std::move(obj)) {
+    obj_.cast<PyEditorBase&>().proxy = this;
+  }
   ~PyEditorProxy() override {
     py::gil_scoped_acquire gil;
+    PyEditorBase& base = obj_.cast<PyEditorBase&>();
+    if (base.proxy == this) base.proxy = nullptr;
     obj_ = py::object();
   }
 
@@ -103,7 +116,6 @@ class PyEditorProxy : public OverlayEditor {
 
   fv::app::CursorId DefaultCursor() const override {
     py::gil_scoped_acquire gil;
-    if (!py::hasattr(obj_, "default_cursor")) return OverlayEditor::DefaultCursor();
     try {
       return obj_.attr("default_cursor")().cast<fv::app::CursorId>();
     } catch (py::error_already_set&) {
@@ -114,7 +126,6 @@ class PyEditorProxy : public OverlayEditor {
 
   EditorUiConstraints UiConstraints() const override {
     py::gil_scoped_acquire gil;
-    if (!py::hasattr(obj_, "ui_constraints")) return {};
     try {
       return obj_.attr("ui_constraints")().cast<EditorUiConstraints>();
     } catch (py::error_already_set&) {
@@ -125,7 +136,6 @@ class PyEditorProxy : public OverlayEditor {
 
   bool AutoEnterOnCreate() const override {
     py::gil_scoped_acquire gil;
-    if (!py::hasattr(obj_, "auto_enter_on_create")) return true;
     try {
       return obj_.attr("auto_enter_on_create")().cast<bool>();
     } catch (py::error_already_set&) {
@@ -136,7 +146,6 @@ class PyEditorProxy : public OverlayEditor {
 
   std::vector<MenuNode> Tools() const override {
     py::gil_scoped_acquire gil;
-    if (!py::hasattr(obj_, "tools")) return {};
     try {
       return obj_.attr("tools")().cast<std::vector<MenuNode>>();
     } catch (py::error_already_set&) {
@@ -151,7 +160,6 @@ class PyEditorProxy : public OverlayEditor {
   // swallow the way the optional queries above do.
   fv::Status Call(const char* name) {
     py::gil_scoped_acquire gil;
-    if (!py::hasattr(obj_, name)) return fv::Status::Ok();
     try {
       obj_.attr(name)();
       return fv::Status::Ok();
@@ -164,6 +172,20 @@ class PyEditorProxy : public OverlayEditor {
 
   py::object obj_;
 };
+
+/// Calls a Python editor factory; null (with the reason on sys.unraisablehook)
+/// when it raises or returns something that is not a pyfvw.app.OverlayEditor.
+std::unique_ptr<OverlayEditor> EditorFromFactory(const py::object& factory) {
+  try {
+    return EditorFromPython(factory());
+  } catch (py::error_already_set& e) {
+    e.discard_as_unraisable("pyfvw editor factory");
+  } catch (const py::builtin_exception& e) {
+    e.set_error();
+    PyErr_WriteUnraisable(factory.ptr());
+  }
+  return nullptr;
+}
 
 // The Python object behind an editor, or the C++ editor itself when it is one.
 py::object EditorToPython(OverlayEditor* editor) {
@@ -331,14 +353,23 @@ void BindApp(py::module_& m) {
              n.checked = checked;
              n.children = std::move(children);
              if (!action.is_none()) {
-               // The callable is held by the std::function, so a lambda passed
-               // inline survives the call that built the menu.
-               n.action = [action]() {
+               // The callable is held through a shared_ptr whose deleter takes
+               // the GIL: hosts copy and destroy menus on threads that do not
+               // hold it, and a py::object copy or release there corrupts the
+               // interpreter.
+               std::shared_ptr<py::object> held(
+                   new py::object(std::move(action)), [](py::object* p) {
+                     py::gil_scoped_acquire gil;
+                     delete p;
+                   });
+               n.action = [held]() {
                  py::gil_scoped_acquire gil;
                  try {
-                   action();
-                 } catch (py::error_already_set&) {
-                   PyErr_Clear();  // a menu action must not unwind the core
+                   (*held)();
+                 } catch (py::error_already_set& e) {
+                   // Reported through sys.unraisablehook; a menu action must
+                   // not unwind the core.
+                   e.discard_as_unraisable("pyfvw menu action");
                  }
                };
              }
@@ -463,6 +494,45 @@ void BindApp(py::module_& m) {
           "overlay", [](const SnapToItem& s) { return s.overlay; },
           py::return_value_policy::reference);
 
+  py::class_<fv::app::InfoRow>(app, "InfoRow", "One line of a Get Info sheet.")
+      .def(py::init([](std::string section, std::string key, std::string value) {
+             return fv::app::InfoRow{std::move(section), std::move(key), std::move(value)};
+           }),
+           "section"_a, "key"_a, "value"_a)
+      .def_readwrite("section", &fv::app::InfoRow::section)
+      .def_readwrite("key", &fv::app::InfoRow::key)
+      .def_readwrite("value", &fv::app::InfoRow::value)
+      .def("__repr__", [](const fv::app::InfoRow& r) {
+        return "<InfoRow " + r.section + ": " + r.key + " = " + r.value + ">";
+      });
+
+  py::class_<fv::app::ItemInfoSheet>(
+      app, "ItemInfoSheet",
+      "What Get Info shows about one item; an overlay's item_info returns one. "
+      "`rows` is a copy on read: append with row().")
+      .def(py::init([](std::string title, std::vector<fv::app::InfoRow> rows,
+                       std::string edit_label) {
+             fv::app::ItemInfoSheet s;
+             s.title = std::move(title);
+             s.rows = std::move(rows);
+             s.edit_label = std::move(edit_label);
+             return s;
+           }),
+           "title"_a = "", "rows"_a = std::vector<fv::app::InfoRow>{}, "edit_label"_a = "")
+      .def_readwrite("title", &fv::app::ItemInfoSheet::title)
+      .def_readwrite("rows", &fv::app::ItemInfoSheet::rows)
+      .def_readwrite("edit_label", &fv::app::ItemInfoSheet::edit_label,
+                     "The context menu item that opens the overlay's editor; empty for none.")
+      .def(
+          "row",
+          [](fv::app::ItemInfoSheet& s, std::string section, std::string key,
+             std::string value) -> fv::app::ItemInfoSheet& {
+            s.rows.push_back(fv::app::InfoRow{std::move(section), std::move(key), std::move(value)});
+            return s;
+          },
+          "section"_a, "key"_a, "value"_a, py::return_value_policy::reference_internal,
+          "Appends a row; a section that differs from the previous row's starts a new section.");
+
   py::enum_<PickPolicy>(app, "PickPolicy",
                         "How several answers under one point become one.")
       .value("TOP_MOST", PickPolicy::kTopMost,
@@ -525,15 +595,7 @@ void BindApp(py::module_& m) {
                d.editor_factory =
                    [editor_factory]() -> std::unique_ptr<OverlayEditor> {
                  py::gil_scoped_acquire gil;
-                 try {
-                   py::object made = editor_factory();
-                   if (made.is_none()) return nullptr;
-                   return std::unique_ptr<OverlayEditor>(
-                       new PyEditorProxy(std::move(made)));
-                 } catch (py::error_already_set&) {
-                   PyErr_Clear();
-                   return nullptr;
-                 }
+                 return EditorFromFactory(editor_factory);
                };
              }
              return d;
@@ -589,15 +651,7 @@ void BindApp(py::module_& m) {
              if (!editor_factory.is_none()) {
                made = [editor_factory]() -> std::unique_ptr<OverlayEditor> {
                  py::gil_scoped_acquire gil;
-                 try {
-                   py::object obj = editor_factory();
-                   if (obj.is_none()) return nullptr;
-                   return std::unique_ptr<OverlayEditor>(
-                       new PyEditorProxy(std::move(obj)));
-                 } catch (py::error_already_set&) {
-                   PyErr_Clear();
-                   return nullptr;
-                 }
+                 return EditorFromFactory(editor_factory);
                };
              }
              return r.SetEditorFactory(id, std::move(made));
@@ -715,12 +769,34 @@ void BindApp(py::module_& m) {
 
   // --- editors ------------------------------------------------------------
 
-  py::class_<OverlayEditor>(
+  py::class_<PyEditorBase>(
       app, "OverlayEditor",
-      "The C++ editor interface. Python editors do NOT subclass this — any "
-      "object with activate() and deactivate() is an editor (see "
-      "OverlayTypeDesc.editor_factory); this class exists so a C++ editor is "
-      "still visible from Python.")
+      "Base class of a Python editor: the tool state for one overlay TYPE "
+      "(its palette, cursor and constraints). Subclass it, call "
+      "super().__init__(), and override what you need; `edited` is the "
+      "overlay being edited while this editor is active.")
+      .def(py::init<>())
+      .def("activate", [](PyEditorBase&) {}, "Called on entering the mode.")
+      .def("deactivate", [](PyEditorBase&) {}, "Called on leaving the mode.")
+      .def("tools", [](PyEditorBase&) { return std::vector<MenuNode>(); },
+           "The palette: a list of MenuNode, asked again whenever the menus rebuild.")
+      .def("default_cursor", [](PyEditorBase&) { return fv::app::CursorId::kCrosshair; })
+      .def("ui_constraints", [](PyEditorBase&) { return EditorUiConstraints(); })
+      .def("auto_enter_on_create", [](PyEditorBase&) { return true; },
+           "Whether entering the mode creates an overlay when none of its type is open.")
+      .def_property_readonly(
+          "edited",
+          [](const PyEditorBase& b) -> std::shared_ptr<fv::Overlay> {
+            if (b.proxy == nullptr || b.proxy->edited() == nullptr) return nullptr;
+            // The stack's handle, so `self.edited` is the overlay's own Python object.
+            return b.proxy->editors()->manager().FindShared(b.proxy->edited());
+          },
+          "The overlay in edit focus while this editor is active, else None.");
+
+  py::class_<OverlayEditor>(
+      app, "NativeEditor",
+      "An editor written in C++ (a built-in type's), as EditorManager."
+      "current_editor and AppShell.on_editor_changed hand it back.")
       .def("activate", [](OverlayEditor& e) { ThrowIfError(e.Activate()); })
       .def("deactivate", [](OverlayEditor& e) { ThrowIfError(e.Deactivate()); })
       .def_property_readonly("default_cursor", &OverlayEditor::DefaultCursor)
@@ -1014,6 +1090,14 @@ void BindApp(py::module_& m) {
       "file_spec_changed. Do not add to or remove from the stack from inside "
       "a callback.")
       .def(py::init<>());
+}
+
+std::unique_ptr<fv::app::OverlayEditor> EditorFromPython(py::object obj) {
+  if (obj.is_none()) return nullptr;
+  if (!py::isinstance<PyEditorBase>(obj))
+    throw py::type_error("an editor must be a pyfvw.app.OverlayEditor, not " +
+                         py::str(py::type::of(obj)).cast<std::string>());
+  return std::unique_ptr<OverlayEditor>(new PyEditorProxy(std::move(obj)));
 }
 
 }  // namespace pyfvw

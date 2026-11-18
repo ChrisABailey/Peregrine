@@ -15,14 +15,11 @@
 #include <sstream>
 #include <utility>
 
-#include <nlohmann/json.hpp>
+#include "geojson_detail.h"
 
 namespace fv {
 
-namespace {
-
-// Ordered, so fields keep the order the file gives them.
-using json = nlohmann::ordered_json;
+namespace geojson_detail {
 
 constexpr const char* kSchemaMember = "fv_schema";
 constexpr const char* kStyleMember = "fv_style";
@@ -398,14 +395,6 @@ bool IsUrl(const std::string& s) {
   return l.rfind("http://", 0) == 0 || l.rfind("https://", 0) == 0;
 }
 
-/// What the values of one property have been seen to be.
-struct Seen {
-  bool any = false;  ///< a non-null value
-  bool boolean = false, integer = false, real = false, other = false;
-  bool text = false;  ///< a string that is not a date or datetime
-  bool date = false, datetime = false;
-  bool all_url = true, all_email = true;
-};
 
 void Observe(const json& v, Seen* s) {
   if (v.is_null()) return;
@@ -564,7 +553,9 @@ Status ReadInto(const json& root, const std::string& fallback_name,
   return Status::Ok();
 }
 
-}  // namespace
+}  // namespace geojson_detail
+
+using namespace geojson_detail;
 
 Status ReadGeoJson(const std::string& text, const std::string& name,
                    std::shared_ptr<MemoryFeatureLayer>* out, std::string* style_json) {

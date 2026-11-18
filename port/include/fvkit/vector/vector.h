@@ -119,6 +119,13 @@ struct VectorFeature {
   std::string layer;
 
   std::vector<std::vector<GeoPoint>> parts;
+
+  /// Edges that are filled but not stroked, parallel to `parts`:
+  /// unstroked_edges[k][i] != 0 hides the edge from parts[k][i] to the next
+  /// vertex (to the first, for a ring's closing edge). A missing or empty
+  /// entry strokes every edge of that part. S-57 sets it for masked and
+  /// data-limit edges.
+  std::vector<std::vector<uint8_t>> unstroked_edges;
   GeoRect bounds;
 
   // Product-specific attributes, verbatim, for style rules and identify/tap.

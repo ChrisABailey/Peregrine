@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "fv_desk_tools.h"
+#include "fvkit/app/editor.h"
 #include "fvkit/overlay/overlay.h"
 #include "peregrine/fv_plugin.h"
 
@@ -34,6 +35,7 @@ struct PluginLibrary {
 
   /// The class named `name`, or null.
   const fv_overlay_class* FindOverlay(const std::string& name) const;
+  const fv_editor_class* FindEditor(const std::string& name) const;
   const fv_tool_class* FindTool(const std::string& name) const;
 };
 
@@ -59,6 +61,11 @@ std::shared_ptr<Overlay> CreateLibraryOverlay(const PluginLibrary& lib,
                                               const std::string& display_name);
 
 /// A ToolRun that calls `cls.run` with a context over the Desk.
+/// Makes the editor for an overlay type; the factory answers null when the
+/// plugin's `create` fails.
+std::function<std::unique_ptr<app::OverlayEditor>()> MakeLibraryEditorFactory(
+    const PluginLibrary& lib, const fv_editor_class& cls);
+
 ToolRun MakeLibraryTool(const PluginLibrary& lib, const fv_tool_class& cls);
 
 }  // namespace desk

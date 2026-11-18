@@ -171,8 +171,9 @@ Status CpuCanvas::DrawLines(const std::vector<PixelPoint>& pts, const Pen& pen) 
 // scanline's active set is a different ORDER than the old ring-by-ring walk,
 // but the crossings are then sorted, and a sorted sequence of doubles does not
 // depend on the order they arrived in. Output is byte-identical.
-void CpuCanvas::FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
-                              const FvColor& c) {
+template <class Span>
+void CpuCanvas::ScanSpans(const std::vector<std::vector<PixelPoint>>& rings,
+                          Span span) {
   int y_min = buf_.Height(), y_max = -1;
   for (const auto& ring : rings)
     for (const auto& p : ring) {
@@ -250,15 +251,50 @@ void CpuCanvas::FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
     }
     std::sort(xs.begin(), xs.end());
 
-    unsigned char* row = buf_.Row(y);
     for (size_t i = 0; i + 1 < xs.size(); i += 2) {  // even-odd pairs
       const int x0 = std::max((int)std::ceil(xs[i] - 0.5), 0);
       const int x1 = std::min((int)std::floor(xs[i + 1] - 0.5),
                               buf_.Width() - 1);
       if (x1 < x0) continue;
-      BlendSpan(row, x0, x1, c);
+      span(y, x0, x1);
     }
   }
+}
+
+void CpuCanvas::FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
+                              const FvColor& c) {
+  ScanSpans(rings, [&](int y, int x0, int x1) {
+    BlendSpan(buf_.Row(y), x0, x1, c);
+  });
+}
+
+Status CpuCanvas::FillPolyPolygonTiled(
+    const std::vector<std::vector<PixelPoint>>& rings, const PatternTile& tile,
+    int origin_x, int origin_y, const Brush* under) {
+  if (rings.empty()) return Status::Error(kInvalidArg, "no rings");
+  const PixelBuffer& pixels = tile.pixels();
+  if (pixels.Empty()) return Status::Error(kInvalidArg, "empty tile");
+  const int tw = pixels.Width(), th = pixels.Height();
+  ScanSpans(rings, [&](int y, int x0, int x1) {
+    if (under != nullptr) BlendSpan(buf_.Row(y), x0, x1, under->color);
+    const int ty = ((y - origin_y) % th + th) % th;
+    const auto& row_runs = tile.runs(ty);
+    if (row_runs.empty()) return;
+    const unsigned char* trow = pixels.Row(ty);
+    // Left edge of the tile copy that holds x0.
+    int left = x0 - ((x0 - origin_x) % tw + tw) % tw;
+    for (; left <= x1; left += tw) {
+      for (const auto& run : row_runs) {
+        const int a = std::max(left + run.first, x0);
+        const int b = std::min(left + run.second, x1);
+        for (int x = a; x <= b; ++x) {
+          const unsigned char* p = trow + 4 * (x - left);
+          BlendPixel(x, y, FvColor{p[0], p[1], p[2], p[3]});
+        }
+      }
+    }
+  });
+  return Status::Ok();
 }
 
 // One horizontal run of BlendPixel, hoisting the per-pixel bounds check and

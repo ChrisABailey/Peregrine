@@ -10,7 +10,7 @@
 #include <cstdlib>
 
 #include "fvkit/app/pick.h"
-#include "fvkit/overlay/manager.h"
+#include "fvkit/app/overlay_host.h"
 
 namespace fv {
 
@@ -225,10 +225,10 @@ EditPosition RouteEditSession::ResolvePixel(PixelPoint p) const {
   // THE SNAP COMES FIRST, because it is the exact answer and the un-projection
   // is the approximate one. A pixel un-projects to wherever that pixel's
   // centre happens to land — the noise a snap exists to remove.
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr && snap_tolerance_px_ > 0.0) {
+  app::OverlayHost* host = overlay_.host();
+  if (host != nullptr && snap_tolerance_px_ > 0.0) {
     const std::vector<app::SnapToItem> candidates =
-        app::SnapCandidates(*manager, proj, p, snap_tolerance_px_);
+        host->SnapCandidates(proj, p, snap_tolerance_px_);
     for (const app::SnapToItem& c : candidates) {
       // THE OVERLAY EXCLUDES ITSELF, and without this line no drag can move.
       // `RouteOverlay::SnapToPoint` answers out of what it DREW, and the
@@ -276,12 +276,10 @@ bool RouteEditSession::BeginDrag(const std::string& label, PixelPoint at) {
   drag_.moved = false;
   drag_.was_dirty = overlay_.is_dirty();
 
-  // Capture is phase 0 of the manager's routing: once the press is taken every
-  // move belongs to this overlay, whatever is drawn on top of it and wherever
-  // the cursor wanders. A null manager is legal (a plain script, or a test) —
-  // the gesture still works, it is just interruptible.
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr) manager->CaptureMouse(&overlay_);
+  // Once the press is taken every move belongs to this overlay, whatever is
+  // drawn on top of it and wherever the cursor wanders. Without a host (a
+  // plain script) the gesture still works, uncaptured.
+  if (app::OverlayHost* host = overlay_.host()) host->CaptureMouse(overlay_);
   return true;
 }
 
@@ -308,8 +306,7 @@ bool RouteEditSession::EndDrag(PixelPoint at) {
   if (!drag_.active) return false;
   if (drag_.moved) DragTo(at);  // commit the release position
   drag_ = Drag{};
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr) manager->ReleaseMouse();
+  if (app::OverlayHost* host = overlay_.host()) host->ReleaseMouse(overlay_);
   return true;
 }
 
@@ -317,8 +314,7 @@ bool RouteEditSession::CancelDrag() {
   if (!drag_.active) return false;
   const Drag d = drag_;
   drag_ = Drag{};
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr) manager->ReleaseMouse();
+  if (app::OverlayHost* host = overlay_.host()) host->ReleaseMouse(overlay_);
 
   if (!d.moved) return true;  // nothing happened; nothing to undo
   if (!undo_.empty()) {

@@ -26,6 +26,7 @@ struct NativeLibrary {
   explicit NativeLibrary(std::string package_dir) : registry(std::move(package_dir)) {}
   const NativeOverlay* FindOverlay(const std::string& name) const;
   const ToolRun* FindTool(const std::string& name) const;
+  const FeatureSourceDesc* FindFeatureSource(const std::string& name) const;
 };
 
 /// This Peregrine's build id (FV_SDK_BUILD_ID).

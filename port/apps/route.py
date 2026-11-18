@@ -77,15 +77,13 @@ RouteOverlay = route.RouteOverlay
 # The editor (A6) — one instance per TYPE, not per route
 # ---------------------------------------------------------------------------
 
-class RouteEditor:
+class RouteEditor(app.OverlayEditor):
     """The route TOOL. There is one of these however many routes are open,
     which is the whole reason the app layer keeps editors per type: "I am
     drawing routes" is a statement about the user, not about a document.
 
-    Duck-typed on purpose (see pyfvw.app.OverlayTypeDesc): an editor is any
-    object with activate() and deactivate(), plus whichever of tools(),
-    default_cursor(), ui_constraints() and auto_enter_on_create() it cares to
-    define. There is no base class to inherit and nothing to call up into.
+    A pyfvw.app.OverlayEditor: it overrides activate(), deactivate(),
+    tools() and default_cursor().
 
     It holds NO editing state. The gestures, the armed mode and the undo stack
     are the overlay's `edit` session, which is what makes this object a
@@ -95,6 +93,7 @@ class RouteEditor:
     """
 
     def __init__(self, app_window=None):
+        super().__init__()
         # The shell, so a palette button can do what a key press does. None in
         # a test, which is why every use of it is guarded.
         self.app = app_window

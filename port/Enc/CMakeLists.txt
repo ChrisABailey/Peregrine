@@ -53,6 +53,9 @@ if(FVW_BUILD_TESTS)
   # convention as canvas_test and the GeoSym harbor golden.
   # fv_png comes PUBLIC through fv_enc -> fv_fvkit; naming it again makes ld warn.
   target_link_libraries(fv_enc_test PRIVATE fv_enc fv_zlib GTest::gtest_main)
+  # The font Osprey ships, so text in the chart goldens is the same on every host.
+  target_compile_definitions(fv_enc_test PRIVATE
+    FV_TEST_FONT="${CMAKE_CURRENT_SOURCE_DIR}/../apps/Osprey/Data/fonts/DejaVuSans.ttf")
   gtest_discover_tests(fv_enc_test
     PROPERTIES ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata")
 

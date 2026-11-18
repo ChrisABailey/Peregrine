@@ -60,6 +60,7 @@ class Bench:
         self.shell = FakeShell()
         self.settings = pyfvw.Settings()
         self.mgr = ovl.OverlayManager()
+        self.host = ovl.ManagerHost(self.mgr)
         self.registry = app.OverlayTypeRegistry()
         app.register_builtin_types(self.registry)
         points_mod.attach_editor(self.registry,
@@ -92,14 +93,14 @@ class Bench:
 
 def _sync(bench):
     """PythonView.sync_point_dimming, transcribed. The shell method itself
-    touches `self.mgr`, `self.editors` and `self.pick` and nothing else, which
+    touches `self.mgr`, `self.host`, `self.editors` and `self.pick` and nothing else, which
     is what makes it testable off the window."""
     edited = bench.editors.edited
     editing = bench.editors.current_mode == points_mod.POINTS_TYPE_ID
     for o in bench.mgr.overlays:
         if not isinstance(o, ovl.PointOverlay):
             continue
-        o.set_manager(bench.mgr)
+        bench.host.bind(o)
         dim = bool(editing and o is not edited)
         o.dimmed = dim
         if dim:

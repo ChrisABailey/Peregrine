@@ -3,13 +3,12 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-#include "fvkit/ais/receiver.h"
+#include "fvkit/nav/nmea_receiver.h"
 
 #include <algorithm>
 #include <utility>
 
 namespace fv {
-namespace ais {
 
 namespace {
 
@@ -74,7 +73,7 @@ void NmeaReceiver::Stop() {
   if (transport_) transport_->Close();
   transport_.reset();
   assembler_.Reset();
-  vdo_decoder_ = AisDecoder();
+  vdo_decoder_ = ais::AisDecoder();
   has_heading_ = false;
   has_gps_fix_ = false;
   state_ = ReceiverState::kOff;
@@ -187,8 +186,8 @@ void NmeaReceiver::TakeOwnShip(const std::string& line, double now_s, ReceiverBa
   // Only VDO lines go through this decoder; the overlay decodes every line itself.
   const std::size_t bang = line.find('!');
   if (bang == std::string::npos || line.compare(bang + 3, 3, "VDO") != 0) return;
-  AisMessage m;
-  if (vdo_decoder_.Feed(line, now_s, &m) != FeedResult::kMessage) return;
+  ais::AisMessage m;
+  if (vdo_decoder_.Feed(line, now_s, &m) != ais::FeedResult::kMessage) return;
   // Position reports at full resolution; type 27 (1/10 minute) is too coarse.
   const bool report = (m.type >= 1 && m.type <= 3) || m.type == 18 || m.type == 19;
   if (!report || !m.has_position) return;
@@ -227,5 +226,4 @@ void NmeaReceiver::Emit(PositionFix fix, double now_s, ReceiverBatch* out) {
   out->fixes.push_back(fix);
 }
 
-}  // namespace ais
 }  // namespace fv

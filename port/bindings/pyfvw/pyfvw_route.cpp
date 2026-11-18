@@ -393,13 +393,6 @@ void BindRoute(py::module_& m) {
                     "which is NOT chart symbology's 0.32 mm reference.")
 
       // --- the stack, the frame, the editor ---
-      .def("set_manager", &fv::RouteOverlay::SetManager, "manager"_a,
-           // Deliberately NO keep_alive: the manager owns the overlay, so
-           // anchoring it here would be a reference cycle. The manager
-           // outliving its own overlays is the shell's own invariant.
-           "The stack, for mouse CAPTURE during a drag and for the snap walk, "
-           "and nothing else. None is legal: the gesture still works, it is "
-           "just uncaptured and unsnapped.")
       .def_property_readonly("has_projection", &fv::RouteOverlay::has_projection)
       .def_property_readonly(
           "edit", [](fv::RouteOverlay& o) -> fv::RouteEditSession& {

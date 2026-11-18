@@ -77,6 +77,11 @@ std::string DefaultOsmStyle();
 /// route. `changed` runs after the new values are in the settings.
 MapOptionsSource RoutingOptions(std::function<void()> changed);
 
+/// The Moving Map page: the feed (demo, recorded track, NMEA over TCP or UDP)
+/// and how the map follows the ship, all `movingmap.*`. `changed` runs after
+/// the new values are in the settings.
+MapOptionsSource MovingMapOptions(std::function<void()> changed);
+
 /// Every built-in source, in no particular order (map-group pages follow the
 /// map group table; app-wide pages come after them).
 std::vector<MapOptionsSource> BuiltinMapOptions();

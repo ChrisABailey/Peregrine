@@ -152,10 +152,11 @@ class Notes(pyfvw.overlay.Overlay):
         self.focus -= 1
 
 
-class NotesEditor:
-    """Duck-typed: activate/deactivate is the whole contract."""
+class NotesEditor(app.OverlayEditor):
+    """Overrides the bracket, the palette and the constraints."""
 
     def __init__(self):
+        super().__init__()
         self.activations = 0
         self.active = False
 
@@ -292,6 +293,20 @@ def test_a_python_overlay_contributes_a_context_menu_section():
     assert len(fx.shell.menus) == 1
 
 
+def test_an_item_info_sheet_is_built_row_by_row():
+    sheet = app.ItemInfoSheet("Notes", edit_label="Edit Notes")
+    sheet.row("Note", "Text", "added").row("Note", "Count", "1")
+    assert sheet.title == "Notes"
+    assert sheet.edit_label == "Edit Notes"
+    assert [(r.section, r.key, r.value) for r in sheet.rows] == [
+        ("Note", "Text", "added"), ("Note", "Count", "1")]
+    # rows reads a copy; appending to it changes nothing.
+    sheet.rows.append(app.InfoRow("x", "y", "z"))
+    assert len(sheet.rows) == 2
+    built = app.ItemInfoSheet(rows=[app.InfoRow("A", "b", "c")])
+    assert built.rows[0].key == "b" and built.title == ""
+
+
 # ---------------------------------------------------------------------------
 # The flows, against a Python shell
 # ---------------------------------------------------------------------------
@@ -415,6 +430,33 @@ def test_the_mode_dance_from_python():
     assert fx.editor.activations == 2
 
 
+def test_an_editor_sees_the_overlay_it_edits():
+    fx = Fixture()
+    assert fx.editor.edited is None                # not yet made by a manager
+    fx.editors.set_mode("user.notes")
+    notes = fx.manager.first_of_type("user.notes")
+    assert fx.editor.edited is notes               # the stack's own object
+    fx.editors.set_mode("")
+    assert fx.editor.edited is None                # not the active editor
+
+
+def test_a_factory_must_return_an_overlay_editor():
+    class NotAnEditor:
+        def activate(self):
+            pass
+
+        def deactivate(self):
+            pass
+
+    fx = Fixture()
+    fx.registry.register(app.OverlayTypeDesc(
+        id="user.duck", display_name="Duck",
+        factory=lambda: Notes("Duck"), editor_factory=lambda: NotAnEditor(),
+        file=app.FileTypeDesc(default_extension="duck")))
+    assert fx.editors.set_mode("user.duck") != app.FlowResult.DONE
+    assert fx.editors.current_editor is None
+
+
 def test_creating_a_document_auto_enters_its_editor():
     fx = Fixture()
     assert fx.session.new_file_overlay("user.notes") == app.FlowResult.DONE
@@ -434,7 +476,7 @@ def test_closing_the_edited_overlay_leaves_the_mode():
 
 
 def test_an_editor_that_refuses_to_activate_fails_the_mode():
-    class Refuses:
+    class Refuses(app.OverlayEditor):
         def activate(self):
             raise RuntimeError("no tools today")
 

@@ -6,6 +6,7 @@
 #include "fv_s52_style.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "fv_enc_vector_source.h"  // kEncShoalerContourAttribute
 #include "fvkit/vector/renderer.h"  // kHimetricPerHundredthInch, the placer
 
 namespace fv {
@@ -220,6 +222,7 @@ struct S52StyleEngine::Impl {
   bool show_meta = false;
   bool show_buoy_names = true;
   bool show_beacon_names = true;
+  bool show_light_descriptions = true;
 
   std::map<std::string, size_t> unhandled_cs;
   size_t placeholders = 0;
@@ -272,9 +275,8 @@ struct S52StyleEngine::Impl {
     }
   }
 
-  // One lookup row's conditions against one feature. Every condition must
-  // hold; S-52 authors the rows most-specific-first, so the first row that
-  // passes is the answer (E2's header states the same rule).
+  /// True when every attribute condition of lookup row `l` holds for `f`.
+  /// SelectLookup decides between several matching rows.
   bool Matches(const S52Lookup& l, const VectorFeature& f) const {
     for (const S52LookupAttribute& cond : l.attributes) {
       const std::string* have = f.Attribute(cond.acronym);
@@ -355,15 +357,21 @@ std::string Seabed01(double drval1, double drval2,
   return out;
 }
 
-// DEPCNT02 — depth contours. The safety contour is the one line an ECDIS must
-// make unmistakable, so it is drawn wider and in DEPSC; every other contour is
-// a thin DEPCN. Reduced: the spec also promotes a DEPARE boundary to a
-// contour, which needs the neighbouring area's depth range and therefore the
-// retained scene E3b/R3 builds.
+/// DEPCNT02 — depth contours. The safety contour (wide, DEPSC) is the cell's
+/// shoalest contour at or deeper than the mariner's setting: VALDCO is not
+/// shoaler than the setting, and the next shoaler contour in the cell
+/// (kEncShoalerContourAttribute) is shoaler than it or absent. Every other
+/// contour is a thin DEPCN. Reduced: DEPARE boundaries are not promoted
+/// to contours, which needs the neighbouring area's depth range.
 std::string DepCnt02(const VectorFeature& f, const S52MarinerSettings& m) {
+  constexpr double kEps = 1e-6;
   const double valdco = AttrNumber(f, "VALDCO", -1.0);
-  const bool safety =
-      valdco >= 0.0 && std::fabs(valdco - m.safety_contour) < 1e-6;
+  bool safety = valdco >= 0.0 && valdco >= m.safety_contour - kEps;
+  if (safety) {
+    const double shoaler = AttrNumber(f, kEncShoalerContourAttribute, -1.0);
+    const bool has_shoaler = f.Attribute(kEncShoalerContourAttribute) != nullptr;
+    safety = !has_shoaler || shoaler < m.safety_contour - kEps;
+  }
   return safety ? "LS(SOLD,2,DEPSC)" : "LS(SOLD,1,DEPCN)";
 }
 
@@ -407,76 +415,27 @@ std::string SlCons03(const VectorFeature& f, const S52MarinerSettings&) {
   return "LS(SOLD,2,CSTLN)";
 }
 
-// SNDFRM02 — the sounding NUMBER, as S-52 actually sets it: one library symbol
-// per digit, with the decimetre as a SUBSCRIPT. It used to be emitted as plain
-// text (same information, wrong typography) because the digit symbols are
-// RASTER-ONLY definitions with no HPGL — which stopped being a reason when E6
-// added the pixmap half of the symbol seam.
-//
-// The library names a digit `SOUND` + family + POSITION + digit, and the
-// POSITION is a slot on a 7 px grid that the delivered BITMAP PIVOTS lay out
-// for us — pivot x 19, 12, 5, -2, -9 for positions 3, 2, 1, 0, 4, which is a
-// contiguous left-to-right row (a pivot is subtracted from the anchor, so a
-// larger one sits further left). Position 5 repeats position 0's x with the
-// pivot 4 px higher, i.e. the same slot dropped half a line: THE SUBSCRIPT.
-// Composing the tiles by their own pivots gives "9<sub>4</sub>", "35",
-// "12<sub>6</sub>" and "127", which is how this was checked.
-//
-// The family is the colour AND the emphasis: SOUNDS* is black, for a sounding
-// at or below the mariner's safety depth, SOUNDG* grey for one deeper — the
-// same distinction the old text made with CHBLK/CHGRD, now made the way the
-// library makes it.
-//
-// The rule for what to print is S-52's: under 10 m and under 31 m keep the
-// decimetre, anything deeper is whole metres. Positions run right-to-left
-// ending at slot 1, so the number is right-aligned on the sounding and the
-// subscript hangs off it; a number too long for that (4 or 5 digits, an ocean
-// trench rather than a harbour) starts at the leftmost slot instead.
-//
-// NOT DONE, and each is one more symbol from the same family: the drying
-// height bar (SOUNDSA1/GA1), the swept-sounding bar (SOUNDSB1/GB1) and the
-// low-accuracy mark (SOUNDSC2/GC2). A drying height prints its magnitude here
-// without the bar that says it is drying.
-std::string SoundingSymbols(double depth, const S52MarinerSettings& m) {
-  const char family = depth <= m.safety_depth ? 'S' : 'G';
-  // A drying height is authored negative; print its magnitude (see above).
-  const double v = std::fabs(depth);
-
-  int whole = 0;
-  int decimetre = -1;  // -1 = none
-  if (v < 31.0) {
-    whole = static_cast<int>(v);
-    const int d = static_cast<int>(std::lround((v - whole) * 10.0));
-    if (d == 10) {  // 9.97 rounds up into the next metre
-      ++whole;
-    } else if (d > 0) {
-      decimetre = d;
-    }
-  } else {
-    whole = static_cast<int>(std::lround(v));
-  }
-
-  // Slots left to right. The whole digits end on slot 1 (index 2) when they
-  // fit, which is what puts the subscript's slot 5 immediately right of them.
-  const int kSlots[] = {3, 2, 1, 0, 4};
-  const int kSlotCount = 5;
-  std::string digits = std::to_string(whole);
-  if (digits.size() > static_cast<size_t>(kSlotCount))
-    digits = digits.substr(digits.size() - kSlotCount);
-  const int first = digits.size() <= 3
-                        ? 3 - static_cast<int>(digits.size())
-                        : 0;
-
+/// SNDFRM03: the sounding figure, as the engine-internal instruction SN(depth
+/// in metres), preceded by the frame symbols the feature's attributes call for.
+/// The executor sets the figure as text in the mariner's depth unit
+/// (SoundingLabels). The library's own digit symbols (SOUNDS/SOUNDG positions
+/// 0-5) are 6x10 raster tiles with a baked-in shadow, which turn blocky when
+/// scaled; the text keeps their layout and colours.
+///
+/// Frame symbols, SOUNDS at or shallower than the safety depth, SOUNDG deeper:
+/// B1 swept (TECSOU 6), C2 low accuracy (QUASOU 3, 4, 5, 8, 9), A1 the
+/// drying-height bar under a negative depth. Not read: QUAPOS, which S-57
+/// keeps on the spatial record rather than the feature.
+std::string SoundingInstruction(const VectorFeature& f, double depth,
+                                const S52MarinerSettings& m) {
+  const std::string prefix = depth <= m.safety_depth ? "SOUNDS" : "SOUNDG";
   std::string out;
-  for (size_t i = 0; i < digits.size(); ++i) {
-    out += std::string(out.empty() ? "" : ";") + "SY(SOUND" + family +
-           std::to_string(kSlots[first + i]) + digits[i] + ")";
-  }
-  if (decimetre >= 0 && digits.size() <= 3) {
-    out += ";SY(SOUND" + std::string(1, family) + "5" +
-           std::to_string(decimetre) + ")";
-  }
-  return out;
+  if (AttrIn(f, "TECSOU", {6})) out += "SY(" + prefix + "B1);";
+  if (AttrIn(f, "QUASOU", {3, 4, 5, 8, 9})) out += "SY(" + prefix + "C2);";
+  if (depth < 0.0) out += "SY(" + prefix + "A1);";
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "SN(%.4f)", depth);
+  return out + buf;
 }
 
 // SOUNDG02 — soundings. The source publishes the depth as the pseudo-attribute
@@ -485,7 +444,7 @@ std::string SoundingSymbols(double depth, const S52MarinerSettings& m) {
 std::string Soundg02(const VectorFeature& f, const S52MarinerSettings& m) {
   const std::string* depth = f.Attribute("DEPTH");
   if (depth == nullptr || depth->empty()) return std::string();
-  return SoundingSymbols(ToDouble(*depth, 0.0), m);
+  return SoundingInstruction(f, ToDouble(*depth, 0.0), m);
 }
 
 // UDWHAZ03 — "is this underwater feature a danger to the mariner?" The one
@@ -516,13 +475,12 @@ const char* DangerSymbol(double valsou, const S52MarinerSettings& m) {
 }
 
 // The sounding a hazard carries, set the way SOUNDG02 sets one — the same
-// SNDFRM02 call the published procedures make, so a wreck's depth and the
+// SNDFRM03 call the published procedures make, so a wreck's depth and the
 // sounding beside it are the same typography instead of two different ones.
 std::string ValsouText(const VectorFeature& f, const S52MarinerSettings& m) {
   const std::string* v = f.Attribute("VALSOU");
   if (v == nullptr || v->empty()) return std::string();
-  const std::string sndg = SoundingSymbols(ToDouble(*v, 0.0), m);
-  return sndg.empty() ? sndg : ";" + sndg;
+  return ";" + SoundingInstruction(f, ToDouble(*v, 0.0), m);
 }
 
 // OBSTRN04 — obstructions: the single heaviest procedure in these cells (105
@@ -540,11 +498,17 @@ std::string Obstrn04(const VectorFeature& f, const S52MarinerSettings& m) {
                                                 : "LS(DASH,2,CHGRD)";
   }
   if (f.type == VectorGeometryType::kArea) {
-    // The area takes the depth ramp when it states a depth, and the dotted
-    // hazard boundary either way.
-    std::string out = has_depth ? Seabed01(depth, depth, m) : "AC(DEPVS)";
-    out += ";LS(DOTT,2,CHBLK)";
-    if (has_depth && IsDangerDepth(depth, m))
+    if (!has_depth) {
+      // No depth: a foul area is patterned, otherwise WATLEV picks the fill —
+      // dry ground, intertidal, or very shallow water.
+      if (AttrIn(f, "CATOBS", {6})) return "AP(FOULAR01);LS(DOTT,2,CHBLK)";
+      if (AttrIn(f, "WATLEV", {1, 2})) return "AC(CHBRN);LS(SOLD,2,CSTLN)";
+      if (AttrIn(f, "WATLEV", {4})) return "AC(DEPIT);LS(DASH,2,CSTLN)";
+      return "AC(DEPVS);LS(DOTT,2,CHBLK)";
+    }
+    // A stated depth takes the depth ramp and the dotted hazard boundary.
+    std::string out = Seabed01(depth, depth, m) + ";LS(DOTT,2,CHBLK)";
+    if (IsDangerDepth(depth, m))
       out += std::string(";SY(") + DangerSymbol(depth, m) + ")";
     return out + ValsouText(f, m);
   }
@@ -636,11 +600,82 @@ bool LightSectors(const VectorFeature& f, double* s1, double* s2) {
 // is a major light; all-round, it is ringed in its colour.
 constexpr double kMajorLightRangeNm = 10.0;
 
+/// Formats a number the way a light description prints it: no trailing zeros.
+std::string LightNumber(double v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%g", v);
+  return buf;
+}
+
+/** LITDSN01: the light description, e.g. "Fl(2) R 6s 12m 5M" — character
+ *  and signal group, colours, period, height and nominal range, each omitted
+ *  when its attribute is missing. Components are space-separated as on US
+ *  charts. Empty when the light states none of them. */
+std::string LightDescription(const VectorFeature& f) {
+  // S-57 LITCHR 1-29; 21-24 are unassigned.
+  static const char* const kCharacter[] = {
+      "",      "F",      "Fl",     "LFl",   "Q",       "VQ",      "UQ",
+      "Iso",   "Oc",     "IQ",     "IVQ",   "IUQ",     "Mo",      "FFl",
+      "Fl+LFl", "Oc+Fl", "FLFl",   "Al.Oc", "Al.LFl",  "Al.Fl",   "Al.Gr",
+      "",      "",       "",       "",      "Q+LFl",   "VQ+LFl",  "UQ+LFl",
+      "Al",    "Al.FFl"};
+  // S-57 COLOUR 1-13.
+  static const char* const kColour[] = {"",   "W",  "B",  "R",  "G",
+                                        "Bu", "Y",  "Gy", "Br", "Am",
+                                        "Vi", "Or", "M",  "P"};
+  std::string out;
+  const int chr = static_cast<int>(AttrNumber(f, "LITCHR", 0.0));
+  if (chr > 0 && chr < static_cast<int>(sizeof(kCharacter) / sizeof(*kCharacter)))
+    out += kCharacter[chr];
+  // A single flash, "(1)", or an empty group is not printed.
+  const std::string* group = f.Attribute("SIGGRP");
+  if (group != nullptr && *group != "()" && *group != "(1)") out += *group;
+  auto append = [&out](const std::string& part) {
+    if (part.empty()) return;
+    if (!out.empty()) out += ' ';
+    out += part;
+  };
+  if (const std::string* c = f.Attribute("COLOUR")) {
+    std::string colours;
+    size_t pos = 0;
+    while (pos < c->size()) {
+      size_t comma = c->find(',', pos);
+      if (comma == std::string::npos) comma = c->size();
+      const int n = std::atoi(c->substr(pos, comma - pos).c_str());
+      if (n > 0 && n < static_cast<int>(sizeof(kColour) / sizeof(*kColour)))
+        colours += kColour[n];
+      pos = comma + 1;
+    }
+    append(colours);
+  }
+  auto number = [](double v, const char* unit) {
+    return std::isfinite(v) ? LightNumber(v) + unit : std::string();
+  };
+  append(number(AttrNumber(f, "SIGPER", NAN), "s"));
+  append(number(AttrNumber(f, "HEIGHT", NAN), "m"));
+  append(number(AttrNumber(f, "VALNMR", NAN), "M"));
+  return out;
+}
+
+/// S-52 text group of a light's description.
+constexpr const char* kLightDescriptionTextGroup = "23";
+
+/// The TX instruction that sets a light's description to the right of it,
+/// text group 23. `yoffs` is in body sizes, negative up.
+std::string LightDescriptionText(const VectorFeature& f, int yoffs) {
+  const std::string d = LightDescription(f);
+  if (d.empty()) return std::string();
+  return ";TX('" + d + "',3,2,3,'15110',2," + std::to_string(yoffs) +
+         ",CHBLK," +
+         kLightDescriptionTextGroup + ")";
+}
+
 /// LIGHTS05 — lights. A sector light draws its legs and arc instead of a
 /// flare; an all-round light draws a flare at kFlareBearingDeg, and a major
-/// one also a full circle. Not implemented: the light description text
-/// ("Fl(2)R.10s12M"), the 25 mm arc for overlapping sectors at one position,
-/// full-range legs, and directional (ORIENT) lights.
+/// one also a full circle. Both carry the description (LIGHTS05's TX at
+/// XOFFS 2, YOFFS -1 beside a flare, 0 beside a sector). Not implemented: the
+/// 25 mm arc for overlapping sectors at one position, full-range legs, and
+/// directional (ORIENT) lights.
 std::string Lights05(const VectorFeature& f, const S52MarinerSettings&) {
   // CATLIT 8 = flood light, 11 = strip light: both have their own symbol and
   // neither takes a flare.
@@ -650,7 +685,8 @@ std::string Lights05(const VectorFeature& f, const S52MarinerSettings&) {
   double s1 = 0.0, s2 = 0.0;
   if (LightSectors(f, &s1, &s2)) {
     return "SY(" +
-           LightSectorId(s1, s2, kSectorArcRadiusMm, LightArcColour(f)) + ")";
+           LightSectorId(s1, s2, kSectorArcRadiusMm, LightArcColour(f)) + ")" +
+           LightDescriptionText(f, 0);
   }
   std::string out = std::string("SY(") + LightFlare(f) + "," +
                     std::to_string(kFlareBearingDeg) + ")";
@@ -659,7 +695,17 @@ std::string Lights05(const VectorFeature& f, const S52MarinerSettings&) {
            LightSectorId(0.0, 360.0, kAllRoundArcRadiusMm, LightArcColour(f)) +
            ")";
   }
-  return out;
+  return out + LightDescriptionText(f, -1);
+}
+
+/// SYMINS01 — a NEWOBJ (in US cells, a virtual AIS aid to navigation) draws
+/// the instructions its own SYMINS attribute carries. Without them it takes the
+/// unknown-object mark; the library has no NEWOBJ01 symbol.
+std::string SymIns01(const VectorFeature& f, const S52MarinerSettings&) {
+  const std::string* ins = f.Attribute("SYMINS");
+  if (ins != nullptr && !ins->empty()) return *ins;
+  if (f.type == VectorGeometryType::kPoint) return "SY(QUESMRK1)";
+  return "LS(DASH,2,CHMGD)";
 }
 
 // TOPMAR01 — a topmark on a buoy or beacon. TOPSHP names the shape; the
@@ -721,17 +767,19 @@ std::string RestrictionInstructions(const VectorFeature& f) {
   }
   const std::string name = std::string(family) + "51";
   if (f.type == VectorGeometryType::kPoint) return "SY(" + name + ")";
-  // Areas and lines take the family's complex boundary line. S-52 also puts a
-  // CENTRED copy of the symbol inside an area, and that is deliberately NOT
-  // emitted: the renderer anchors point symbology at a part's FIRST VERTEX,
-  // so the mark would sit on a corner of the boundary rather than in the
-  // middle of the area — a misplaced restriction symbol is worse than none.
-  // A centroid anchor belongs with the retained scene (R3).
-  return "LC(" + name + ")";
+  // A line takes the family's boundary line; an area also takes the symbol,
+  // which the renderer centres in the area.
+  if (f.type == VectorGeometryType::kLine) return "LC(" + name + ")";
+  return "SY(" + name + ");LC(" + name + ")";
 }
 
-// RESTRN01 — the restriction symbology of any object that carries RESTRN.
+/// RESTRN01 — restriction symbology for any object class whose lookup row calls
+/// it (anchorages, cable and pipeline areas, fairways, ...). Emits nothing when
+/// the object carries no RESTRN; the undefined-restriction mark is only for a
+/// RESTRN value outside the three families.
 std::string Restrn01(const VectorFeature& f, const S52MarinerSettings&) {
+  const std::string* restrn = f.Attribute("RESTRN");
+  if (restrn == nullptr || restrn->empty()) return std::string();
   return RestrictionInstructions(f);
 }
 
@@ -769,6 +817,7 @@ const std::unordered_map<std::string, CsProc>& CsRegistry() {
     (*m)["RESTRN01"] = &Restrn01;
     (*m)["SLCONS03"] = &SlCons03;
     (*m)["SOUNDG02"] = &Soundg02;
+    (*m)["SYMINS01"] = &SymIns01;
     (*m)["TOPMAR01"] = &TopMar01;
     (*m)["WRECKS02"] = &Wrecks02;
     return m;
@@ -838,6 +887,15 @@ void S52StyleEngine::SetShowBeaconNames(bool on) {
 }
 bool S52StyleEngine::show_beacon_names() const { return impl_->show_beacon_names; }
 
+void S52StyleEngine::SetShowLightDescriptions(bool on) {
+  if (impl_->show_light_descriptions == on) return;
+  impl_->show_light_descriptions = on;
+  BumpStyleEpoch();
+}
+bool S52StyleEngine::show_light_descriptions() const {
+  return impl_->show_light_descriptions;
+}
+
 void S52StyleEngine::SetPointStyle(S52PointStyle s) {
   impl_->point_style = s;
   BumpStyleEpoch();
@@ -853,14 +911,28 @@ const S52PresentationLibrary& S52StyleEngine::library() const {
 
 const S52Lookup* S52StyleEngine::SelectLookup(const VectorFeature& f) const {
   if (!IsOpen()) return nullptr;
-  const std::vector<const S52Lookup*> rows =
+  const std::vector<const S52Lookup*>& rows =
       impl_->lib.Lookups(impl_->TableFor(f.type), f.style_key);
   if (rows.empty()) return nullptr;
-  for (const S52Lookup* candidate : rows)
-    if (impl_->Matches(*candidate, f)) return candidate;
-  // S-52 authors a catch-all (no conditions) at the end of each object's rows;
-  // when a producer's attribute combination misses even that, the table's last
-  // row is its own default, which beats drawing nothing.
+  // The matching row with the most conditions wins, earliest on a tie. The
+  // delivered library does not keep its catch-all rows last (VEGATN's is
+  // first, BOYLAT's Paper row 45 of 55), so file order alone would shadow
+  // the specific rows behind them.
+  const S52Lookup* best = nullptr;
+  const S52Lookup* catch_all = nullptr;
+  for (const S52Lookup* candidate : rows) {
+    if (candidate->attributes.empty()) {
+      if (catch_all == nullptr) catch_all = candidate;
+      continue;
+    }
+    if (!impl_->Matches(*candidate, f)) continue;
+    if (best == nullptr ||
+        candidate->attributes.size() > best->attributes.size())
+      best = candidate;
+  }
+  if (best != nullptr) return best;
+  if (catch_all != nullptr) return catch_all;
+  // No catch-all and nothing matched: the last row stands in as the default.
   return rows.back();
 }
 
@@ -1019,26 +1091,79 @@ int OffsetPixels(const std::string& spec, double body_px) {
   return static_cast<int>(std::lround(ToDouble(Clean(spec), 0.0) * body_px));
 }
 
-// TE's format string, applied to one attribute value. Only the conversions the
-// delivered library actually uses are honoured ('%s' and the numeric forms);
-// anything else falls through to the raw value, which is information rather
-// than a blank label.
+/** Applies TE's printf-style `format` to one attribute value.
+ *  The single conversion spec is located and formatted on its own; the text
+ *  around it (`"clr "`, `" kn"`, `" (m)"`) is kept verbatim. A format with no
+ *  spec, a second spec or an unsupported conversion yields the raw value. */
 std::string ApplyTextFormat(const std::string& format,
                             const std::string& value) {
   const size_t pct = format.find('%');
   if (pct == std::string::npos) return format.empty() ? value : format;
-  const char conv = format.back();
+  size_t end = pct + 1;
+  while (end < format.size() && std::strchr("-+ #0", format[end]) != nullptr) ++end;
+  while (end < format.size() && (std::isdigit(static_cast<unsigned char>(format[end])) ||
+                                 format[end] == '.'))
+    ++end;
+  while (end < format.size() && (format[end] == 'l' || format[end] == 'h')) ++end;
+  if (end >= format.size()) return value;
+  const char conv = format[end];
+  const std::string suffix = format.substr(end + 1);
+  if (suffix.find('%') != std::string::npos) return value;
+  // The length modifiers are dropped: the argument types below are fixed.
+  std::string spec = format.substr(pct, end - pct);
+  spec.erase(std::remove_if(spec.begin(), spec.end(),
+                            [](char c) { return c == 'l' || c == 'h'; }),
+             spec.end());
+  spec += conv;
   char buf[128];
   if (conv == 's') {
-    snprintf(buf, sizeof(buf), format.c_str(), value.c_str());
+    snprintf(buf, sizeof(buf), spec.c_str(), value.c_str());
   } else if (conv == 'd' || conv == 'i') {
-    snprintf(buf, sizeof(buf), format.c_str(), std::atoi(value.c_str()));
+    snprintf(buf, sizeof(buf), spec.c_str(), std::atoi(value.c_str()));
   } else if (conv == 'f' || conv == 'g' || conv == 'e') {
-    snprintf(buf, sizeof(buf), format.c_str(), ToDouble(value, 0.0));
+    snprintf(buf, sizeof(buf), spec.c_str(), ToDouble(value, 0.0));
   } else {
     return value;
   }
-  return std::string(buf);
+  return format.substr(0, pct) + buf + suffix;
+}
+
+// Sounding text size in S-52 nominal pixels (0.32 mm): digits close to the
+// library tiles' 9 px height and 7 px pitch.
+constexpr double kSoundingTextPx = 13.0;
+
+/// The labels for one sounding figure, laid out on the digit tiles' grid: the
+/// whole part right-aligned ending at the sounding, the subscript to its right
+/// and 4 px lower. A whole part longer than the tiles' three slots starts at
+/// the leftmost slot instead. Offsets are nominal pixels times `symbol_scale`.
+void SoundingLabels(const SoundingFigure& fig, const FvColor& colour,
+                    double symbol_scale, std::vector<LabelStyle>* out) {
+  auto px = [symbol_scale](double v) {
+    return static_cast<int>(std::lround(v * symbol_scale));
+  };
+  LabelStyle whole;
+  whole.valid = true;
+  whole.text = fig.whole;
+  whole.style.size = kSoundingTextPx * symbol_scale;
+  whole.style.color = colour;
+  whole.skip_repeat_filter = true;
+  whole.dy = px(5);
+  if (fig.whole.size() <= 3) {
+    whole.halign = LabelHAlign::kRight;
+  } else {
+    whole.dx = px(-19);
+  }
+  if (!fig.fraction.empty() && fig.whole.size() <= 3) {
+    LabelStyle sub = whole;
+    sub.text = fig.fraction;
+    sub.halign = LabelHAlign::kLeft;
+    sub.dx = px(1);
+    sub.dy = px(9);
+    out->push_back(std::move(whole));
+    out->push_back(std::move(sub));
+    return;
+  }
+  out->push_back(std::move(whole));
 }
 
 }  // namespace
@@ -1070,20 +1195,27 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
   // band. A row may carry more than one TX/TE (a light's characteristic and its
   // name), and each keeps its own result exactly as the builder would have.
   std::vector<LabelStyle> labels;
+  // Sounding figures: text, but drawn at the row's own priority.
+  std::vector<LabelStyle> soundings;
 
-  // A CS procedure's output is executed in the same pass, so its instructions
-  // land in the same StyleResult sequence. One level deep is enough: no
-  // published procedure emits another CS.
-  std::vector<S52Instruction> program = row->instructions;
-  // No published procedure emits another CS, so expansion is one level deep in
-  // practice — but a future procedure that emitted its own name would spin
-  // here forever, and a style engine must not be able to hang a render.
-  const size_t kMaxProgram = 64;
-  for (size_t i = 0; i < program.size() && i < kMaxProgram; ++i) {
-    const S52Instruction& ins = program[i];
+  // A CS procedure's output runs in place of the CS, so its instructions land
+  // in the same StyleResult sequence. It is walked as a second frame over the
+  // row's own program; a CS inside that output is skipped, which no published
+  // procedure emits and which could otherwise recurse without bound.
+  const std::vector<S52Instruction>* frame[2] = {&row->instructions, nullptr};
+  size_t next[2] = {0, 0};
+  std::vector<S52Instruction> emitted_program;
+  int depth = 0;
+  for (;;) {
+    if (next[depth] >= frame[depth]->size()) {
+      if (depth == 0) break;
+      depth = 0;
+      continue;
+    }
+    const S52Instruction& ins = (*frame[depth])[next[depth]++];
 
     if (ins.op == "CS") {
-      if (ins.params.empty()) continue;
+      if (ins.params.empty() || depth > 0) continue;
       const std::string name = Clean(ins.params[0]);
       const auto& registry = CsRegistry();
       auto it = registry.find(name);
@@ -1096,12 +1228,10 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
         ++impl_->sector_lights_simplified;
       const std::string emitted = it->second(f, current_mariner());
       if (emitted.empty()) continue;
-      const std::vector<S52Instruction> sub = ParseS52Instructions(emitted);
-      if (program.size() + sub.size() > kMaxProgram) continue;
-      // NOTE `ins` is a reference INTO program and is dead after this insert;
-      // nothing below the insert may touch it.
-      program.insert(program.begin() + static_cast<long>(i) + 1, sub.begin(),
-                     sub.end());
+      emitted_program = ParseS52Instructions(emitted);
+      frame[1] = &emitted_program;
+      next[1] = 0;
+      depth = 1;
       continue;
     }
 
@@ -1208,6 +1338,12 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       // The renderer already folds StyleContext::symbol_scale into its pixel
       // conversion, so only a RULE's own multiplier belongs here.
       s.scale = pass.SymbolScaleOr(1.0);
+      // S-52 centres an area's or line's symbol; a point ignores the anchor.
+      s.anchor = LabelAnchor::kCentre;
+      // S-52 symbols stay screen-upright on a rotated chart. Light sectors
+      // carry true bearings in their geometry and turn with it; so does an
+      // attribute rotation (ORIENT), set below.
+      s.turns_with_chart = IsLightSectorId(name);
       if (sym != nullptr) {
         s.symbol_id = name;
       } else if (impl_->lib.SymbolBitmap(name) != nullptr) {
@@ -1243,10 +1379,26 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
         if (RuleValueAsNumber(p, &deg)) {
           s.rotation_deg = -deg;
         } else {
+          // An attribute is a true bearing; a literal (the flare's 135) is
+          // relative to the top of the screen.
           const std::string* v = f.Attribute(p);
-          if (v != nullptr) s.rotation_deg = -ToDouble(*v, 0.0);
+          if (v != nullptr) {
+            s.rotation_deg = -ToDouble(*v, 0.0);
+            s.turns_with_chart = true;
+          }
         }
       }
+      continue;
+    }
+
+    if (ins.op == "SN" && !ins.params.empty()) {
+      // Soundings are chart data, not optional text: not gated by draw_labels.
+      const double depth = ToDouble(Clean(ins.params[0]), 0.0);
+      const S52MarinerSettings& m = current_mariner();
+      const FvColor colour =
+          impl_->Color(depth <= m.safety_depth ? "SNDG2" : "CHGRD");
+      SoundingLabels(FormatSounding(depth, m.depth_unit), colour, symbol_scale,
+                     &soundings);
       continue;
     }
 
@@ -1256,7 +1408,11 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       const bool is_te = ins.op == "TE";
       const size_t attr_index = is_te ? 1 : 0;
       if (ins.params.size() <= attr_index) continue;
-      const std::string* value = f.Attribute(Clean(ins.params[attr_index]));
+      const bool literal = !is_te && attr_index < ins.quoted.size() &&
+                           ins.quoted[attr_index];
+      const std::string* value =
+          literal ? &ins.params[attr_index]
+                  : f.Attribute(Clean(ins.params[attr_index]));
       if (value == nullptr || value->empty()) continue;
 
       // NOT into `builder`: text is drawn above all geometry, which means a
@@ -1265,9 +1421,13 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
       LabelStyle label;
       label.valid = true;
       label.text = is_te ? ApplyTextFormat(ins.params[0], *value) : *value;
+      label.anchor = LabelAnchor::kCentre;
       // Parameter layout after the attribute: hjust, vjust, space, chars,
       // xoffs, yoffs, colour, display.
       const size_t base = attr_index + 1;
+      if (!impl_->show_light_descriptions && ins.params.size() > base + 7 &&
+          Clean(ins.params[base + 7]) == kLightDescriptionTextGroup)
+        continue;
       if (ins.params.size() > base + 3)
         label.style.size = TextSizeFromSpec(ins.params[base + 3]) * symbol_scale;
       if (ins.params.size() > base + 6)
@@ -1293,13 +1453,20 @@ Status S52StyleEngine::StyleFeature(const VectorFeature& f,
   // question mark — but ONLY when nothing else in the row put ink down, since
   // a beacon that already drew its own symbol needs its missing topmark
   // counted, not a question mark stamped on top of it.
-  if (unhandled_here > 0 && !builder.AnythingDrawn() && labels.empty()) {
+  if (unhandled_here > 0 && !builder.AnythingDrawn() && labels.empty() &&
+      soundings.empty()) {
     PointSymbolStyle& s = builder.Symbol();
     s.valid = true;
     s.symbol_id = kQuestionMark;
     ++impl_->placeholders;
   }
   builder.Finish();
+  for (LabelStyle& lb : soundings) {
+    StyleResult r;
+    r.priority = priority;
+    r.label = std::move(lb);
+    out->push_back(std::move(r));
+  }
 
   // A large minority of S-52 rows are text ONLY — a sounding IS its number —
   // so this is frequently the row's whole output, not an afterthought on it.

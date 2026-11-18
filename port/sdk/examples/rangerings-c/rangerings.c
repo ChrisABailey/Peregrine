@@ -8,8 +8,11 @@
  *
  * Concentric range rings about a centre the user places with a click. The
  * rings are a file overlay (`.rng`, plain text), offer four properties, and
- * hit-test their centre and each ring. The package also contributes one tool,
- * which opens the sample file shipped in the package.
+ * hit-test their centre and each ring. An editor gives them a toolbar button
+ * and a palette; clicks reach the rings only while it is active, and each
+ * centre move undoes and redoes from Edit ▸ Undo. The package
+ * also contributes one tool, which opens the sample file shipped in the
+ * package.
  */
 #include <math.h>
 #include <stdio.h>
@@ -19,17 +22,25 @@
 #include "peregrine/fv_plugin.h"
 
 #define MAX_RINGS 10
+#define MAX_HISTORY 32
 #define METRES_PER_NM 1852.0
 #define EARTH_RADIUS_M 6371008.8
 #define PI 3.14159265358979323846
+#define HOME_LAT 32.7765 /* Charleston, until a click or a file says otherwise */
+#define HOME_LON -79.9311
 
 typedef struct rings {
   const fv_host_api* host;
+  fv_overlay_ref* ref;
   fv_geo_point center;
   int count;
   double spacing_nm;
   fv_color color;
   int labels;
+  fv_geo_point undo[MAX_HISTORY]; /* earlier centres, oldest first */
+  int undo_count;
+  fv_geo_point redo[MAX_HISTORY];
+  int redo_count;
   char text[256]; /* the last string returned to the host */
 } rings;
 
@@ -51,9 +62,47 @@ static fv_geo_point north_of(fv_geo_point p, double metres) {
   return q;
 }
 
+/* MARK: History */
+
+/** Appends `p` to a bounded history, dropping the oldest entry when full. */
+static void history_push(fv_geo_point* h, int* n, fv_geo_point p) {
+  if (*n == MAX_HISTORY) {
+    memmove(h, h + 1, (MAX_HISTORY - 1) * sizeof *h);
+    --*n;
+  }
+  h[(*n)++] = p;
+}
+
+/** Moves the centre to `to` as one undoable edit and dirties the document. */
+static void move_centre(rings* r, fv_geo_point to) {
+  history_push(r->undo, &r->undo_count, r->center);
+  r->redo_count = 0;
+  r->center = to;
+  r->host->set_dirty(r->ref, 1);
+}
+
+static int rings_can_undo(void* self) { return ((rings*)self)->undo_count > 0; }
+static int rings_can_redo(void* self) { return ((rings*)self)->redo_count > 0; }
+
+static void rings_undo(void* self) {
+  rings* r = (rings*)self;
+  if (r->undo_count == 0) return;
+  history_push(r->redo, &r->redo_count, r->center);
+  r->center = r->undo[--r->undo_count];
+  r->host->set_dirty(r->ref, 1);
+}
+
+static void rings_redo(void* self) {
+  rings* r = (rings*)self;
+  if (r->redo_count == 0) return;
+  history_push(r->undo, &r->undo_count, r->center);
+  r->center = r->redo[--r->redo_count];
+  r->host->set_dirty(r->ref, 1);
+}
+
 /* MARK: Overlay */
 
-static void* rings_create(const fv_host_api* host, const char* type_id) {
+static void* rings_create(const fv_host_api* host, fv_overlay_ref* ref, const char* type_id) {
   rings* r = (rings*)calloc(1, sizeof(rings));
   (void)type_id;
   if (r == NULL) {
@@ -61,8 +110,9 @@ static void* rings_create(const fv_host_api* host, const char* type_id) {
     return NULL;
   }
   r->host = host;
-  r->center.lat = 32.7765; /* Charleston, until a click or a file says otherwise */
-  r->center.lon = -79.9311;
+  r->ref = ref;
+  r->center.lat = HOME_LAT;
+  r->center.lon = HOME_LON;
   r->count = 3;
   r->spacing_nm = 1.0;
   r->color.r = 255;
@@ -133,13 +183,17 @@ static int rings_open(void* self, const char* path) {
     }
   }
   fclose(f);
+  next.undo_count = 0;
+  next.redo_count = 0;
   *r = next;
   return FV_OK;
 }
 
-static int rings_save(void* self, const char* path) {
+static int rings_save(void* self, const char* path, int format_index) {
   const rings* r = (const rings*)self;
-  FILE* f = fopen(path, "w");
+  FILE* f;
+  (void)format_index;
+  f = fopen(path, "w");
   if (f == NULL) {
     r->host->set_error("cannot write the file");
     return FV_ERR_IO;
@@ -181,6 +235,32 @@ static int rings_hit_test(void* self, const fv_view* view, double x, double y, d
     }
   }
   return 0;
+}
+
+/** Get Info for the centre or the ring under (x, y): the ring's radius, then the centre and the set. */
+static int rings_item_info(void* self, const fv_view* view, double x, double y,
+                           double tolerance_px, const fv_info* info) {
+  rings* r = (rings*)self;
+  fv_hit hit;
+  char value[64];
+  if (!rings_hit_test(self, view, x, y, tolerance_px, &hit)) return 0;
+  info->title(info, "Range Rings");
+  if (hit.feature > 0) {
+    snprintf(value, sizeof value, "%d", (int)hit.feature);
+    info->row(info, "Ring", "Number", value);
+    snprintf(value, sizeof value, "%g nm", (double)hit.feature * r->spacing_nm);
+    info->row(info, "Ring", "Radius", value);
+  }
+  snprintf(value, sizeof value, "%.6f", r->center.lat);
+  info->row(info, "Centre", "Latitude", value);
+  snprintf(value, sizeof value, "%.6f", r->center.lon);
+  info->row(info, "Centre", "Longitude", value);
+  snprintf(value, sizeof value, "%d", r->count);
+  info->row(info, "Rings", "Count", value);
+  snprintf(value, sizeof value, "%g nm", r->spacing_nm);
+  info->row(info, "Rings", "Spacing", value);
+  info->edit_label(info, "Edit Rings\xE2\x80\xA6" /* UTF-8 ellipsis */);
+  return 1;
 }
 
 static const char* rings_properties_schema(void* self) {
@@ -241,6 +321,7 @@ static int rings_set_property(void* self, const char* key, const char* value) {
   } else {
     return FV_ERR_NOT_FOUND;
   }
+  r->host->set_dirty(r->ref, 1);
   return FV_OK;
 }
 
@@ -250,8 +331,65 @@ static int rings_on_mouse(void* self, const fv_view* view, const fv_mouse_event*
   fv_geo_point at;
   if (view == NULL || e->kind != FV_MOUSE_DOWN || e->button != 0) return 0;
   if (view->screen_to_geo(view, e->x, e->y, &at) != FV_OK) return 0;
-  r->center = at;
+  move_centre(r, at);
   return 1;
+}
+
+/** While editing, any left press moves the centre. */
+static const char* rings_edit_hint(void* self, double x, double y) {
+  (void)self;
+  (void)x;
+  (void)y;
+  return "Move the centre here";
+}
+
+/* MARK: Editor */
+
+/** The palette shown while editing range rings. It holds no state of its own. */
+typedef struct rings_editor {
+  const fv_host_api* host;
+  fv_editor_ref* ref;
+} rings_editor;
+
+static void* editor_create(const fv_host_api* host, fv_editor_ref* ref) {
+  rings_editor* e = (rings_editor*)calloc(1, sizeof(rings_editor));
+  if (e == NULL) {
+    host->set_error("out of memory");
+    return NULL;
+  }
+  e->host = host;
+  e->ref = ref;
+  return e;
+}
+
+static void editor_destroy(void* self) { free(self); }
+
+static void editor_tools(void* self, const fv_menu* menu) {
+  const rings_editor* e = (const rings_editor*)self;
+  const rings* r = (const rings*)e->host->edited(e->ref);
+  const int at_home = r != NULL && r->center.lat == HOME_LAT && r->center.lon == HOME_LON;
+  menu->item(menu, "labels", "Show Labels", "resources/labels.svg",
+             r == NULL ? FV_ITEM_DISABLED : (r->labels ? FV_ITEM_CHECKED : 0));
+  menu->item(menu, "reset", "Reset Centre", "recenter",
+             r == NULL || at_home ? FV_ITEM_DISABLED : 0);
+}
+
+static int editor_run_tool(void* self, const char* id) {
+  const rings_editor* e = (const rings_editor*)self;
+  rings* r = (rings*)e->host->edited(e->ref);
+  if (r == NULL) return FV_ERR_NOT_FOUND;
+  if (strcmp(id, "labels") == 0) {
+    r->labels = !r->labels;
+  } else if (strcmp(id, "reset") == 0) {
+    fv_geo_point home;
+    home.lat = HOME_LAT;
+    home.lon = HOME_LON;
+    move_centre(r, home);
+  } else {
+    return FV_ERR_NOT_FOUND;
+  }
+  e->host->request_redraw(r->ref);
+  return FV_OK;
 }
 
 /* MARK: Tool */
@@ -265,23 +403,49 @@ static int open_sample(const fv_tool_context* c) {
 
 /* MARK: Entry point */
 
-static const fv_overlay_class kOverlays[] = {{
-    sizeof(fv_overlay_class), "rings", rings_create, rings_destroy, rings_draw, rings_open,
-    rings_save, rings_hit_test, rings_properties_schema, rings_get_property,
-    rings_set_property, rings_on_mouse,
-}};
-
+static fv_overlay_class overlays[1];
+static fv_editor_class editors[1];
 static const fv_tool_class kTools[] = {{sizeof(fv_tool_class), "open_sample", open_sample}};
 
 FV_PLUGIN_EXPORT int fv_plugin_entry(const fv_host_api* host, fv_plugin_api* out) {
+  fv_overlay_class* o = &overlays[0];
+  fv_editor_class* e = &editors[0];
   if (host->api_major != FV_PLUGIN_API_MAJOR) {
-    host->set_error("rangerings needs plugin API 1");
+    host->set_error("rangerings needs plugin API 2");
     return FV_ERR_UNSUPPORTED;
   }
+  o->struct_size = sizeof(fv_overlay_class);
+  o->name = "rings";
+  o->create = rings_create;
+  o->destroy = rings_destroy;
+  o->draw = rings_draw;
+  o->open = rings_open;
+  o->save = rings_save;
+  o->hit_test = rings_hit_test;
+  o->properties_schema = rings_properties_schema;
+  o->get_property = rings_get_property;
+  o->set_property = rings_set_property;
+  o->on_mouse = rings_on_mouse;
+  o->edit_hint = rings_edit_hint;
+  o->item_info = rings_item_info;
+  o->can_undo = rings_can_undo;
+  o->undo = rings_undo;
+  o->can_redo = rings_can_redo;
+  o->redo = rings_redo;
+  e->struct_size = sizeof(fv_editor_class);
+  e->name = "rings_editor";
+  e->create = editor_create;
+  e->destroy = editor_destroy;
+  e->cursor = FV_CURSOR_CROSSHAIR;
+  e->tools = editor_tools;
+  e->run_tool = editor_run_tool;
+
   out->api_major = FV_PLUGIN_API_MAJOR;
   out->api_minor = FV_PLUGIN_API_MINOR;
-  out->overlays = kOverlays;
-  out->overlay_count = sizeof kOverlays / sizeof kOverlays[0];
+  out->overlays = overlays;
+  out->overlay_count = 1;
+  out->editors = editors;
+  out->editor_count = 1;
   out->tools = kTools;
   out->tool_count = sizeof kTools / sizeof kTools[0];
   return FV_OK;

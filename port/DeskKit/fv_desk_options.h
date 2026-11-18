@@ -83,6 +83,13 @@ class OptionsPage {
   static std::unique_ptr<OptionsPage> ForType(const app::OverlayTypeDesc& type,
                                               const Settings& settings,
                                               const std::vector<MapOptionsSource>& extra = {});
+  /// A page over one object's properties, not the settings: `props` shows as
+  /// it is and Apply calls `apply` with it, writing no settings. Null when
+  /// `props` declares nothing.
+  static std::unique_ptr<OptionsPage> ForObject(const app::TypeId& id, const std::string& title,
+                                                const std::string& icon,
+                                                std::shared_ptr<app::Properties> props,
+                                                std::function<void(const app::Properties&)> apply);
   /// The page for a map group, titled with the group's title, or null when
   /// the source makes no properties or they declare none.
   static std::unique_ptr<OptionsPage> ForMapGroup(const std::string& title,
@@ -137,6 +144,7 @@ class OptionsPage {
   std::vector<Part> parts_;
   std::vector<OptionsField> fields_;
   std::vector<size_t> field_part_;  ///< parallel to `fields_`
+  bool persisted_ = true;  ///< false for a `ForObject` page
   std::vector<OptionsSection> sections_;
   std::vector<OptionsAction> actions_;
 };
@@ -147,6 +155,8 @@ class OptionsModel {
   /// each with the `extra` sources whose `group_id` is its type.
   OptionsModel(const app::OverlayTypeRegistry& types, const Settings& settings,
                const std::vector<MapOptionsSource>& extra = {});
+  /// A dialog of one page, such as `OptionsPage::ForObject`'s.
+  explicit OptionsModel(std::unique_ptr<OptionsPage> page);
   /// Map options: pages for every group in `groups` that has a source, in
   /// table order.
   OptionsModel(const MapGroups& groups, const std::vector<MapOptionsSource>& sources,

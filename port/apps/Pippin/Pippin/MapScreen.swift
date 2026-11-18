@@ -103,11 +103,14 @@ struct MapScreen: View {
     @State private var aisSettingsShown = false
     /// The chart features under the last tap; non-empty while their sheet is up.
     @State private var chartFeatures: [PPChartFeatureInfo] = []
+    /// What a tap on the map found, on a road pack; nil when the sheet is closed.
+    @State private var mapInfo: PPMapInfo?
 
     /// The unit preference. `@ObservedObject` because this view does not own
     /// it; `DisplayUnits.shared` is also observed from views across sheet
     /// boundaries.
     @ObservedObject private var display = DisplayUnits.shared
+    @ObservedObject private var luminance = InterfaceLuminance.shared
 
     var body: some View {
         GeometryReader { geo in
@@ -149,40 +152,49 @@ struct MapScreen: View {
                     },
                     onHoldReleased: { beginPressedPoint(at: $0) },
                     holdSeconds: model.routeWaypointHoldSeconds)
-                if let index = pickingIndex {
-                    pickOverlay(index: index, top: top, bottom: bottom)
-                } else if let pick = tapPick {
-                    tapPickOverlay(pick, top: top, bottom: bottom)
-                } else if let draft = placingPoint {
-                    pointPlaceOverlay(draft: draft, top: top, bottom: bottom)
-                } else {
-                    controls(top: top)
-                }
-                if model.gpsMode {
-                    LiveMapReader(model.live) { rideBar(top: top) }
-                }
-                LiveMapReader(model.live) {
-                    if let course = model.courseDeviation {
-                        courseIndicator(course, top: top)
-                    } else if let guidance = model.guidance {
-                        guidanceBanner(guidance, top: top)
+                // Everything drawn over the map, in one group so the chart palette
+                // dims it as a whole.
+                ZStack {
+                    if let index = pickingIndex {
+                        pickOverlay(index: index, top: top, bottom: bottom)
+                    } else if let pick = tapPick {
+                        tapPickOverlay(pick, top: top, bottom: bottom)
+                    } else if let draft = placingPoint {
+                        pointPlaceOverlay(draft: draft, top: top, bottom: bottom)
+                    } else {
+                        controls(top: top)
                     }
+                    if model.gpsMode {
+                        LiveMapReader(model.live) { rideBar(top: top) }
+                    }
+                    LiveMapReader(model.live) {
+                        if let course = model.courseDeviation {
+                            courseIndicator(course, top: top)
+                        } else if let guidance = model.guidance {
+                            guidanceBanner(guidance, top: top)
+                        }
+                    }
+                    if let detour = model.detourButton {
+                        detourButton(detour, top: top)
+                    }
+                    if cardShown { toolCard(top: top, size: geo.size) }
+                    if let progress = model.chartImportProgress {
+                        noticeBanner(MapNotice(text: "Importing charts… \(Int(progress * 100))%"))
+                    } else if let download = model.chartDownload {
+                        noticeBanner(MapNotice(text: ChartDownloadText.progress(download.region,
+                                                                                fraction: download.fraction)))
+                    } else if let notice = model.notice {
+                        noticeBanner(notice)
+                    }
+                    #if DEBUG
+                    if MapModel.showsStats {
+                        LiveMapReader(model.live) { statsOverlay(top: top) }
+                    }
+                    #endif
+                    if let failure = model.failure { failureOverlay(failure) }
                 }
-                if cardShown { toolCard(top: top, size: geo.size) }
-                if let progress = model.chartImportProgress {
-                    noticeBanner(MapNotice(text: "Importing charts… \(Int(progress * 100))%"))
-                } else if let download = model.chartDownload {
-                    noticeBanner(MapNotice(text: ChartDownloadText.progress(download.region,
-                                                                            fraction: download.fraction)))
-                } else if let notice = model.notice {
-                    noticeBanner(notice)
-                }
-                #if DEBUG
-                if MapModel.showsStats {
-                    LiveMapReader(model.live) { statsOverlay(top: top) }
-                }
-                #endif
-                if let failure = model.failure { failureOverlay(failure) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .chartDimmed()
             }
             // Preferences travel up the tree, so the bar's height is read here
             // where both it and the views that clear it are visible.
@@ -212,6 +224,8 @@ struct MapScreen: View {
                 #endif
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
+                // A window attached after the palette was read gets it here.
+                if phase == .active { luminance.applyToWindows() }
                 model.setScenePhase(SceneVisibility(phase))
             }
             // The drag replans on the render queue; the card's stops follow
@@ -231,6 +245,11 @@ struct MapScreen: View {
             }
             .onChange(of: colorScheme, initial: true) { _, scheme in
                 model.setDarkMap(scheme == .dark)
+                luminance.follow(palette: model.chartSettings.palette,
+                                 darkMode: scheme == .dark)
+            }
+            .onChange(of: model.chartSettings.palette) { _, palette in
+                luminance.follow(palette: palette, darkMode: colorScheme == .dark)
             }
             .onChange(of: geo.size) { _, size in
                 // A size change is the one moment the insets can change too.
@@ -271,12 +290,13 @@ struct MapScreen: View {
                 routeSheet
                     .environment(\.describePlace, model.describePlace)
                     .environment(\.searchPlaces, model.search(for:))
+                    .chartDimmedSheet()
             }
             // Two sheet modifiers rather than one `item:`: the info sheet is
             // bound to the model's selection (re-read after edits) and the
             // editor to a draft this view owns.
-            .sheet(isPresented: sheetOnly($infoShown)) { pointInfoSheet }
-            .sheet(isPresented: $ridesShown) { ridesSheet }
+            .sheet(isPresented: sheetOnly($infoShown)) { pointInfoSheet.chartDimmedSheet() }
+            .sheet(isPresented: $ridesShown) { ridesSheet.chartDimmedSheet() }
             .fileImporter(isPresented: $chartImporterShown,
                           allowedContentTypes: [.zip]) { result in
                 if case .success(let url) = result { model.importCharts(from: url) }
@@ -289,6 +309,7 @@ struct MapScreen: View {
                               symbolStepLabels: symbolStepLabels,
                               onClose: { settingsShown = false })
                     .modifier(ContentHeightReader(height: $settingsFit))
+                    .chartDimmedSheet()
                     .presentationDetents(settingsDetents, selection: $settingsDetent)
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                     .onChange(of: settingsFit) { old, new in
@@ -311,6 +332,7 @@ struct MapScreen: View {
                                    },
                                    onCancel: { model.cancelChartDownload() },
                                    onClose: { chartDownloadShown = false })
+                    .chartDimmedSheet()
                     .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $aisSettingsShown) {
@@ -321,10 +343,12 @@ struct MapScreen: View {
                                                      set: { model.setAisOpenWaters($0) }),
                                  onApply: { model.setAisReceiver($0) },
                                  onClose: { aisSettingsShown = false })
+                    .chartDimmedSheet()
                     .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $chartHelpShown) {
                 ChartHelpSheet(onClose: { chartHelpShown = false })
+                    .chartDimmedSheet()
                     .presentationDetents([.medium, .large])
             }
             // Medium with the map live above, so another tap re-queries in place.
@@ -332,21 +356,35 @@ struct MapScreen: View {
                                         set: { if !$0 { chartFeatures = [] } })) {
                 ChartFeatureSheet(features: chartFeatures,
                                   onClose: { chartFeatures = [] })
+                    .chartDimmedSheet()
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
-            .sheet(isPresented: $problemShown) { problemSheet }
+            .sheet(isPresented: Binding(get: { mapInfo != nil },
+                                        set: { if !$0 { mapInfo = nil } })) {
+                if let mapInfo {
+                    MapInfoSheet(info: mapInfo, units: display.units,
+                                 onClose: { self.mapInfo = nil })
+                        .chartDimmedSheet()
+                        .presentationDetents([.medium, .large])
+                        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                }
+            }
+            .sheet(isPresented: $problemShown) { problemSheet.chartDimmedSheet() }
             .sheet(isPresented: $aboutShown) {
                 AboutSheet(onClose: { aboutShown = false })
+                    .chartDimmedSheet()
             }
             .sheet(isPresented: $tidesShown) {
                 if let tide = model.tide {
                     TideCard(tide: tide, onClose: { tidesShown = false })
+                        .chartDimmedSheet()
                 }
             }
             // Medium with the map live above it, so a pinch redraws the swatches.
             .sheet(isPresented: sheetOnly($legendShown)) {
                 LegendSheet(model: model, scope: legendScope, onClose: { legendShown = false })
+                    .chartDimmedSheet()
                     .presentationDetents([.medium, .large])
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             }
@@ -354,9 +392,13 @@ struct MapScreen: View {
                 pointEditSheet(draft)
                     .environment(\.describePlace, model.describePlace)
                     .environment(\.searchPlaces, model.search(for:))
+                    .chartDimmedSheet()
             }
         }
         .ignoresSafeArea()
+        // The status bar and home indicator are white and cannot be dimmed.
+        .statusBarHidden(luminance.level != .day)
+        .persistentSystemOverlays(luminance.level == .day ? .automatic : .hidden)
     }
 
     // MARK: - Tool card
@@ -546,8 +588,8 @@ struct MapScreen: View {
                 model.setRoute(waypoints: route.waypoints, profile: route.profile,
                                beachUse: route.beachUse, avoidHills: avoidHills)
             },
-            slopeColors: model.routeSlopeColors,
-            onSlopeColorsChange: { model.setRouteSlopeColors($0) },
+            routeColoring: model.routeColoring,
+            onRouteColoringChange: { model.setRouteColoring($0) },
             onClear: {
                 // The sheet stays up and returns to the search box on an
                 // empty draft; `load(from: nil)` sets the phase.
@@ -574,6 +616,7 @@ struct MapScreen: View {
         .presentationDetents([.medium, .large])
         .sheet(isPresented: $preferencesShown) {
             LegendSheet(model: model, scope: .adjusted, onClose: { preferencesShown = false })
+                .chartDimmedSheet()
                 .presentationDetents([.medium, .large])
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
@@ -705,6 +748,7 @@ struct MapScreen: View {
         model.point(under: location) { hit in
             if let hit {
                 chartFeatures = []
+                mapInfo = nil
                 model.select(hit)
                 infoShown = true
             } else if infoShown {
@@ -712,7 +756,18 @@ struct MapScreen: View {
                 model.select(nil)
             } else if model.importsCharts {
                 showChartFeatures(at: location)
+            } else if !sheetShown || usesToolCard {
+                showMapInfo(at: location)
             }
+        }
+    }
+
+    /// Describes the route, road or map feature under a tap that hit no
+    /// marker; a tap on nothing closes the sheet.
+    private func showMapInfo(at location: CGPoint) {
+        model.mapInfo(under: location) { info in
+            guard pickingIndex == nil, placingPoint == nil, editing == nil else { return }
+            mapInfo = info
         }
     }
 
@@ -1187,19 +1242,26 @@ struct MapScreen: View {
                     }
                     Self.layer(frame.baseImage, Self.preview(of: frame.baseViewport,
                                                              in: live))
+                    // The route, pins and AIS targets are drawn in fixed
+                    // colours, not from the chart's palette.
                     Self.layer(frame.overlayImage, Self.preview(of: frame.overlayViewport,
                                                                 in: live))
+                        .chartDimmed()
                 }
                 .modifier(Tilt(live: live, screen: size))
                 ForEach(Array(frame.billboards.enumerated()), id: \.offset) { _, board in
                     Self.billboard(board, in: live, screen: size)
                 }
+                .chartDimmed()
                 farFade(live, size: size)
                 if let ship = model.ownship {
-                    if AppFlavor.current.showsCourseOverGround {
-                        Self.courseVector(ship, in: live, screen: size)
+                    Group {
+                        if AppFlavor.current.showsCourseOverGround {
+                            Self.courseVector(ship, in: live, screen: size)
+                        }
+                        Self.ship(ship, in: live, screen: size)
                     }
-                    Self.ship(ship, in: live, screen: size)
+                    .chartDimmed()
                 }
             }
             .frame(width: size.width, height: size.height)
@@ -1210,10 +1272,11 @@ struct MapScreen: View {
         }
     }
 
-    /// The style's background once an underlay has reported it, and a neutral
-    /// grey before that.
+    /// The style's background once an underlay has reported it; before that
+    /// a neutral grey, or black under a dusk or night chart palette.
     private var mapBackground: Color {
-        model.mapBackground.map { Color(cgColor: $0) } ?? Color(white: 0.92)
+        model.mapBackground.map { Color(cgColor: $0) }
+            ?? (luminance.level == .day ? Color(white: 0.92) : .black)
     }
 
     // MARK: - Controls
@@ -1531,9 +1594,8 @@ struct MapScreen: View {
     /// counting down.
     ///
     /// Below the ride bar, because a rider glancing down for the next corner
-    /// looks where the ride numbers are. Not hit-testable — there is nothing
-    /// to press, and a banner that swallowed taps would be a hole in the
-    /// chart where the map is.
+    /// looks where the ride numbers are. Not hit-testable, so it is not a
+    /// hole in the chart; the detour button under it is a separate view.
     ///
     /// Off route it says so instead of naming a corner. That is the whole of
     /// the guidance's silence made visible: `fv::nav::Guidance` stops
@@ -1559,8 +1621,11 @@ struct MapScreen: View {
                             .monospacedDigit()
                         // Dropped rather than drawn blank: a good deal of what
                         // a bicycle rides on Kiawah has no name in OSM.
-                        if !guidance.road.isEmpty {
-                            Text(guidance.road)
+                        let roadLine = GuidanceNotice.roadLine(road: guidance.road,
+                                                               roadClass: guidance.roadClass,
+                                                               continues: guidance.continues)
+                        if guidance.maneuver != .arrive && !roadLine.isEmpty {
+                            Text(roadLine)
                                 .font(.system(size: 16, weight: .medium, design: .rounded))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -1584,6 +1649,26 @@ struct MapScreen: View {
             Spacer()
         }
         .allowsHitTesting(false)
+    }
+
+    /// The detour offer under the turn banner while off route, or "End
+    /// detour" while one is being ridden.
+    private func detourButton(_ button: DetourButton, top: CGFloat) -> some View {
+        VStack {
+            Button {
+                if button.ends { model.cancelDetour() } else { model.applyDetour() }
+            } label: {
+                Label(button.label, systemImage: button.systemImage)
+                    .font(.system(size: button.ends ? 15 : 18, weight: .semibold,
+                                  design: .rounded))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+            }
+            .buttonBorderShape(.capsule)
+            .modifier(DetourButtonStyle(prominent: !button.ends))
+            .padding(.top, Self.belowBars(top: top, rideBarHeight, guidanceBannerHeight))
+            Spacer()
+        }
     }
 
     /// The course deviation indicator for a straight-leg route: the point
@@ -2199,6 +2284,19 @@ private struct Tilt: ViewModifier {
 
 /// Evaluates its content under an observation of the per-frame map state, so
 /// a new frame redraws the content without invalidating the view that holds it.
+/// The detour button's two looks: filled for an offer, bordered to end one.
+private struct DetourButtonStyle: ViewModifier {
+    let prominent: Bool
+
+    func body(content: Content) -> some View {
+        if prominent {
+            content.buttonStyle(.borderedProminent)
+        } else {
+            content.buttonStyle(.bordered).background(.thinMaterial, in: Capsule())
+        }
+    }
+}
+
 struct LiveMapReader<Content: View>: View {
     @ObservedObject private var live: LiveMapState
     private let content: () -> Content
@@ -2244,6 +2342,7 @@ private struct AisCreditButton: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .sheet(isPresented: $showing) {
                 AisCreditsSheet(feed: feed) { showing = false }
+                    .chartDimmedSheet()
                     .presentationDetents([.medium, .large])
             }
         }

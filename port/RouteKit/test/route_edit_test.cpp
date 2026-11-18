@@ -21,6 +21,7 @@
 
 #include <memory>
 
+#include "fvkit/app/manager_host.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/overlay/manager.h"
 #include "fvkit/overlay/point_overlay.h"
@@ -412,6 +413,7 @@ TEST(RouteEdit, AChordIsNotItsLetter) {
 // test below.
 struct SnapFixture {
   fv::OverlayManager manager;
+  fv::app::ManagerHost host{manager};
   std::shared_ptr<fv::PointOverlay> points{new fv::PointOverlay("Points")};
   std::shared_ptr<RouteOverlay> route{new RouteOverlay("Route1")};
   MapProjection proj = KiawahProj();
@@ -428,7 +430,7 @@ struct SnapFixture {
     // Points below, route above: the route is what the user is working on.
     EXPECT_TRUE(manager.Add(points).ok());
     EXPECT_TRUE(manager.Add(route).ok());
-    route->SetManager(&manager);
+    host.Bind(*route);
     route->SetShowLabels(false);
     route->SetWaypoints(TwoWaypoints());
     Draw();

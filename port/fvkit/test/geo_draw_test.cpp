@@ -825,7 +825,7 @@ TEST(GeoDrawState, AHighlightedLabelKeepsItsOwnHaloAndGainsOneOutsideIt) {
 
   EXPECT_EQ(d.draws_emitted(), 1u) << "a highlighted label is still ONE label";
   EXPECT_EQ(d.halo_draws(), 8u) << "the label's own halo is untouched";
-  EXPECT_EQ(d.highlight_draws(), 8u);
+  EXPECT_GT(d.highlight_draws(), 8u) << "a highlight past a stem's width fills its disc";
   EXPECT_GT(CountColor(c.Buffer(), kWhite), 0) << "legibility is not traded "
                                                   "for selection";
   EXPECT_GT(CountColor(c.Buffer(), kYellow), 0);

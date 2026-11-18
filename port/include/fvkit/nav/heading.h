@@ -97,6 +97,11 @@ class HeadingResolver {
   // the new run derives its heading from where the last run ended.
   void Reset();
 
+  /// Adds `p` to the history without resolving a heading, so the next fix
+  /// derives its heading from it. A replay placed after a jump primes the
+  /// point it is coming from.
+  void Prime(const GeoPoint& p);
+
   std::size_t history_size() const { return points_.size(); }
 
  private:

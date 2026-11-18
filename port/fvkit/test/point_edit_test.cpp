@@ -13,6 +13,7 @@
 // drag leaving no history at all, and a drop taking a neighbouring set's
 // surveyed coordinate rather than the pixel's.
 
+#include "fvkit/app/manager_host.h"
 #include "fvkit/overlay/point_edit.h"
 
 #include <gtest/gtest.h>
@@ -204,9 +205,10 @@ TEST(PointEdit, DropSnapsToAnotherSetAndNeverToItself) {
   target->SetPoints({At(10, 32.7450, -79.8850)});
   auto edited = std::make_shared<PointOverlay>("Working");
   edited->SetPoints({At(1, 32.7400, -79.8900)});
-  edited->SetManager(&mgr);
+  fv::app::ManagerHost host(mgr);
   ASSERT_TRUE(mgr.Add(target).ok());
   ASSERT_TRUE(mgr.Add(edited).ok());
+  host.Bind(*edited);
 
   const fv::MapProjection proj = HarbourProj();
   Draw(*target, proj);

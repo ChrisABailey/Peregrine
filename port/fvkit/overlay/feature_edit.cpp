@@ -10,7 +10,7 @@
 
 #include "fvkit/app/pick.h"
 #include "fvkit/overlay/feature_overlay.h"
-#include "fvkit/overlay/manager.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/proj.h"
 
 namespace fv {
@@ -674,9 +674,9 @@ EditPosition FeatureEditSession::ResolvePixel(PixelPoint p) const {
   EditPosition out;
   if (!HasProjection()) return out;
   const MapProjection& proj = Projection();
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr && snap_tolerance_px_ > 0.0) {
-    const std::vector<app::SnapToItem> candidates = app::SnapCandidates(*manager, proj, p, snap_tolerance_px_);
+  app::OverlayHost* host = overlay_.host();
+  if (host != nullptr && snap_tolerance_px_ > 0.0) {
+    const std::vector<app::SnapToItem> candidates = host->SnapCandidates(proj, p, snap_tolerance_px_);
     if (!candidates.empty()) {
       out.position = candidates.front().point;
       out.valid = true;
@@ -705,7 +705,7 @@ bool FeatureEditSession::BeginVertexDrag(const VertexRef& v, PixelPoint at) {
   drag_.before = std::move(before);
   drag_.label = "Move Vertex";
   drag_.was_dirty = overlay_.is_dirty();
-  if (OverlayManager* m = overlay_.manager()) m->CaptureMouse(&overlay_);
+  if (app::OverlayHost* host = overlay_.host()) host->CaptureMouse(overlay_);
   return true;
 }
 
@@ -721,7 +721,7 @@ bool FeatureEditSession::BeginMoveDrag(PixelPoint at) {
   drag_.label = before.size() == 1 ? "Move Feature" : "Move Features";
   drag_.before = std::move(before);
   drag_.was_dirty = overlay_.is_dirty();
-  if (OverlayManager* m = overlay_.manager()) m->CaptureMouse(&overlay_);
+  if (app::OverlayHost* host = overlay_.host()) host->CaptureMouse(overlay_);
   return true;
 }
 
@@ -729,7 +729,7 @@ bool FeatureEditSession::BeginBoxDrag(PixelPoint at) {
   drag_ = Drag{};
   drag_.kind = DragKind::kBox;
   drag_.press = drag_.now = at;
-  if (OverlayManager* m = overlay_.manager()) m->CaptureMouse(&overlay_);
+  if (app::OverlayHost* host = overlay_.host()) host->CaptureMouse(overlay_);
   return true;
 }
 
@@ -778,7 +778,7 @@ bool FeatureEditSession::EndDrag(PixelPoint at) {
   if (drag_.moved) DragTo(at);
   Drag d = std::move(drag_);
   drag_ = Drag{};
-  if (OverlayManager* m = overlay_.manager()) m->ReleaseMouse();
+  if (app::OverlayHost* host = overlay_.host()) host->ReleaseMouse(overlay_);
   if (d.kind == DragKind::kBox) {
     if (d.moved) {
       const PixelRect r{std::min(d.press.x, d.now.x), std::min(d.press.y, d.now.y),
@@ -801,7 +801,7 @@ bool FeatureEditSession::CancelDrag() {
   if (drag_.kind == DragKind::kNone) return false;
   Drag d = std::move(drag_);
   drag_ = Drag{};
-  if (OverlayManager* m = overlay_.manager()) m->ReleaseMouse();
+  if (app::OverlayHost* host = overlay_.host()) host->ReleaseMouse(overlay_);
   if (d.moved || d.edited) {
     for (const Feature& f : d.before) Replace(f);
     if (!d.was_dirty) overlay_.set_dirty(false);

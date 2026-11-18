@@ -8,37 +8,25 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 // G2: DrawSymbolAt / DrawPixmapSymbolAt / ResolveSymbol / DrawResolvedSymbol
 // and InkBox used to be defined below, in the anonymous namespace. They now
 // live here so an overlay can reach them too.
+#include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/draw_interrupt.h"
 #include "fvkit/vector/symbol_draw.h"
 #include "fvkit/vector/text_draw.h"
 
 namespace fv {
 namespace {
-
-/// Where a point-placed label sits on one projected part: its first vertex,
-/// or for LabelAnchor::kCentre a line's middle vertex and an area's box centre.
-SurfacePoint PointLabelAnchor(const LabelStyle& label, VectorGeometryType type,
-                              const std::vector<SurfacePoint>& part) {
-  if (label.anchor != LabelAnchor::kCentre || type == VectorGeometryType::kPoint)
-    return part.front();
-  if (type == VectorGeometryType::kLine) return part[part.size() / 2];
-  double x0 = part.front().x, x1 = x0, y0 = part.front().y, y1 = y0;
-  for (const SurfacePoint& q : part) {
-    x0 = std::min(x0, q.x);
-    x1 = std::max(x1, q.x);
-    y0 = std::min(y0, q.y);
-    y1 = std::max(y1, q.y);
-  }
-  return SurfacePoint{(x0 + x1) / 2, (y0 + y1) / 2};
-}
 
 /// Text placed so far in one frame, for VectorRenderer's repeat filter.
 class LabelRepeats {
@@ -69,6 +57,51 @@ class LabelRepeats {
   double min_sq_;
   double w_, h_;
   std::unordered_map<std::string, std::vector<SurfacePoint>> placed_;
+};
+
+/// Ground already taken by labels in one frame, as one disc per glyph, for
+/// VectorRenderer's label collision test. A uniform grid keeps the test local.
+class LabelCollisions {
+ public:
+  struct Disc {
+    double x, y, r;
+  };
+  explicit LabelCollisions(bool enabled) : enabled_(enabled) {}
+  bool enabled() const { return enabled_; }
+  /// True when any of `discs` overlaps a disc already taken.
+  bool Hits(const std::vector<Disc>& discs) const {
+    for (const Disc& d : discs) {
+      const int x0 = Cell(d.x - d.r - max_r_), x1 = Cell(d.x + d.r + max_r_);
+      const int y0 = Cell(d.y - d.r - max_r_), y1 = Cell(d.y + d.r + max_r_);
+      for (int cy = y0; cy <= y1; ++cy) {
+        for (int cx = x0; cx <= x1; ++cx) {
+          auto it = cells_.find(Key(cx, cy));
+          if (it == cells_.end()) continue;
+          for (const Disc& o : it->second) {
+            const double rr = d.r + o.r;
+            if ((d.x - o.x) * (d.x - o.x) + (d.y - o.y) * (d.y - o.y) < rr * rr) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+  void Take(const std::vector<Disc>& discs) {
+    for (const Disc& d : discs) {
+      cells_[Key(Cell(d.x), Cell(d.y))].push_back(d);
+      max_r_ = std::max(max_r_, d.r);
+    }
+  }
+
+ private:
+  static constexpr double kCellPx = 32.0;
+  static int Cell(double v) { return static_cast<int>(std::floor(v / kCellPx)); }
+  static int64_t Key(int cx, int cy) {
+    return (static_cast<int64_t>(cx) << 32) ^ static_cast<uint32_t>(cy);
+  }
+  bool enabled_;
+  double max_r_ = 0.0;
+  std::unordered_map<int64_t, std::vector<Disc>> cells_;
 };
 
 // Outcodes for Cohen-Sutherland.
@@ -328,18 +361,6 @@ std::vector<SurfacePoint> Subpath(const std::vector<SurfacePoint>& path,
   return out;
 }
 
-bool PointInRing(const std::vector<SurfacePoint>& ring, double x, double y) {
-  bool in = false;
-  for (size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
-    const double yi = ring[i].y, yj = ring[j].y;
-    if ((yi > y) == (yj > y)) continue;
-    const double xi = ring[i].x, xj = ring[j].x;
-    const double cut = xi + (y - yi) * (xj - xi) / (yj - yi);
-    if (x < cut) in = !in;
-  }
-  return in;
-}
-
 }  // namespace
 
 std::vector<PathRun> DashRuns(const std::vector<double>& dash) {
@@ -568,27 +589,28 @@ std::vector<PlacedTextRun> PlaceTextAlongPath(
   return out;
 }
 
-std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
-                                        double spacing_x, double spacing_y,
-                                        bool staggered, double anchor_x,
-                                        double anchor_y, double clip_w,
-                                        double clip_h) {
+std::vector<SurfacePoint> PlaceOverArea(
+    const std::vector<std::vector<SurfacePoint>>& rings, double spacing_x,
+    double spacing_y, bool staggered, double anchor_x, double anchor_y,
+    double clip_w, double clip_h) {
   std::vector<SurfacePoint> out;
-  if (ring.size() < 3 || !(spacing_x > 0.0) || !(spacing_y > 0.0)) return out;
+  if (rings.empty() || rings[0].size() < 3 || !(spacing_x > 0.0) ||
+      !(spacing_y > 0.0))
+    return out;
 
-  double minx = ring[0].x, maxx = ring[0].x;
-  double miny = ring[0].y, maxy = ring[0].y;
-  for (const SurfacePoint& p : ring) {
-    minx = (std::min)(minx, p.x);
-    maxx = (std::max)(maxx, p.x);
-    miny = (std::min)(miny, p.y);
-    maxy = (std::max)(maxy, p.y);
+  double minx = rings[0][0].x, maxx = minx;
+  double miny = rings[0][0].y, maxy = miny;
+  for (const std::vector<SurfacePoint>& r : rings) {
+    for (const SurfacePoint& p : r) {
+      minx = (std::min)(minx, p.x);
+      maxx = (std::max)(maxx, p.x);
+      miny = (std::min)(miny, p.y);
+      maxy = (std::max)(maxy, p.y);
+    }
   }
 
-  // The ring is the EXACT projected outline, so it can run far off-canvas; walk
-  // only the part that can put ink down. Without this a coastline polygon
-  // spanning a whole cell would step a lattice across millions of pixels and
-  // spend the stamp budget before reaching the viewport.
+  // Walk only the part that can put ink down: a coastline polygon spanning a
+  // whole cell would otherwise spend the stamp budget before the viewport.
   if (clip_w > 0.0 && clip_h > 0.0) {
     minx = (std::max)(minx, 0.0);
     miny = (std::max)(miny, 0.0);
@@ -597,32 +619,50 @@ std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
     if (minx > maxx || miny > maxy) return out;
   }
 
-  // The grid is anchored to a point the CALLER pins, not to the ring's own
-  // corner, so two adjacent areas sharing a pattern line up instead of each
-  // starting its own grid.
-  //
-  // R3c: that anchor is a GEOGRAPHIC reference projected into pixels, where
-  // before it was the canvas origin — which meant the whole lattice moved with
-  // the canvas and the stamps crawled inside their own regions as the map
-  // panned. Anchoring on the ground makes the stamp positions a function of
-  // WHERE ON EARTH the area is, so a pan slides the ring and its pattern
-  // together. Which ground point is only a convention; see
-  // VectorRenderer::PatternAnchor for why it has to be a NEARBY one.
   const double x0 =
       anchor_x + std::floor((minx - anchor_x) / spacing_x) * spacing_x;
-  const double y0 =
-      anchor_y + std::floor((miny - anchor_y) / spacing_y) * spacing_y;
+  const double first_row = std::floor((miny - anchor_y) / spacing_y);
+  const double y0 = anchor_y + first_row * spacing_y;
 
-  int row = 0;
+  // One pass over the edges per lattice row: the row's crossings, sorted, and
+  // a site is inside when an odd number of them lie strictly to its right
+  // (half-open edges, so a vertex on the row is counted once).
+  std::vector<double> cuts;
+  // Counted from the anchor, not from the first row walked: the offset rows
+  // must not change when the area's top or the canvas edge crosses a row.
+  long long row = static_cast<long long>(first_row);
   for (double y = y0; y <= maxy && out.size() < kMaxPatternStamps;
        y += spacing_y, ++row) {
+    cuts.clear();
+    for (const std::vector<SurfacePoint>& r : rings) {
+      if (r.size() < 3) continue;
+      for (size_t i = 0, j = r.size() - 1; i < r.size(); j = i++) {
+        const double yi = r[i].y, yj = r[j].y;
+        if ((yi > y) == (yj > y)) continue;
+        const double xi = r[i].x, xj = r[j].x;
+        cuts.push_back(xi + (y - yi) * (xj - xi) / (yj - yi));
+      }
+    }
+    if (cuts.size() < 2) continue;
+    std::sort(cuts.begin(), cuts.end());
     const double shift = (staggered && (row & 1)) ? spacing_x * 0.5 : 0.0;
+    size_t right_of = 0;  // cuts at or left of x
     for (double x = x0 + shift; x <= maxx && out.size() < kMaxPatternStamps;
          x += spacing_x) {
-      if (PointInRing(ring, x, y)) out.push_back(SurfacePoint{x, y});
+      while (right_of < cuts.size() && !(x < cuts[right_of])) ++right_of;
+      if (((cuts.size() - right_of) & 1) != 0) out.push_back(SurfacePoint{x, y});
     }
   }
   return out;
+}
+
+std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
+                                        double spacing_x, double spacing_y,
+                                        bool staggered, double anchor_x,
+                                        double anchor_y, double clip_w,
+                                        double clip_h) {
+  return PlaceOverArea(std::vector<std::vector<SurfacePoint>>{ring}, spacing_x,
+                       spacing_y, staggered, anchor_x, anchor_y, clip_w, clip_h);
 }
 
 // ---------------------------------------------------------------------------
@@ -630,51 +670,24 @@ std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
 VectorRenderer::VectorRenderer(VectorSourcePtr source, StyleEnginePtr style)
     : source_(std::move(source)), style_(std::move(style)) {}
 
-// Resolves one pattern spacing's stamp lattice into this frame's pixels, and
-// remembers it as a GROUND point for the next frame.
-//
-// WHY THIS IS NOT JUST THE SEED (the R3c bug, found by Chris in the viewer).
-// R3c anchored the lattice at lat/lon 0,0 and recomputed the anchor pixel
-// every frame as -lon/dpp_lon. That is genuinely fixed to the ground while dpp
-// holds still, and panning east/west it is: measured over 40 one-pixel pans of
-// the Charleston chart, not one stamp moved.
-//
-// But MapProjection derives dpp from the CENTRE LATITUDE in its scale and
-// physical-scale modes (equal-arc, square ground cells at the centre), which
-// is the mode the viewer runs in — so every north/south pan changes dpp_lon
-// slightly. At Charleston the 0,0 anchor sits ~600,000 px off-screen, and a
-// one-pixel north pan moves dpp_lon by 1.26e-6 of itself: 600,000 x 1.26e-6 =
-// 0.75 px of lattice slip per pixel of vertical pan. With 29.5 px cells, ~39
-// px of drag slips the lattice a whole cell and every tuft of marsh grass
-// re-lands on a different site. That is the "tufts appear and disappear"
-// Chris saw, and it is why panning only in longitude did not catch it.
-//
-// The lever arm is the whole problem, so the fix is to keep the anchor within
-// ONE CELL of the viewport centre instead of 600,000 px away. Each frame the
-// retained ground point is projected, then walked to the nearest lattice site
-// to the centre — a WHOLE NUMBER OF CELLS, so this re-centring cannot move
-// the lattice, only re-describe it — and the walked point is stored back. The
-// residual slip is now 30 px x 1.26e-6 = 4e-5 px per pixel of pan.
-//
-// One anchor per (spacing_x, spacing_y): the whole-cell walk is only exact for
-// the spacing it was computed with, and patterns on one chart do not share a
-// spacing. There are a handful of distinct spacings in a presentation library.
-//
-// CONSEQUENCE. The lattice is now renderer state, so it is stable across the
-// frames of ONE renderer, which is how an interactive caller draws. Two
-// renderers seeded at different centres can land on lattices offset by a
-// sub-cell amount (the seed carries the full lever arm). A caller that builds
-// a fresh renderer per frame therefore still crawls — the viewer does not, and
-// neither should any pan test.
+/// Returns this frame's pixel position of a site of the pattern lattice with
+/// the given period, and retains it as a ground point for the next frame.
+///
+/// The retained point is moved by whole periods to the site nearest the
+/// surface centre. Degrees per pixel change with the centre latitude in the
+/// scale-driven projection modes, so a lattice hung on a distant point slides
+/// as the map pans north or south; one hung within a period of the centre does
+/// not. `seed_x`/`seed_y` place the lattice on the first frame only. The
+/// lattice is renderer state: two renderers do not share one.
 void VectorRenderer::PatternAnchor(const MapProjection& proj, double seed_x,
-                                   double seed_y, double spacing_x,
-                                   double spacing_y, double* ax, double* ay) {
+                                   double seed_y, double period_x,
+                                   double period_y, double* ax, double* ay) {
   const PixelSize surface = proj.SurfaceSize();
   const double cx = (surface.width - 1) / 2.0;
   const double cy = (surface.height - 1) / 2.0;
 
   double x = seed_x, y = seed_y;
-  const auto it = pattern_anchors_.find(std::make_pair(spacing_x, spacing_y));
+  const auto it = pattern_anchors_.find(std::make_pair(period_x, period_y));
   if (it != pattern_anchors_.end()) {
     double px = 0.0, py = 0.0;
     if (proj.GeoToSurface(it->second, &px, &py).ok()) {
@@ -683,12 +696,12 @@ void VectorRenderer::PatternAnchor(const MapProjection& proj, double seed_x,
     }
   }
 
-  if (spacing_x > 0.0) x += std::round((cx - x) / spacing_x) * spacing_x;
-  if (spacing_y > 0.0) y += std::round((cy - y) / spacing_y) * spacing_y;
+  if (period_x > 0.0) x += std::round((cx - x) / period_x) * period_x;
+  if (period_y > 0.0) y += std::round((cy - y) / period_y) * period_y;
 
   GeoPoint g;
   if (proj.SurfaceToGeo(x, y, &g).ok())
-    pattern_anchors_[std::make_pair(spacing_x, spacing_y)] = g;
+    pattern_anchors_[std::make_pair(period_x, period_y)] = g;
 
   *ax = x;
   *ay = y;
@@ -724,6 +737,148 @@ bool ProjectPart(const MapProjection& proj, const GeoPoint* pts, size_t n,
   return true;
 }
 
+/// Pixel box of a geographic box under an affine projection. Returns false when
+/// the box is not within 180 degrees of the centre on both sides (its vertices
+/// would not all unwrap alike) or a corner does not project.
+bool BoxOnSurface(const MapProjection& proj, const GeoPoint& center,
+                  const GeoRect& b, double* minx, double* miny, double* maxx,
+                  double* maxy) {
+  if (!(b.ll.lon - center.lon > -179.999 && b.ur.lon - center.lon < 179.999))
+    return false;
+  if (!proj.GeoToSurface(b.ll, minx, miny).ok()) return false;
+  *maxx = *minx;
+  *maxy = *miny;
+  if (b.ll.lat == b.ur.lat && b.ll.lon == b.ur.lon) return true;
+  const GeoPoint rest[3] = {b.ur, {b.ll.lat, b.ur.lon}, {b.ur.lat, b.ll.lon}};
+  for (const GeoPoint& g : rest) {
+    double x = 0.0, y = 0.0;
+    if (!proj.GeoToSurface(g, &x, &y).ok()) return false;
+    *minx = std::min(*minx, x);
+    *maxx = std::max(*maxx, x);
+    *miny = std::min(*miny, y);
+    *maxy = std::max(*maxy, y);
+  }
+  return true;
+}
+
+/// Upper bound on the distance from a symbol's anchor to its ink, in pixels at
+/// the given scales; infinite when the library states no extent for it.
+double SymbolReach(ISymbolLibrary* lib, const std::string& id,
+                   double px_per_himetric, double pixmap_scale) {
+  const ResolvedSymbol rs = ResolveSymbol(lib, id);
+  double r = 0.0;
+  if (rs.vec != nullptr && !rs.vec->primitives.empty()) {
+    const VectorSymbol& v = *rs.vec;
+    const double ex = std::max(std::abs(v.min_x), std::abs(v.max_x));
+    const double ey = std::max(std::abs(v.min_y), std::abs(v.max_y));
+    if (ex == 0.0 && ey == 0.0) return std::numeric_limits<double>::infinity();
+    r = std::hypot(ex, ey) * px_per_himetric;
+  }
+  if (rs.pix != nullptr && rs.pix->pixel_ratio > 0.0) {
+    const SymbolPixmap& p = *rs.pix;
+    const double ex = std::max(std::abs(p.pivot_x), std::abs(p.tile.Width() - p.pivot_x));
+    const double ey = std::max(std::abs(p.pivot_y), std::abs(p.tile.Height() - p.pivot_y));
+    r = std::max(r, std::hypot(ex, ey) * pixmap_scale / p.pixel_ratio);
+  }
+  // The extent leaves out pen width.
+  return r * 1.25 + 8.0;
+}
+
+/// One area pattern as drawn in a frame: the tile holding one period of it
+/// and the pixel a lattice site falls on.
+struct PatternFill {
+  const PatternTile* tile = nullptr;
+  double anchor_x = 0.0, anchor_y = 0.0;
+};
+
+/// Draws one period of an area pattern into a transparent tile: one cell, or
+/// one cell wide and two rows deep when staggered, the lower row offset by
+/// half a cell. A lattice site is at tile pixel (0,0) and ink that crosses a
+/// tile edge wraps to the opposite one. `reach` is the symbol's ink radius.
+PixelBuffer BuildPatternTile(const ResolvedSymbol& pat, int cell_w, int cell_h,
+                             bool staggered, double px_per_himetric,
+                             double pixmap_scale, double reach) {
+  const int rows = staggered ? 2 : 1;
+  CpuCanvas tile(cell_w, cell_h * rows);
+  tile.Clear(FvColor{0, 0, 0, 0});
+  // Neighbouring sites whose ink can reach into the tile.
+  constexpr int kMaxWrap = 16;
+  const auto wrap = [&](int cell) {
+    if (!std::isfinite(reach)) return 2;
+    return (std::min)(kMaxWrap, static_cast<int>(std::ceil(reach / cell)));
+  };
+  const int nx = wrap(cell_w), ny = wrap(cell_h);
+  for (int r = -ny; r < rows + ny; ++r) {
+    const int shift = (staggered && (r & 1)) ? cell_w / 2 : 0;
+    for (int i = -nx - 1; i <= nx; ++i)
+      DrawResolvedSymbol(&tile, pat, i * cell_w + shift, r * cell_h,
+                         px_per_himetric, pixmap_scale, 0.0, nullptr);
+  }
+  return std::move(tile.Buffer());
+}
+
+/// Where a part's point symbol or point label is drawn, and the ground point
+/// it stands for. kCentre puts a line's at its middle vertex and an area's once,
+/// at the scene's interior centre, on the outer ring's pass; returns false for
+/// a part that draws nothing.
+bool PartAnchor(LabelAnchor anchor, const SceneItem& it, size_t p,
+                const MapProjection& proj, const std::vector<SurfacePoint>& part,
+                const GeoPoint* geo, SurfacePoint* at, GeoPoint* at_geo) {
+  if (anchor == LabelAnchor::kCentre && it.type == VectorGeometryType::kArea) {
+    if (p != 0 || !it.has_centre) return false;
+    if (!proj.GeoToSurface(it.centre, &at->x, &at->y).ok()) return false;
+    *at_geo = it.centre;
+    return true;
+  }
+  const size_t i = anchor == LabelAnchor::kCentre &&
+                           it.type == VectorGeometryType::kLine
+                       ? part.size() / 2
+                       : 0;
+  *at = part[i];
+  *at_geo = geo[i];
+  return true;
+}
+
+/// Splits a projected part into the runs its stroke follows. A ring is closed
+/// back to its first vertex. `hidden` (one flag per vertex, or null) marks
+/// edges that are not stroked; each one ends a run, and a ring's runs start
+/// after a hidden edge so that no run is broken at vertex 0.
+void StrokeRuns(const std::vector<SurfacePoint>& part, const uint8_t* hidden,
+                bool ring, std::vector<std::vector<SurfacePoint>>* runs) {
+  runs->clear();
+  const size_t n = part.size();
+  if (n < 2) return;
+  const bool close = ring && (part.front().x != part.back().x ||
+                              part.front().y != part.back().y);
+  if (hidden == nullptr) {
+    runs->push_back(part);
+    if (close) runs->back().push_back(part.front());
+    return;
+  }
+  const size_t m = close ? n : n - 1;  // edges; edge e ends at vertex (e+1)%n
+  auto at = [&](size_t v) -> const SurfacePoint& { return part[v % n]; };
+  size_t start = 0;
+  if (ring) {
+    for (size_t e = 0; e < m; ++e)
+      if (hidden[e] != 0) {
+        start = e + 1;
+        break;
+      }
+  }
+  std::vector<SurfacePoint> cur;
+  for (size_t i = 0; i < m; ++i) {
+    const size_t e = ring ? (start + i) % m : i;
+    if (hidden[e] != 0) {
+      if (cur.size() >= 2) runs->push_back(std::move(cur));
+      cur.clear();
+      continue;
+    }
+    if (cur.empty()) cur.push_back(at(e));
+    cur.push_back(at(e + 1));
+  }
+  if (cur.size() >= 2) runs->push_back(std::move(cur));
+}
+
 // Ground metres per pixel where a feature actually sits, for labels sized in
 // ground units on a projection whose scale varies across the frame. Falls back
 // to the centre scale where the point has no image.
@@ -757,6 +912,44 @@ double MsSince(Clock::time_point t0) {
 }
 
 }  // namespace
+
+double VectorRenderer::InkReach(const StyleResult& sr, double px_per_himetric,
+                                double pixmap_scale, double label_px) const {
+  const double kUnbounded = std::numeric_limits<double>::infinity();
+  double reach = 0.0;
+  if (sr.stroke.valid) reach = std::max(reach, sr.stroke.pen.width / 2.0);
+  if (sr.symbol.valid)
+    reach = std::max(reach, SymbolReach(style_.get(), sr.symbol.symbol_id,
+                                        px_per_himetric * sr.symbol.scale,
+                                        pixmap_scale * sr.symbol.scale));
+  if (sr.line_pattern.valid) {
+    reach = std::max(reach, sr.line_pattern.pen.width / 2.0);
+    for (const PathRun& run : sr.line_pattern.runs) {
+      if (run.type != PathRunType::kSymbol) continue;
+      reach = std::max(reach, std::abs(run.offset) +
+                                  SymbolReach(style_.get(), run.symbol_id,
+                                              px_per_himetric * run.symbol_scale,
+                                              pixmap_scale * run.symbol_scale));
+    }
+  }
+  if (sr.label.valid && !sr.label.text.empty()) {
+    const double halo = HaloPixels(sr.label, label_px);
+    if (sr.label.placement == LabelPlacement::kAlongPath) {
+      // A run off the canvas still takes collision discs that can hide a run
+      // on it, so with collisions on the part is always drawn.
+      if (label_collision_) return kUnbounded;
+      reach = std::max(reach, std::abs(sr.label.offset_px) +
+                                  std::abs(AlongPathAnchorShift(sr.label, label_px)) +
+                                  2.0 * label_px + halo);
+    } else {
+      // One em a byte is at least the string's width.
+      reach = std::max(reach, std::abs(sr.label.dx) + std::abs(sr.label.dy) +
+                                  label_px * (sr.label.text.size() + 1.0) + halo);
+    }
+  }
+  // Rounding to whole pixels and the minimum pick box.
+  return reach + 8.0;
+}
 
 Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   features_queried_ = 0;
@@ -796,32 +989,31 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   const Clock::time_point t_draw = Clock::now();
   const PixelSize size = canvas->Size();
   LabelRepeats repeats(label_repeat_px_, size);
+  LabelCollisions collisions(label_collision_);
+  std::vector<LabelCollisions::Disc> run_discs;
 
-  // SEED for an area pattern's stamp lattice: where lat/lon 0,0 lands in this
-  // frame's pixels. Written out from the projection's own linear relation
-  // rather than fetched through GeoToSurface, which unwraps longitude toward
-  // the centre — an unwrap that would make the seed jump as a pan crossed
-  // +/-90 degrees from the centre.
-  //
-  // This is only the seed: it fixes WHICH lattice a renderer starts on, and
-  // PatternAnchor below then carries that lattice forward from frame to frame
-  // without ever evaluating this expression again. See PatternAnchor for why
-  // using it every frame (R3c) was wrong.
+  // First-frame position of the area-pattern lattices: where lat/lon 0,0
+  // lands. Written from the projection's linear relation because GeoToSurface
+  // unwraps longitude toward the centre. PatternAnchor carries the lattice
+  // forward on later frames.
   const GeoPoint pat_center = proj.Center();
   const PixelSize surface = proj.SurfaceSize();  // GeoToSurface's frame, not
                                                  // the canvas's, if they differ
   double pattern_seed_x = (surface.width - 1) / 2.0;
   double pattern_seed_y = (surface.height - 1) / 2.0;
+  // A tile holds the palette's colours, so a restyle discards them.
+  const uint64_t style_epoch = style_ != nullptr ? style_->style_epoch() : 0;
+  if (style_epoch != pattern_tiles_epoch_) {
+    pattern_tiles_.clear();
+    pattern_tiles_epoch_ = style_epoch;
+  }
+  // Tiles and anchors of the patterns drawn so far in this frame.
+  std::map<PatternTileKey, PatternFill> pattern_fills;
   if (proj.IsAffine()) {
     pattern_seed_x -= pat_center.lon / proj.DegPerPixelLon();
     pattern_seed_y += pat_center.lat / proj.DegPerPixelLat();
   } else {
-    // No linear relation to write out, so ask the projection. The unwrap the
-    // affine branch avoids is accepted here: a seed that moves by a whole
-    // world as a pan crosses 180 degrees from the centre still lands on a
-    // lattice, and PatternAnchor keeps the lattice the first frame chose.
-    // A centre with no image (Orthographic looking at the far side) leaves
-    // the seed at the surface centre, which is a lattice like any other.
+    // A centre with no image leaves the seed at the surface centre.
     double sx = 0.0, sy = 0.0;
     if (proj.GeoToSurface(GeoPoint{0.0, 0.0}, &sx, &sy).ok()) {
       pattern_seed_x = sx;
@@ -854,19 +1046,47 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
   // symbol per feature is the wrong place to ask.
   const double chart_rotation = proj.Rotation();
   std::vector<SurfacePoint> proj_part;
+  std::vector<std::vector<SurfacePoint>> area_rings;
+  std::vector<std::vector<SurfacePoint>> stroke_runs;
+  static const std::vector<std::vector<SurfacePoint>> kNoRuns;
 
   const std::vector<GeoPoint>& pts = scene_.points();
   const std::vector<uint32_t>& part_first = scene_.part_first();
+  const std::vector<uint8_t>& unstroked = scene_.unstroked();
+  const std::vector<GeoRect>& part_bounds = scene_.part_bounds();
+  // A box maps to a parallelogram only under an affine projection.
+  const bool cull = screen_cull_ && affine;
+  const GeoPoint cull_center = proj.Center();
+  parts_culled_ = 0;
 
   for (size_t item = 0; item < scene_.items().size(); ++item) {
     if (DrawInterruptedAt(item)) return Status::Error(kInterrupted, "vector draw interrupted");
     const SceneItem& it = scene_.items()[item];
     const StyleResult& sr = scene_.styles()[it.style];
+    double reach = -1.0;  // InkReach(sr), found for the first part off the canvas
 
     for (size_t p = 0; p < it.part_count; ++p) {
       const uint32_t k = it.first_part + static_cast<uint32_t>(p);
       const uint32_t begin = part_first[k], end = part_first[k + 1];
       if (end <= begin) continue;
+      // An area's holes lie inside part 0's box, and its centred symbol and
+      // label are in it, so every part is tested alone.
+      double bx0, by0, bx1, by1;
+      if (cull && BoxOnSurface(proj, cull_center, part_bounds[k], &bx0, &by0,
+                               &bx1, &by1) &&
+          (bx1 < 0.0 || by1 < 0.0 || bx0 > size.width || by0 > size.height)) {
+        if (reach < 0.0)
+          reach = InkReach(sr, px_per_himetric, pixmap_scale,
+                           sr.label.valid
+                               ? LabelPixelSize(sr.label, ctx.scale_denominator,
+                                                meters_per_pixel, label_ref_scale_)
+                               : 0.0);
+        if (bx1 < -reach || by1 < -reach || bx0 > size.width + reach ||
+            by0 > size.height + reach) {
+          ++parts_culled_;
+          continue;
+        }
+      }
       if (!ProjectPart(proj, &pts[begin], end - begin, &proj_part)) continue;
 
       if (it.type == VectorGeometryType::kArea &&
@@ -876,6 +1096,8 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
         std::vector<PixelPoint> ring =
             ClipPolygon(proj_part, size.width, size.height);
         if (ring.size() >= 3) rings.push_back(std::move(ring));
+        // The exact projected rings, for the pattern's membership test.
+        if (sr.area_pattern.valid) area_rings.assign(1, proj_part);
         std::vector<SurfacePoint> hole;
         for (size_t q = 1; !rings.empty() && q < it.part_count; ++q) {
           const uint32_t hk = it.first_part + static_cast<uint32_t>(q);
@@ -883,62 +1105,94 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
           if (he <= hb || !ProjectPart(proj, &pts[hb], he - hb, &hole)) continue;
           std::vector<PixelPoint> h = ClipPolygon(hole, size.width, size.height);
           if (h.size() >= 3) rings.push_back(std::move(h));
+          if (sr.area_pattern.valid) area_rings.push_back(hole);
         }
         if (!rings.empty()) {
-          // A patterned area may carry a boundary pen and no fill at all
-          // (S-52's MARCUL row is AP(MARCUL02);LS(DASH,1,CHGRD)), so the pen
-          // is drawn whether or not there is a brush — otherwise entering
-          // this branch for the pattern would silently swallow the boundary
-          // the stroke branch below would have drawn.
-          if (sr.fill.valid || sr.stroke.valid) {
-            canvas->DrawPolyPolygon(rings, sr.fill.valid ? &sr.fill.brush
-                                                         : nullptr,
-                                    sr.stroke.valid ? &sr.stroke.pen : nullptr);
+          // Filled without a pen: the clipped rings run along the canvas
+          // edge, and stroking them would draw that edge. The boundary is
+          // stroked from the unclipped rings below, once per ring.
+          bool filled = !sr.fill.valid;
+          const auto fill = [&] {
+            if (filled) return;
+            canvas->DrawPolyPolygon(rings, &sr.fill.brush, nullptr);
             ++draws_emitted_;
-          }
+            filled = true;
+          };
           if (sr.area_pattern.valid) {
-            // Resolved once, before the placement walk: an unresolvable
-            // pattern must not cost a grid of stamps that all fail, and a
-            // resolvable one must not cost a lookup per stamp.
             const ResolvedSymbol pat =
                 ResolveSymbol(style_.get(), sr.area_pattern.symbol_id);
             if (pat.drawable()) {
-              double anchor_x = 0.0, anchor_y = 0.0;
-              PatternAnchor(proj, pattern_seed_x, pattern_seed_y,
-                            sr.area_pattern.spacing_x,
-                            sr.area_pattern.spacing_y, &anchor_x, &anchor_y);
-              // The EXACT projected ring, not the clipped integer one the fill
-              // is drawn from: ClipPolygon rounds every vertex to a whole pixel
-              // and drops vertices that round together, so its boundary moves
-              // by up to half a pixel — differently at every pan — and a stamp
-              // sitting near an edge flips in and out. On a marsh shredded by
-              // tidal channels that is most of them. Found alongside the anchor
-              // lever arm and visible on an EAST pan, where the anchor is
-              // blameless. Membership is now a question about the geometry, not
-              // about how the geometry happened to round.
-              for (const SurfacePoint& at :
-                   PlaceOverArea(proj_part, sr.area_pattern.spacing_x,
-                                 sr.area_pattern.spacing_y,
-                                 sr.area_pattern.staggered, anchor_x, anchor_y,
-                                 size.width, size.height)) {
-                // PR2 leaves this 0.0. An area pattern is a screen-space FILL
-                // TEXTURE — PlaceOverArea lays its stamps on a grid aligned to
-                // the surface axes, not to the geography — so turning the
-                // stamps while their grid stayed put would be half a rotation
-                // and would read worse than none. The ring being filled turns
-                // with the chart because it is projected; the hatch inside it
-                // stays upright, which is what a hatch does.
-                DrawResolvedSymbol(
-                    canvas, pat, at.x, at.y,
-                    px_per_himetric * sr.area_pattern.symbol_scale,
-                    pixmap_scale * sr.area_pattern.symbol_scale, 0.0, nullptr);
-                ++draws_emitted_;
+              const AreaPatternStyle& ap = sr.area_pattern;
+              // Whole-pixel cells, so the tile repeats exactly.
+              const int cell_w =
+                  (std::max)(1, static_cast<int>(std::lround(ap.spacing_x)));
+              const int cell_h =
+                  (std::max)(1, static_cast<int>(std::lround(ap.spacing_y)));
+              const double pat_himetric = px_per_himetric * ap.symbol_scale;
+              const double pat_pixmap = pixmap_scale * ap.symbol_scale;
+              const PatternTileKey key(ap.symbol_id, cell_w, cell_h,
+                                       ap.staggered, pat_himetric, pat_pixmap);
+              PatternFill& pf = pattern_fills[key];
+              if (pf.tile == nullptr) {
+                // A staggered pattern repeats every two rows.
+                PatternAnchor(proj, pattern_seed_x, pattern_seed_y, cell_w,
+                              cell_h * (ap.staggered ? 2 : 1), &pf.anchor_x,
+                              &pf.anchor_y);
+                auto cached = pattern_tiles_.find(key);
+                if (cached == pattern_tiles_.end()) {
+                  cached = pattern_tiles_
+                               .emplace(key, PatternTile(BuildPatternTile(
+                                                 pat, cell_w, cell_h,
+                                                 ap.staggered, pat_himetric,
+                                                 pat_pixmap,
+                                                 SymbolReach(style_.get(),
+                                                             ap.symbol_id,
+                                                             pat_himetric,
+                                                             pat_pixmap))))
+                               .first;
+                }
+                pf.tile = &cached->second;
+              }
+              // The pattern is a screen-aligned texture: it does not turn with
+              // the chart, and it is clipped to the area like the solid fill.
+              // The solid fill goes down in the same pass over the rings.
+              const Status tiled = canvas->FillPolyPolygonTiled(
+                  rings, *pf.tile,
+                  static_cast<int>(std::lround(pf.anchor_x)),
+                  static_cast<int>(std::lround(pf.anchor_y)),
+                  filled ? nullptr : &sr.fill.brush);
+              if (tiled.code != kUnsupported) {
+                draws_emitted_ += filled ? 1 : 2;
+                filled = true;
+              } else {
+                // A canvas with no tiled fill gets whole stamps at the sites
+                // inside the exact rings.
+                fill();
+                for (const SurfacePoint& at :
+                     PlaceOverArea(area_rings, cell_w, cell_h, ap.staggered,
+                                   pf.anchor_x, pf.anchor_y, size.width,
+                                   size.height)) {
+                  DrawResolvedSymbol(canvas, pat, at.x, at.y, pat_himetric,
+                                     pat_pixmap, 0.0, nullptr);
+                  ++draws_emitted_;
+                }
               }
             }
           }
+          fill();
           if (pick_enabled_) pick_.AddFill(it.ref, sr.priority, rings[0]);
         }
-      } else if (sr.stroke.valid && proj_part.size() >= 2) {
+      }
+
+      const bool ring = it.type == VectorGeometryType::kArea;
+      if ((sr.stroke.valid || sr.line_pattern.valid) && proj_part.size() >= 2)
+        StrokeRuns(proj_part, unstroked.empty() ? nullptr : &unstroked[begin],
+                   ring, &stroke_runs);
+      else
+        stroke_runs.clear();
+
+      for (const std::vector<SurfacePoint>& path :
+           sr.stroke.valid ? stroke_runs : kNoRuns) {
         const double half = std::max(0.5, sr.stroke.pen.width / 2.0);
         // A dashed stroke is placed along the WHOLE projected path and clipped
         // afterwards, for the same reason the pattern branch below is: the
@@ -951,7 +1205,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
         // is what lets a wider pen case a narrower one dash for dash.
         const std::vector<PathRun> dash = DashRuns(sr.stroke.pen.dash);
         if (dash.empty()) {
-          for (auto& run : ClipPolyline(proj_part, size.width, size.height)) {
+          for (auto& run : ClipPolyline(path, size.width, size.height)) {
             canvas->DrawLines(run, sr.stroke.pen);
             ++draws_emitted_;
             if (pick_enabled_) pick_.AddStroke(it.ref, sr.priority, run, half);
@@ -960,7 +1214,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
           Pen solid = sr.stroke.pen;
           solid.dash.clear();
           const PathPlacement placed =
-              PlaceAlongPath(proj_part, dash, sr.stroke.dash_phase);
+              PlaceAlongPath(path, dash, sr.stroke.dash_phase);
           for (const std::vector<SurfacePoint>& d : placed.dashes) {
             for (auto& run : ClipPolyline(d, size.width, size.height)) {
               canvas->DrawLines(run, solid);
@@ -970,7 +1224,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
           // Picked along the whole line, not dash by dash: a tap that lands in
           // a gap is still a tap on the road.
           if (pick_enabled_) {
-            for (auto& run : ClipPolyline(proj_part, size.width, size.height))
+            for (auto& run : ClipPolyline(path, size.width, size.height))
               pick_.AddStroke(it.ref, sr.priority, run, half);
           }
         }
@@ -980,10 +1234,12 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
       // projected path and clipped afterwards, not along the clipped runs:
       // clipping first would restart the pattern at the canvas edge, so a
       // dash would jump every time the map panned by one pixel.
-      if (sr.line_pattern.valid && !sr.line_pattern.runs.empty() &&
-          proj_part.size() >= 2) {
+      const bool patterned =
+          sr.line_pattern.valid && !sr.line_pattern.runs.empty();
+      for (const std::vector<SurfacePoint>& path :
+           patterned ? stroke_runs : kNoRuns) {
         const PathPlacement placed =
-            PlaceAlongPath(proj_part, sr.line_pattern.runs,
+            PlaceAlongPath(path, sr.line_pattern.runs,
                            sr.line_pattern.phase);
         const double half = (std::max)(0.5, sr.line_pattern.pen.width / 2.0);
         for (const std::vector<SurfacePoint>& dash : placed.dashes) {
@@ -1002,7 +1258,7 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
           // Resolved per stamp: a pattern's runs can name different symbols.
           const ResolvedSymbol rs = ResolveSymbol(style_.get(), ps.symbol_id);
           if (ps.bend && rs.vec != nullptr) {
-            if (!arc) arc = std::make_unique<PathArc>(proj_part);
+            if (!arc) arc = std::make_unique<PathArc>(path);
             DrawSymbolAlongPath(canvas, *rs.vec, *arc, ps.along, ps.offset,
                                 px_per_himetric * ps.scale,
                                 pick_enabled_ ? &ink : nullptr);
@@ -1021,11 +1277,12 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
         }
       }
 
-      // A single point symbol anchors at the first vertex of each part (a
-      // line's symbol, when a row carries one, marks its start). Repeated
-      // symbology along the path is line_pattern, above.
-      if (sr.symbol.valid) {
-        const SurfacePoint& a = proj_part.front();
+      // A single point symbol, placed by PartAnchor. Repeated symbology along
+      // a path is line_pattern, above.
+      SurfacePoint a;
+      GeoPoint a_geo;
+      if (sr.symbol.valid && PartAnchor(sr.symbol.anchor, it, p, proj, proj_part,
+                                        &pts[begin], &a, &a_geo)) {
         if (a.x >= -1e4 && a.y >= -1e4 && a.x <= size.width + 1e4 &&
             a.y <= size.height + 1e4) {
           InkBox ink;
@@ -1033,11 +1290,13 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                   canvas, ResolveSymbol(style_.get(), sr.symbol.symbol_id),
                   a.x, a.y, px_per_himetric * sr.symbol.scale,
                   pixmap_scale * sr.symbol.scale,
-                  SymbolAngleOnChart(
-                      sr.symbol.rotation_deg,
-                      affine ? chart_rotation
-                             : NorthOnChartAt(proj, pts[begin],
-                                              chart_rotation)) *
+                  (sr.symbol.turns_with_chart
+                       ? SymbolAngleOnChart(
+                             sr.symbol.rotation_deg,
+                             affine ? chart_rotation
+                                    : NorthOnChartAt(proj, a_geo,
+                                                     chart_rotation))
+                       : sr.symbol.rotation_deg) *
                       kPi / 180.0,
                   pick_enabled_ ? &ink : nullptr)) {
             ++draws_emitted_;
@@ -1095,10 +1354,23 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                        sr.label.keep_upright)) {
                 if (run.glyphs.empty()) continue;
                 const PlacedGlyph& mid = run.glyphs[run.glyphs.size() / 2];
-                if (repeats.enabled()) {
-                  if (repeats.Near(sr.label.text, mid.x, mid.y)) continue;
-                  repeats.Add(sr.label.text, mid.x, mid.y);
+                if (repeats.enabled() && repeats.Near(sr.label.text, mid.x, mid.y)) continue;
+                if (collisions.enabled()) {
+                  // One disc per glyph, centred on its face: baseline-left
+                  // origin, half an advance along the run, half a cap height up.
+                  run_discs.clear();
+                  const double cap = ts.size * kCapHeightEm;
+                  for (const PlacedGlyph& g : run.glyphs) {
+                    const double w = adv[g.index];
+                    const double c = std::cos(g.angle_rad), sn = std::sin(g.angle_rad);
+                    run_discs.push_back({g.x + c * w / 2 - sn * cap / 2,
+                                         g.y - sn * w / 2 - c * cap / 2,
+                                         std::max(w, cap) / 2 + halo_px});
+                  }
+                  if (collisions.Hits(run_discs)) continue;
+                  collisions.Take(run_discs);
                 }
+                if (repeats.enabled()) repeats.Add(sr.label.text, mid.x, mid.y);
                 InkBox ink;
                 bool drew = false;
                 // The WHOLE run's halo goes down before ANY of its fill. Per
@@ -1143,11 +1415,8 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
                 }
               }
             }
-          } else if (sr.label.anchor == LabelAnchor::kCentre &&
-                     it.type == VectorGeometryType::kArea && p != 0) {
-            // A centred area label belongs to the outer ring alone.
-          } else {
-            const SurfacePoint a = PointLabelAnchor(sr.label, it.type, proj_part);
+          } else if (PartAnchor(sr.label.anchor, it, p, proj, proj_part,
+                                &pts[begin], &a, &a_geo)) {
             int lx = static_cast<int>(std::lround(a.x)) + sr.label.dx;
             int ly = static_cast<int>(std::lround(a.y)) + sr.label.dy;
 
@@ -1179,11 +1448,12 @@ Status VectorRenderer::Render(const MapProjection& proj, ICanvas* canvas) {
               }
             }
 
+            const bool filtered = repeats.enabled() && !sr.label.skip_repeat_filter;
             const bool repeated =
-                repeats.enabled() && repeats.Near(sr.label.text, a.x, a.y);
+                filtered && repeats.Near(sr.label.text, a.x, a.y);
             if (!repeated && lx > -1000 && ly > -1000 &&
                 lx < size.width + 1000 && ly < size.height + 1000) {
-              if (repeats.enabled()) repeats.Add(sr.label.text, a.x, a.y);
+              if (filtered) repeats.Add(sr.label.text, a.x, a.y);
               for (int i = 0; i < halo_n; ++i) {
                 canvas->DrawTextString(
                     sr.label.text,

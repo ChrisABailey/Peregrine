@@ -112,8 +112,6 @@ class RingsOverlay : public fv::Overlay, public fv::app::Properties {
 /// The palette shown while editing range rings: Place Rings and Clear Rings.
 class RingsEditor : public fv::app::OverlayEditor {
  public:
-  explicit RingsEditor(fv::desk::NativeEditorContext ctx) : ctx_(ctx) {}
-
   fv::Status Activate() override { return fv::Status::Ok(); }
   fv::Status Deactivate() override {
     if (RingsOverlay* o = Edited()) o->SetPlacing(false);
@@ -141,10 +139,7 @@ class RingsEditor : public fv::app::OverlayEditor {
   }
 
  private:
-  RingsOverlay* Edited() const {
-    return ctx_.editors ? dynamic_cast<RingsOverlay*>(ctx_.editors->edited()) : nullptr;
-  }
-  fv::desk::NativeEditorContext ctx_;
+  RingsOverlay* Edited() const { return dynamic_cast<RingsOverlay*>(edited()); }
 };
 
 /// Adds a ring set at the centre of the view to the topmost rings overlay.
@@ -164,9 +159,7 @@ FV_NATIVE_PLUGIN_BUILD_ID()
 FV_NATIVE_EXPORT int fv_native_register(fv::desk::NativeRegistrar* r) {
   fv::desk::NativeOverlay rings;
   rings.factory = [] { return std::make_shared<RingsOverlay>(); };
-  rings.editor_factory = [](const fv::desk::NativeEditorContext& ctx) {
-    return std::make_unique<RingsEditor>(ctx);
-  };
+  rings.editor_factory = [] { return std::make_unique<RingsEditor>(); };
   if (!r->AddOverlay("rings", std::move(rings)).ok()) return 1;
   if (!r->AddTool("at_center", RingsAtCenter).ok()) return 1;
   return 0;

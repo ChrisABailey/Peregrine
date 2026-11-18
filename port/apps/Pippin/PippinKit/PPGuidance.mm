@@ -56,17 +56,21 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::CourseEventType type) {
   fv::nav::GuidanceEvent _event;
   PPGuidanceEventKind _kind;
   NSString* _road;
+  NSString* _roadClass;
+  BOOL _continues;
   NSString* _nextName;
   double _crossTrack;
 }
 
 - (instancetype)initWithEvent:(const fv::nav::GuidanceEvent&)event
-                         road:(NSString*)road {
+                     maneuver:(const fv::nav::Maneuver*)maneuver {
   self = [super init];
   if (self != nil) {
     _event = event;
     _kind = PPKindFrom(event.type);
-    _road = [road copy];
+    _road = maneuver != nullptr ? @(maneuver->road.c_str()) : @"";
+    _roadClass = maneuver != nullptr ? @(maneuver->klass.c_str()) : @"";
+    _continues = maneuver != nullptr && maneuver->continues;
     _nextName = @"";
   }
   return self;
@@ -80,6 +84,7 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::CourseEventType type) {
     _event.maneuver_index = event.waypoint_index;
     _kind = PPKindFrom(event.type);
     _road = [name copy];
+    _roadClass = @"";
     _nextName = [nextName copy];
     _crossTrack = event.cross_track_m;
   }
@@ -94,6 +99,8 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::CourseEventType type) {
 - (double)distanceMeters { return _event.distance_m; }
 - (NSInteger)maneuverIndex { return static_cast<NSInteger>(_event.maneuver_index); }
 - (NSString*)road { return _road; }
+- (NSString*)roadClass { return _roadClass; }
+- (BOOL)continues { return _continues; }
 
 - (NSString*)description {
   return [NSString stringWithFormat:@"<PPGuidanceEvent %ld %s %.0f m>",
@@ -107,14 +114,26 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::CourseEventType type) {
 @implementation PPGuidance {
   fv::nav::GuidanceState _state;
   NSString* _road;
+  NSString* _roadClass;
+  BOOL _continues;
 }
 
 - (instancetype)initWithState:(const fv::nav::GuidanceState&)state
-                         road:(NSString*)road {
+                         next:(const fv::nav::Maneuver*)next
+                   detourKind:(PPDetourKind)detourKind
+            detourExtraMeters:(double)extraMeters
+             detourBackMeters:(double)backMeters
+                    detouring:(BOOL)detouring {
   self = [super init];
   if (self != nil) {
     _state = state;
-    _road = [road copy];
+    _detourKind = detourKind;
+    _detourExtraMeters = extraMeters;
+    _detourBackMeters = backMeters;
+    _detouring = detouring;
+    _road = next != nullptr ? @(next->road.c_str()) : @"";
+    _roadClass = next != nullptr ? @(next->klass.c_str()) : @"";
+    _continues = next != nullptr && next->continues;
   }
   return self;
 }
@@ -123,6 +142,8 @@ static PPGuidanceEventKind PPKindFrom(fv::nav::CourseEventType type) {
 - (PPManeuver)maneuver { return PPManeuverFrom(_state.next_type); }
 - (double)distanceMeters { return _state.distance_to_next_m; }
 - (NSString*)road { return _road; }
+- (NSString*)roadClass { return _roadClass; }
+- (BOOL)continues { return _continues; }
 - (BOOL)hasThen { return _state.has_then ? YES : NO; }
 - (PPManeuver)thenManeuver { return PPManeuverFrom(_state.then_type); }
 - (double)remainingMeters { return _state.remaining_m; }

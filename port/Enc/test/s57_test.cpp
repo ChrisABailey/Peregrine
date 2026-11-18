@@ -356,6 +356,57 @@ TEST(S57Cell, PinnedAreaWithHoles) {
   EXPECT_EQ("1939", f->FindAttribute(151)->value);
 }
 
+TEST(S57Cell, MaskedAndDataLimitEdgesAreFlaggedUnstroked) {
+  // Feature 448 (M_QUAL): of its 16 FSPT edges, 6 exterior and all 3
+  // interior ones are MASK = 1 and one is USAG = 3 on the data limit. Their
+  // vertices stay in the rings, flagged so the boundary is not stroked.
+  OPEN_BASE_CELL(cell, "US5CHSDC");
+  const fv::S57Feature* f = ById(cell, 448);
+  ASSERT_NE(nullptr, f);
+  const fv::S57Geometry& g = f->geometry;
+  ASSERT_EQ(g.parts.size(), g.unstroked_edges.size());
+  auto hidden = [&](size_t k) {
+    EXPECT_EQ(g.parts[k].size(), g.unstroked_edges[k].size());
+    size_t n = 0;
+    for (uint8_t e : g.unstroked_edges[k]) n += e != 0;
+    return n;
+  };
+  EXPECT_EQ(104u, hidden(0));
+  // Each hole is one masked edge: every vertex but the closing one.
+  EXPECT_EQ(g.parts[1].size() - 1, hidden(1));
+  EXPECT_EQ(g.parts[2].size() - 1, hidden(2));
+  EXPECT_EQ(0, g.unstroked_edges[0].back()) << "the closing vertex has no edge";
+}
+
+TEST(S57Cell, UnstrokedEdgeFlagsMatchTheirParts) {
+  SKIP_WITHOUT_ENC();
+  size_t hidden = 0, features = 0;
+  for (const CellSpec& spec : kCells) {
+    const std::string path = CellPath(spec.stem);
+    if (path.empty()) continue;
+    fv::S57Cell cell;
+    ASSERT_TRUE(cell.Open(path).ok()) << spec.stem;
+    for (const fv::S57Feature& f : cell.features()) {
+      const fv::S57Geometry& g = f.geometry;
+      if (g.unstroked_edges.empty()) continue;
+      ASSERT_EQ(g.parts.size(), g.unstroked_edges.size()) << f.record_id;
+      bool any = false;
+      for (size_t k = 0; k < g.parts.size(); ++k) {
+        if (g.unstroked_edges[k].empty()) continue;
+        ASSERT_EQ(g.parts[k].size(), g.unstroked_edges[k].size())
+            << spec.stem << " feature " << f.record_id;
+        for (uint8_t e : g.unstroked_edges[k]) {
+          hidden += e != 0;
+          any = any || e != 0;
+        }
+      }
+      features += any;
+    }
+  }
+  EXPECT_GT(features, 0u);
+  EXPECT_GT(hidden, features);
+}
+
 TEST(S57Cell, FeatureObjectIdsAreDecodedAndUnique) {
   OPEN_CELL(cell, "US5CHSDC");
   std::set<std::tuple<int, uint32_t, int>> seen;

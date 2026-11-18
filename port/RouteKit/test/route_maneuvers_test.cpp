@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <string>
 
+#include "fv_route_doc.h"
 #include "fv_route_planner.h"
 
 namespace {
@@ -152,4 +153,92 @@ TEST(RouteManeuvers, ARouteThatWasNotFoundHasNoInstructions) {
   fv::routing::Route none;
   EXPECT_TRUE(ManeuverShapeOf(none).geometry.empty());
   EXPECT_TRUE(ManeuversOf(none).empty());
+}
+
+namespace {
+
+/// A route planned on `graph_path` the way RoutePlanner prices it, with the
+/// options it used.
+struct Planned {
+  RoutePlanner planner;
+  fv::routing::RouteOptions options;
+  fv::routing::Route route;
+  explicit Planned(const std::string& graph_path, const std::string& rules)
+      : planner(graph_path, rules) {}
+};
+
+bool PlanLikeThePlanner(const std::vector<GeoPoint>& stops, const fv::RoutePlanOptions& in,
+                        Planned* p) {
+  if (!p->planner.EnsureGraph().ok()) return false;
+  if (!p->planner.BuildOptions(in, &p->options).ok()) return false;
+  fv::routing::Router router(*p->planner.graph());
+  return router.RouteVia(stops, p->options, &p->route).ok() && p->route.found;
+}
+
+/// Plans a `.fvrte` fixture on `graph_path` with `rules`.
+bool PlanFixture(const std::string& graph_path, const std::string& rules,
+                 const std::string& fvrte, Planned* p) {
+  fv::RouteDoc doc;
+  if (!doc.Read(fvrte).ok()) return false;
+  std::vector<GeoPoint> stops;
+  for (const fv::RouteWaypoint& w : doc.waypoints()) stops.push_back(w.position);
+  fv::RoutePlanOptions in;
+  in.profile = doc.profile();
+  if (doc.avoid_hills()) in.avoid_hills = true;
+  return PlanLikeThePlanner(stops, in, p);
+}
+
+/// True when `m` has a maneuver within `tol_m` of `along_m`.
+bool HasManeuverNear(const std::vector<Maneuver>& m, double along_m, double tol_m) {
+  for (size_t i = 1; i + 1 < m.size(); ++i)
+    if (std::fabs(m[i].distance_m - along_m) <= tol_m) return true;
+  return false;
+}
+
+}  // namespace
+
+// Junction candidates add turns without losing any leg-boundary turn, and on
+// the Kiawah fixtures the list grows by no more than about a quarter.
+TEST(RouteManeuvers, KiawahJunctionsAddFewTurns) {
+  SKIP_WITHOUT_GRAPH();
+  size_t before_total = 0;
+  size_t after_total = 0;
+  for (const char* fixture : {FV_ROUTE_FIXTURE_FILE, FV_ROUTE_BEACH_FIXTURE_FILE}) {
+    Planned p(graph_path, FV_ROUTE_RULES_FILE);
+    ASSERT_TRUE(PlanFixture(graph_path, FV_ROUTE_RULES_FILE, fixture, &p)) << fixture;
+    const std::vector<Maneuver> before = ManeuversOf(p.route);
+    const std::vector<Maneuver> after = ManeuversOf(p.route, *p.planner.graph(), p.options);
+    for (size_t i = 1; i + 1 < before.size(); ++i)
+      EXPECT_TRUE(HasManeuverNear(after, before[i].distance_m, 0.01))
+          << fixture << ": lost the turn at " << before[i].distance_m << " m";
+    before_total += before.size();
+    after_total += after.size();
+  }
+  EXPECT_LE(after_total * 4, before_total * 5);
+}
+
+// The 2026-11-08 Atlanta ride (port/pippin-reroute-plan.md section 2): the two
+// unannounced junction turns become maneuvers and none of the leg-boundary
+// turns is lost.
+TEST(RouteManeuvers, AtlantaRideAnnouncesTheJunctionTurns) {
+  const std::filesystem::path graph =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(graph)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  Planned p(graph.string(), FV_ROUTE_CITY_RULES_FILE);
+  fv::RoutePlanOptions in;
+  in.profile = "bicycle";
+  in.avoid_hills = true;
+  ASSERT_TRUE(PlanLikeThePlanner({{33.78421411913466, -84.44998056736293},
+                                  {33.822726949999996, -84.4314115}},
+                                 in, &p));
+  EXPECT_NEAR(p.route.length_m, 8990.0, 30.0);
+
+  const std::vector<Maneuver> before = ManeuversOf(p.route);
+  const std::vector<Maneuver> after = ManeuversOf(p.route, *p.planner.graph(), p.options);
+  EXPECT_EQ(before.size(), 15u);
+  for (size_t i = 1; i + 1 < before.size(); ++i)
+    EXPECT_TRUE(HasManeuverNear(after, before[i].distance_m, 0.01))
+        << "lost the turn at " << before[i].distance_m << " m";
+  EXPECT_TRUE(HasManeuverNear(after, 2705.0, 15.0)) << "no turn onto the service road";
+  EXPECT_TRUE(HasManeuverNear(after, 4800.0, 15.0)) << "no turn onto the unclassified road";
 }

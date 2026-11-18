@@ -38,6 +38,7 @@ namespace fv {
 namespace app {
 
 class Persistence;
+class Properties;
 
 // ---------------------------------------------------------------------------
 // Persistence — a file overlay's document state (~ IFvOverlayPersistence)
@@ -60,6 +61,13 @@ class Persistence {
 
   // Full path. Empty until the document has been opened or saved once.
   const std::string& file_spec() const { return file_spec_; }
+
+  /// The file a saved configuration reopens this document from. Empty for a
+  /// document restored by FileNew plus `ConfigurationProperties` instead.
+  virtual std::string ConfigurationSpec() const { return file_spec_; }
+  /// State a configuration saves beside the file spec and loads back after
+  /// reopening; null for none.
+  virtual Properties* ConfigurationProperties() { return nullptr; }
   // Has unsaved edits -- what makes Close prompt (plan §3g).
   bool is_dirty() const { return dirty_; }
   // Has ever reached disk. A dirty overlay that has NOT been saved goes

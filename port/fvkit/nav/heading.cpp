@@ -71,6 +71,12 @@ void HeadingResolver::Reset() {
   current_ = ResolvedHeading{};
 }
 
+void HeadingResolver::Prime(const GeoPoint& p) {
+  if (!points_.empty() && points_.back().lat == p.lat && points_.back().lon == p.lon) return;
+  points_.push_back(p);
+  while (points_.size() > capacity_) points_.pop_front();
+}
+
 ResolvedHeading HeadingResolver::Update(const PositionFix& fix) {
   // A reported heading wins outright, exactly as the original does — and it
   // wins even when the position is missing, because a VTG sentence carries a

@@ -42,7 +42,7 @@ do {
 
     var other = heads
     other.maneuverIndex = 4
-    if case .post(let id, _, _, _)? = actions(other).first {
+    if case .post(let id, _, _, _, _, _)? = actions(other).first {
         check(id != "guidance.turn.3", "another maneuver gets its own id")
     } else {
         check(false, "another maneuver posts")
@@ -67,10 +67,12 @@ do {
 
     let off = actions(GuidanceNoticeEvent(kind: .offRoute))
     check(off.count == 1, "off route is one action")
-    if case .post(let id, let title, _, let ts)? = off.first {
+    if case .post(let id, let title, _, let ts, let category, let alerts)? = off.first {
         check(id == GuidanceNotice.offRouteID, "off route has its own id")
         check(title == "Off route", "off route title")
         check(ts, "off route is time sensitive")
+        check(category.isEmpty, "plain off route carries no action")
+        check(alerts, "off route alerts")
     } else {
         check(false, "off route posts")
     }
@@ -84,7 +86,7 @@ do {
     let arrived = actions(GuidanceNoticeEvent(kind: .arrived))
     check(arrived.first == .removeAll, "arrival clears first")
     check(arrived.count == 2, "then posts one notice")
-    if case .post(let id, _, _, let ts)? = arrived.last {
+    if case .post(let id, _, _, let ts, _, _)? = arrived.last {
         check(id == GuidanceNotice.arrivedID, "arrival id")
         check(!ts, "arrival is not time sensitive")
     }
@@ -132,6 +134,62 @@ do {
           "off course gives the side and the steer")
     check(actions(GuidanceNoticeEvent(kind: .backOnCourse)) == [.remove(ids: [GuidanceNotice.offCourseID])],
           "back on course withdraws the off-course notice")
+}
+
+// --- a junction turn where the road does not change -------------------------
+
+do {
+    var e = GuidanceNoticeEvent(kind: .approach, ring: .headsUp, maneuverIndex: 5,
+                                turn: .right, distanceMeters: 385, road: "Marietta Rd")
+    e.continues = true
+    check(actions(e) == [.post(id: "guidance.turn.5", title: "Right in 400 m",
+                               body: "To stay on Marietta Rd", timeSensitive: true)],
+          "named road that continues: \(actions(e))")
+    e.road = ""
+    e.roadClass = "cycleway"
+    check(GuidanceNotice.body(e) == "On the path", "unnamed path: \(GuidanceNotice.body(e))")
+    e.roadClass = "service"
+    check(GuidanceNotice.body(e) == "On the road", "unnamed road: \(GuidanceNotice.body(e))")
+    e.continues = false
+    check(GuidanceNotice.body(e) == "", "unnamed way joined from another names nothing")
+}
+
+// --- detour offers -----------------------------------------------------------
+
+do {
+    let reroute = DetourNoticeOffer(turnAround: false, label: "Re-route: +0.3 mi")
+    let farther = DetourNoticeOffer(turnAround: false, label: "Re-route: +0.4 mi")
+    let back = DetourNoticeOffer(turnAround: true, label: "Turn around: 410 ft back")
+    let id = GuidanceNotice.offRouteID
+
+    check(GuidanceNotice.detourActions(from: nil, to: nil, onRoute: false).isEmpty,
+          "no offer either side changes nothing")
+    check(GuidanceNotice.detourActions(from: reroute, to: reroute, onRoute: false).isEmpty,
+          "the same offer is not posted again")
+    check(GuidanceNotice.detourActions(from: nil, to: reroute, onRoute: false)
+          == [.post(id: id, title: "Off route", body: "Re-route: +0.3 mi", timeSensitive: true,
+                    category: GuidanceNotice.detourRerouteCategory, alerts: true)],
+          "a new offer replaces the off-route notice, with its action, and alerts")
+    check(GuidanceNotice.detourActions(from: reroute, to: farther, onRoute: false)
+          == [.post(id: id, title: "Off route", body: "Re-route: +0.4 mi", timeSensitive: true,
+                    category: GuidanceNotice.detourRerouteCategory, alerts: false)],
+          "a new distance on the same kind is silent")
+    check(GuidanceNotice.detourActions(from: reroute, to: back, onRoute: false)
+          == [.post(id: id, title: "Off route", body: "Turn around: 410 ft back",
+                    timeSensitive: true, category: GuidanceNotice.detourTurnAroundCategory,
+                    alerts: true)],
+          "re-route to turn around alerts")
+    check(GuidanceNotice.detourActions(from: back, to: nil, onRoute: false)
+          == [.post(id: id, title: "Off route", body: GuidanceNotice.offRouteBody,
+                    timeSensitive: true, alerts: false)],
+          "an offer withdrawn off route reverts to plain off route, silently")
+    check(GuidanceNotice.detourActions(from: back, to: nil, onRoute: true)
+          == [.remove(ids: [id])], "rejoining removes the notice")
+}
+
+for id in [GuidanceNotice.detourRerouteCategory, GuidanceNotice.detourTurnAroundCategory,
+           GuidanceNotice.detourActionID] {
+    check(id.hasPrefix(GuidanceNotice.prefix), "\(id) carries the prefix")
 }
 
 for id in [GuidanceNotice.turnID(0), GuidanceNotice.offRouteID, GuidanceNotice.arrivedID,

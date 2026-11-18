@@ -36,12 +36,6 @@ BuiltinTable& Builtins() {
   return table;
 }
 
-bool IsIconFile(const std::string& icon) {
-  std::string ext = fs::path(icon).extension().string();
-  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return ext == ".svg" || ext == ".png" || ext == ".pdf";
-}
-
 /// Reads `[["label", "*.ext"], ...]` into filter pairs.
 bool ReadFilters(const json& j, std::vector<std::pair<std::string, std::string>>* out) {
   if (!j.is_array()) return false;
@@ -91,9 +85,8 @@ bool ParseEntry(const json& j, const std::string& base_dir, OverlayManifestEntry
     return false;
   if (d.default_opacity < 0 || d.default_opacity > 100)
     return *why = at + "opacity must be 0 to 100", false;
-  if (!d.icon.empty() && IsIconFile(d.icon) && !base_dir.empty() &&
-      fs::path(d.icon).is_relative())
-    d.icon = (fs::path(base_dir) / d.icon).lexically_normal().string();
+  d.icon = ResolveIconFile(d.icon, base_dir);
+  d.resource_dir = base_dir;
 
   std::string kind;
   if (!str("kind", &kind)) return false;
@@ -145,6 +138,20 @@ bool ParseEntry(const json& j, const std::string& base_dir, OverlayManifestEntry
     return *why = at + "implementation." + impl.key() + " must name something", false;
   e->implementation_kind = impl.key();
   e->implementation_name = impl.value().get<std::string>();
+
+  if (!j.contains("editor")) return true;
+  if (!j["editor"].is_object() || j["editor"].size() != 1)
+    return *why = at + "editor must be an object with one key", false;
+  const auto ed = j["editor"].begin();
+  if (ed.key() != "python" && ed.key() != "library")
+    return *why = at + "an editor is \"python\" or \"library\"; builtin and native overlays "
+                       "name their editor in code", false;
+  if (ed.key() != e->implementation_kind)
+    return *why = at + "the editor must be the same kind as the implementation", false;
+  if (!ed.value().is_string() || ed.value().get<std::string>().empty())
+    return *why = at + "editor." + ed.key() + " must name something", false;
+  e->editor_kind = ed.key();
+  e->editor_name = ed.value().get<std::string>();
   return true;
 }
 
@@ -181,6 +188,19 @@ BuiltinOverlayRegistrar::BuiltinOverlayRegistrar(const std::string& name, Builti
 }
 
 // MARK: Parsing
+
+bool IsIconFile(const std::string& icon) {
+  std::string ext = std::filesystem::path(icon).extension().string();
+  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext == ".svg" || ext == ".png" || ext == ".pdf";
+}
+
+std::string ResolveIconFile(const std::string& icon, const std::string& base_dir) {
+  if (icon.empty() || base_dir.empty() || !IsIconFile(icon) ||
+      !std::filesystem::path(icon).is_relative())
+    return icon;
+  return (std::filesystem::path(base_dir) / icon).lexically_normal().string();
+}
 
 Status ParseOverlayManifest(const std::string& text, const std::string& source,
                             const std::string& base_dir,

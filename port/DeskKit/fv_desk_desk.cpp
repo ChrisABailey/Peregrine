@@ -6,26 +6,35 @@
 #include "fv_desk_desk.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 #include "fv_desk_base_map.h"
 #include "fv_desk_enc_import.h"
 #include "fv_desk_map_options.h"
 #include "fv_desk_overlay_manifest.h"
 #include "fv_desk_feature_editor.h"
+#include "fv_desk_moving_map_editor.h"
 #include "fv_desk_point_editor.h"
 #include "fv_desk_user_settings.h"
 #include "fv_route_editor.h"
 #include "fv_route_overlay.h"
+#include "fv_road_network.h"
 #include "fv_route_planner.h"
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/source_spec.h"
+#include "fvkit/feature/feature_source.h"
+#include "fvkit/feature/web/remote_layer.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/feature/points_layer.h"
 #include "fvkit/formats/dted.h"
@@ -34,6 +43,7 @@
 #include "fvkit/log.h"
 #include "fvkit/overlay/contour_overlay.h"
 #include "fvkit/overlay/feature_overlay.h"
+#include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
 #include "fvkit/overlay/ta_mask_overlay.h"
 #include "fvkit/settings.h"
@@ -50,6 +60,7 @@ constexpr double kRotateStepDeg = 15.0;
 constexpr double kSymbolScaleStep = 1.25;
 constexpr double kMinSymbolScale = 0.2, kMaxSymbolScale = 8.0;
 constexpr char kSymbolScaleKey[] = "view.symbol_scale";
+constexpr char kPlaybackRateKey[] = "ownship.playback_rate";
 
 constexpr char kWorkspaceConfig[] = "workspace";
 constexpr char kWorkspacePrefix[] = "session.workspace.";
@@ -168,6 +179,76 @@ class Desk::ShellTap : public app::AppShell {
   Desk& desk_;
 };
 
+// MARK: Overlay host
+
+/// The Desk's side of app::OverlayHost, shared by every HostAware overlay.
+class Desk::OverlayHostImpl : public app::OverlayHost {
+ public:
+  explicit OverlayHostImpl(Desk& desk) : desk_(desk) {}
+
+  void RequestRedraw() override { redraw_.store(true); }
+  bool TakeRedraw() { return redraw_.exchange(false); }
+
+  Status CaptureMouse(Overlay& overlay) override { return desk_.overlays_.CaptureMouse(&overlay); }
+  void ReleaseMouse(Overlay& overlay) override {
+    if (desk_.overlays_.mouse_capture() == &overlay) desk_.overlays_.ReleaseMouse();
+  }
+  bool ElevationAt(const GeoPoint& p, double* metres) override {
+    float m = 0;
+    if (!desk_.pointer_elevation_ || !desk_.pointer_elevation_->GetElevation(p, &m).ok())
+      return false;
+    *metres = m;
+    return true;
+  }
+  std::shared_ptr<IElevationSource> OpenElevation() override;
+  std::string LabelFont() const override { return HostLabelFont(); }
+  double DisplayScale() const override { return desk_.view_->View().DisplayScale(); }
+  void PushUndo(app::UndoEntry entry) override { desk_.undo_.Push(std::move(entry)); }
+  app::UndoStack& History() override { return desk_.undo_; }
+  std::vector<app::SnapToItem> SnapCandidates(const MapProjection& proj, PixelPoint p,
+                                              double tolerance_px) override {
+    return app::SnapCandidates(desk_.overlays_, proj, p, tolerance_px);
+  }
+  void ShowStatus(const std::string& text) override {
+    desk_.tap_->ShowHint(app::HintText{std::string(), text});
+  }
+  std::vector<CoverageRow> Coverage(const std::string& format, const GeoRect& area) override {
+    std::vector<CoverageRow> rows, out;
+    if (!desk_.catalog_ || !desk_.catalog_->SelectByGeoRect(area, &rows).ok()) return out;
+    for (CoverageRow& r : rows)
+      if (r.format == format) out.push_back(std::move(r));
+    return out;
+  }
+  bool OwnshipFix(PositionFix* out) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ownship_.has_position) return false;
+    *out = ownship_;
+    return true;
+  }
+  void RaiseAlarm(const std::string& text) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    alarms_.push_back(text);
+  }
+
+  /// Copies the Desk's ownship for overlays reading it off the UI thread.
+  void PublishOwnship(const OwnshipState& state) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ownship_ = state.has_position() ? state.fix : PositionFix();
+  }
+  /// The alarms raised since the last call, oldest first.
+  std::vector<std::string> TakeAlarms() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return std::exchange(alarms_, {});
+  }
+
+ private:
+  Desk& desk_;
+  std::atomic<bool> redraw_{false};
+  std::mutex mutex_;  ///< guards ownship_ and alarms_
+  PositionFix ownship_;
+  std::vector<std::string> alarms_;
+};
+
 // MARK: Stack hook
 
 /// Re-lists the open file overlays when the stack or a file name changes.
@@ -176,21 +257,28 @@ class Desk::StackHook : public StackObserver {
   explicit StackHook(Desk& desk) : desk_(desk) {}
   void OverlayAdded(Overlay& o) override {
     desk_.NoteRecent(o);
+    desk_.AttachMovingMap(o);
     // An elevation overlay with no source draws nothing, which reads as broken.
-    if (!desk_.BindOverlay(o)) {
+    const Status bound = desk_.BindOverlay(o);
+    if (!bound.ok()) {
       const app::OverlayTypeDesc* d = desk_.types_.Find(o.type_id());
       const std::string what = d != nullptr ? d->display_name : o.Name();
-      desk_.Report(Status::Error(kNotFound, what + " needs elevation data (DTED or lidar); the catalog has none."));
+      desk_.Report(Status::Error(bound.code, what + " " + bound.message));
     }
     Changed();
   }
   void OverlayRemoved(Overlay& o) override {
+    if (app::HostAware* h = o.AsHostAware()) h->SetHost(nullptr);
+    desk_.DetachMovingMap(o);
     desk_.DropFeatureViews(o);
     desk_.undo_.RemoveOwner(&o);
     Changed();
   }
   void OverlayFileSpecChanged(Overlay&) override { Changed(); }
-  void OverlayOrderChanged() override { ++desk_.layers_generation_; }
+  void OverlayOrderChanged() override {
+    ++desk_.layers_generation_;
+    desk_.SyncOwnship();
+  }
   void CurrentChanged(Overlay*, Overlay*) override { ++desk_.layers_generation_; }
   void OverlayDirtyChanged(Overlay&) override { ++desk_.layers_generation_; }
 
@@ -208,9 +296,11 @@ class Desk::StackHook : public StackObserver {
 Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
     : shell_(shell), settings_(settings), groups_(std::move(groups)), menus_(commands_) {
   tap_ = std::make_unique<ShellTap>(*this);
+  host_ = std::make_unique<OverlayHostImpl>(*this);
   search_ = std::make_unique<DeskSearch>();
   overlays_.SetTypeRegistry(&types_);
   session_ = std::make_unique<app::OverlaySession>(types_, overlays_, *tap_, settings_);
+  SetReplayRate(settings_.GetDouble(kPlaybackRateKey, 1.0));
   editors_ = std::make_unique<app::EditorManager>(types_, overlays_, *tap_);
   session_->SetEditorManager(editors_.get());
   editors_->SetSession(session_.get());
@@ -222,6 +312,9 @@ Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
   overlays_.AddObserver(stack_hook_.get());
 
   Status s = app::RegisterBuiltinOverlayTypes(types_);
+  // In the desktop a moving map is a document per feed, not fvkit's static toggle.
+  if (s.ok()) s = types_.Replace(MovingMapFileType());
+  if (s.ok()) s = RegisterMovingMapEditor(types_, *this);
   if (!s.ok()) Warn("built-in overlay types: " + s.message);
   s = RegisterPointEditor(types_, *editors_, [this] {
     const Status st = EditSelectedFeature();
@@ -268,13 +361,18 @@ Desk::Desk(DeskShell& shell, Settings& settings, MapGroups groups)
   view_ = std::make_unique<view::MapView>(view::Viewport::Make(GeoPoint{0, 0}, 1.0e7),
                                           view::LadderKind::kUniform, nullptr);
   map_options_ = BuiltinMapOptions();
-  overlay_options_ = {RoutingOptions([this] { ResolveRoutePlanner(); })};
+  overlay_options_ = {RoutingOptions([this] { ResolveRoutePlanner(); }),
+                      MovingMapOptions([this] { MovingMapOptionsChanged(); })};
   menus_.SetOnChange([this] { shell_.MenusChanged(); });
   RegisterStaticCommands();
   Refresh();
 }
 
 Desk::~Desk() {
+  moving_maps_.clear();
+  // An overlay a script still holds must not keep a pointer to this Desk.
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
+    if (app::HostAware* h = o->AsHostAware()) h->SetHost(nullptr);
   overlays_.RemoveObserver(stack_hook_.get());
   menus_.SetOnChange(nullptr);
 }
@@ -297,7 +395,6 @@ std::vector<app::TypeId> Desk::LoadOverlayManifests(const std::vector<std::strin
 
 void Desk::LoadPackages(const PackageDirs& dirs, const std::string& host_version) {
   packages_ = std::make_unique<PackageManager>(dirs, types_, tools_, host_version);
-  packages_->SetEditorManager(editors_.get());
   packages_->Scan(&warnings_);
   packages_->LoadAll();
   for (const PackageInfo& p : packages_->packages())
@@ -434,14 +531,38 @@ void Desk::RegisterStaticCommands() {
                                             std::string("Untitled.") + kWorkspaceExtension);
     if (!spec.first.empty()) SaveWorkspace(spec.first);
   });
+  // An empty workspace stack falls back to the edited overlay's history, so
+  // routes, points and plugin overlays undo from the Edit menu too.
   add("edit.undo", "Undo", "Primary+Z", [this] {
+    if (!undo_.CanUndo()) {
+      app::EditTarget* t = EditedHistory();
+      if (t == nullptr || !t->CanUndo()) return;
+      t->Undo();
+      shell_.RequestInvalidate();
+      return;
+    }
     const Status st = undo_.Undo();
     if (!st.ok()) Report(st);
-  }, [this] { return undo_.CanUndo(); }, nullptr, "undo");
+  }, [this] {
+    if (undo_.CanUndo()) return true;
+    const app::EditTarget* t = EditedHistory();
+    return t != nullptr && t->CanUndo();
+  }, nullptr, "undo");
   add("edit.redo", "Redo", "Primary+Shift+Z", [this] {
+    if (!undo_.CanRedo()) {
+      app::EditTarget* t = EditedHistory();
+      if (t == nullptr || !t->CanRedo()) return;
+      t->Redo();
+      shell_.RequestInvalidate();
+      return;
+    }
     const Status st = undo_.Redo();
     if (!st.ok()) Report(st);
-  }, [this] { return undo_.CanRedo(); }, nullptr, "redo");
+  }, [this] {
+    if (undo_.CanRedo()) return true;
+    const app::EditTarget* t = EditedHistory();
+    return t != nullptr && t->CanRedo();
+  }, nullptr, "redo");
   add("app.quit", "Quit", "Primary+Q", [this] {
     if (session_->Exit() == app::FlowResult::kDone) shell_.Quit();
   });
@@ -463,6 +584,7 @@ void Desk::RegisterStaticCommands() {
   add("view.symbols_smaller", "Smaller Chart Symbols", "Primary+[",
       [this] { SetSymbolScale(symbol_scale_ / kSymbolScaleStep); },
       [this] { return symbol_scale_ > kMinSymbolScale; });
+  add("view.ownship", "Ownship\xE2\x80\xA6", "Primary+Shift+M", [this] { shell_.ShowOwnship(); });
   add("view.symbols_actual", "Actual Symbol Size", "Primary+0", [this] { SetSymbolScale(1.0); },
       [this] { return symbol_scale_ != 1.0; });
   add("map.rotate.left", "Rotate Left", "Alt+Left", [this] { RotateChart(-kRotateStepDeg); });
@@ -511,6 +633,22 @@ void Desk::RegisterStaticCommands() {
     const Status st = OpenLayerStyle();
     if (!st.ok()) Report(st);
   }, [this] { return dynamic_cast<const FeatureOverlay*>(overlays_.current()) != nullptr; });
+  add("overlay.add_web_layer", "Add Web Layer\xE2\x80\xA6", "", [this] { shell_.ShowAddWebLayer(); },
+      [] { return AnyFeatureSourceLists(); });
+  add("layers.refresh", "Refresh", "", [this] {
+    const Status st = RefreshWebLayer();
+    if (!st.ok()) Report(st);
+  }, [this] {
+    const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
+    return f != nullptr && f->remote_layer() != nullptr;
+  });
+  add("layers.reset_service_style", "Reset to Service Style", "", [this] {
+    const Status st = ResetToServiceStyle();
+    if (!st.ok()) Report(st);
+  }, [this] {
+    const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
+    return f != nullptr && f->from_source();
+  });
   // Off the menus: Overlay ▸ New ▸ Feature Layer… runs the same dialog. Kept for shells that run it by id.
   add("overlay.new_layer", "New Feature Layer…", "", [this] { OpenNewLayer(); });
   add("overlay.fields", "Layer Fields…", "", [this] {
@@ -1150,7 +1288,7 @@ void Desk::RegisterEditorCommands() {
             Command c;
             c.id = PathId(here);
             c.label = n.label;
-            c.icon = n.icon;
+            c.icon = ResolveIconFile(n.icon, desc != nullptr ? desc->resource_dir : std::string());
             c.enabled = [live, here] {
               return live(here, [](const app::MenuNode* m) { return m && m->enabled && m->action; });
             };
@@ -1406,7 +1544,7 @@ void Desk::CatalogChanged() {
 namespace {
 
 /// Lidar DEMs stacked over the DTED tree; either may be absent.
-std::unique_ptr<IElevationSource> OpenElevation(const std::string& dted_dir,
+std::unique_ptr<IElevationSource> OpenElevationStack(const std::string& dted_dir,
                                                 const std::vector<std::string>& lidar_dirs) {
   std::unique_ptr<IElevationSource> dted;
   if (!dted_dir.empty()) dted = std::make_unique<DtedElevationSource>(dted_dir);
@@ -1418,6 +1556,10 @@ std::unique_ptr<IElevationSource> OpenElevation(const std::string& dted_dir,
 }
 
 }  // namespace
+
+std::shared_ptr<IElevationSource> Desk::OverlayHostImpl::OpenElevation() {
+  return OpenElevationStack(desk_.elevation_dted_dir_, desk_.elevation_lidar_dirs_);
+}
 
 void Desk::ResolveElevation() {
   ++elevation_gen_;
@@ -1434,14 +1576,19 @@ void Desk::ResolveElevation() {
       if (r.format == "lidar" && r.frames > 0) lidar_dirs.push_back(r.path);
     }
   }
-  elevation_ = OpenElevation(dted_dir, lidar_dirs);
-  pointer_elevation_ = OpenElevation(dted_dir, lidar_dirs);
-  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays()) BindOverlay(*o);
+  elevation_ = OpenElevationStack(dted_dir, lidar_dirs);
+  pointer_elevation_ = OpenElevationStack(dted_dir, lidar_dirs);
+  elevation_dted_dir_ = dted_dir;
+  elevation_lidar_dirs_ = lidar_dirs;
+  RebindHosts();
 }
 
-bool Desk::BindOverlay(Overlay& overlay) {
+Status Desk::BindOverlay(Overlay& overlay) {
+  app::HostAware* h = overlay.AsHostAware();
+  if (h == nullptr) return Status::Ok();
+  h->SetHost(host_.get());
+  // The road graph and routing settings are window state with no host service.
   if (auto* r = dynamic_cast<RouteOverlay*>(&overlay)) {
-    r->SetManager(&overlays_);
     r->SetPlanner(planner_.get());
     r->SetAvoidHillsPenalty(
         settings_.GetDouble("routing.avoid_hills_penalty", kDefaultAvoidHillsPenalty));
@@ -1453,33 +1600,24 @@ bool Desk::BindOverlay(Overlay& overlay) {
         r->set_dirty(false);
       }
     }
-    return true;
   }
-  if (auto* p = dynamic_cast<PointOverlay*>(&overlay)) {
-    p->SetManager(&overlays_);
-    return true;
-  }
-  if (auto* f = dynamic_cast<FeatureOverlay*>(&overlay)) {
-    f->SetManager(&overlays_);
-    f->edit().SetUndoStack(&undo_);
-    f->SetLabelFont(HostLabelFont());
-    f->SetDisplayScale(view_->View().DisplayScale());
-    return true;
-  }
-  if (auto* c = dynamic_cast<ContourOverlay*>(&overlay)) {
-    c->SetElevationSource(elevation_);
-  } else if (auto* t = dynamic_cast<TAMaskOverlay*>(&overlay)) {
-    t->SetElevationSource(elevation_);
-  } else {
-    return true;
-  }
-  return elevation_ != nullptr;
+  return h->HostStatus();
+}
+
+void Desk::RebindHosts() {
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
+    if (app::HostAware* h = o->AsHostAware()) h->SetHost(host_.get());
+}
+
+bool Desk::FlushOverlayRedraw() {
+  for (const std::string& alarm : host_->TakeAlarms()) shell_.ShowNotice(alarm);
+  if (!host_->TakeRedraw()) return false;
+  shell_.RequestInvalidate();
+  return true;
 }
 
 void Desk::DisplayScaleChanged() {
-  const double scale = view_->View().DisplayScale();
-  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
-    if (auto* f = dynamic_cast<FeatureOverlay*>(o.get())) f->SetDisplayScale(scale);
+  RebindHosts();
 }
 
 Status Desk::SetLayerVisible(size_t row, bool visible) {
@@ -1927,6 +2065,45 @@ Status Desk::CreateNewLayer() {
   return Status::Ok();
 }
 
+std::vector<std::string> Desk::RecentWebUrls() const {
+  return user_settings_ != nullptr ? desk::RecentWebUrls(*user_settings_) : std::vector<std::string>();
+}
+
+Status Desk::AddWebLayers() {
+  const std::vector<std::string> specs = web_.ChosenSpecs();
+  if (specs.empty()) return Status::Error(kInvalidArg, "tick the layers to add");
+  NoteRecentWebUrl(user_settings_, web_.url());
+  for (const std::string& spec : specs) {
+    const app::FlowResult r = session_->OpenFile(FeatureOverlay::kTypeId, spec);
+    if (r == app::FlowResult::kDone) continue;
+    const Status& e = session_->last_error();
+    return e.ok() ? Status::Error(kInternal, "opening " + spec + " was cancelled") : e;
+  }
+  shell_.RequestInvalidate();
+  return Status::Ok();
+}
+
+Status Desk::RefreshWebLayer() {
+  const auto* f = dynamic_cast<const FeatureOverlay*>(overlays_.current());
+  web::RemoteFeatureLayer* remote = f != nullptr ? f->remote_layer() : nullptr;
+  if (remote == nullptr) return Status::Error(kNotFound, "the current layer is not a web layer");
+  const Status s = remote->Refresh();
+  shell_.RequestInvalidate();
+  return s;
+}
+
+Status Desk::ResetToServiceStyle() {
+  const auto f = std::dynamic_pointer_cast<FeatureOverlay>(overlays_.FindShared(overlays_.current()));
+  if (!f || !f->from_source()) return Status::Error(kNotFound, "the current layer did not come from a service");
+  FeatureStyle style;
+  if (!f->source_style_json().empty()) {
+    const Status s = ReadFeatureStyleJson(f->source_style_json(), &style);
+    if (!s.ok()) return s;
+  }
+  style.overrides = f->style().overrides;
+  return rules_.Replace(f, style, "Reset to Service Style");
+}
+
 void Desk::CloseNewLayer() {
   if (!new_layer_) return;
   new_layer_.reset();
@@ -1975,6 +2152,10 @@ void Desk::ResolveRoutePlanner() {
   for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
     if (auto* r = dynamic_cast<RouteOverlay*>(o.get())) r->SetPlanner(next.get());
   planner_ = std::move(next);
+  moving_map_roads_.reset();
+  moving_map_graph_ = nullptr;
+  for (const auto& d : moving_maps_)
+    d->SetRoadNetwork(d->overlay()->feed_config().snap_to_road ? MovingMapRoads() : nullptr);
 }
 
 const MapGroup* Desk::CurrentGroup() const {
@@ -2011,6 +2192,12 @@ void Desk::SetSymbolScale(double scale) {
 void Desk::RotateChart(double degrees) {
   const view::Viewport& v = view_->View();
   view_->SetViewport(v.RotatedBy(degrees, v.SurfaceCenter()));
+}
+
+app::EditTarget* Desk::EditedHistory() const {
+  if (!Editing()) return nullptr;
+  Overlay* o = editors_->edited();
+  return o != nullptr ? o->AsEditTarget() : nullptr;
 }
 
 void Desk::PanScreens(double fx, double fy) {
@@ -2462,6 +2649,302 @@ bool Desk::OverlayKeyDown(const KeyEvent& e) {
 
 // MARK: Status
 
+// MARK: Moving map
+
+void Desk::AttachMovingMap(Overlay& overlay) {
+  if (dynamic_cast<DeskMovingMap*>(&overlay) == nullptr) return;
+  std::shared_ptr<DeskMovingMap> mm;
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
+    if (o.get() == &overlay) mm = std::static_pointer_cast<DeskMovingMap>(o);
+  if (!mm) return;
+  mm->SetSymbolDpiScale(view_->View().DisplayScale());
+  auto driver = std::make_unique<MovingMapDriver>(settings_, feed_receivers_, mm);
+  if (mm->feed_config().snap_to_road) driver->SetRoadNetwork(MovingMapRoads());
+  const view::Viewport& v = view_->View();
+  const Status s = driver->Start(v.Center(), v.Rotation(), MovingMapDemoPath());
+  moving_maps_.push_back(std::move(driver));
+  if (mm->replay()) ++clock_generation_;  // the range widened
+  // An opened track is shown whole: the clock stops at its last fix.
+  if (mm->replay()) {
+    replay_clock_.playing = false;
+    SeekReplay(mm->end_s());
+  }
+  SyncOwnship();
+  if (!s.ok()) Report(s);
+}
+
+void Desk::DetachMovingMap(const Overlay& overlay) {
+  const auto it = std::find_if(moving_maps_.begin(), moving_maps_.end(),
+                               [&overlay](const auto& d) { return d->overlay() == &overlay; });
+  if (it == moving_maps_.end()) return;
+  const bool replay = (*it)->overlay()->replay();
+  moving_maps_.erase(it);
+  double start = 0.0;
+  double end = 0.0;
+  if (!ReplayRange(&start, &end)) replay_clock_.playing = false;
+  if (replay) ++clock_generation_;
+  SyncOwnship();
+}
+
+bool Desk::ReplayRange(double* start_s, double* end_s) const {
+  bool any = false;
+  for (const auto& d : moving_maps_) {
+    const DeskMovingMap* mm = d->overlay();
+    if (!mm->replay()) continue;
+    *start_s = any ? std::min(*start_s, mm->start_s()) : mm->start_s();
+    *end_s = any ? std::max(*end_s, mm->end_s()) : mm->end_s();
+    any = true;
+  }
+  return any;
+}
+
+void Desk::SeekReplay(double t_s) {
+  double start = 0.0;
+  double end = 0.0;
+  if (!ReplayRange(&start, &end)) return;
+  replay_clock_.time_s = std::clamp(t_s, start, end);
+  ++clock_generation_;
+  for (const auto& d : moving_maps_) d->SetReplayTime(replay_clock_.time_s, true);
+  shell_.RequestInvalidate();
+}
+
+void Desk::SetReplayPlaying(bool playing) {
+  double start = 0.0;
+  double end = 0.0;
+  if (!ReplayRange(&start, &end)) playing = false;
+  if (playing && replay_clock_.time_s >= end) SeekReplay(start);
+  if (replay_clock_.playing == playing) return;
+  replay_clock_.playing = playing;
+  ++clock_generation_;
+}
+
+void Desk::SetReplayRate(double rate) {
+  if (!(rate > 0.0) || rate == replay_clock_.rate) return;
+  replay_clock_.rate = rate;
+  ++clock_generation_;
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.17g", rate);
+  settings_.Set(kPlaybackRateKey, text);
+  if (user_settings_ != nullptr) user_settings_->Set(kPlaybackRateKey, text);
+}
+
+OwnshipPanel Desk::ownship_panel() const {
+  double start = 0.0;
+  double end = 0.0;
+  const bool has_range = ReplayRange(&start, &end);
+  const std::string units = settings_.GetString("ownship.units", "nautical");
+  OwnshipPanel p = BuildOwnshipPanel(
+      ownship_, replay_clock_, has_range, start, end,
+      units == "metric" ? OwnshipUnits::kMetric : OwnshipUnits::kNautical);
+  p.generation = OwnshipPanelGeneration();
+  return p;
+}
+
+MovingMapDriver* Desk::OwnshipDriver() const {
+  // The topmost moving map is the ownship (FirstOfType is top-down).
+  const std::shared_ptr<Overlay> top = overlays_.FirstOfType(MovingMapOverlay::kTypeId);
+  for (const auto& d : moving_maps_)
+    if (d->overlay() == top.get()) return d.get();
+  return nullptr;
+}
+
+void Desk::SyncOwnship() {
+  MovingMapDriver* owner = OwnshipDriver();
+  const Overlay* current = ownship_.source.lock().get();
+  if (owner != nullptr && owner->overlay() == current) return;
+  if (owner == nullptr && ownship_.mode == OwnshipMode::kNone) return;
+  const uint64_t generation = ownship_.generation + 1;
+  ownship_ = OwnshipState();
+  ownship_.generation = generation;
+  host_->PublishOwnship(ownship_);
+  if (owner == nullptr) return;
+  DeskMovingMap* mm = owner->overlay();
+  ownship_.mode = mm->replay() ? OwnshipMode::kReplay : OwnshipMode::kLive;
+  ownship_.source = overlays_.FirstOfType(MovingMapOverlay::kTypeId);
+  ownship_.source_name = mm->Name();
+  // The new ownship's camera starts from the view as it is, not where it last left it.
+  const view::Viewport& v = view_->View();
+  owner->MapMoved(v.Center(), v.Rotation());
+  // A paused replay sends no fix, so the view would not come to it until play.
+  mm->RecheckCamera();
+  if (mm->has_fix()) {
+    MovingMapStep step;
+    step.new_fix = true;
+    step.fix = mm->last_fix();
+    step.heading = owner->heading();
+    UpdateOwnship(step);
+  }
+}
+
+void Desk::UpdateOwnship(const MovingMapStep& step) {
+  if (!step.new_fix) return;
+  ownship_.fix = step.fix;
+  ownship_.time_from_fix = step.fix.has_time;
+  if (!step.fix.has_time) {
+    ownship_.fix.time_s = UtcNowSeconds();
+    ownship_.fix.has_time = true;
+  }
+  ownship_.heading = step.heading;
+  ++ownship_.generation;
+  host_->PublishOwnship(ownship_);
+}
+
+std::vector<GeoPoint> Desk::MovingMapDemoPath() const {
+  std::vector<GeoPoint> path;
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays()) {
+    const auto* r = dynamic_cast<const RouteOverlay*>(o.get());
+    if (r == nullptr) continue;
+    if (r->has_plan()) {
+      for (const std::vector<GeoPoint>& leg : r->plan().legs) path.insert(path.end(), leg.begin(), leg.end());
+    } else {
+      for (const auto& w : r->waypoints()) path.push_back(w.position);
+    }
+    if (path.size() >= 2) break;
+    path.clear();
+  }
+  return path;
+}
+
+std::shared_ptr<const IRoadNetwork> Desk::MovingMapRoads() {
+  if (planner_ == nullptr) return nullptr;
+  // Snapping is a refinement: a graph that will not load leaves the raw fixes.
+  const Status s = planner_->EnsureGraph();
+  if (!s.ok()) {
+    Warn("moving map: " + s.message);
+    return nullptr;
+  }
+  std::shared_ptr<const routing::RoadGraph> graph = planner_->graph();
+  if (graph == nullptr) return nullptr;
+  if (graph.get() != moving_map_graph_) {
+    moving_map_roads_ = std::make_shared<routing::RoadGraphNetwork>(graph);
+    moving_map_graph_ = graph.get();
+  }
+  return moving_map_roads_;
+}
+
+void Desk::MovingMapOptionsChanged() {
+  SetReplayRate(settings_.GetDouble(kPlaybackRateKey, 1.0));
+  for (const auto& d : moving_maps_) d->ApplySettings();
+  shell_.RequestInvalidate();
+}
+
+bool Desk::SetMovingMapFeed(const Overlay& overlay, const FeedConfig& config) {
+  const auto it = std::find_if(moving_maps_.begin(), moving_maps_.end(),
+                               [&overlay](const auto& d) { return d->overlay() == &overlay; });
+  if (it == moving_maps_.end()) return false;
+  (*it)->overlay()->SetFeedConfig(config);
+  if ((*it)->feed_stale()) RestartMovingMap(**it);
+  return true;
+}
+
+void Desk::RestartMovingMap(MovingMapDriver& d) {
+  d.SetRoadNetwork(d.overlay()->feed_config().snap_to_road ? MovingMapRoads() : nullptr);
+  const view::Viewport& v = view_->View();
+  const Status s = d.Start(v.Center(), v.Rotation(), MovingMapDemoPath());
+  if (!s.ok()) Report(s);
+  if (d.overlay()->replay()) d.SetReplayTime(replay_clock_.time_s, true);
+  // A restarted ownship feed has no fix yet; the ownship waits for its first one.
+  if (&d == OwnshipDriver()) {
+    ownship_.source.reset();
+    SyncOwnship();
+  }
+  shell_.RequestInvalidate();
+}
+
+DeskMovingMap* Desk::EditedMovingMap() const {
+  if (auto* mm = dynamic_cast<DeskMovingMap*>(editors_->edited())) return mm;
+  const MovingMapDriver* d = OwnshipDriver();
+  return d != nullptr ? d->overlay() : nullptr;
+}
+
+void Desk::SetMovingMapFlag(const std::string& key, bool on) {
+  const char* text = on ? "true" : "false";
+  settings_.Set(key, text);
+  if (user_settings_ != nullptr) user_settings_->Set(key, text);
+  MovingMapOptionsChanged();
+}
+
+bool Desk::ToggleMovingMapListening() {
+  DeskMovingMap* mm = EditedMovingMap();
+  if (mm == nullptr || mm->replay()) return false;
+  FeedConfig config = mm->feed_config();
+  config.listening = !config.listening;
+  return SetMovingMapFeed(*mm, config);
+}
+
+bool Desk::ToggleMovingMapSnap() {
+  DeskMovingMap* mm = EditedMovingMap();
+  if (mm == nullptr) return false;
+  FeedConfig config = mm->feed_config();
+  config.snap_to_road = !config.snap_to_road;
+  return SetMovingMapFeed(*mm, config);
+}
+
+bool Desk::OpenMovingMapFeed() {
+  DeskMovingMap* mm = EditedMovingMap();
+  // A replay's track is its feed; there is nothing to choose.
+  if (mm == nullptr || mm->replay()) return false;
+  std::weak_ptr<Overlay> target;
+  for (const std::shared_ptr<Overlay>& o : overlays_.Overlays())
+    if (o.get() == mm) target = o;
+  auto props = std::make_shared<FeedConfigProperties>(false, true);
+  props->set_config(mm->feed_config());
+  auto page = OptionsPage::ForObject(
+      MovingMapOverlay::kTypeId, "Feed for " + mm->Name(), "movingmap", props,
+      [this, target](const app::Properties& p) {
+        const std::shared_ptr<Overlay> o = target.lock();
+        const auto* feed = dynamic_cast<const FeedConfigProperties*>(&p);
+        // The map may have closed while the dialog was open.
+        if (o != nullptr && feed != nullptr) SetMovingMapFeed(*o, feed->config());
+      });
+  if (page == nullptr) return false;
+  shell_.ShowFeedOptions(std::make_shared<OptionsModel>(std::move(page)));
+  return true;
+}
+
+const MovingMapDriver* Desk::ownship_map() const { return OwnshipDriver(); }
+
+bool Desk::TickMovingMap(double dt_s) {
+  if (moving_maps_.empty()) return false;
+  const view::Viewport& v = view_->View();
+  if (!v.HasSurface()) return false;
+  feed_receivers_.Poll(UtcNowSeconds());
+  // A feed changed through its properties (a workspace, the Feed dialog) restarts here.
+  for (const auto& d : moving_maps_)
+    if (d->feed_stale()) RestartMovingMap(*d);
+  if (replay_clock_.playing) {
+    double start = 0.0;
+    double end = 0.0;
+    ReplayRange(&start, &end);
+    replay_clock_.time_s = std::min(end, std::max(start, replay_clock_.time_s) +
+                                             dt_s * replay_clock_.rate);
+    if (replay_clock_.time_s >= end) replay_clock_.playing = false;
+    ++clock_generation_;
+    for (const auto& d : moving_maps_) d->SetReplayTime(replay_clock_.time_s, false);
+  }
+  SyncOwnship();
+  MovingMapDriver* owner = OwnshipDriver();
+  const bool user_moving = view_->InGesture() || view_->Coasting();
+  const MapProjection& proj = v.Projection();
+  bool redraw = false;
+  MovingMapStep owner_step;
+  for (const auto& d : moving_maps_) {
+    const MovingMapStep step = d->Tick(proj, dt_s, d.get() == owner && !user_moving);
+    redraw |= step.redraw;
+    if (d.get() == owner) owner_step = step;
+  }
+  if (owner != nullptr) {
+    UpdateOwnship(owner_step);
+    if (owner_step.move) {
+      view_->FollowTo(v.WithCamera(owner_step.center, v.ScaleDenom(), owner_step.rotation_deg));
+      const view::Viewport& now = view_->View();
+      owner->NoteApplied(now.Center(), now.Rotation());
+    }
+  }
+  if (redraw) shell_.RequestInvalidate();
+  return redraw;
+}
+
 StatusBar Desk::CurrentStatus() const {
   StatusBar bar;
   bar.feedback = feedback_;
@@ -2476,6 +2959,11 @@ StatusBar Desk::CurrentStatus() const {
     const MapGroup* g = CurrentGroup();
     if (g != nullptr) bar.message = "No " + g->title + " map here";
   }
+  const MovingMapDriver* owner = OwnshipDriver();
+  const std::string mm = owner != nullptr ? owner->StatusText() : std::string();
+  if (!mm.empty()) bar.message = bar.message.empty() ? mm : bar.message + "   " + mm;
+  const std::string web = WebLayersStatus(overlays_);
+  if (!web.empty()) bar.message = bar.message.empty() ? web : bar.message + "   " + web;
   return bar;
 }
 

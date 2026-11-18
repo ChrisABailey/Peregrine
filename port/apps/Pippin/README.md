@@ -1451,8 +1451,8 @@ on a phone in a jersey pocket the thing that says "I have it" is a tap on the ha
 
 ### The bug only the simulator could find
 
-`fv::RouteOverlay` keeps its **own** manager back-pointer (`SetManager`) — an overlay does not
-otherwise know its stack — and `OverlayManager::Add` does not set it. `PPMap` never had, because
+`fv::RouteOverlay` reaches its stack only through its host (`fv::app::ManagerHost::Bind`; until
+PX9 a manager back-pointer, `SetManager`), and `OverlayManager::Add` does not set it. `PPMap` never had, because
 until this session nothing in Pippin asked the overlay a question that needed its stack. The
 editor's snap goes through `RouteEditSession::ResolvePixel` → `fv::app::SnapCandidates(*manager,
 …)`, and with a null manager it silently does not snap: the drag works, and every dropped waypoint

@@ -17,7 +17,9 @@
 #include "fvkit/app/source_spec.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/canvas/geo_draw.h"
+#include "fvkit/feature/feature_source.h"
 #include "fvkit/feature/geojson.h"
+#include "fvkit/feature/web/remote_layer.h"
 #include "fvkit/feature/value_text.h"
 #include "fvkit/feature/vector_source.h"
 #include "fvkit/log.h"
@@ -263,10 +265,70 @@ bool PackageIsOpen(const std::string& path) {
   return it != open.by_path.end() && !it->second.expired();
 }
 
-FeatureOverlay::FeatureOverlay(std::string name)
-    : Overlay(std::move(name)), edit_(std::make_unique<FeatureEditSession>(*this)) {}
+const char FeatureOverlay::kReadOnlySourceHint[] = "Web layer: export to a GeoPackage to edit";
 
-FeatureOverlay::~FeatureOverlay() = default;
+struct FeatureOverlay::RedrawRelay {
+  std::mutex mu;
+  app::OverlayHost* host = nullptr;
+
+  void Set(app::OverlayHost* h) {
+    std::lock_guard<std::mutex> lock(mu);
+    host = h;
+  }
+  void Fire() {
+    std::lock_guard<std::mutex> lock(mu);
+    if (host != nullptr) host->RequestRedraw();
+  }
+};
+
+/// The style of a feature-source layer, as one property a workspace stores.
+class FeatureOverlay::SourceProperties : public app::Properties {
+ public:
+  explicit SourceProperties(FeatureOverlay& overlay) : overlay_(overlay) {}
+
+  const std::vector<app::PropertySpec>& Describe() const override {
+    static const std::vector<app::PropertySpec> specs = [] {
+      app::PropertySpec style;
+      style.key = "style";
+      style.label = "Style";
+      style.type = app::PropertyType::kString;
+      style.default_value = app::PropertyValue::String("");
+      return std::vector<app::PropertySpec>{style};
+    }();
+    return specs;
+  }
+  Status GetProperty(const std::string& key, app::PropertyValue* out) const override {
+    if (key != "style") return Status::Error(kNotFound, "no property '" + key + "'");
+    std::string json;
+    Status s = overlay_.StyleDocument(/*keep_name=*/true, &json);
+    if (!s.ok()) return s;
+    // One line, so a settings file keeps it as one value.
+    const nlohmann::ordered_json doc = nlohmann::ordered_json::parse(json, nullptr, false);
+    *out = app::PropertyValue::String(doc.is_discarded() ? json : doc.dump());
+    return Status::Ok();
+  }
+  Status SetProperty(const std::string& key, const app::PropertyValue& value) override {
+    if (key != "style") return Status::Error(kNotFound, "no property '" + key + "'");
+    if (value.type != app::PropertyType::kString) return Status::Error(kInvalidArg, "style is text");
+    if (value.s.empty()) return Status::Ok();
+    overlay_.UseStoredStyle(overlay_.file_spec(), value.s);
+    return Status::Ok();
+  }
+
+ private:
+  FeatureOverlay& overlay_;
+};
+
+FeatureOverlay::FeatureOverlay(std::string name)
+    : Overlay(std::move(name)),
+      edit_(std::make_unique<FeatureEditSession>(*this)),
+      redraw_(std::make_shared<RedrawRelay>()),
+      source_props_(std::make_unique<SourceProperties>(*this)) {}
+
+FeatureOverlay::~FeatureOverlay() {
+  // A remote layer's worker may still report; it must find no host.
+  redraw_->Set(nullptr);
+}
 
 void FeatureOverlay::SetSelected(int64_t id) {
   selection_.clear();
@@ -497,7 +559,11 @@ Status FeatureOverlay::DrawLayer(const MapProjection& proj, ICanvas& canvas) {
 }
 
 void FeatureOverlay::SetLayer(std::shared_ptr<IEditableFeatureLayer> layer) {
+  if (auto* view = dynamic_cast<ReadOnlyFeatureLayer*>(layer_.get()))
+    if (auto* remote = dynamic_cast<web::RemoteFeatureLayer*>(view->inner().get())) remote->SetOnChange(nullptr);
   layer_ = std::move(layer);
+  from_source_ = false;
+  source_style_json_.clear();
   source_.reset();
   source_fields_.clear();
   renderer_.reset();
@@ -620,7 +686,32 @@ Status FeatureOverlay::FileNew() {
   return Status::Ok();
 }
 
+Status FeatureOverlay::LoadSource(const std::string& spec) {
+  FeatureSourceResult opened;
+  Status s = OpenFeatureSource(spec, &opened);
+  if (!s.ok()) return s;
+  for (const std::string& note : opened.notes) FV_LOG_INFO(spec << ": " << note);
+  if (auto* remote = dynamic_cast<web::RemoteFeatureLayer*>(opened.layer.get())) {
+    std::shared_ptr<RedrawRelay> relay = redraw_;
+    remote->SetOnChange([relay] { relay->Fire(); });
+  }
+  SetLayer(std::make_shared<ReadOnlyFeatureLayer>(std::move(opened.layer), kReadOnlySourceHint));
+  from_source_ = true;
+  source_style_json_ = opened.style_json;
+  set_read_only(true);
+  spec_layer_ = app::SplitSourceSpec(spec).layer;
+  set_save_format_index(kFormatGeoPackage);
+  UseStoredStyle(spec, opened.style_json);
+  return Status::Ok();
+}
+
+web::RemoteFeatureLayer* FeatureOverlay::remote_layer() const {
+  const auto* view = dynamic_cast<const ReadOnlyFeatureLayer*>(layer_.get());
+  return view != nullptr ? dynamic_cast<web::RemoteFeatureLayer*>(view->inner().get()) : nullptr;
+}
+
 Status FeatureOverlay::Load(const std::string& spec) {
+  if (IsFeatureSourceSpec(spec)) return LoadSource(spec);
   const app::SourceSpec source = app::SplitSourceSpec(spec);
   const std::string ext = LowerExtension(source.path);
   if (ext == kGeoJsonExtension || ext == "json") {
@@ -729,6 +820,8 @@ Status FeatureOverlay::StyleDocument(bool keep_name, std::string* json) const {
 
 Status FeatureOverlay::FileSaveAs(const std::string& spec, int format_index) {
   if (!layer_) return Status::Error(kInvalidArg, "no feature layer to save");
+  if (IsFeatureSourceSpec(spec))
+    return Status::Error(kUnsupported, "features cannot be saved to " + spec + "; save them as a GeoPackage");
   std::string style_json;
   Status st = StyleDocument(/*keep_name=*/true, &style_json);
   if (!st.ok()) return st;
@@ -1067,6 +1160,23 @@ Status DrawRulesSwatch(ICanvas& canvas, const std::vector<StyleRule>& rules, Geo
   Status s = WriteFeatureStyleJson(style, &json);
   if (!s.ok()) return s;
   return RenderSwatch(canvas, json, geometry, 6, scale, font);
+}
+
+app::Properties* FeatureOverlay::ConfigurationProperties() {
+  return from_source_ ? source_props_.get() : nullptr;
+}
+
+std::string FeatureOverlay::EditHintAt(PixelPoint p) {
+  return from_source_ ? kReadOnlySourceHint : edit_->HintAt(p);
+}
+
+void FeatureOverlay::SetHost(app::OverlayHost* host) {
+  app::HostAware::SetHost(host);
+  redraw_->Set(host);
+  edit_->SetUndoStack(host != nullptr ? &host->History() : nullptr);
+  if (host == nullptr) return;
+  SetLabelFont(host->LabelFont());
+  SetDisplayScale(host->DisplayScale());
 }
 
 }  // namespace fv

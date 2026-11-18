@@ -680,6 +680,33 @@ TEST(MovingMapOverlay, TakesTheRoadsBearingAsTheHeadingOfAMovingShip) {
   EXPECT_NEAR(t.heading.degrees, 90.0, 0.5);
 }
 
+TEST(MovingMapOverlay, AStoppedShipOnTheRoadKeepsItsHeading) {
+  fv::MapProjection proj = Proj();
+  MovingMapOverlay ovl;
+  ovl.SetSlewSettings(Jump());
+  ovl.SetRoadNetwork(std::make_shared<OneRoad>());
+  auto fix = [](double lon, double speed) {
+    PositionFix f = Fix(32.60, lon);
+    f.speed_mps = speed;
+    f.has_speed = true;
+    return f;
+  };
+  // Riding west, 5 m a fix.
+  for (int i = 0; i < 4; ++i) {
+    ovl.PushFix(fix(-80.0800 - 0.0000535 * i, 5.0));
+    ovl.Tick(proj, 0.1);
+  }
+  ASSERT_NEAR(ovl.heading().degrees, 270.0, 1.0);
+  // Stopped, the receiver jitters half a metre east: still facing west.
+  ovl.PushFix(fix(-80.0800 - 0.0000535 * 3 + 0.0000054, 0.2));
+  const MovingMapTick t = ovl.Tick(proj, 0.1);
+  EXPECT_TRUE(t.stopped);
+  EXPECT_NEAR(t.heading.degrees, 270.0, 1.0);
+  // Moving on, the road's direction is still west.
+  ovl.PushFix(fix(-80.0800 - 0.0000535 * 4, 5.0));
+  EXPECT_NEAR(ovl.Tick(proj, 0.1).heading.degrees, 270.0, 1.0);
+}
+
 TEST(MovingMapOverlay, KeepsTheRawFixWhenTheSnapIsNotSureEnough) {
   fv::MapProjection proj = Proj();
   MovingMapOverlay ovl;

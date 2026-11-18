@@ -175,6 +175,9 @@ struct RouteProfile {
       {0.735, "Most preferred"}, {1.16, "Preferred"}, {2.29, "Acceptable"},
       {5.29, "Avoided"},          {std::numeric_limits<double>::infinity(), "Last resort"}};
 
+  /// The index in `legend_tiers` of a cost `factor`; the last tier past every bound.
+  int TierRank(double factor) const;
+
   /// `key_locks`: settings the map key shows with a lock instead of a slider,
   /// setting id (as `ProfileOverrides`) → the reason it shows, e.g. a
   /// motorway closed to bikes. Overlaid key by key under `extends`.

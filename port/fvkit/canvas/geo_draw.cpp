@@ -458,7 +458,10 @@ Status GeoDraw::StampSymbol(double x, double y, const std::string& symbol_id,
   // PR2: the one conversion, done once, so the highlight silhouette and the
   // symbol over it can never disagree about which way the chart is turned.
   const double rot_rad =
-      SymbolAngleOnChart(style.rotation_deg, chart_rotation_deg) * kPi / 180.0;
+      (style.turns_with_chart
+           ? SymbolAngleOnChart(style.rotation_deg, chart_rotation_deg)
+           : style.rotation_deg) *
+      kPi / 180.0;
 
   // G4: T2's halo, applied to a shape instead of to a string. The symbol's own
   // SILHOUETTE stamped at the halo offsets in the highlight colour, then the

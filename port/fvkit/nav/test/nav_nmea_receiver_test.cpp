@@ -3,10 +3,10 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-/// Tests for the local AIS receiver: line routing, HDT, the reconnect
+/// Tests for the NMEA receiver: line routing, HDT, the reconnect
 /// schedule, and real TCP and UDP sockets on loopback.
 
-#include "fvkit/ais/receiver.h"
+#include "fvkit/nav/nmea_receiver.h"
 
 #include <gtest/gtest.h>
 
@@ -22,7 +22,6 @@
 #include <string>
 
 namespace fv {
-namespace ais {
 namespace {
 
 /// `$` + body + `*hh`.
@@ -47,7 +46,7 @@ struct Rig {
   }};
 };
 
-TEST(AisReceiver, RecognisesAisSentences) {
+TEST(NmeaReceiver, RecognisesAisSentences) {
   EXPECT_TRUE(IsAisSentence(kVdm));
   EXPECT_TRUE(IsAisSentence(kTagged));
   EXPECT_TRUE(IsAisSentence("!AIVDO,1,1,,A,15M2sIh00`rBEb0Bge=G25`20000,0*25"));
@@ -56,7 +55,7 @@ TEST(AisReceiver, RecognisesAisSentences) {
   EXPECT_FALSE(IsAisSentence("\\s:unterminated"));
 }
 
-TEST(AisReceiver, ParsesTrueHeading) {
+TEST(NmeaReceiver, ParsesTrueHeading) {
   double h = -1.0;
   EXPECT_TRUE(ParseNmeaTrueHeading(Sentence("HEHDT,274.5,T"), &h));
   EXPECT_DOUBLE_EQ(h, 274.5);
@@ -68,7 +67,7 @@ TEST(AisReceiver, ParsesTrueHeading) {
   EXPECT_FALSE(ParseNmeaTrueHeading(Sentence("HEHDM,274.5,M"), &h));
 }
 
-TEST(AisReceiver, RoutesAisAndPositionLines) {
+TEST(NmeaReceiver, RoutesAisAndPositionLines) {
   Rig rig;
   rig.receiver.Start(1000.0);
   EXPECT_EQ(rig.receiver.state(), ReceiverState::kConnecting);
@@ -96,7 +95,7 @@ TEST(AisReceiver, RoutesAisAndPositionLines) {
   EXPECT_EQ(rig.receiver.lines_ignored(), 1u);
 }
 
-TEST(AisReceiver, HdtFillsTheHeadingOfASlowOrHeadinglessFix) {
+TEST(NmeaReceiver, HdtFillsTheHeadingOfASlowOrHeadinglessFix) {
   Rig rig;
   rig.receiver.Start(1000.0);
   rig.transport->AddData(Sentence("HEHDT,90.0,T") + "\n");
@@ -119,7 +118,7 @@ TEST(AisReceiver, HdtFillsTheHeadingOfASlowOrHeadinglessFix) {
   EXPECT_DOUBLE_EQ(batch.fixes[1].time_s, UtcToEpochSeconds(2026, 10, 26, 20 * 3600 + 56 * 60));
 }
 
-TEST(AisReceiver, MovingFixKeepsItsCourse) {
+TEST(NmeaReceiver, MovingFixKeepsItsCourse) {
   Rig rig;
   rig.receiver.Start(1000.0);
   rig.transport->AddData(Sentence("HEHDT,90.0,T") + "\n");
@@ -143,7 +142,7 @@ TEST(AisReceiver, MovingFixKeepsItsCourse) {
 
 const char kVdo[] = "!AIVDO,1,1,,A,15M2sIh00`rBEb0Bge=G25`20000,0*25";
 
-TEST(AisReceiver, VdoGivesAFixWhenThereIsNoGps) {
+TEST(NmeaReceiver, VdoGivesAFixWhenThereIsNoGps) {
   Rig rig;
   rig.receiver.Start(1000.0);
   rig.transport->AddData(std::string(kVdo) + "\n" + kVdm + "\n");
@@ -161,7 +160,7 @@ TEST(AisReceiver, VdoGivesAFixWhenThereIsNoGps) {
   EXPECT_EQ(rig.receiver.vdo_fixes(), 1u);
 }
 
-TEST(AisReceiver, GpsSentencesTakePrecedenceOverVdo) {
+TEST(NmeaReceiver, GpsSentencesTakePrecedenceOverVdo) {
   Rig rig;
   rig.receiver.Start(1000.0);
   rig.transport->AddData(Sentence("GPRMC,205559.00,A,3236.2694,N,08004.7436,W,6.0,90.0,261026,,") + "\n");
@@ -185,7 +184,7 @@ TEST(AisReceiver, GpsSentencesTakePrecedenceOverVdo) {
   EXPECT_EQ(rig.receiver.vdo_fixes(), 1u);
 }
 
-TEST(AisReceiver, VdmIsNeverAPosition) {
+TEST(NmeaReceiver, VdmIsNeverAPosition) {
   Rig rig;
   rig.receiver.Start(1000.0);
   rig.transport->AddData(std::string(kVdm) + "\n" + kTagged + "\n");
@@ -194,7 +193,7 @@ TEST(AisReceiver, VdmIsNeverAPosition) {
   EXPECT_TRUE(batch.fixes.empty());
 }
 
-TEST(AisReceiver, EndRetriesWithBackoffAndALineResetsIt) {
+TEST(NmeaReceiver, EndRetriesWithBackoffAndALineResetsIt) {
   Rig rig;
   rig.receiver.Start(0.0);
   EXPECT_EQ(rig.opens, 1);
@@ -223,7 +222,7 @@ TEST(AisReceiver, EndRetriesWithBackoffAndALineResetsIt) {
   EXPECT_DOUBLE_EQ(rig.receiver.retry_at_s(), 10.0);  // back to 2 s after a line
 }
 
-TEST(AisReceiver, SilenceAndDeadTcp) {
+TEST(NmeaReceiver, SilenceAndDeadTcp) {
   Rig rig;
   rig.receiver.Start(0.0);
   ReceiverBatch batch;
@@ -237,7 +236,7 @@ TEST(AisReceiver, SilenceAndDeadTcp) {
   EXPECT_EQ(rig.receiver.last_error(), "no data");
 }
 
-TEST(AisReceiver, OpenFailureRetries) {
+TEST(NmeaReceiver, OpenFailureRetries) {
   int opens = 0;
   NmeaReceiver receiver([&opens]() -> std::shared_ptr<ILineTransport> {
     ++opens;
@@ -264,7 +263,7 @@ void PollUntil(NmeaReceiver* receiver, ReceiverBatch* batch, Done done) {
   }
 }
 
-TEST(AisReceiver, TcpLoopback) {
+TEST(NmeaReceiver, TcpLoopback) {
   const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
   ASSERT_GE(listener, 0);
   sockaddr_in addr{};
@@ -299,7 +298,7 @@ TEST(AisReceiver, TcpLoopback) {
   ::close(listener);
 }
 
-TEST(AisReceiver, UdpLoopback) {
+TEST(NmeaReceiver, UdpLoopback) {
   std::shared_ptr<UdpLineTransport> transport;
   NmeaReceiver receiver([&transport]() -> std::shared_ptr<ILineTransport> {
     transport = std::make_shared<UdpLineTransport>(0);
@@ -333,5 +332,4 @@ TEST(AisReceiver, UdpLoopback) {
 #endif  // !_WIN32
 
 }  // namespace
-}  // namespace ais
 }  // namespace fv

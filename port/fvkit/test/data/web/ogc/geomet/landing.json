@@ -1,0 +1,83 @@
+{
+ "links": [
+  {
+   "rel": "about",
+   "type": "text/html",
+   "title": "MSC GeoMet - GeoMet-OGC-API",
+   "href": {
+    "en": "https://eccc-msc.github.io/open-data/msc-geomet/readme_en/",
+    "fr": "https://eccc-msc.github.io/open-data/msc-geomet/readme_fr/"
+   }
+  },
+  {
+   "rel": "self",
+   "type": "application/json",
+   "title": "This document as JSON",
+   "href": "https://api.weather.gc.ca?f=json"
+  },
+  {
+   "rel": "alternate",
+   "type": "application/ld+json",
+   "title": "This document as RDF (JSON-LD)",
+   "href": "https://api.weather.gc.ca?f=jsonld"
+  },
+  {
+   "rel": "alternate",
+   "type": "text/html",
+   "title": "This document as HTML",
+   "href": "https://api.weather.gc.ca?f=html",
+   "hreflang": "en-CA"
+  },
+  {
+   "rel": "service-desc",
+   "type": "application/vnd.oai.openapi+json;version=3.0",
+   "title": "The OpenAPI definition as JSON",
+   "href": "https://api.weather.gc.ca/openapi"
+  },
+  {
+   "rel": "service-doc",
+   "type": "text/html",
+   "title": "The OpenAPI definition as HTML",
+   "href": "https://api.weather.gc.ca/openapi?f=html",
+   "hreflang": "en-CA"
+  },
+  {
+   "rel": "conformance",
+   "type": "application/json",
+   "title": "Conformance",
+   "href": "https://api.weather.gc.ca/conformance"
+  },
+  {
+   "rel": "data",
+   "type": "application/json",
+   "title": "Collections",
+   "href": "https://api.weather.gc.ca/collections"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/processes",
+   "type": "application/json",
+   "title": "Processes",
+   "href": "https://api.weather.gc.ca/processes"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/job-list",
+   "type": "application/json",
+   "title": "Jobs",
+   "href": "https://api.weather.gc.ca/jobs"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/tiling-schemes",
+   "type": "application/json",
+   "title": "The list of supported tiling schemes as JSON",
+   "href": "https://api.weather.gc.ca/TileMatrixSets?f=json"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/tiling-schemes",
+   "type": "text/html",
+   "title": "The list of supported tiling schemes as HTML",
+   "href": "https://api.weather.gc.ca/TileMatrixSets?f=html"
+  }
+ ],
+ "title": "MSC GeoMet - GeoMet-OGC-API",
+ "description": "GeoMet-OGC-API provides public access to the Meteorological Service of Canada (MSC) and Environment and Climate Change Canada (ECCC) data via interoperable web services and application programming interfaces (API). Through open standards, users can freely and quickly access thousands of real-time and archived weather, climate and water datasets and products and integrate them in their domain-specific applications and decision support systems. Users can build mobile apps, create interactive web maps, and display and animate MSC data in desktop software. MSC GeoMet also enables on demand raw data clipping and reprojection, on demand format conversion and custom visualization."
+}

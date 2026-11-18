@@ -6,6 +6,13 @@
 	     Pippin; see AppFlavor.swift. -->
 	<key>PPAppFlavor</key>
 	<string>osprey</string>
+	<!-- A black launch screen in either appearance: the system default is
+	     white in Light Mode, which a night chart palette does not excuse. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<!-- Documents/ over the USB cable: points, routes and tracks. -->
 	<key>UIFileSharingEnabled</key>
 	<true/>

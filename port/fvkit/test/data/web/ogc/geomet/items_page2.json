@@ -1,0 +1,322 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "CREDIT RIVER AT NORVAL",
+    "IDENTIFIER": "02HB025",
+    "STATION_NUMBER": "02HB025",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Active",
+    "STATUS_FR": "En service",
+    "CONTRIBUTOR_EN": "ONTARIO MINISTRY OF NATURAL RESOURCES",
+    "CONTRIBUTOR_FR": "MINISTERE DES RICHESSES NATURELLES DE L'ONTARIO",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 1,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 643.0999755859375,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB025&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB025"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB025"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB025",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB025",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB025"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for CREDIT RIVER AT NORVAL (02HB025)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB025"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.85600280761719,
+     43.647579193115234
+    ]
+   },
+   "id": "02HB025"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "CREDIT RIVER AT MISSISSAUGA GOLF COURSE",
+    "IDENTIFIER": "02HB026",
+    "STATION_NUMBER": "02HB026",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Discontinued",
+    "STATUS_FR": "Fermée",
+    "CONTRIBUTOR_EN": "WATER SURVEY OF CANADA (DOE) (CANADA)",
+    "CONTRIBUTOR_FR": "RELEVES HYDROLOGIQUES DU CANADA (MDE) (CANADA)",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 0,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 855.2000122070312,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for CREDIT RIVER AT MISSISSAUGA GOLF COURSE (02HB026)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB026&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for CREDIT RIVER AT MISSISSAUGA GOLF COURSE (02HB026)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB026"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for CREDIT RIVER AT MISSISSAUGA GOLF COURSE (02HB026)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB026"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for CREDIT RIVER AT MISSISSAUGA GOLF COURSE (02HB026)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB026",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station CREDIT RIVER AT MISSISSAUGA GOLF COURSE (02HB026)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB026",
+     "hreflang": "fr-CA"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.63612365722656,
+     43.54949188232422
+    ]
+   },
+   "id": "02HB026"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "CREDIT RIVER AT STREETSVILLE",
+    "IDENTIFIER": "02HB029",
+    "STATION_NUMBER": "02HB029",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Active",
+    "STATUS_FR": "En service",
+    "CONTRIBUTOR_EN": "WATER SURVEY OF CANADA (DOE) (CANADA)",
+    "CONTRIBUTOR_FR": "RELEVES HYDROLOGIQUES DU CANADA (MDE) (CANADA)",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 1,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 774.5999755859375,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB029&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB029"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB029"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB029",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB029",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB029"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for CREDIT RIVER AT STREETSVILLE (02HB029)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB029"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.70874786376953,
+     43.582279205322266
+    ]
+   },
+   "id": "02HB029"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "COOKSVILLE CREEK NEAR COOKSVILLE",
+    "IDENTIFIER": "02HB030",
+    "STATION_NUMBER": "02HB030",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Active",
+    "STATUS_FR": "En service",
+    "CONTRIBUTOR_EN": "ONTARIO MINISTRY OF NATURAL RESOURCES",
+    "CONTRIBUTOR_FR": "MINISTERE DES RICHESSES NATURELLES DE L'ONTARIO",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 1,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 19.670000076293945,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB030&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB030"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB030"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB030",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB030",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB030"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for COOKSVILLE CREEK NEAR COOKSVILLE (02HB030)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB030"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.62389373779297,
+     43.59233093261719
+    ]
+   },
+   "id": "02HB030"
+  }
+ ],
+ "numberMatched": 67,
+ "numberReturned": 4,
+ "links": [
+  {
+   "type": "application/geo+json",
+   "rel": "self",
+   "title": "This document as GeoJSON",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=json&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "rel": "alternate",
+   "type": "application/ld+json",
+   "title": "This document as RDF (JSON-LD)",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=jsonld&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "text/html",
+   "rel": "alternate",
+   "title": "This document as HTML",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=html&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "application/geo+json",
+   "rel": "prev",
+   "title": "Items (prev)",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?offset=0&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "application/geo+json",
+   "rel": "next",
+   "title": "Items (next)",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?offset=8&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "application/json",
+   "title": "Hydrometric Data - Monitoring Stations",
+   "rel": "collection",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations"
+  }
+ ],
+ "timeStamp": "2026-11-17T21:58:43.003637Z"
+}

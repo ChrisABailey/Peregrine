@@ -441,6 +441,48 @@ TEST(CpuCanvas, RotatedTextAtZeroIsTheUprightPathExactly) {
             0);
 }
 
+TEST(CpuCanvas, ATiledFillRepeatsTheTileFromItsOriginInsideTheRings) {
+  // 3x2 tile with one opaque red pixel at (0,0) and a half-alpha one at (1,1).
+  fv::PixelBuffer cell(3, 2);
+  for (int y = 0; y < 2; ++y) memset(cell.Row(y), 0, 12);
+  unsigned char* p = cell.Row(0);
+  p[0] = 255; p[3] = 255;
+  unsigned char* q = cell.Row(1) + 4;
+  q[2] = 255; q[3] = 128;
+  const fv::PatternTile tile(cell);
+
+  fv::CpuCanvas c(20, 20);
+  c.Clear(fv::FvColor{0, 0, 0, 255});
+  // Rows 4..11, columns 4..13, with a hole over columns 7..9.
+  const std::vector<std::vector<fv::PixelPoint>> rings{
+      {{4, 4}, {14, 4}, {14, 12}, {4, 12}}, {{7, 4}, {10, 4}, {10, 12}, {7, 12}}};
+  ASSERT_TRUE(c.FillPolyPolygonTiled(rings, tile, -2, 1).ok());
+
+  for (int y = 0; y < 20; ++y) {
+    for (int x = 0; x < 20; ++x) {
+      const unsigned char* d = c.Buffer().Row(y) + 4 * x;
+      const bool inside = y >= 4 && y < 12 && x >= 4 && x < 14 &&
+                          !(x >= 7 && x < 10);
+      const int tx = ((x + 2) % 3 + 3) % 3, ty = ((y - 1) % 2 + 2) % 2;
+      const int red = inside && tx == 0 && ty == 0 ? 255 : 0;
+      const int blue = inside && tx == 1 && ty == 1 ? 128 : 0;
+      EXPECT_EQ(d[0], red) << x << "," << y;
+      EXPECT_EQ(d[2], blue) << x << "," << y;
+    }
+  }
+  EXPECT_EQ(c.FillPolyPolygonTiled(rings, fv::PatternTile(), 0, 0).code,
+            fv::kInvalidArg);
+
+  // With a brush under the tile: one pass equals the solid fill then the tile.
+  const fv::Brush green{fv::FvColor{0, 200, 0, 255}};
+  fv::CpuCanvas one(20, 20), two(20, 20);
+  ASSERT_TRUE(one.FillPolyPolygonTiled(rings, tile, -2, 1, &green).ok());
+  ASSERT_TRUE(two.DrawPolyPolygon(rings, &green, nullptr).ok());
+  ASSERT_TRUE(two.FillPolyPolygonTiled(rings, tile, -2, 1).ok());
+  for (int y = 0; y < 20; ++y)
+    EXPECT_EQ(memcmp(one.Buffer().Row(y), two.Buffer().Row(y), 80), 0) << y;
+}
+
 TEST(CpuCanvas, ADefaultCanvasDrawsRotatedTextUpright) {
   // ICanvas::DrawRotatedTextString is not pure: a backend that has no rotated
   // text (pyfvw's Python subclasses) must still put the string down. This

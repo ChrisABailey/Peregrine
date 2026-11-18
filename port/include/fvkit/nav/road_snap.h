@@ -182,10 +182,9 @@ struct RoadCandidate {
   double length_m = 0.0;     // the whole road
   double bearing_deg = 0.0;  // direction of travel at `point`, true
 
-  // A one-way road can only be travelled in `bearing_deg`'s direction, so a
-  // fix moving the other way along it is being told something. A two-way one
-  // is aligned on its AXIS and the direction of travel is chosen from the
-  // heading.
+  // A one-way road's `bearing_deg` is its permitted direction, which the
+  // scoring holds a heading against; a two-way one is aligned on its AXIS and
+  // the direction of travel is chosen from the heading.
   bool one_way = false;
 
   std::string name;  // "" when the road is unnamed; for a status readout
@@ -242,6 +241,11 @@ struct RoadSnapSettings {
   // slow walk; a vessel or a car stopped at lights is well under it.
   double hold_speed_mps = 1.0;
 
+  // How far the raw fixes must move before their own direction decides which
+  // way along a two-way road the ship is going, instead of the prior heading.
+  // Above GPS jitter; one second of cycling covers it.
+  double motion_min_m = 3.0;
+
   // How much better the best score has to be than the runner-up before the
   // choice reads as certain. Under it, `confidence` is scaled down — this is
   // the number that says "two parallel roads, could be either".
@@ -262,10 +266,11 @@ struct SnappedFix {
   uint64_t arc = kNoRoadArc;
   std::string road_name;
 
-  // The direction of travel along the road, true. `has_bearing` is false when
-  // the road's direction could not be resolved — a two-way road with no
-  // heading to choose from — or when the ship is not moving, because the
-  // heading of a stationary ship is not the road's.
+  // The direction of travel along the road, true: the way the ship is going,
+  // even against a one-way road. `has_bearing` is false when the road's
+  // direction could not be resolved — a two-way road with no heading to
+  // choose from — or when the ship is not moving, because the heading of a
+  // stationary ship is not the road's.
   double bearing_deg = 0.0;
   bool has_bearing = false;
 
@@ -317,6 +322,10 @@ class RoadSnapper {
 
   // Snap one fix.
   //
+  // When the fix reports no heading and the raw fixes have moved at least
+  // `motion_min_m` since the last measurement, the direction of that movement
+  // is used instead of the prior heading.
+  //
   // `prior_heading_deg` is the heading as of the PREVIOUS fix, and being one
   // fix stale is right rather than merely tolerable: it describes the way the
   // ship was going as it arrived here, which is what says which road it is on.
@@ -346,6 +355,8 @@ class RoadSnapper {
   RoadSnapSettings settings_;
 
   bool have_prev_ = false;
+  bool have_motion_from_ = false;
+  GeoPoint motion_from_;  ///< raw position the direction of motion is measured from
   uint64_t prev_arc_ = kNoRoadArc;
   uint64_t prev_from_ = 0;
   uint64_t prev_to_ = 0;

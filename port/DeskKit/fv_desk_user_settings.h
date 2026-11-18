@@ -64,5 +64,11 @@ class UserSettings {
 /// home directory is known.
 std::string DefaultUserSettingsPath();
 
+/// The user cache directory for data Peregrine can fetch again:
+/// ~/Library/Caches/Peregrine on macOS, `$XDG_CACHE_HOME/peregrine` (else
+/// ~/.cache/peregrine) on Linux, `%LOCALAPPDATA%\Peregrine\cache` on Windows.
+/// Empty when no home directory is known. Not created here.
+std::string DefaultUserCacheDir();
+
 }  // namespace desk
 }  // namespace fv

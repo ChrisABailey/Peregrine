@@ -11,7 +11,10 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <deque>
+#include <functional>
 #include <optional>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -23,12 +26,32 @@
 
 #include "fv_desk_desk.h"
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/properties.h"
+#include "fvkit/app/search.h"
 #include "fvkit/canvas/geo_draw.h"
 #include "fvkit/draw_interrupt.h"
 #include "fvkit/log.h"
 #include "fvkit/scale_table.h"
 #include "fvkit/symbol/builtin.h"
+
+/// The host's handle on one plugin overlay. Owned by its adapter, and by any
+/// menu action that outlives a call; `overlay` is null once the adapter is
+/// gone. The mutex orders a plugin thread's request_redraw against teardown.
+struct fv_overlay_ref {
+  std::mutex mutex;
+  fv::Overlay* overlay = nullptr;
+  const fv_overlay_class* cls = nullptr;
+  void* self = nullptr;
+};
+
+/// The host's handle on one plugin editor; `editor` is null once it is gone.
+struct fv_editor_ref {
+  fv::app::OverlayEditor* editor = nullptr;
+  const fv::desk::PluginLibrary* lib = nullptr;
+  const fv_editor_class* cls = nullptr;
+  void* self = nullptr;
+};
 
 namespace fv {
 namespace desk {
@@ -316,33 +339,164 @@ std::vector<app::PropertySpec> ParseSchema(const char* text, const std::string& 
   return specs;
 }
 
+// MARK: Builders
+
+/// What an fv_menu fills: one node, and the action an item id becomes.
+/// A submenu is named by its parent and index, not a pointer, because the
+/// parent's children may reallocate while the plugin still fills it.
+struct MenuHost {
+  app::MenuNode* root;     ///< the top menu; null for a submenu
+  const MenuHost* parent;  ///< the enclosing menu of a submenu
+  size_t index;            ///< the submenu's place in its parent's children
+  std::function<std::function<void()>(const std::string& id)> action;
+  std::deque<MenuHost>* hosts;  ///< storage for submenus, alive for the call
+  std::deque<fv_menu>* menus;
+};
+
+const MenuHost& Host(const fv_menu* m) { return *static_cast<const MenuHost*>(m->host); }
+
+app::MenuNode& Node(const MenuHost& h) {
+  return h.root != nullptr ? *h.root : Node(*h.parent).children[h.index];
+}
+
+void MenuItem(const fv_menu* m, const char* id, const char* label, const char* icon, int flags) {
+  if (id == nullptr || label == nullptr || *label == '\0') return;
+  const MenuHost& h = Host(m);
+  app::MenuNode item;
+  item.label = label;
+  item.icon = icon != nullptr ? icon : "";
+  item.enabled = (flags & FV_ITEM_DISABLED) == 0;
+  item.checked = (flags & FV_ITEM_CHECKED) != 0;
+  item.action = h.action(id);
+  Node(h).children.push_back(std::move(item));
+}
+
+void MenuSeparator(const fv_menu* m) { Node(Host(m)).children.push_back(app::MenuNode()); }
+
+fv_menu MakeMenu(const MenuHost* host) {
+  fv_menu m{};
+  m.struct_size = sizeof(fv_menu);
+  m.host = host;
+  m.item = MenuItem;
+  m.separator = MenuSeparator;
+  m.submenu = [](const fv_menu* parent, const char* label) -> const fv_menu* {
+    const MenuHost& h = Host(parent);
+    app::MenuNode sub;
+    sub.label = label != nullptr && *label != '\0' ? label : "\xE2\x80\xA6";
+    app::MenuNode& parent_node = Node(h);
+    parent_node.children.push_back(std::move(sub));
+    h.hosts->push_back(MenuHost{nullptr, &h, parent_node.children.size() - 1, h.action, h.hosts, h.menus});
+    h.menus->push_back(MakeMenu(&h.hosts->back()));
+    return &h.menus->back();
+  };
+  return m;
+}
+
+/// Calls `fill` with a menu that appends to `node`; item ids become `action(id)`.
+template <typename Fill>
+void BuildMenu(app::MenuNode* node, std::function<std::function<void()>(const std::string&)> action,
+               Fill fill) {
+  std::deque<MenuHost> hosts;
+  std::deque<fv_menu> menus;
+  hosts.push_back(MenuHost{node, nullptr, 0, std::move(action), &hosts, &menus});
+  menus.push_back(MakeMenu(&hosts.back()));
+  fill(&menus.back());
+}
+
+const char* OrEmpty(const char* s) { return s != nullptr ? s : ""; }
+
+app::ItemInfoSheet& Sheet(const fv_info* i) {
+  return *static_cast<app::ItemInfoSheet*>(const_cast<void*>(i->host));
+}
+
+fv_info MakeInfo(app::ItemInfoSheet* sheet) {
+  fv_info i{};
+  i.struct_size = sizeof(fv_info);
+  i.host = sheet;
+  i.title = [](const fv_info* i, const char* t) { Sheet(i).title = OrEmpty(t); };
+  i.row = [](const fv_info* i, const char* section, const char* key, const char* value) {
+    Sheet(i).rows.push_back(app::InfoRow{OrEmpty(section), OrEmpty(key), OrEmpty(value)});
+  };
+  i.edit_label = [](const fv_info* i, const char* l) { Sheet(i).edit_label = OrEmpty(l); };
+  return i;
+}
+
+struct SnapHost {
+  std::vector<app::SnapToItem>* out;
+  Overlay* overlay;
+};
+
+struct SearchHost {
+  const app::SearchQuery* query;
+  const std::atomic<bool>* cancel;
+  std::vector<app::SearchResult>* out;
+  size_t added = 0;
+};
+
+SearchHost& Host(const fv_search* q) { return *static_cast<SearchHost*>(const_cast<void*>(q->host)); }
+
 // MARK: The overlay adapter
 
-/// True when the overlay class is large enough to hold `field` and supplies it.
+/// True when the class is large enough to hold `field` and supplies it.
 #define CLASS_HAS(cls, field) (FV_HAS_FIELD(&(cls), fv_overlay_class, field) && (cls).field != nullptr)
+#define EDITOR_HAS(cls, field) (FV_HAS_FIELD(&(cls), fv_editor_class, field) && (cls).field != nullptr)
 
 /// An fv::Overlay backed by a plugin's overlay class.
 class LibraryOverlay : public Overlay,
                        public app::Properties,
                        public app::Persistence,
-                       public app::HitTest {
+                       public app::HitTest,
+                       public app::EditHint,
+                       public app::SnapTo,
+                       public app::ContextMenu,
+                       public app::ItemInfo,
+                       public app::SearchProvider,
+                       public app::EditTarget,
+                       public app::HostAware {
  public:
-  LibraryOverlay(const PluginLibrary& lib, const fv_overlay_class& cls, void* self,
-                 const std::string& display_name)
-      : Overlay(display_name), lib_(lib), cls_(cls), self_(self) {
+  LibraryOverlay(const PluginLibrary& lib, const fv_overlay_class& cls,
+                 std::shared_ptr<fv_overlay_ref> ref, const std::string& display_name)
+      : Overlay(display_name), lib_(lib), cls_(cls), ref_(std::move(ref)), self_(ref_->self) {
+    {
+      std::lock_guard<std::mutex> lock(ref_->mutex);
+      ref_->overlay = this;
+    }
     if (CLASS_HAS(cls_, properties_schema) && CLASS_HAS(cls_, get_property) &&
         CLASS_HAS(cls_, set_property)) {
       has_properties_ = true;
       specs_ = ParseSchema(cls_.properties_schema(self_), lib_.path);
     }
   }
-  ~LibraryOverlay() override { cls_.destroy(self_); }
-
-  app::Properties* AsProperties() override { return has_properties_ ? this : nullptr; }
-  app::Persistence* AsPersistence() override {
-    return CLASS_HAS(cls_, open) ? this : nullptr;
+  ~LibraryOverlay() override {
+    // Detached first: a plugin worker that calls request_redraw while
+    // `destroy` joins it finds nothing rather than a half-destroyed adapter.
+    {
+      std::lock_guard<std::mutex> lock(ref_->mutex);
+      ref_->overlay = nullptr;
+    }
+    cls_.destroy(self_);
   }
+
+  const PluginLibrary& library() const { return lib_; }
+  void* self() const { return self_; }
+
+  app::HostAware* AsHostAware() override { return this; }
+  app::Properties* AsProperties() override { return has_properties_ ? this : nullptr; }
+  app::Persistence* AsPersistence() override { return CLASS_HAS(cls_, open) ? this : nullptr; }
   app::HitTest* AsHitTest() override { return CLASS_HAS(cls_, hit_test) ? this : nullptr; }
+  app::EditHint* AsEditHint() override { return CLASS_HAS(cls_, edit_hint) ? this : nullptr; }
+  app::SnapTo* AsSnapTo() override { return CLASS_HAS(cls_, snap_to) ? this : nullptr; }
+  app::ContextMenu* AsContextMenu() override {
+    return CLASS_HAS(cls_, context_menu) && CLASS_HAS(cls_, menu_command) ? this : nullptr;
+  }
+  app::ItemInfo* AsItemInfo() override { return CLASS_HAS(cls_, item_info) ? this : nullptr; }
+  app::SearchProvider* AsSearch() override { return CLASS_HAS(cls_, search) ? this : nullptr; }
+  app::EditTarget* AsEditTarget() override {
+    return CLASS_HAS(cls_, enter_edit_focus) || CLASS_HAS(cls_, release_edit_focus) ||
+                   CLASS_HAS(cls_, undo) || CLASS_HAS(cls_, redo)
+               ? this
+               : nullptr;
+  }
 
   Status OnDraw(const MapProjection& proj, ICanvas& canvas) override {
     {
@@ -380,6 +534,19 @@ class LibraryOverlay : public Overlay,
     return Mouse(FV_MOUSE_WHEEL, e, delta);
   }
 
+  bool OnKeyDown(const KeyEvent& e) override {
+    if (!CLASS_HAS(cls_, on_key)) return false;
+    fv_key_event ev{};
+    ev.struct_size = sizeof(fv_key_event);
+    ev.key = e.key;
+    ev.text = e.text;
+    ev.shift = e.shift ? 1 : 0;
+    ev.ctrl = e.ctrl ? 1 : 0;
+    ev.alt = e.alt ? 1 : 0;
+    ev.meta = e.meta ? 1 : 0;
+    return cls_.on_key(self_, &ev) != 0;
+  }
+
   // app::Properties
   const std::vector<app::PropertySpec>& Describe() const override { return specs_; }
 
@@ -401,10 +568,8 @@ class LibraryOverlay : public Overlay,
     if (spec == nullptr) return Status::Error(kNotFound, "no property " + key);
     if (value.type != spec->type) return Status::Error(kInvalidArg, "property " + key + ": wrong type");
     BeginCall();
-    const Status s = FromPlugin(cls_.set_property(self_, key.c_str(), value.ToString().c_str()),
-                                "property " + key);
-    if (s.ok() && AsPersistence() != nullptr) set_dirty(true);
-    return s;
+    return FromPlugin(cls_.set_property(self_, key.c_str(), value.ToString().c_str()),
+                      "property " + key);
   }
 
   // app::Persistence
@@ -421,14 +586,23 @@ class LibraryOverlay : public Overlay,
   }
 
   Status FileSaveAs(const std::string& spec, int format_index) override {
-    (void)format_index;
     if (!CLASS_HAS(cls_, save)) return Status::Error(kUnsupported, Name() + " cannot be saved");
     BeginCall();
-    const Status s = FromPlugin(cls_.save(self_, spec.c_str()), "save " + spec);
+    const Status s = FromPlugin(cls_.save(self_, spec.c_str(), format_index), "save " + spec);
     if (!s.ok()) return s;
     set_file_spec(spec);
     set_has_been_saved(true);
     set_dirty(false);
+    return s;
+  }
+
+  bool SupportsRevert() const override { return CLASS_HAS(cls_, revert); }
+
+  Status Revert(const std::string& spec) override {
+    if (!CLASS_HAS(cls_, revert)) return app::Persistence::Revert(spec);
+    BeginCall();
+    const Status s = FromPlugin(cls_.revert(self_, spec.c_str()), "revert " + spec);
+    if (s.ok()) set_dirty(false);
     return s;
   }
 
@@ -450,9 +624,112 @@ class LibraryOverlay : public Overlay,
     out.push_back(std::move(item));
   }
 
+  // app::EditHint
+  std::string EditHintAt(PixelPoint p) override { return OrEmpty(cls_.edit_hint(self_, p.x, p.y)); }
+
+  // app::SnapTo
+  void SnapToPoint(const MapProjection& proj, PixelPoint p, double tolerance_px,
+                   std::vector<app::SnapToItem>& out) override {
+    ViewHost vh{};
+    fv_view view;
+    MakeView(proj, &vh, &view);
+    SnapHost host{&out, this};
+    fv_snap_list list{};
+    list.struct_size = sizeof(fv_snap_list);
+    list.host = &host;
+    list.add = [](const fv_snap_list* l, fv_geo_point g, const char* description, double d) {
+      const auto* h = static_cast<const SnapHost*>(l->host);
+      h->out->push_back(app::SnapToItem{GeoPoint{g.lat, g.lon}, OrEmpty(description), h->overlay, d});
+    };
+    cls_.snap_to(self_, &view, p.x, p.y, tolerance_px, &list);
+  }
+
+  // app::ContextMenu
+  void AppendMenuItems(const MapProjection& proj, PixelPoint p, app::MenuNode& menu) override {
+    ViewHost vh{};
+    fv_view view;
+    MakeView(proj, &vh, &view);
+    const std::shared_ptr<fv_overlay_ref> ref = ref_;
+    BuildMenu(&menu, [ref](const std::string& id) -> std::function<void()> {
+      return [ref, id] {
+        // The menu may outlive the overlay; a closed one ignores the choice.
+        if (ref->overlay == nullptr) return;
+        BeginCall();
+        const Status s = FromPlugin(ref->cls->menu_command(ref->self, id.c_str()), id);
+        if (!s.ok()) FV_LOG_WARNING("plugin: " << s.message);
+      };
+    }, [&](const fv_menu* m) { cls_.context_menu(self_, &view, p.x, p.y, m); });
+  }
+
+  // app::ItemInfo
+  std::optional<app::ItemInfoSheet> InfoAt(const MapProjection& proj, PixelPoint p,
+                                           double tolerance_px) override {
+    ViewHost vh{};
+    fv_view view;
+    MakeView(proj, &vh, &view);
+    app::ItemInfoSheet sheet;
+    const fv_info info = MakeInfo(&sheet);
+    if (cls_.item_info(self_, &view, p.x, p.y, tolerance_px, &info) != 1) return std::nullopt;
+    if (sheet.title.empty()) sheet.title = Name();
+    return sheet;
+  }
+
+  // app::SearchProvider
+  void Search(const app::SearchQuery& q, const std::atomic<bool>& cancel,
+              std::vector<app::SearchResult>& out) override {
+    SearchHost host{&q, &cancel, &out};
+    fv_search s{};
+    s.struct_size = sizeof(fv_search);
+    s.host = &host;
+    s.text = q.text.c_str();
+    if (q.area) {
+      s.has_area = 1;
+      s.south_west = fv_geo_point{q.area->ll.lat, q.area->ll.lon};
+      s.north_east = fv_geo_point{q.area->ur.lat, q.area->ur.lon};
+    }
+    s.max_results = q.max_results;
+    s.match = [](const fv_search* q, const char* label) {
+      return app::TextMatchQuality(Host(q).query->text, OrEmpty(label));
+    };
+    s.in_area = [](const fv_search* q, fv_geo_point p) {
+      return app::SearchAreaAccepts(*Host(q).query, GeoPoint{p.lat, p.lon}) ? 1 : 0;
+    };
+    s.cancelled = [](const fv_search* q) { return Host(q).cancel->load() ? 1 : 0; };
+    s.add = [](const fv_search* q, uint64_t feature, const char* title, const char* detail,
+               fv_geo_point at, fv_geo_point sw, fv_geo_point ne, int quality) {
+      SearchHost& h = Host(q);
+      if (h.query->max_results != 0 && h.added >= h.query->max_results) return;
+      app::SearchResult r;
+      r.title = OrEmpty(title);
+      r.detail = OrEmpty(detail);
+      r.position = GeoPoint{at.lat, at.lon};
+      r.bounds = GeoRect{GeoPoint{sw.lat, sw.lon}, GeoPoint{ne.lat, ne.lon}};
+      r.match_quality = quality;
+      r.feature = feature;
+      h.out->push_back(std::move(r));
+      ++h.added;
+    };
+    cls_.search(self_, &s);
+  }
+
+  // app::EditTarget
+  void EnterEditFocus() override {
+    if (CLASS_HAS(cls_, enter_edit_focus)) cls_.enter_edit_focus(self_);
+  }
+  void ReleaseEditFocus() override {
+    if (CLASS_HAS(cls_, release_edit_focus)) cls_.release_edit_focus(self_);
+  }
+  bool CanUndo() const override { return CLASS_HAS(cls_, can_undo) && cls_.can_undo(self_) != 0; }
+  void Undo() override {
+    if (CLASS_HAS(cls_, undo)) cls_.undo(self_);
+  }
+  bool CanRedo() const override { return CLASS_HAS(cls_, can_redo) && cls_.can_redo(self_) != 0; }
+  void Redo() override {
+    if (CLASS_HAS(cls_, redo)) cls_.redo(self_);
+  }
+
  private:
-  /// Passes a mouse event with the last frame's view. A handled press marks
-  /// a document dirty, since API 1 has no other way to report an edit.
+  /// Passes a mouse event with the last frame's view.
   bool Mouse(int kind, const MouseEvent& e, double wheel) {
     if (!CLASS_HAS(cls_, on_mouse)) return false;
     std::optional<MapProjection> proj;
@@ -473,19 +750,138 @@ class LibraryOverlay : public Overlay,
     ev.ctrl = e.ctrl ? 1 : 0;
     ev.clicks = e.clicks;
     ev.wheel_delta = wheel;
-    const bool handled = cls_.on_mouse(self_, proj ? &view : nullptr, &ev) != 0;
-    if (handled && kind == FV_MOUSE_DOWN && AsPersistence() != nullptr) set_dirty(true);
-    return handled;
+    return cls_.on_mouse(self_, proj ? &view : nullptr, &ev) != 0;
   }
 
   const PluginLibrary& lib_;
   const fv_overlay_class& cls_;
+  std::shared_ptr<fv_overlay_ref> ref_;
   void* self_;
   bool has_properties_ = false;
   std::vector<app::PropertySpec> specs_;
   std::mutex last_proj_mutex_;
   std::optional<MapProjection> last_proj_;
 };
+
+// MARK: The editor adapter
+
+app::CursorId ToCursor(int c) {
+  switch (c) {
+    case FV_CURSOR_ARROW: return app::CursorId::kDefault;
+    case FV_CURSOR_HAND: return app::CursorId::kHand;
+    case FV_CURSOR_MOVE: return app::CursorId::kMove;
+    case FV_CURSOR_NO: return app::CursorId::kNo;
+    case FV_CURSOR_WAIT: return app::CursorId::kWait;
+    default: return app::CursorId::kCrosshair;
+  }
+}
+
+/// An app::OverlayEditor backed by a plugin's editor class.
+class LibraryEditor : public app::OverlayEditor {
+ public:
+  explicit LibraryEditor(std::shared_ptr<fv_editor_ref> ref) : ref_(std::move(ref)), cls_(*ref_->cls) {
+    ref_->editor = this;
+  }
+  ~LibraryEditor() override {
+    ref_->editor = nullptr;
+    cls_.destroy(ref_->self);
+  }
+
+  Status Activate() override {
+    if (!EDITOR_HAS(cls_, activate)) return Status::Ok();
+    BeginCall();
+    return FromPlugin(cls_.activate(ref_->self), std::string(cls_.name) + " activate");
+  }
+  Status Deactivate() override {
+    if (!EDITOR_HAS(cls_, deactivate)) return Status::Ok();
+    BeginCall();
+    return FromPlugin(cls_.deactivate(ref_->self), std::string(cls_.name) + " deactivate");
+  }
+
+  app::CursorId DefaultCursor() const override { return ToCursor(cls_.cursor); }
+
+  app::EditorUiConstraints UiConstraints() const override {
+    app::EditorUiConstraints c;
+    c.disable_rotation = (cls_.flags & FV_EDITOR_DISABLE_ROTATION) != 0;
+    c.disable_projection_change = (cls_.flags & FV_EDITOR_DISABLE_PROJECTION_CHANGE) != 0;
+    c.requires_north_up = (cls_.flags & FV_EDITOR_REQUIRES_NORTH_UP) != 0;
+    c.disable_overlay_reorder = (cls_.flags & FV_EDITOR_DISABLE_OVERLAY_REORDER) != 0;
+    return c;
+  }
+
+  bool AutoEnterOnCreate() const override { return (cls_.flags & FV_EDITOR_NO_AUTO_CREATE) == 0; }
+
+  std::vector<app::MenuNode> Tools() const override {
+    if (!EDITOR_HAS(cls_, tools) || !EDITOR_HAS(cls_, run_tool)) return {};
+    app::MenuNode root;
+    const std::shared_ptr<fv_editor_ref> ref = ref_;
+    BuildMenu(&root, [ref](const std::string& id) -> std::function<void()> {
+      return [ref, id] {
+        if (ref->editor == nullptr) return;
+        BeginCall();
+        const Status s = FromPlugin(ref->cls->run_tool(ref->self, id.c_str()), id);
+        if (!s.ok()) FV_LOG_WARNING("plugin: " << s.message);
+      };
+    }, [&](const fv_menu* m) { cls_.tools(ref_->self, m); });
+    return std::move(root.children);
+  }
+
+ private:
+  std::shared_ptr<fv_editor_ref> ref_;
+  const fv_editor_class& cls_;
+};
+
+// MARK: Host services
+
+void HostRequestRedraw(fv_overlay_ref* ref) {
+  if (ref == nullptr) return;
+  // Held through the call so the adapter cannot be destroyed under it.
+  std::lock_guard<std::mutex> lock(ref->mutex);
+  if (ref->overlay == nullptr) return;
+  if (app::HostAware* a = ref->overlay->AsHostAware())
+    if (app::OverlayHost* h = a->host()) h->RequestRedraw();
+}
+
+/// The host of a UI-thread call's overlay, or null.
+app::OverlayHost* HostOf(fv_overlay_ref* ref) {
+  if (ref == nullptr || ref->overlay == nullptr) return nullptr;
+  app::HostAware* a = ref->overlay->AsHostAware();
+  return a != nullptr ? a->host() : nullptr;
+}
+
+int HostCaptureMouse(fv_overlay_ref* ref) {
+  app::OverlayHost* h = HostOf(ref);
+  if (h == nullptr) return FV_ERR_NOT_FOUND;
+  const Status s = h->CaptureMouse(*ref->overlay);
+  if (!s.ok()) t_plugin_error = s.message;
+  return s.ok() ? FV_OK : FV_ERR_NOT_FOUND;
+}
+
+void HostReleaseMouse(fv_overlay_ref* ref) {
+  if (app::OverlayHost* h = HostOf(ref)) h->ReleaseMouse(*ref->overlay);
+}
+
+void HostSetDirty(fv_overlay_ref* ref, int dirty) {
+  if (ref == nullptr || ref->overlay == nullptr) return;
+  if (app::Persistence* p = ref->overlay->AsPersistence()) p->set_dirty(dirty != 0);
+}
+
+int HostElevationAt(fv_overlay_ref* ref, fv_geo_point p, double* metres) {
+  if (metres == nullptr) return FV_ERR_INVALID_ARG;
+  app::OverlayHost* h = HostOf(ref);
+  if (h == nullptr) return FV_ERR_NOT_FOUND;
+  return h->ElevationAt(GeoPoint{p.lat, p.lon}, metres) ? FV_OK : FV_ERR_OUT_OF_COVERAGE;
+}
+
+void HostShowStatus(fv_overlay_ref* ref, const char* text) {
+  if (app::OverlayHost* h = HostOf(ref)) h->ShowStatus(OrEmpty(text));
+}
+
+void* HostEdited(fv_editor_ref* ref) {
+  if (ref == nullptr || ref->editor == nullptr) return nullptr;
+  const auto* o = dynamic_cast<const LibraryOverlay*>(ref->editor->edited());
+  return o != nullptr && &o->library() == ref->lib ? o->self() : nullptr;
+}
 
 // MARK: Tools
 
@@ -552,6 +948,13 @@ std::string ValidateApi(const fv_plugin_api& api) {
     if (c.name == nullptr || c.create == nullptr || c.destroy == nullptr || c.draw == nullptr)
       return "overlay class " + std::to_string(i) + " lacks a name, create, destroy or draw";
   }
+  if (api.editor_count > 0 && api.editors == nullptr) return "editor_count without editors";
+  for (size_t i = 0; i < api.editor_count; ++i) {
+    const fv_editor_class& c = api.editors[i];
+    if (c.struct_size < offsetof(fv_editor_class, destroy) + sizeof(c.destroy) ||
+        c.name == nullptr || c.create == nullptr || c.destroy == nullptr)
+      return "editor class " + std::to_string(i) + " lacks a name, create or destroy";
+  }
   for (size_t i = 0; i < api.tool_count; ++i) {
     const fv_tool_class& c = api.tools[i];
     if (c.struct_size < offsetof(fv_tool_class, run) + sizeof(c.run) || c.name == nullptr ||
@@ -566,6 +969,12 @@ std::string ValidateApi(const fv_plugin_api& api) {
 const fv_overlay_class* PluginLibrary::FindOverlay(const std::string& name) const {
   for (size_t i = 0; i < api.overlay_count; ++i)
     if (name == api.overlays[i].name) return &api.overlays[i];
+  return nullptr;
+}
+
+const fv_editor_class* PluginLibrary::FindEditor(const std::string& name) const {
+  for (size_t i = 0; i < api.editor_count; ++i)
+    if (name == api.editors[i].name) return &api.editors[i];
   return nullptr;
 }
 
@@ -630,6 +1039,13 @@ Status LoadPluginLibrary(const std::string& path, const std::string& package_dir
   lib->host.package_dir = lib->package_dir.c_str();
   lib->host.log = HostLog;
   lib->host.set_error = HostSetError;
+  lib->host.request_redraw = HostRequestRedraw;
+  lib->host.capture_mouse = HostCaptureMouse;
+  lib->host.release_mouse = HostReleaseMouse;
+  lib->host.set_dirty = HostSetDirty;
+  lib->host.elevation_at = HostElevationAt;
+  lib->host.show_status = HostShowStatus;
+  lib->host.edited = HostEdited;
   lib->api.struct_size = sizeof(fv_plugin_api);
 
   BeginCall();
@@ -656,14 +1072,35 @@ std::shared_ptr<Overlay> CreateLibraryOverlay(const PluginLibrary& lib,
                                               const fv_overlay_class& cls,
                                               const std::string& type_id,
                                               const std::string& display_name) {
+  auto ref = std::make_shared<fv_overlay_ref>();
+  ref->cls = &cls;
   BeginCall();
-  void* self = cls.create(&lib.host, type_id.c_str());
-  if (self == nullptr) {
+  ref->self = cls.create(&lib.host, ref.get(), type_id.c_str());
+  if (ref->self == nullptr) {
     FV_LOG_WARNING("plugin: " << type_id << ": create failed"
                               << (t_plugin_error.empty() ? "" : ": " + t_plugin_error));
     return nullptr;
   }
-  return std::make_shared<LibraryOverlay>(lib, cls, self, display_name);
+  return std::make_shared<LibraryOverlay>(lib, cls, std::move(ref), display_name);
+}
+
+std::function<std::unique_ptr<app::OverlayEditor>()> MakeLibraryEditorFactory(
+    const PluginLibrary& lib, const fv_editor_class& cls) {
+  const PluginLibrary* l = &lib;
+  const fv_editor_class* c = &cls;
+  return [l, c]() -> std::unique_ptr<app::OverlayEditor> {
+    auto ref = std::make_shared<fv_editor_ref>();
+    ref->lib = l;
+    ref->cls = c;
+    BeginCall();
+    ref->self = c->create(&l->host, ref.get());
+    if (ref->self == nullptr) {
+      FV_LOG_WARNING("plugin: editor " << c->name << ": create failed"
+                                       << (t_plugin_error.empty() ? "" : ": " + t_plugin_error));
+      return nullptr;
+    }
+    return std::make_unique<LibraryEditor>(std::move(ref));
+  };
 }
 
 ToolRun MakeLibraryTool(const PluginLibrary& lib, const fv_tool_class& cls) {

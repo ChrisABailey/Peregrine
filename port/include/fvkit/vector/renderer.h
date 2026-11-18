@@ -23,7 +23,10 @@
 #define FVKIT_VECTOR_RENDERER_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -91,6 +94,12 @@ class VectorRenderer {
   void SetLabelRepeatPixels(double px) { label_repeat_px_ = px > 0.0 ? px : 0.0; }
   double label_repeat_pixels() const { return label_repeat_px_; }
 
+  /// Skips a label placed along a line when any of its glyphs, halo
+  /// included, would overlap a label already drawn this frame. Draw order is
+  /// display priority, so the first placement wins. Off by default.
+  void SetLabelCollision(bool on) { label_collision_ = on; }
+  bool label_collision() const { return label_collision_; }
+
   // --- the retained scene (R3a, plan §5.4) ---------------------------------
   //
   // Every Render goes through a VectorScene; these control how long one lives.
@@ -123,6 +132,14 @@ class VectorRenderer {
   // style engine's epoch does not report — which for both real products is
   // nothing, since LookupTableStyleEngine reports its own.
   void InvalidateScene() { scene_.Clear(); }
+
+  /// Skips, before projecting it, any part whose bounding box and style
+  /// cannot put ink on the canvas. On by default and pixel-exact; applies to
+  /// affine projections only. Off is for tests that compare against it.
+  void SetScreenCull(bool on) { screen_cull_ = on; }
+  bool screen_cull() const { return screen_cull_; }
+  /// Parts the last Render skipped that way.
+  size_t parts_culled() const { return parts_culled_; }
 
   // Whether the LAST Render reused the retained scene instead of rebuilding.
   bool scene_reused() const { return scene_reused_; }
@@ -165,14 +182,16 @@ class VectorRenderer {
   double draw_ms() const { return draw_ms_; }
 
  private:
-  // This frame's pixel anchor for one area-pattern spacing, carried forward as
-  // a ground point so a pan cannot slide the lattice. See the long comment on
-  // the definition — the short version is that anchoring on a point 600,000 px
-  // away made the lattice sensitive to dpp, and dpp moves with the centre
-  // latitude in every scale-driven projection mode.
+  /// This frame's pixel position of a site of the area-pattern lattice with
+  /// the given period, retained as a ground point so a pan cannot slide it.
   void PatternAnchor(const MapProjection& proj, double seed_x, double seed_y,
-                     double spacing_x, double spacing_y, double* ax,
-                     double* ay);
+                     double period_x, double period_y, double* ax, double* ay);
+
+  /// Upper bound, in pixels, on how far outside its geometry's bounding box
+  /// `sr` can draw (pen width, symbols, label text). Infinite when no bound is
+  /// known. `label_px` is the drawn label size.
+  double InkReach(const StyleResult& sr, double px_per_himetric,
+                  double pixmap_scale, double label_px) const;
 
   VectorSourcePtr source_;
   StyleEnginePtr style_;
@@ -183,9 +202,12 @@ class VectorRenderer {
   double simplify_px_ = 0.0;
   double label_ref_scale_ = 0.0;
   double label_repeat_px_ = 0.0;
+  bool label_collision_ = false;
   VectorScene scene_;
   bool scene_reused_ = false;
   bool pick_enabled_ = true;
+  bool screen_cull_ = true;
+  size_t parts_culled_ = 0;
   size_t features_queried_ = 0;
   size_t draws_emitted_ = 0;
   size_t halo_draws_ = 0;
@@ -193,8 +215,14 @@ class VectorRenderer {
   double style_ms_ = 0.0;
   double draw_ms_ = 0.0;
   PickIndex pick_;
-  // Retained stamp lattices, keyed by (spacing_x, spacing_y). Each value is the
-  // ground point the lattice hangs on; a handful of entries at most.
+  /// Symbol id, cell width and height, staggered, and the two symbol scales.
+  using PatternTileKey =
+      std::tuple<std::string, int, int, bool, double, double>;
+  // One period of each area pattern drawn since the style last changed.
+  std::map<PatternTileKey, PatternTile> pattern_tiles_;
+  uint64_t pattern_tiles_epoch_ = 0;
+  // Retained pattern lattices, keyed by period in pixels. Each value is the
+  // ground point the lattice hangs on.
   std::map<std::pair<double, double>, GeoPoint> pattern_anchors_;
 };
 
@@ -278,25 +306,30 @@ PathPlacement PlaceAlongPath(const std::vector<SurfacePoint>& path,
 // length, and so the phase of every later dash, is unchanged by either.
 std::vector<PathRun> DashRuns(const std::vector<double>& dash);
 
-// Grid of stamp positions covering `ring`, the EXACT projected outline in
-// sub-pixel surface coordinates — deliberately not the clipped, whole-pixel
-// ring the fill is drawn from, whose vertices move by up to half a pixel with
-// the pan and make stamps near a boundary blink. A position is emitted when it
-// is inside the ring by the even-odd rule, the same fill rule CpuCanvas uses,
-// so a pattern lands where the solid fill would have.
-//
-// `clip_w`/`clip_h` bound the walk to a canvas of that size (0 = unbounded),
-// which an exact ring needs because it may run far outside the viewport.
-//
-// DEVIATION: a symbol whose ink overruns the boundary is not clipped — ICanvas
-// has no clip region — so a pattern can bleed by up to half a symbol.
-// Documented in the ledger; the fix is an ICanvas clip rect.
-//
-// `anchor_x`/`anchor_y` pin the lattice: stamps land on anchor + k*spacing, so
-// every ring in a frame shares one grid. The renderer passes the pixel position
-// of a nearby FIXED GEOGRAPHIC POINT, which is what keeps a pattern still under
-// its own area while the map pans — pass 0,0 to get the original canvas-origin
-// lattice, which crawls. See VectorRenderer::PatternAnchor.
+/// Grid of stamp positions inside an area, by the even-odd rule over every
+/// ring in `rings` (outer ring and holes), the fill rule CpuCanvas uses, so a
+/// pattern lands where the solid fill would and not inside a hole.
+///
+/// The rings are the exact projected outlines in sub-pixel surface
+/// coordinates, not the clipped whole-pixel rings the fill is drawn from: those
+/// move by up to half a pixel with the pan and make stamps near a boundary
+/// blink. `clip_w`/`clip_h` bound the walk to a canvas of that size
+/// (0 = unbounded), since an exact ring can run far outside the viewport.
+///
+/// `anchor_x`/`anchor_y` pin the lattice: stamps land on anchor + k*spacing,
+/// so every area shares one grid. When `staggered`, the rows an odd number of
+/// rows from the anchor are offset by half a cell, whichever row is walked
+/// first.
+///
+/// The renderer fills patterns with a tile (ICanvas::FillPolyPolygonTiled) and
+/// uses this only on a canvas without one; a stamp's ink is then not clipped
+/// to the area.
+std::vector<SurfacePoint> PlaceOverArea(
+    const std::vector<std::vector<SurfacePoint>>& rings, double spacing_x,
+    double spacing_y, bool staggered, double anchor_x = 0.0,
+    double anchor_y = 0.0, double clip_w = 0.0, double clip_h = 0.0);
+
+/// PlaceOverArea for an area with no holes.
 std::vector<SurfacePoint> PlaceOverArea(const std::vector<SurfacePoint>& ring,
                                         double spacing_x, double spacing_y,
                                         bool staggered, double anchor_x = 0.0,

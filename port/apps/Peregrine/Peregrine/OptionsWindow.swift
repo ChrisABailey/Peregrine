@@ -34,7 +34,11 @@ final class OptionsWindowController: NSWindowController, NSWindowDelegate,
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
                               styleMask: [.titled, .closable, .resizable],
                               backing: .buffered, defer: true)
-        window.title = kind == fv.desk.kOptionsMap.rawValue ? "Map Options" : "Overlay Options"
+        switch kind {
+        case fv.desk.kOptionsMap.rawValue: window.title = "Map Options"
+        case fv.desk.kOptionsFeed.rawValue: window.title = "Moving Map Feed"
+        default: window.title = "Overlay Options"
+        }
         window.minSize = NSSize(width: 520, height: 320)
         window.tabbingMode = .disallowed
         super.init(window: window)
@@ -347,6 +351,8 @@ final class OptionsWindowController: NSWindowController, NSWindowDelegate,
         guard let key = sender.identifier?.rawValue else { return }
         let value: String
         switch sender {
+        // NSPopUpButton is an NSButton, so it must be matched first.
+        case let p as NSPopUpButton: value = String(p.indexOfSelectedItem)
         case let b as NSButton: value = b.state == .on ? "true" : "false"
         case let w as NSColorWell:
             guard let text = Self.text(w.color) else {
@@ -355,7 +361,6 @@ final class OptionsWindowController: NSWindowController, NSWindowDelegate,
                 return
             }
             value = text
-        case let p as NSPopUpButton: value = String(p.indexOfSelectedItem)
         case let t as NSTextField: value = Self.plain(t)
         default: return
         }

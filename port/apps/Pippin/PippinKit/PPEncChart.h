@@ -57,6 +57,8 @@ struct EncChartSettings {
   /// Area edges carry their class's marks (anchors, T-ticks) rather than plain
   /// dashed lines: S-52's symbolized-boundaries lookup table.
   bool symbolized_boundaries = false;
+  /// The unit soundings are printed in.
+  EncDepthUnits sounding_units = EncDepthUnits::kMetres;
 
   bool operator==(const EncChartSettings& o) const;
   bool operator!=(const EncChartSettings& o) const { return !(*this == o); }
@@ -80,6 +82,10 @@ std::string EncFeatureSummary(const fv::FeatureDescription& d, EncDepthUnits uni
 /** Picks the band whose nominal scale is nearest `scale_denominator` in log
  *  terms; ties go to the larger-scale band. 0 when `bands` is empty. */
 int EncBandForScale(const std::vector<int>& bands, double scale_denominator);
+
+/** True when the union of `cells` holds every point of `view`. Either side may
+ *  cross the antimeridian; an empty view is covered by anything. */
+bool EncCellsCoverRect(const std::vector<fv::GeoRect>& cells, const fv::GeoRect& view);
 
 /** An ENC exchange set drawn with S-52 symbology. A draw shows the band for
  *  the scale over coarser bands where that band does not cover the view.
@@ -164,6 +170,8 @@ class EncChart {
   /** The finest band of the last kBase draw and its renderer; 0 / nullptr
    *  before one. */
   int last_band() const { return last_band_; }
+  /** Every band of the last kBase draw, coarsest first. */
+  const std::vector<int>& last_bands() const { return last_bands_; }
   fv::VectorRenderer* last_renderer() const { return last_renderer_; }
   fv::EncVectorSource* last_source() const { return last_source_; }
 
@@ -172,7 +180,8 @@ class EncChart {
   fv::Status OpenBand(int band, Band** out);
   void ReleaseOtherBands(const std::vector<int>& keep);
   /** Bands to draw for `proj`, coarsest first: the band for the scale, then
-   *  coarser bands with cells in view until one cell's bounds hold the view. */
+   *  coarser bands with cells in view until a band's cell bounds together
+   *  hold the view. */
   std::vector<int> BandsForView(const fv::MapProjection& proj) const;
   void ApplySettings();
 

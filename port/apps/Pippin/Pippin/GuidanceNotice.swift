@@ -9,7 +9,8 @@
 // One notification per maneuver: its identifier is the maneuver's index, so
 // act-now replaces heads-up rather than stacking under it, and passing the
 // corner removes it. Off route has an identifier of its own that rejoining
-// removes. Arrival clears everything and leaves only itself. Course events
+// removes; a detour offer replaces its text and adds the action that applies
+// it. Arrival clears everything and leaves only itself. Course events
 // (straight-leg routes) use one waypoint identifier, so each route point
 // replaces the last, and an off-course identifier that back-on-course removes.
 //
@@ -34,16 +35,31 @@ struct GuidanceNoticeEvent: Equatable {
     /// The road being joined; empty for an unnamed way. On a course event,
     /// the route point's label.
     var road: String = ""
+    /// The joined road's OSM highway value; names an unnamed way.
+    var roadClass: String = ""
+    /// The road joined has the name of the road left (both unnamed counts).
+    var continues: Bool = false
     /// On a waypoint event, the label of the point now steered for.
     var nextName: String = ""
     /// Signed cross-track metres on a course event, positive right of track.
     var crossTrackMeters: Double = 0
 }
 
+/// The detour on offer to an off-route rider, as the notification shows it.
+struct DetourNoticeOffer: Equatable {
+    /// The offer starts by turning round rather than riding on.
+    var turnAround: Bool
+    /// The detour button's label, "Re-route: +0.3 mi" or "Turn around: 410 ft back".
+    var label: String
+}
+
 /// One change to the delivered notifications.
 enum GuidanceNoticeAction: Equatable {
     /// Posts, or replaces the notification with the same identifier.
-    case post(id: String, title: String, body: String, timeSensitive: Bool)
+    /// `category` names the action buttons it carries, empty for none.
+    /// `alerts` false replaces the text without a sound or lighting the screen.
+    case post(id: String, title: String, body: String, timeSensitive: Bool,
+              category: String = "", alerts: Bool = true)
     case remove(ids: [String])
     /// Removes every guidance notification.
     case removeAll
@@ -59,6 +75,34 @@ enum GuidanceNotice {
     static let offCourseID = prefix + "offcourse"
 
     static func turnID(_ index: Int) -> String { prefix + "turn.\(index)" }
+
+    static let offRouteTitle = "Off route"
+    static let offRouteBody = "Turn alerts resume when you rejoin the route."
+
+    /// Notification categories for a detour offer. Each carries one action,
+    /// `detourActionID`, titled "Re-route" or "Turn around".
+    static let detourRerouteCategory = prefix + "detour.reroute"
+    static let detourTurnAroundCategory = prefix + "detour.turnaround"
+    static let detourActionID = prefix + "detour.apply"
+
+    /// The off-route notification's changes when the detour on offer goes
+    /// from `shown` to `offer`. A new offer, or one that changes between
+    /// re-routing and turning round, alerts; a new distance on the same kind
+    /// replaces the text silently. With the offer gone the notice reverts to
+    /// plain off route, or goes once the rider is back on the route.
+    static func detourActions(from shown: DetourNoticeOffer?, to offer: DetourNoticeOffer?,
+                              onRoute: Bool) -> [GuidanceNoticeAction] {
+        if shown == offer { return [] }
+        guard let offer else {
+            if onRoute { return [.remove(ids: [offRouteID])] }
+            return [.post(id: offRouteID, title: offRouteTitle, body: offRouteBody,
+                          timeSensitive: true, alerts: false)]
+        }
+        return [.post(id: offRouteID, title: offRouteTitle, body: offer.label,
+                      timeSensitive: true,
+                      category: offer.turnAround ? detourTurnAroundCategory : detourRerouteCategory,
+                      alerts: shown?.turnAround != offer.turnAround)]
+    }
 
     /// The changes one event makes, in order.
     static func actions(for event: GuidanceNoticeEvent,
@@ -80,8 +124,7 @@ enum GuidanceNotice {
         case .passed:
             return [.remove(ids: [turnID(event.maneuverIndex)])]
         case .offRoute:
-            return [.post(id: offRouteID, title: "Off route",
-                          body: "Turn alerts resume when you rejoin the route.",
+            return [.post(id: offRouteID, title: offRouteTitle, body: offRouteBody,
                           timeSensitive: true)]
         case .rejoined:
             return [.remove(ids: [offRouteID])]
@@ -115,8 +158,23 @@ enum GuidanceNotice {
 
     static func body(_ event: GuidanceNoticeEvent) -> String {
         if event.turn == .arrive { return "End of the planned route." }
-        return event.road.isEmpty ? "" : "Onto \(event.road)"
+        return roadLine(road: event.road, roadClass: event.roadClass,
+                        continues: event.continues)
     }
+
+    /// The line under a turn, shared by the notification, banner and Live
+    /// Activity: "Onto NAME", "To stay on NAME" when the road continues, "On
+    /// the path" (or road) for an unnamed way that continues, else empty.
+    static func roadLine(road: String, roadClass: String, continues: Bool) -> String {
+        if !road.isEmpty { return continues ? "To stay on \(road)" : "Onto \(road)" }
+        guard continues else { return "" }
+        return pathClasses.contains(roadClass) ? "On the path" : "On the road"
+    }
+
+    /// OSM highway values a rider calls a path rather than a road.
+    static let pathClasses: Set<String> = [
+        "cycleway", "path", "footway", "pedestrian", "bridleway", "track", "steps",
+    ]
 
     static func phrase(_ turn: GuidanceNoticeEvent.Turn) -> String {
         switch turn {

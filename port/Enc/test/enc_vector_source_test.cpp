@@ -350,6 +350,42 @@ TEST(EncVectorSource, SoundingsPublishTheirDepthAsAnAttribute) {
   EXPECT_GE(with_depth, 70u);
 }
 
+// Each DEPCNT carries the next shoaler contour of its own cell, and the
+// cell's shoalest contour carries none.
+TEST(EncVectorSource, ContoursCarryTheNextShoalerContourOfTheirCell) {
+  SKIP_WITHOUT_ENC();
+  OPEN_SOURCE(src);
+  std::vector<fv::VectorFeature> f;
+  ASSERT_TRUE(src.Query(fv::VectorQuery(), &f).ok());
+
+  std::map<int32_t, std::set<double>> per_cell;
+  for (const auto& v : f) {
+    if (v.style_key != "DEPCNT") continue;
+    const std::string* d = v.Attribute("VALDCO");
+    if (d != nullptr && !d->empty()) per_cell[v.ref.tile].insert(std::stod(*d));
+  }
+  ASSERT_FALSE(per_cell.empty());
+
+  size_t checked = 0;
+  for (const auto& v : f) {
+    if (v.style_key != "DEPCNT") continue;
+    const std::string* d = v.Attribute("VALDCO");
+    if (d == nullptr || d->empty()) continue;
+    const std::set<double>& depths = per_cell[v.ref.tile];
+    auto it = depths.find(std::stod(*d));
+    ASSERT_NE(it, depths.end());
+    const std::string* shoaler = v.Attribute(fv::kEncShoalerContourAttribute);
+    if (it == depths.begin()) {
+      EXPECT_EQ(shoaler, nullptr);
+    } else {
+      ASSERT_NE(shoaler, nullptr);
+      EXPECT_DOUBLE_EQ(std::stod(*shoaler), *std::prev(it));
+    }
+    ++checked;
+  }
+  EXPECT_GT(checked, 0u);
+}
+
 // SCAMIN is a property of the DATA ("do not show me below this scale"), so it
 // is applied by the source. A query with no scale must not lose anything.
 TEST(EncVectorSource, ScaminThinsOnlyWhenTheQueryNamesAScale) {

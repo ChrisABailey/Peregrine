@@ -75,6 +75,39 @@ enum ChartPalette: Int, CaseIterable, Identifiable {
         case .night: return "Night"
         }
     }
+
+    /// Dusk and night hold the interface in its dark appearance whatever the
+    /// system setting. Automatic does not: it reads the system setting.
+    var forcesDarkAppearance: Bool { self == .dusk || self == .night }
+}
+
+/// How bright the app's own controls and sheets may be: the chart's colour
+/// table carried over to everything drawn around the chart.
+enum ChartLuminance: Equatable {
+    case day
+    case dusk
+    case night
+
+    /// The level for a chart palette. Automatic is night in Dark Mode, as on
+    /// the chart.
+    static func resolve(palette: ChartPalette, darkMode: Bool) -> ChartLuminance {
+        switch palette {
+        case .automatic: return darkMode ? .night : .day
+        case .day: return .day
+        case .dusk: return .dusk
+        case .night: return .night
+        }
+    }
+
+    /// The sRGB colour, 0...255, that white is scaled down to: S-52's UINFD
+    /// (user-interface text) for the palette. Nil for day, which is not dimmed.
+    var ceiling: (red: Int, green: Int, blue: Int)? {
+        switch self {
+        case .day: return nil
+        case .dusk: return (71, 78, 79)
+        case .night: return (43, 48, 48)
+        }
+    }
 }
 
 /// The settings the chart settings sheet edits. Depths are metres and are

@@ -18,8 +18,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface PPGuidanceEvent ()
 
+/// A turn event; `maneuver` is the corner it is about, or null when the
+/// event names none (off route, rejoined).
 - (instancetype)initWithEvent:(const fv::nav::GuidanceEvent &)event
-                         road:(NSString *)road NS_DESIGNATED_INITIALIZER;
+                     maneuver:(const fv::nav::Maneuver *_Nullable)maneuver
+    NS_DESIGNATED_INITIALIZER;
 
 /// A course event; `name` is the point's label, `nextName` the next one's.
 - (instancetype)initWithCourseEvent:(const fv::nav::CourseEvent &)event
@@ -30,9 +33,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface PPGuidance ()
 
+/// `next` is the maneuver being counted down to, or null when there is none.
 - (instancetype)initWithState:(const fv::nav::GuidanceState &)state
-                         road:(NSString *)road
-    NS_DESIGNATED_INITIALIZER;
+                         next:(const fv::nav::Maneuver *_Nullable)next
+                   detourKind:(PPDetourKind)detourKind
+            detourExtraMeters:(double)extraMeters
+             detourBackMeters:(double)backMeters
+                    detouring:(BOOL)detouring NS_DESIGNATED_INITIALIZER;
 
 @end
 

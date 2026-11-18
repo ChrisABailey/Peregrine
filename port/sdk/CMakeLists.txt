@@ -98,8 +98,10 @@ if(FVW_BUILD_TESTS)
   add_executable(peregrine_python_plugin_test test/python_plugin_test.cpp)
   target_link_libraries(peregrine_python_plugin_test PRIVATE peregrine_core GTest::gtest_main)
   target_include_directories(peregrine_python_plugin_test PRIVATE ${CMAKE_SOURCE_DIR}/port/DeskKit/test)
-  add_dependencies(peregrine_python_plugin_test pyrings_pgpkg rangerings_pgpkg)
+  add_dependencies(peregrine_python_plugin_test pyrings_pgpkg rangerings_pgpkg analysis_pgpkg)
   target_compile_definitions(peregrine_python_plugin_test PRIVATE
+    FV_ANALYSIS_PGPKG="${CMAKE_BINARY_DIR}/port/sdk/examples/analysis-py/com.example.analysis.pgpkg"
+    FV_TESTDATA_DTED="${CMAKE_SOURCE_DIR}/testdata/dted"
     FV_PYRINGS_PGPKG="${CMAKE_BINARY_DIR}/port/sdk/examples/rangerings-py/com.example.pyrings.pgpkg"
     FV_RANGERINGS_PGPKG="${CMAKE_BINARY_DIR}/port/sdk/examples/rangerings-c/com.example.rangerings.pgpkg")
   if(TARGET peregrine_python)

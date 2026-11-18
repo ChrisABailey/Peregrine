@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <map>
 
@@ -91,6 +92,58 @@ std::vector<RouteBeachStretch> BeachStretchesOf(const routing::Route& route) {
     at_s += leg.seconds;
   }
   return out;
+}
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+// The radius nav::Guidance measures along-route metres in.
+constexpr double kEarthRadiusM = 6371008.8;
+
+/// Great-circle metres, the formula nav::Guidance uses for `along_m`.
+double GreatCircleMeters(const GeoPoint& a, const GeoPoint& b) {
+  const double phi1 = a.lat * kDegToRad;
+  const double phi2 = b.lat * kDegToRad;
+  const double s1 = std::sin((b.lat - a.lat) * kDegToRad * 0.5);
+  const double s2 = std::sin(NormalizeLon(b.lon - a.lon) * kDegToRad * 0.5);
+  double h = s1 * s1 + std::cos(phi1) * std::cos(phi2) * s2 * s2;
+  if (h > 1.0) h = 1.0;
+  return 2.0 * kEarthRadiusM * std::asin(std::sqrt(h));
+}
+
+double LineMeters(const std::vector<GeoPoint>& line) {
+  double m = 0.0;
+  for (size_t i = 1; i < line.size(); ++i) m += GreatCircleMeters(line[i - 1], line[i]);
+  return m;
+}
+
+/// Metres from `p` to segment `a`-`b`, on a local flat projection about `p`.
+double SegmentMeters(const GeoPoint& p, const GeoPoint& a, const GeoPoint& b) {
+  const double kx = kEarthRadiusM * kDegToRad * std::cos(p.lat * kDegToRad);
+  const double ky = kEarthRadiusM * kDegToRad;
+  const double ax = NormalizeLon(a.lon - p.lon) * kx, ay = (a.lat - p.lat) * ky;
+  const double bx = NormalizeLon(b.lon - p.lon) * kx, by = (b.lat - p.lat) * ky;
+  const double dx = bx - ax, dy = by - ay;
+  const double len2 = dx * dx + dy * dy;
+  double t = len2 > 0.0 ? -(ax * dx + ay * dy) / len2 : 0.0;
+  t = std::max(0.0, std::min(1.0, t));
+  return std::hypot(ax + t * dx, ay + t * dy);
+}
+
+/// Metres along `path` (legs joined) to its first vertex within `within_m`
+/// of `line`; the whole length when it never comes that close.
+double MetersUntilNear(const std::vector<std::vector<GeoPoint>>& path,
+                       const std::vector<std::vector<GeoPoint>>& line, double within_m) {
+  double at = 0.0;
+  const GeoPoint* prev = nullptr;
+  for (const std::vector<GeoPoint>& leg : path) {
+    for (const GeoPoint& p : leg) {
+      if (prev) at += GreatCircleMeters(*prev, p);
+      prev = &p;
+      for (const std::vector<GeoPoint>& l : line)
+        for (size_t i = 1; i < l.size(); ++i)
+          if (SegmentMeters(p, l[i - 1], l[i]) <= within_m) return at;
+    }
+  }
+  return at;
 }
 
 }  // namespace
@@ -181,7 +234,67 @@ Status RoutePlanner::BuildOptions(const RoutePlanOptions& in,
   if (in.avoid_ferries) out->ferry_penalty = routing::kAvoidExcluded;
   out->beach = in.beach;
   out->hill_penalty = in.avoid_hills.value_or(false) ? in.avoid_hills_penalty : 1.0;
+  out->start_heading_deg = in.start_heading_deg;
+  out->start_u_turn_seconds = in.start_u_turn_seconds;
   return Status::Ok();
+}
+
+DetourPlan RoutePlanner::PlanDetour(const DetourRequest& request,
+                                    const std::vector<GeoPoint>& waypoints,
+                                    const RoutePlan& route,
+                                    const RoutePlanOptions& options) const {
+  DetourPlan out;
+  if (waypoints.size() < 2 || route.legs.empty()) return out;
+
+  // Stop i (i >= 1) ends leg i - 1 of the original line.
+  const size_t stop_count = std::min(waypoints.size(), route.legs.size() + 1);
+  double stop_along = 0.0;
+  for (size_t i = 1; i + 1 < stop_count; ++i) {
+    stop_along += LineMeters(route.legs[i - 1]);
+    if (stop_along > request.last_along_m) out.stops_ahead.push_back(waypoints[i]);
+  }
+  out.stops_ahead.push_back(waypoints.back());
+
+  double total_m = 0.0;
+  for (const std::vector<GeoPoint>& leg : route.legs) total_m += LineMeters(leg);
+  out.remaining_m = total_m - std::max(0.0, std::min(request.last_along_m, total_m));
+
+  std::vector<GeoPoint> stops{request.position};
+  stops.insert(stops.end(), out.stops_ahead.begin(), out.stops_ahead.end());
+
+  RoutePlanOptions ahead = options;
+  ahead.start_heading_deg = request.heading_deg;
+  ahead.start_u_turn_seconds = request.u_turn_seconds;
+  out.reroute = Plan(stops, ahead);
+  out.reroute_starts_with_u_turn = out.reroute.found && out.reroute.start_u_turn;
+  if (out.reroute.found) out.extra_m = out.reroute.length_m - out.remaining_m;
+
+  // The best plan that sets off back the way the rider came. Without a
+  // heading there is no "back", and it is the reroute again.
+  if (std::isfinite(request.heading_deg)) {
+    RoutePlanOptions back = ahead;
+    back.start_heading_deg = std::fmod(request.heading_deg + 180.0, 360.0);
+    back.start_u_turn_seconds = request.turn_around_force_seconds;
+    RoutePlan turn = Plan(stops, back);
+    // A plan that still goes on (a one-way, a dead end ahead of nothing) is
+    // not a way to turn round.
+    if (turn.found && !turn.start_u_turn) {
+      out.back_m = MetersUntilNear(turn.legs, route.legs, request.rejoin_m);
+      out.turn_around = std::move(turn);
+    }
+  }
+
+  const bool can_turn = out.turn_around.found;
+  if (!out.reroute.found) {
+    out.pick = can_turn ? DetourPick::kTurnAround : DetourPick::kNone;
+  } else if (can_turn && (out.reroute_starts_with_u_turn ||
+                          out.turn_around.length_m + request.turn_around_margin_m <
+                              out.reroute.length_m)) {
+    out.pick = DetourPick::kTurnAround;
+  } else {
+    out.pick = DetourPick::kReroute;
+  }
+  return out;
 }
 
 std::string RoutePlanner::StatusLine(const RoutePlanOptions& in, double meters,
@@ -330,15 +443,17 @@ RoutePlan RoutePlanner::PlanOnce(const std::vector<GeoPoint>& stops,
     plan.length_m = through.length_m;
     plan.seconds = through.seconds;
     plan.u_turn_stops = through.u_turn_stops;
+    plan.start_u_turn = through.start_u_turn;
     plan.has_elevation = through.has_elevation;
     plan.climb_m = through.climb_m;
     plan.descent_m = through.descent_m;
     plan.elevation = through.profile;
+    plan.tiers = through.tiers;
     // The turn list is measured along `through.geometry`, and `legs` joined
     // end to end is that same line: the cuts are indices into it, and the
     // duplicate vertices a joiner drops are zero-length segments that no
     // cumulative distance counted in the first place.
-    plan.maneuvers = ManeuversOf(through);
+    plan.maneuvers = ManeuversOf(through, *graph_, options);
     plan.roads = through.legs;
     plan.beach = BeachStretchesOf(through);
     std::string turned;

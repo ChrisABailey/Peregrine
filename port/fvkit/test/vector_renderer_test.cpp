@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -813,6 +814,7 @@ class StubStyle : public fv::IStyleEngine {
   std::vector<double> dash;  // empty = solid
   // PR2: a NORTH-UP symbol angle, the kind a chart rotation acts on.
   double symbol_rotation_deg = 0.0;
+  bool symbol_turns_with_chart = true;
   fv::VectorSymbol symbol;
   std::vector<std::string> styled_keys;
 
@@ -826,6 +828,7 @@ class StubStyle : public fv::IStyleEngine {
       r.symbol.valid = true;
       r.symbol.symbol_id = "stub";
       r.symbol.rotation_deg = symbol_rotation_deg;
+      r.symbol.turns_with_chart = symbol_turns_with_chart;
     } else {
       r.stroke.valid = true;
       r.stroke.pen.color = color;
@@ -1279,6 +1282,358 @@ TEST(VectorRenderer, LongLineIsClippedNotDropped) {
   };
   EXPECT_TRUE(column_has_red(0));
   EXPECT_TRUE(column_has_red(63));
+}
+
+// --- area fill and boundary stroke ---------------------------------------
+
+/// Styles every feature as a filled area with a boundary pen.
+class AreaStyle : public fv::IStyleEngine {
+ public:
+  fv::FvColor fill{0, 0, 255, 255};
+  fv::FvColor pen{255, 0, 0, 255};
+
+  fv::Status Style(const fv::VectorFeature&, const fv::StyleContext&,
+                   std::vector<fv::StyleResult>* out) override {
+    fv::StyleResult r;
+    r.fill.valid = true;
+    r.fill.brush.color = fill;
+    r.stroke.valid = true;
+    r.stroke.pen.color = pen;
+    r.stroke.pen.width = 1;
+    out->push_back(r);
+    return fv::Status::Ok();
+  }
+  const fv::VectorSymbol* Symbol(const std::string&) override {
+    return nullptr;
+  }
+};
+
+/// An axis-aligned ring (lat/lon degrees), not closed.
+std::vector<fv::GeoPoint> Box(double lat0, double lon0, double lat1,
+                              double lon1) {
+  return {{lat0, lon0}, {lat0, lon1}, {lat1, lon1}, {lat1, lon0}};
+}
+
+fv::VectorFeature Area(std::vector<std::vector<fv::GeoPoint>> rings) {
+  fv::VectorFeature f;
+  f.type = fv::VectorGeometryType::kArea;
+  f.style_key = "area";
+  f.layer = "stub";
+  f.parts = std::move(rings);
+  return f;
+}
+
+/// 64x64 at 1 deg/px, centred so that pixel = (32 + lon, 32 - lat) exactly.
+fv::MapProjection AreaProj() { return Proj(64, 64, 0.5, -0.5, 1.0); }
+
+TEST(VectorRenderer, AnAreaClippedByTheCanvasHasNoPenAlongTheCanvasEdge) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Area({Box(-10, -10, 10, 100)}));
+  auto style = std::make_shared<AreaStyle>();
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(AreaProj(), &canvas).ok());
+
+  EXPECT_EQ(Px(canvas.Buffer(), 22, 32)[0], 255);  // the real west boundary
+  EXPECT_EQ(Px(canvas.Buffer(), 63, 32)[0], 0)
+      << "pen drawn along the canvas edge";
+  EXPECT_EQ(Px(canvas.Buffer(), 62, 32)[2], 255)
+      << "the area is still filled to the edge";
+}
+
+TEST(VectorRenderer, AHoleOfAFilledAreaIsStrokedOnce) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(
+      Area({Box(-20, -20, 20, 20), Box(-5, -5, 5, 5)}));
+  auto style = std::make_shared<AreaStyle>();
+  // A fill the same as the background and a translucent pen: a second pass
+  // over the hole's boundary would show as a brighter red there.
+  style->fill = fv::FvColor{0, 0, 0, 255};
+  style->pen = fv::FvColor{255, 0, 0, 128};
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(AreaProj(), &canvas).ok());
+
+  const int outer = Px(canvas.Buffer(), 12, 32)[0];
+  const int hole = Px(canvas.Buffer(), 27, 32)[0];
+  EXPECT_GT(outer, 0);
+  EXPECT_EQ(hole, outer);
+}
+
+TEST(VectorRenderer, AnUnstrokedEdgeIsFilledButNotStroked) {
+  auto src = std::make_shared<StubSource>();
+  fv::VectorFeature f = Area({Box(-10, -10, 10, 10)});
+  f.unstroked_edges = {{0, 1, 0, 0}};  // vertex 1 -> 2, the east side
+  src->features.push_back(f);
+  auto style = std::make_shared<AreaStyle>();
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(AreaProj(), &canvas).ok());
+
+  EXPECT_EQ(Px(canvas.Buffer(), 22, 32)[0], 255);  // west, stroked
+  EXPECT_EQ(Px(canvas.Buffer(), 32, 42)[0], 255);  // south, stroked
+  EXPECT_EQ(Px(canvas.Buffer(), 32, 22)[0], 255);  // north, stroked
+  EXPECT_EQ(Px(canvas.Buffer(), 42, 32)[0], 0);    // east, hidden
+  EXPECT_EQ(Px(canvas.Buffer(), 32, 32)[2], 255);  // filled
+}
+
+// --- centred area symbols and patterns with holes --------------------------
+
+namespace {
+
+/// A ring from (lon, lat) pairs, for shapes easier to read x-first.
+std::vector<fv::GeoPoint> RingXY(std::initializer_list<std::pair<double, double>> xy) {
+  std::vector<fv::GeoPoint> out;
+  for (const auto& p : xy) out.push_back(fv::GeoPoint{p.second, p.first});
+  return out;
+}
+
+/// One opaque green 1x1 tile, drawn either as a centred area symbol or as an
+/// area pattern at `spacing` px.
+class GreenDotStyle : public fv::IStyleEngine {
+ public:
+  fv::SymbolPixmap pix;
+  double spacing = 0.0;  // 0 = point symbol at the centre anchor
+  bool staggered = false;
+
+  GreenDotStyle() {
+    pix.tile = fv::PixelBuffer(1, 1);
+    unsigned char* px = pix.tile.Row(0);
+    px[0] = 0;
+    px[1] = 255;
+    px[2] = 0;
+    px[3] = 255;
+  }
+  fv::Status Style(const fv::VectorFeature&, const fv::StyleContext&,
+                   std::vector<fv::StyleResult>* out) override {
+    fv::StyleResult r;
+    if (spacing > 0.0) {
+      r.area_pattern.valid = true;
+      r.area_pattern.symbol_id = "dot";
+      r.area_pattern.spacing_x = r.area_pattern.spacing_y = spacing;
+      r.area_pattern.staggered = staggered;
+    } else {
+      r.symbol.valid = true;
+      r.symbol.symbol_id = "dot";
+      r.symbol.anchor = fv::LabelAnchor::kCentre;
+    }
+    out->push_back(r);
+    return fv::Status::Ok();
+  }
+  const fv::VectorSymbol* Symbol(const std::string&) override { return nullptr; }
+  const fv::SymbolPixmap* Pixmap(const std::string& id) override {
+    return id == "dot" ? &pix : nullptr;
+  }
+};
+
+/// Pixels of the frame that are the dot's green.
+std::vector<std::pair<int, int>> GreenPixels(const fv::PixelBuffer& b, int w,
+                                             int h) {
+  std::vector<std::pair<int, int>> out;
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x)
+      if (Px(b, x, y)[1] == 255 && Px(b, x, y)[0] == 0) out.push_back({x, y});
+  return out;
+}
+
+}  // namespace
+
+TEST(AreaInteriorPoint, ConvexRingGivesItsCentroid) {
+  fv::GeoPoint c;
+  ASSERT_TRUE(fv::AreaInteriorPoint({Box(-10, -20, 10, 40)}, &c));
+  EXPECT_NEAR(c.lat, 0.0, 1e-9);
+  EXPECT_NEAR(c.lon, 10.0, 1e-9);
+}
+
+TEST(AreaInteriorPoint, CentroidOutsideTheRingMovesInside) {
+  // A U open to the north; its centroid (0, -1.5) lies in the notch.
+  const auto u = RingXY({{-10, -10}, {10, -10}, {10, 10}, {5, 10},
+                         {5, -5}, {-5, -5}, {-5, 10}, {-10, 10}});
+  fv::GeoPoint c;
+  ASSERT_TRUE(fv::AreaInteriorPoint({u}, &c));
+  EXPECT_NEAR(c.lat, -1.5, 1e-9);
+  EXPECT_NEAR(c.lon, -7.5, 1e-9);
+}
+
+TEST(AreaInteriorPoint, CentroidInAHoleMovesOutOfIt) {
+  fv::GeoPoint c;
+  ASSERT_TRUE(
+      fv::AreaInteriorPoint({Box(-10, -10, 10, 10), Box(-5, -5, 5, 5)}, &c));
+  EXPECT_NEAR(c.lat, 0.0, 1e-9);
+  EXPECT_NEAR(c.lon, -7.5, 1e-9);
+}
+
+TEST(AreaInteriorPoint, RejectsADegenerateRing) {
+  fv::GeoPoint c;
+  EXPECT_FALSE(fv::AreaInteriorPoint({{{0, 0}, {1, 1}}}, &c));
+  EXPECT_FALSE(fv::AreaInteriorPoint({}, &c));
+}
+
+TEST(VectorRenderer, ACentredAreaSymbolIsDrawnOnceAtTheWholeAreasCentre) {
+  // Runs off the east edge: the visible part's middle would be lon 5.5, the
+  // whole area's is lon 10. The hole is away from the centre.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(
+      Area({Box(-10, -20, 10, 40), Box(-5, -15, 5, -10)}));
+  auto style = std::make_shared<GreenDotStyle>();
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(AreaProj(), &canvas).ok());
+
+  EXPECT_EQ(r.draws_emitted(), 1u);
+  const auto green = GreenPixels(canvas.Buffer(), 64, 64);
+  ASSERT_EQ(green.size(), 1u);
+  EXPECT_EQ(green[0], std::make_pair(42, 32));
+}
+
+TEST(VectorRenderer, ACentredAreaSymbolStaysOnTheGroundAsTheMapPans) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Area({Box(-10, -20, 10, 40)}));
+  auto style = std::make_shared<GreenDotStyle>();
+  fv::VectorRenderer r(src, style);
+  for (int pan = 0; pan <= 12; pan += 3) {
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    ASSERT_TRUE(r.Render(Proj(64, 64, 0.5, -0.5 + pan, 1.0), &canvas).ok());
+    const auto green = GreenPixels(canvas.Buffer(), 64, 64);
+    ASSERT_EQ(green.size(), 1u) << "pan " << pan;
+    EXPECT_EQ(green[0], std::make_pair(42 - pan, 32)) << "pan " << pan;
+  }
+}
+
+TEST(VectorRenderer, ACentredAreaSymbolOffTheCanvasIsNotMovedOnto) {
+  // Centre at lon 100, far off the east edge; the area covers the canvas.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Area({Box(-40, -100, 40, 300)}));
+  auto style = std::make_shared<GreenDotStyle>();
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(AreaProj(), &canvas).ok());
+  EXPECT_TRUE(GreenPixels(canvas.Buffer(), 64, 64).empty());
+}
+
+TEST(PlaceOverArea, NoStampLandsInAHole) {
+  const std::vector<fv::SurfacePoint> outer = {{0, 0}, {40, 0}, {40, 40}, {0, 40}};
+  const std::vector<fv::SurfacePoint> hole = {{10, 10}, {30, 10}, {30, 30}, {10, 30}};
+  const auto solid = PlaceOverArea(outer, 4, 4, false);
+  const auto holed = PlaceOverArea({outer, hole}, 4, 4, false);
+  size_t in_hole = 0;
+  for (const auto& p : holed)
+    if (p.x > 10 && p.x < 30 && p.y > 10 && p.y < 30) ++in_hole;
+  EXPECT_EQ(in_hole, 0u);
+  // Every solid stamp outside the hole is still there.
+  size_t outside = 0;
+  for (const auto& p : solid)
+    if (!(p.x > 10 && p.x < 30 && p.y > 10 && p.y < 30)) ++outside;
+  EXPECT_EQ(holed.size(), outside);
+  EXPECT_GT(outside, 0u);
+}
+
+TEST(VectorRenderer, AnAreaPatternIsNotStampedInsideAHole) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Area({Box(-20, -20, 20, 20), Box(-8, -8, 8, 8)}));
+  auto style = std::make_shared<GreenDotStyle>();
+  style->spacing = 4.0;
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(AreaProj(), &canvas).ok());
+
+  size_t in_hole = 0, in_area = 0;
+  for (const auto& p : GreenPixels(canvas.Buffer(), 64, 64)) {
+    // Hole: lon/lat -8..8 is pixels 24..40.
+    if (p.first > 24 && p.first < 40 && p.second > 24 && p.second < 40)
+      ++in_hole;
+    else
+      ++in_area;
+  }
+  EXPECT_EQ(in_hole, 0u);
+  EXPECT_GT(in_area, 20u);
+}
+
+TEST(AreaPlacer, StaggeredRowsAreCountedFromTheAnchorNotTheFirstRowWalked) {
+  // The same lattice walked from three different top rows: a row's offset
+  // depends only on its distance from the anchor.
+  for (double top : {0.0, 10.0, 20.0, 30.0}) {
+    std::vector<SurfacePoint> ring{{0, top}, {40, top}, {40, 100}, {0, 100}};
+    const auto stamps = PlaceOverArea(ring, 10, 10, true, 0.0, 0.0);
+    ASSERT_FALSE(stamps.empty());
+    for (const auto& p : stamps) {
+      const bool odd_row = (static_cast<long>(std::lround(p.y / 10.0)) & 1) != 0;
+      EXPECT_DOUBLE_EQ(std::fmod(p.x, 10.0), odd_row ? 5.0 : 0.0)
+          << "top " << top << " row y " << p.y;
+    }
+  }
+}
+
+TEST(VectorRenderer, AStaggeredPatternMovesWithTheMapAcrossTheCanvasEdge) {
+  // The area runs off every edge, so the first row drawn is set by the canvas.
+  // Each pan must move every dot by the pan and change nothing else.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Area({Box(-80, -150, 80, 150)}));
+  auto style = std::make_shared<GreenDotStyle>();
+  style->spacing = 6.0;
+  style->staggered = true;
+  fv::VectorRenderer r(src, style);
+
+  auto Frame = [&](int pan_x, int pan_y) {
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    EXPECT_TRUE(
+        r.Render(Proj(64, 64, 0.5 - pan_y, -0.5 + pan_x, 1.0), &canvas).ok());
+    return GreenPixels(canvas.Buffer(), 64, 64);
+  };
+  const auto base = Frame(0, 0);
+  ASSERT_GT(base.size(), 50u);
+  // Staggered: some dots sit half a cell off the others' columns.
+  std::set<int> columns;
+  for (const auto& p : base) columns.insert(p.first % 6);
+  EXPECT_EQ(columns.size(), 2u);
+
+  const std::set<std::pair<int, int>> base_set(base.begin(), base.end());
+  for (int pan = 1; pan <= 14; ++pan) {
+    for (const auto& d : {std::make_pair(pan, 0), std::make_pair(0, pan),
+                          std::make_pair(pan, pan)}) {
+      for (const auto& p : Frame(d.first, d.second)) {
+        // A ground point at (x, y) in the base frame is now at (x - dx, y - dy).
+        const std::pair<int, int> was{p.first + d.first, p.second + d.second};
+        if (was.first >= 64 || was.second >= 64) continue;
+        EXPECT_TRUE(base_set.count(was) != 0)
+            << "pan " << d.first << "," << d.second << " dot at " << p.first
+            << "," << p.second;
+      }
+    }
+  }
+}
+
+TEST(VectorRenderer, AnAreaPatternIsStampedOnACanvasWithNoTiledFill) {
+  /// A CpuCanvas that reports no tiled fill.
+  struct NoTileCanvas : fv::CpuCanvas {
+    using fv::CpuCanvas::CpuCanvas;
+    fv::Status FillPolyPolygonTiled(
+        const std::vector<std::vector<fv::PixelPoint>>& rings,
+        const fv::PatternTile& tile, int ox, int oy,
+        const fv::Brush* under) override {
+      return fv::ICanvas::FillPolyPolygonTiled(rings, tile, ox, oy, under);
+    }
+  };
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Area({Box(-20, -20, 20, 20)}));
+  auto style = std::make_shared<GreenDotStyle>();
+  style->spacing = 4.0;
+  NoTileCanvas stamped(64, 64);
+  fv::CpuCanvas tiled(64, 64);
+  fv::VectorRenderer r1(src, style), r2(src, style);
+  ASSERT_TRUE(r1.Render(AreaProj(), &stamped).ok());
+  ASSERT_TRUE(r2.Render(AreaProj(), &tiled).ok());
+  const auto a = GreenPixels(stamped.Buffer(), 64, 64);
+  EXPECT_GT(a.size(), 50u);
+  EXPECT_EQ(a, GreenPixels(tiled.Buffer(), 64, 64));
 }
 
 // --- dashed strokes --------------------------------------------------------
@@ -1810,6 +2165,50 @@ TEST(VectorRenderer, TheRepeatFilterDrawsANearbyDuplicateNameOnce) {
   EXPECT_EQ(2u, draws(20.0));
 }
 
+/// Labels each feature along its path with its own style key.
+class KeyLabelEngine : public fv::IStyleEngine {
+ public:
+  fv::LabelStyle label;
+  fv::Status Style(const fv::VectorFeature& f, const fv::StyleContext&,
+                   std::vector<fv::StyleResult>* out) override {
+    fv::StyleResult r;
+    r.label = label;
+    r.label.text = f.style_key;
+    out->push_back(r);
+    return fv::Status::Ok();
+  }
+  const fv::VectorSymbol* Symbol(const std::string&) override { return nullptr; }
+};
+
+TEST(VectorRenderer, TheCollisionTestDropsALineLabelOverlappingAnother) {
+  const std::string font = SystemFont();
+  if (font.empty()) GTEST_SKIP() << "no known system TTF";
+  // Three parallel north-south roads with different names: two 4 px apart,
+  // as a carriageway and its express lanes are, and one 60 px off.
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("I 75", {{-60.0, 0.0}, {60.0, 0.0}}));
+  src->features.push_back(Line("I 75 Toll", {{-60.0, 4.0}, {60.0, 4.0}}));
+  src->features.push_back(Line("Cobb Pkwy", {{-60.0, 60.0}, {60.0, 60.0}}));
+  auto eng = std::make_shared<KeyLabelEngine>();
+  eng->label.valid = true;
+  eng->label.placement = fv::LabelPlacement::kAlongPath;
+  eng->label.style.font_path = font;
+  eng->label.style.size = 12;
+  eng->label.style.color = fv::FvColor{255, 255, 255, 255};
+  eng->label.halo_width = 2.0;
+  eng->label.halo_color = fv::FvColor{0, 0, 0, 255};
+
+  auto draws = [&](bool collide) {
+    fv::CpuCanvas c(200, 200);
+    fv::VectorRenderer r(src, eng);
+    r.SetLabelCollision(collide);
+    EXPECT_TRUE(r.Render(Proj(200, 200, 0.0, 0.0, 1.0), &c).ok());
+    return r.draws_emitted();
+  };
+  EXPECT_EQ(3u, draws(false)) << "off by default";
+  EXPECT_EQ(2u, draws(true)) << "the toll lanes' name is dropped, Cobb Pkwy is not";
+}
+
 // A point label hangs off its anchor by halign/valign. The canvas draws
 // baseline-left, so kLeft/kBaseline must stay a no-op — GeoSym and OSM both
 // pre-compute a dx/dy and say nothing about alignment, and neither may move.
@@ -2079,13 +2478,15 @@ TEST(VectorRendererHalo, AWiderHaloReachesFurtherAndAddsTheDiagonals) {
     *halo_draws = r.halo_draws();
   };
 
-  Tally thin, thick;
-  size_t thin_draws = 0, thick_draws = 0;
+  Tally thin, mid, thick;
+  size_t thin_draws = 0, mid_draws = 0, thick_draws = 0;
   render(1.0, &thin, &thin_draws);
+  render(2.0, &mid, &mid_draws);
   render(3.0, &thick, &thick_draws);
 
   EXPECT_EQ(thin_draws, 4u);
-  EXPECT_EQ(thick_draws, 8u) << "past one pixel the corners need the diagonals";
+  EXPECT_EQ(mid_draws, 8u) << "past one pixel the corners need the diagonals";
+  EXPECT_GT(thick_draws, 8u) << "past a stem's width the disc is filled";
   // Three pixels out on each side, so the outline's box is wider and taller
   // than the one-pixel outline's. Not an exact +4: the diagonals sit on the
   // circle of radius r, not at the square's corner.
@@ -2120,9 +2521,27 @@ TEST(VectorRendererHalo, TheOutlineGrowsWithTheTextItOutlines) {
 
   // At the reference scale the text is its authored size and the 1 px halo is
   // the four-stamp ring. Zoomed in 4x the text is 4x and the halo is 4 px,
-  // which is past the point the diagonals are needed.
+  // which fills its disc.
   EXPECT_EQ(render(500000.0, 500000.0), 4u);
-  EXPECT_EQ(render(125000.0, 500000.0), 8u);
+  EXPECT_GT(render(125000.0, 500000.0), 8u);
+}
+
+TEST(VectorRendererHalo, AWideHaloFillsItsDiscWithNoGapWiderThanTwoPixels) {
+  double dx[fv::kMaxHaloOffsets], dy[fv::kMaxHaloOffsets];
+  const int n = fv::HaloOffsets(7.0, dx, dy);
+  ASSERT_GT(n, 8);
+  ASSERT_LE(n, fv::kMaxHaloOffsets);
+  // Every point of the disc lies within half the diagonal of a two-pixel
+  // cell of some stamp, or of the glyph itself at the centre.
+  for (double y = -7.0; y <= 7.0; y += 0.5) {
+    for (double x = -7.0; x <= 7.0; x += 0.5) {
+      if (x * x + y * y > 49.0) continue;
+      double best = x * x + y * y;
+      for (int i = 0; i < n; ++i)
+        best = std::min(best, (x - dx[i]) * (x - dx[i]) + (y - dy[i]) * (y - dy[i]));
+      EXPECT_LE(best, 2.0 + 1e-9) << x << "," << y;
+    }
+  }
 }
 
 TEST(VectorRendererHalo, AnAlongPathLabelIsOutlinedGlyphByGlyph) {
@@ -2258,6 +2677,47 @@ TEST(VectorRendererRotation, ANorthUpPointSymbolTurnsWithTheChart) {
   // arithmetic is exact at 90 (PR1's cardinal table), the coverage is not.
   EXPECT_NEAR(right.x1 - right.x0, up.y1 - up.y0, 1);
   EXPECT_NEAR(right.y1 - right.y0, up.x1 - up.x0, 1);
+}
+
+/// A screen-upright symbol (turns_with_chart false) keeps its screen angle
+/// on a turned chart.
+TEST(VectorRendererRotation, AScreenUprightSymbolIgnoresTheChartTurn) {
+  auto src = std::make_shared<StubSource>();
+  fv::VectorFeature pt;
+  pt.type = fv::VectorGeometryType::kPoint;
+  pt.style_key = "p";
+  pt.parts.push_back({fv::GeoPoint{0.0, 0.0}});
+  src->features.push_back(pt);
+
+  auto style = std::make_shared<StubStyle>();
+  style->emit_symbol = true;
+  style->symbol_turns_with_chart = false;
+  fv::SymbolPrimitive bar;
+  bar.type = fv::SymbolPrimitiveType::kPolygon;
+  bar.points = {{-20, 0}, {20, 0}, {20, 400}, {-20, 400}};
+  bar.has_fill = true;
+  bar.fill_color = fv::FvColor{0, 0, 255, 255};
+  style->symbol.primitives.push_back(bar);
+
+  auto draw_at = [&](double rotation_deg) {
+    fv::CpuCanvas canvas(64, 64);
+    canvas.Clear(fv::FvColor{0, 0, 0, 255});
+    fv::VectorRenderer r(src, style);
+    EXPECT_TRUE(
+        r.Render(TurnedProj(64, 64, 0.0, 0.0, 1.0, rotation_deg), &canvas)
+            .ok());
+    return InkBounds(canvas.Buffer());
+  };
+
+  const Bounds up = draw_at(0.0);
+  ASSERT_TRUE(up.any());
+  for (const double turn : {90.0, 37.0}) {
+    const Bounds b = draw_at(turn);
+    EXPECT_NEAR(b.x0, up.x0, 1) << "chart turned " << turn;
+    EXPECT_NEAR(b.x1, up.x1, 1) << "chart turned " << turn;
+    EXPECT_NEAR(b.y0, up.y0, 1) << "chart turned " << turn;
+    EXPECT_NEAR(b.y1, up.y1, 1) << "chart turned " << turn;
+  }
 }
 
 TEST(VectorRendererRotation, TheSymbolTURNSRatherThanTheAnchorMoving) {
@@ -2414,6 +2874,99 @@ TEST(VectorRenderer, StyleContextCarriesDpiAndSymbolScale) {
 
   EXPECT_DOUBLE_EQ(style->last_ctx.device_dpi, 144.0);
   EXPECT_DOUBLE_EQ(style->last_ctx.symbol_scale, 2.0);
+}
+
+// --- screen cull -----------------------------------------------------------
+
+/// Renders `src` through `style` on a turned 64x64 view, with and without the
+/// screen cull, and returns whether the two pictures are byte-identical.
+/// `culled` receives the parts the culling render skipped.
+bool SamePictureWithAndWithoutCull(std::shared_ptr<fv::IVectorSource> src,
+                                   std::shared_ptr<fv::IStyleEngine> style,
+                                   size_t* culled) {
+  fv::MapProjection proj = Proj(64, 64, 0.0, 0.0, 1.0);
+  proj.SetRotation(30.0);
+  fv::CpuCanvas on(64, 64), off(64, 64);
+  on.Clear(fv::FvColor{0, 0, 0, 255});
+  off.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  EXPECT_TRUE(r.Render(proj, &on).ok());
+  *culled = r.parts_culled();
+  r.SetScreenCull(false);
+  EXPECT_TRUE(r.Render(proj, &off).ok());
+  EXPECT_EQ(r.parts_culled(), 0u);
+  return std::memcmp(on.Buffer().Row(0), off.Buffer().Row(0),
+                     static_cast<size_t>(64) * 64 * 4) == 0;
+}
+
+TEST(VectorRendererCull, APartOffTheCanvasIsSkippedBeforeProjection) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("in", {{0.0, -10.0}, {0.0, 10.0}}));
+  src->features.push_back(Line("out", {{60.0, 100.0}, {70.0, 110.0}}));
+  auto style = std::make_shared<StubStyle>();
+  size_t culled = 0;
+  EXPECT_TRUE(SamePictureWithAndWithoutCull(src, style, &culled));
+  EXPECT_EQ(culled, 1u);
+}
+
+TEST(VectorRendererCull, ASymbolIsKeptWhileItsExtentReachesTheCanvas) {
+  auto src = std::make_shared<StubSource>();
+  for (double lon : {-36.0, -80.0}) {  // 4 px and 48 px left of the canvas
+    fv::VectorFeature pt;
+    pt.type = fv::VectorGeometryType::kPoint;
+    pt.parts.push_back({fv::GeoPoint{0.0, lon}});
+    src->features.push_back(pt);
+  }
+  auto style = std::make_shared<StubStyle>();
+  style->emit_symbol = true;
+  fv::SymbolPrimitive box;
+  box.type = fv::SymbolPrimitiveType::kPolygon;
+  box.points = {{-200, -200}, {200, -200}, {200, 200}, {-200, 200}};
+  box.has_fill = true;
+  box.fill_color = fv::FvColor{0, 0, 255, 255};
+  style->symbol.primitives.push_back(box);
+  style->symbol.min_x = style->symbol.min_y = -200;
+  style->symbol.max_x = style->symbol.max_y = 200;
+
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(Proj(64, 64, 0.0, 0.0, 1.0), &canvas).ok());
+  EXPECT_EQ(r.parts_culled(), 1u) << "only the far one";
+  EXPECT_EQ(Px(canvas.Buffer(), 1, 32)[2], 255) << "the near one's box shows";
+
+  // An extent the library never stated bounds nothing.
+  style->symbol.min_x = style->symbol.min_y = 0;
+  style->symbol.max_x = style->symbol.max_y = 0;
+  r.InvalidateScene();
+  ASSERT_TRUE(r.Render(Proj(64, 64, 0.0, 0.0, 1.0), &canvas).ok());
+  EXPECT_EQ(r.parts_culled(), 0u);
+}
+
+TEST(VectorRendererCull, OnlyAnAffineProjectionCulls) {
+  auto src = std::make_shared<StubSource>();
+  src->features.push_back(Line("out", {{60.0, 100.0}, {70.0, 110.0}}));
+  auto style = std::make_shared<StubStyle>();
+  fv::MapProjection proj = Proj(64, 64, 0.0, 0.0, 1.0);
+  ASSERT_TRUE(proj.SetProjectionType(fv::ProjectionType::kMercator).ok());
+  fv::CpuCanvas canvas(64, 64);
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(proj, &canvas).ok());
+  EXPECT_EQ(r.parts_culled(), 0u);
+}
+
+TEST(VectorRendererCull, APartAcrossTheAntimeridianFromTheCentreIsNotCulled) {
+  auto src = std::make_shared<StubSource>();
+  // Stored at -179..179: its box spans the world, but it lies under a centre
+  // at 180 and draws there.
+  src->features.push_back(Line("wrap", {{0.0, 179.0}, {0.0, -179.0}}));
+  auto style = std::make_shared<StubStyle>();
+  fv::CpuCanvas canvas(64, 64);
+  canvas.Clear(fv::FvColor{0, 0, 0, 255});
+  fv::VectorRenderer r(src, style);
+  ASSERT_TRUE(r.Render(Proj(64, 64, 0.0, 180.0, 0.1), &canvas).ok());
+  EXPECT_EQ(r.parts_culled(), 0u);
+  EXPECT_EQ(Px(canvas.Buffer(), 32, 32)[0], 255);
 }
 
 }  // namespace

@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "id": "com.example.analysis",
+  "name": "Analysis (Python)",
+  "version": "1.0.0",
+  "publisher": "Peregrine SDK example",
+  "license": "LGPL-3.0-or-later",
+  "description": "Range and bearing, multi-point and area measurement, terrain profile and viewsheds, with an editor palette on the toolbar. Written in Python against pyfvw.analysis.",
+  "requires": { "peregrine": "0.1", "python": "3.10" },
+  "python_path": "python",
+  "overlays": [
+    { "id": "com.example.analysis.measure", "display_name": "Analysis (Python)",
+      "icon": "resources/analysis.svg", "kind": "file", "display_order": 1100,
+      "file": { "extension": "pyana", "filters": [["Analysis (Python)", "*.pyana"]] },
+      "implementation": { "python": "pyanalysis:Analysis" },
+      "editor": { "python": "pyanalysis:AnalysisEditor" } }
+  ],
+  "tools": [
+    { "id": "com.example.analysis.open_sample", "title": "Open Sample Measurement",
+      "submenu": "Analysis (Python)",
+      "description": "Opens a measurement and a viewshed near Charleston, SC.",
+      "implementation": { "python": "pyanalysis:open_sample" } }
+  ]
+}

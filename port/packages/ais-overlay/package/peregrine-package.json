@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "id": "peregrine.ais",
+  "name": "AIS Traffic",
+  "version": "1.0.0",
+  "publisher": "Peregrine",
+  "license": "LGPL-3.0-or-later",
+  "description": "Live AIS vessel traffic from the Open Waters network and a local NMEA receiver, with a collision alarm against the ownship. Settings under Overlay ▸ Options.",
+  "requires": { "peregrine": "0.1" },
+  "libraries": {
+    "macos": "lib/macos/libaistraffic.dylib",
+    "linux-x86_64": "lib/linux-x86_64/libaistraffic.so",
+    "linux-aarch64": "lib/linux-aarch64/libaistraffic.so",
+    "windows-x86_64": "lib/windows-x86_64/aistraffic.dll"
+  },
+  "overlays": [
+    { "id": "peregrine.ais.traffic", "display_name": "AIS Traffic",
+      "icon": "resources/ais.svg", "kind": "static", "display_order": 900,
+      "implementation": { "native": "traffic" } }
+  ]
+}

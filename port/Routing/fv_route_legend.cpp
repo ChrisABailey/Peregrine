@@ -5,6 +5,7 @@
 
 #include "fv_route_legend.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -270,6 +271,21 @@ struct RoadOfKey {
   const char* label;
   const char* highway;
 };
+/// Reads a specimen's tags into an arc as the graph builder would, with the
+/// signed-route pseudo-tag as the arc's route. False when the tags are not a way.
+bool SpecimenArc(const std::vector<OsmTag>& osm_tags, RoadArc* arc) {
+  OsmWay way;
+  BikeRoute network = BikeRoute::kNone;
+  for (const OsmTag& t : osm_tags) {
+    if (t.key == kRouteNetworkPseudoTag) network = NetworkFromPseudoTag(t.value);
+    else way.tags.push_back(t);
+  }
+  if (!ReadWayTags(way, RoadGraphBuildOptions{}, arc)) return false;
+  arc->bike_route = network;
+  arc->length_m = kSpecimenMetres;
+  return true;
+}
+
 constexpr RoadOfKey kRoadsOfKey[] = {
     {"Quiet street", "residential"},
     {"Moderate road", "tertiary"},
@@ -280,25 +296,44 @@ constexpr RoadOfKey kRoadsOfKey[] = {
 }  // namespace
 
 LegendCost CostOfTags(const RouteProfile& profile, const std::vector<OsmTag>& osm_tags) {
-  LegendCost out;
-  OsmWay way;
-  BikeRoute network = BikeRoute::kNone;
-  for (const OsmTag& t : osm_tags) {
-    if (t.key == kRouteNetworkPseudoTag) network = NetworkFromPseudoTag(t.value);
-    else way.tags.push_back(t);
-  }
   RoadArc arc;
-  if (!ReadWayTags(way, RoadGraphBuildOptions{}, &arc)) {
+  if (!SpecimenArc(osm_tags, &arc)) {
+    LegendCost out;
     out.excluded = true;
     out.locked = true;
     return out;
   }
-  arc.bike_route = network;
-  arc.length_m = kSpecimenMetres;
+  return CostOfArc(profile, arc);
+}
 
-  // Non-owning: the caller's profile outlives this call.
+namespace {
+
+/// `source` as the key prices it: the way itself, without climb (the slope's
+/// business) or a junction's signal or crossing (a per-node cost).
+RoadArc KeyArc(const RoadArc& source) {
+  RoadArc arc = source;
+  arc.climb_dm = 0;
+  arc.descent_dm = 0;
+  arc.signal = false;
+  arc.crossing = RoadCrossing::kNone;
+  arc.crossing_from = RoadCrossing::kNone;
+  if (!(arc.length_m > 0.0f)) arc.length_m = kSpecimenMetres;
+  return arc;
+}
+
+/// Route options carrying `profile`, which must outlive them.
+RouteOptions OptionsFor(const RouteProfile& profile) {
   RouteOptions options;
   ApplyProfile(std::shared_ptr<const RouteProfile>(std::shared_ptr<void>(), &profile), &options);
+  return options;
+}
+
+}  // namespace
+
+LegendCost CostOfArc(const RouteProfile& profile, const RoadArc& source) {
+  LegendCost out;
+  const RoadArc arc = KeyArc(source);
+  const RouteOptions options = OptionsFor(profile);
   const double reference = profile.metric == RouteMetric::kDistance
                                ? arc.length_m
                                : arc.length_m / (profile.fixed_kph / 3.6);
@@ -332,12 +367,110 @@ LegendCost CostOfTags(const RouteProfile& profile, const std::vector<OsmTag>& os
   return out;
 }
 
+namespace {
+
+/// The road a link belongs to, for matching a key row; other classes as given.
+RoadClass KeyClassOf(RoadClass klass) {
+  switch (klass) {
+    case RoadClass::kMotorwayLink: return RoadClass::kMotorway;
+    case RoadClass::kTrunkLink: return RoadClass::kTrunk;
+    case RoadClass::kPrimaryLink: return RoadClass::kPrimary;
+    case RoadClass::kSecondaryLink: return RoadClass::kSecondary;
+    case RoadClass::kTertiaryLink: return RoadClass::kTertiary;
+    default: return klass;
+  }
+}
+
+/// The attributes beyond its class that make a type row specific, as bits.
+uint32_t TypeTraits(const RoadArc& arc) {
+  uint32_t bits = 0;
+  if (!arc.bicycle_allowed()) bits |= 1u << 0;
+  if (arc.surface == RoadSurface::kRough) bits |= 1u << 1;
+  if (arc.golf_cartpath()) bits |= 1u << 2;
+  if (arc.golf_path()) bits |= 1u << 3;
+  if (arc.structure()) bits |= 1u << 4;
+  return bits;
+}
+
+int BitCount(uint32_t v) {
+  int n = 0;
+  for (; v != 0; v &= v - 1) ++n;
+  return n;
+}
+
+}  // namespace
+
+LegendRowMatch MatchLegendRows(const RoadArc& arc,
+                               const std::vector<std::vector<OsmTag>>& specimens) {
+  LegendRowMatch out;
+  const RoadClass klass = KeyClassOf(arc.klass);
+  const uint32_t traits = TypeTraits(arc);
+  int best_bits = -1;
+  for (size_t i = 0; i < specimens.size(); ++i) {
+    RoadArc s;
+    if (specimens[i].empty() || !SpecimenArc(specimens[i], &s)) continue;
+    const int row = static_cast<int>(i);
+    if (s.bike != BikeProvision::kNone || s.bike_route != BikeRoute::kNone) {
+      const bool lane = s.bike != BikeProvision::kNone && s.bike == arc.bike;
+      const bool route = s.bike_route != BikeRoute::kNone && s.bike_route == arc.bike_route;
+      if (lane || route) out.modifier_rows.push_back(row);
+      continue;
+    }
+    if (KeyClassOf(s.klass) != klass) continue;
+    const uint32_t need = TypeTraits(s);
+    if ((need & traits) != need) continue;
+    // Ties keep the earlier row: the key lists the plain row first.
+    if (BitCount(need) > best_bits) {
+      best_bits = BitCount(need);
+      out.type_row = row;
+    }
+  }
+  return out;
+}
+
+std::vector<CostTerm> LegendMarkingTerms(const RouteProfile& profile, const RoadArc& source,
+                                         const std::vector<std::vector<OsmTag>>& specimens,
+                                         const LegendRowMatch& match) {
+  const RoadArc arc = KeyArc(source);
+  const RouteOptions options = OptionsFor(profile);
+  const double reference = profile.metric == RouteMetric::kDistance
+                               ? arc.length_m
+                               : arc.length_m / (profile.fixed_kph / 3.6);
+  // Settings a matched row already names.
+  std::vector<std::string> named;
+  bool row_excluded = false;
+  auto name_row = [&](int row) {
+    if (row < 0 || row >= static_cast<int>(specimens.size()) || specimens[row].empty()) return;
+    const LegendCost cost = CostOfTags(profile, specimens[row]);
+    named.push_back(cost.setting.setting);
+    row_excluded = row_excluded || cost.excluded;
+  };
+  name_row(match.type_row);
+  for (int row : match.modifier_rows) name_row(row);
+
+  std::vector<CostTerm> out;
+  bool excluded_by_term = false;
+  for (const CostTerm& t : SettingsOf(arc, profile, options, reference)) {
+    if (t.factor == kAvoidExcluded) excluded_by_term = true;
+    const bool marking = t.kind == CostTermKind::kModifier ||
+                         t.kind == CostTermKind::kCondition || t.setting == "speed_factor";
+    if (!marking || std::fabs(t.factor - 1.0) <= 1e-9) continue;
+    if (std::find(named.begin(), named.end(), t.setting) != named.end()) continue;
+    out.push_back(t);
+  }
+  // Closed by its access tags: no multiplier says so, but it is why the way is
+  // Never. A matched row that is itself Never ("No bicycles") already says it.
+  if (!excluded_by_term && !row_excluded && !ArcUsable(arc, options) && !ExcludedOnlyByClass(arc, profile)) {
+    out.push_back(CostTerm{"closed to " + Travellers(profile.mode), kAvoidExcluded, "access",
+                           CostTermKind::kCondition});
+  }
+  return out;
+}
+
 std::string LegendTierWord(const RouteProfile& profile, const LegendCost& cost) {
   if (cost.excluded) return "Never";
-  for (const auto& tier : profile.legend_tiers) {
-    if (cost.factor <= tier.first * (1.0 + 1e-9)) return tier.second;
-  }
-  return profile.legend_tiers.empty() ? std::string() : profile.legend_tiers.back().second;
+  if (profile.legend_tiers.empty()) return std::string();
+  return profile.legend_tiers[profile.TierRank(cost.factor)].second;
 }
 
 std::string LegendSentence(const RouteProfile& profile, const LegendCost& cost,

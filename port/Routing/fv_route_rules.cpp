@@ -5,6 +5,7 @@
 
 #include "fv_route_rules.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -496,6 +497,13 @@ double RouteProfile::SpeedFactor(int kph) const {
     if (kph <= band.first) return band.second;
   }
   return speed_factor.back().second;
+}
+
+int RouteProfile::TierRank(double factor) const {
+  const int n = static_cast<int>(legend_tiers.size());
+  for (int i = 0; i < n; ++i)
+    if (factor <= legend_tiers[i].first * (1.0 + 1e-9)) return i;
+  return std::max(0, n - 1);
 }
 
 // ---------------------------------------------------------------------------

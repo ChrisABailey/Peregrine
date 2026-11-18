@@ -64,6 +64,8 @@ add_library(fv_fvkit STATIC
   nav/road_snap.cpp
   nav/line_transport.cpp
   nav/nmea.cpp
+  nav/nmea_receiver.cpp
+  nav/track_replay.cpp
   nav/gpx.cpp
   nav/gpx_recorder.cpp
   nav/trip.cpp
@@ -78,7 +80,6 @@ add_library(fv_fvkit STATIC
   ais/vessel_table.cpp
   ais/presentation.cpp
   ais/openwaters.cpp
-  ais/receiver.cpp
   overlay/ais_overlay.cpp
   overlay/manager.cpp
   draw_interrupt.cpp
@@ -97,11 +98,13 @@ add_library(fv_fvkit STATIC
   app/session.cpp
   app/editor.cpp
   app/undo.cpp
+  app/manager_host.cpp
   app/pick.cpp
   app/search.cpp
   app/vector_hit_test.cpp
   app/source_spec.cpp
   store/tile_pack.cpp
+  vector/mariner.cpp
   vector/renderer.cpp
   vector/symbol_draw.cpp
   vector/text_draw.cpp
@@ -131,6 +134,13 @@ add_library(fv_fvkit STATIC
   feature/points_layer.cpp
   feature/vector_source.cpp
   feature/feature_filter.cpp
+  feature/web/tiles.cpp
+  feature/web/remote_layer.cpp
+  feature/web/ogc_api.cpp
+  feature/web/esri.cpp
+  feature/web/esri_style.cpp
+  feature/web/web_source.cpp
+  feature/feature_source.cpp
   overlay/feature_edit.cpp
   overlay/feature_overlay.cpp
 )
@@ -172,6 +182,11 @@ if(FVW_BUILD_TESTS)
     test/feature_geometry_test.cpp
     test/feature_geojson_test.cpp
     test/feature_geopackage_test.cpp
+    test/feature_remote_layer_test.cpp
+    test/feature_ogc_api_test.cpp
+    test/feature_esri_test.cpp
+    test/feature_esri_style_test.cpp
+    test/feature_web_source_test.cpp
     test/feature_overlay_test.cpp
     test/feature_edit_test.cpp
     test/feature_geometry_edit_test.cpp
@@ -217,6 +232,8 @@ if(FVW_BUILD_TESTS)
     nav/test/nav_camera_slew_test.cpp
     nav/test/nav_road_snap_test.cpp
     nav/test/nav_line_transport_test.cpp
+    nav/test/nav_nmea_receiver_test.cpp
+    nav/test/nav_track_replay_test.cpp
     nav/test/nav_nmea_test.cpp
     nav/test/nav_gpx_test.cpp
     nav/test/nav_gpx_writer_test.cpp
@@ -232,13 +249,13 @@ if(FVW_BUILD_TESTS)
     ais/test/ais_vessel_table_test.cpp
     ais/test/ais_overlay_test.cpp
     ais/test/ais_openwaters_test.cpp
-    ais/test/ais_receiver_test.cpp
     app/test/app_type_registry_test.cpp
     app/test/app_stack_test.cpp
     app/test/app_session_test.cpp
     app/test/app_editor_test.cpp
     app/test/app_pick_test.cpp
     app/test/app_search_test.cpp
+    test/manager_host_test.cpp
     test/point_edit_test.cpp
     test/point_overlay_test.cpp
     test/vector_map_overlay_test.cpp
@@ -253,6 +270,7 @@ if(FVW_BUILD_TESTS)
     test/vector_families_test.cpp
     test/vector_lookup_engine_test.cpp
     test/vector_scene_test.cpp
+    test/mariner_test.cpp
     test/settings_test.cpp
   )
   # fv_png: golden-PNG side channel in canvas_test (ported libpng)
@@ -261,6 +279,7 @@ if(FVW_BUILD_TESTS)
   # checks they parse. Same pattern as FV_ROUTE_RULES_FILE in port/Routing.
   target_compile_definitions(fv_fvkit_test PRIVATE
     FV_FEATURE_RIVERS="${CMAKE_CURRENT_SOURCE_DIR}/test/data/charleston-rivers.geojson"
+    FV_WEB_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/test/data/web"
     FV_FEATURE_SAMPLE_GPKG="${CMAKE_BINARY_DIR}/feature-samples.gpkg"
     FV_FAMILIES_DNC="${CMAKE_SOURCE_DIR}/port/families/dnc-families.json"
     FV_FAMILIES_ENC="${CMAKE_SOURCE_DIR}/port/families/enc-families.json"

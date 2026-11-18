@@ -128,6 +128,9 @@ struct RouteSnapshot {
 
   /// The departure the tide was judged for, Unix seconds.
   double depart_s = 0.0;
+
+  /// A detour is the guided line; the figures above are the planned route's.
+  bool detouring = false;
 };
 
 // Where a point is, in words a rider can act on.
@@ -162,6 +165,57 @@ struct PlaceDescription {
   // without matching on English.
   double distance_m = 0.0;
   uint64_t arc = fv::kNoRoadArc;
+};
+
+/// The road nearest a tapped point, for the map's info card.
+struct RoadInfo {
+  bool found = false;
+  /// The graph arc, in its stored direction, and its index.
+  fv::routing::RoadArc arc;
+  uint32_t arc_index = 0;
+  /// The road's own name; empty when it has none.
+  std::string name;
+  /// The OSM class with spaces ("living street").
+  std::string class_name;
+  /// From the tap to the road, metres.
+  double distance_m = 0.0;
+  /// Average grade over the arc, percent, positive when it rises in the
+  /// arc's stored direction; `bearing_deg` is that direction at the tap.
+  bool has_elevation = false;
+  double grade_pct = 0.0;
+  double bearing_deg = 0.0;
+};
+
+/// The point on the planned route nearest a tap, for the map's info card.
+struct RouteSpot {
+  bool found = false;
+  /// Along the route from its start, and the route's whole length, metres.
+  double along_m = 0.0;
+  double length_m = 0.0;
+  /// Estimated riding time from the start to here and for the whole route.
+  double seconds_from_start = 0.0;
+  double seconds = 0.0;
+  /// Grade in the direction of travel over about 50 m centred here, percent.
+  bool has_elevation = false;
+  double grade_pct = 0.0;
+  /// From the tap to the route line, metres, and the point on the line.
+  double distance_m = 0.0;
+  fv::GeoPoint point;
+};
+
+/// What an off-route rider is offered (re-route plan RR-D4): the plan picked
+/// and the two numbers its button reads.
+struct DetourOffer {
+  fv::DetourPick pick = fv::DetourPick::kNone;
+  /// The picked plan's length and time, from `position` to the destination.
+  double length_m = 0.0;
+  double seconds = 0.0;
+  /// Metres more than was left of the guided line; negative when shorter.
+  double extra_m = 0.0;
+  /// Metres back to the guided line when turning round.
+  double back_m = 0.0;
+  /// Where it was planned from.
+  fv::GeoPoint position;
 };
 
 class RouteStore {
@@ -277,13 +331,41 @@ class RouteStore {
   RouteSnapshot ReplanShowingPrevious(ReplanChange* change);
   void ClearGhost() { overlay_->ClearGhost(); }
 
+  // --- Detours ----------------------------------------------------------
+  //
+  // A detour replaces the guided line and turn list without editing the
+  // document (RR-D3). `RoutePath` and `RouteManeuvers` follow it, the
+  // overlay draws the planned line as the ghost, and any plan of the document
+  // drops it.
+
+  /// The heading penalty and turn-round margin a detour is planned with
+  /// (`[routing] reroute_u_turn_seconds`, `reroute_turn_around_margin_m`).
+  void set_detour_u_turn_seconds(double s) { detour_u_turn_seconds_ = s; }
+  void set_detour_turn_around_margin_m(double m) { detour_turn_around_margin_m_ = m; }
+
+  /// Plans the way on for a rider at `position` travelling `heading_deg`
+  /// (NaN when unknown) whose last fix on the guided line was `last_along_m`
+  /// along it, and keeps it for `ApplyDetour`. Against the current detour
+  /// when there is one. `pick` is kNone with no road plan or nothing routed.
+  DetourOffer PlanDetour(const fv::GeoPoint& position, double heading_deg,
+                         double last_along_m);
+
+  /// Makes the last `PlanDetour`'s pick the guided line. False when there is
+  /// none, or the route has been planned again since.
+  bool ApplyDetour();
+
+  /// Back to the planned line and its guidance. False when not detouring.
+  bool CancelDetour();
+
+  bool detouring() const { return overlay_->has_detour(); }
+
   // No route, and no document on disk either.
   RouteSnapshot Clear();
 
   RouteSnapshot Snapshot() const;
 
-  // The planned line, every leg joined end to end, or empty when nothing has
-  // been planned. The trip computer measures distance-to-go along this road
+  // The guided line (the detour while there is one, else the planned line),
+  // every leg joined end to end, or empty when nothing has been planned. The trip computer measures distance-to-go along this road
   // geometry and not along the waypoints, which on Kiawah are three points
   // with a 6 km ride between them.
   //
@@ -300,7 +382,8 @@ class RouteStore {
   /// line to follow: fewer than two stops, or roads that were never planned.
   fv::GpxDocument ExportGpx(const std::string& name) const;
 
-  // The turn list along that same line (GD1), or empty when nothing has been
+  // The turn list along that same line (GD1), the detour's while there is
+  // one, or empty when nothing has been
   // planned or the plan fell back to straight legs. Empty is the "no
   // guidance" state and is what a half-built route gives.
   const std::vector<fv::nav::Maneuver>& RouteManeuvers() const;
@@ -455,6 +538,16 @@ class RouteStore {
 
   void ForgetNamedPlace() { described_arc_ = fv::kNoRoadArc; }
 
+  /// The road nearest `p` within `max_m`, whether or not any profile may use
+  /// it, so a motorway answers too. A footway, path or steps yields to another
+  /// road up to 15 m further away. Not found with no graph or nothing in range.
+  RoadInfo DescribeRoad(const fv::GeoPoint& p, double max_m);
+
+  /// The point of the planned road route nearest `p` within `max_m`. Not found
+  /// with no road plan (straight legs included) or nothing in range. Times are
+  /// pro-rated within each run of one road.
+  RouteSpot RouteSpotNear(const fv::GeoPoint& p, double max_m) const;
+
   // The margin the remembered road is kept by, in metres. Settable because the
   // right value differs between an island of cul-de-sacs and a city grid;
   // `pippin.ini` carries it as `routing.pick_stay_bonus_m`, along with the
@@ -497,6 +590,14 @@ class RouteStore {
   // Writes the document, or removes it when there is nothing to write.
   void Persist();
 
+  /// `plan`'s legs joined with repeated vertices dropped, or the straight
+  /// legs densified; empty with no plan. `RoutePath` is this of the guided plan.
+  std::vector<fv::GeoPoint> PathOf(const fv::RoutePlan& plan) const;
+
+  /// The plan options every plan of the document uses, departing `depart_s`.
+  fv::RoutePlanOptions PlanOptions(double depart_s) const;
+  double Now() const;
+
   std::string document_path_;
   std::unique_ptr<fv::RoutePlanner> planner_;
   std::shared_ptr<fv::RouteOverlay> overlay_;
@@ -530,6 +631,16 @@ class RouteStore {
   // changed since the press. `moved` is why a grab-and-let-go writes nothing.
   std::string drag_label_;
   bool drag_moved_ = false;
+
+  double detour_u_turn_seconds_ = 45.0;
+  double detour_turn_around_margin_m_ = 200.0;
+  /// The last `PlanDetour` and the plan it was made against; the stops of
+  /// the detour being ridden, starting where it was planned from.
+  fv::DetourPlan pending_detour_;
+  DetourOffer pending_offer_;
+  uint64_t generation_ = 0;  ///< bumped by every change of the guided line
+  uint64_t pending_generation_ = ~uint64_t{0};
+  std::vector<fv::GeoPoint> detour_stops_;
 
   bool straight_legs_ = false;
   // The waypoints as a rhumb-line path; measured only in straight-leg mode.

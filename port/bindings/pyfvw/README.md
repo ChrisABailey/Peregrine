@@ -497,9 +497,11 @@ Two more pieces sit on top of that.
 
 **Editors** are per TYPE, not per overlay — the editor is the tool state ("I am
 drawing routes") and the overlay being edited is whichever instance is current.
-An editor is duck-typed: any object with `activate()` and `deactivate()`, plus
-whichever of `tools()`, `default_cursor()`, `ui_constraints()` and
-`auto_enter_on_create()` it wants. `EditorManager.set_mode(t)` makes the current
+An editor subclasses `app.OverlayEditor` (calling `super().__init__()`) and
+overrides whichever of `activate()`, `deactivate()`, `tools()`,
+`default_cursor()`, `ui_constraints()` and `auto_enter_on_create()` it wants;
+`self.edited` is the overlay being edited while it is the active editor. An
+editor factory that returns anything else makes no editor. `EditorManager.set_mode(t)` makes the current
 overlay match the mode — creating one through the session if none of that type
 is open — and making a different overlay current makes the mode match the
 overlay, which happens however the change was made.

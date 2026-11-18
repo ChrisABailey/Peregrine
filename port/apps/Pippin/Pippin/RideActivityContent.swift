@@ -28,8 +28,13 @@ struct RideActivityContent: Codable, Hashable {
     /// or too slow for the estimate to mean anything; the card then shows
     /// distance alone.
     var turnAt: Date?
-    /// The road being joined; empty for an unnamed way.
-    var road: String = ""
+    /// "Onto NAME", "To stay on NAME" or "On the path"; empty for an unnamed
+    /// way the route turns onto (`GuidanceNotice.roadLine`).
+    var roadLine: String = ""
+    /// Off route, the detour on offer: the button's label ("Re-route: +0.3
+    /// mi") and SF Symbol. Empty while none is on offer.
+    var detour: String = ""
+    var detourSymbol: String = ""
 }
 
 extension RideActivityContent {

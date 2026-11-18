@@ -100,7 +100,7 @@ struct SettingsSheet: View {
         } header: {
             Text("Depth")
         } footer: {
-            Text("The safety contour and depth move to the nearest choice in the new unit. Soundings stay in metres.")
+            Text("Soundings print in this unit. The safety contour and depth move to the nearest choice in the new unit.")
         }
         Section {
             Picker("Bearings", selection: $display.bearings) {
@@ -126,14 +126,14 @@ struct SettingsSheet: View {
             }
         }
         Section {
-            Picker("Colours", selection: binding(\.palette)) {
+            Picker("Colors", selection: binding(\.palette)) {
                 ForEach(ChartPalette.allCases) { Text($0.menuName).tag($0) }
             }
             .pickerStyle(.segmented)
         } header: {
-            Text("Colours")
+            Text("Colors")
         } footer: {
-            Text("Automatic uses the night colours in Dark Mode.")
+            Text("Automatic uses the night colors in Dark Mode.")
         }
     }
 
@@ -144,6 +144,7 @@ struct SettingsSheet: View {
                 Text(chart.depthUnit.label(metres: metres)).tag(metres)
             }
         }
+        .chartDimmedPicker()
     }
 
     /// A binding that writes through `onChange`; `convert` re-snaps the depths

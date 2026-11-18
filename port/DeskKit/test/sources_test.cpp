@@ -228,7 +228,8 @@ TEST_F(SourcesTest, MenusListTheirCommandsAndFollowTheRow) {
                                       "overlay.attribute_table", "layers.select_by_attributes",
                                       "layers.clear_selection", "overlay.export_selection", "layers.rule.add",
                                       "layers.import_style",
-                                      "layers.export_style", "layers.zoom_to", "layers.close"}));
+                                      "layers.export_style", "layers.reset_service_style", "layers.refresh",
+                                      "layers.zoom_to", "layers.close"}));
   EXPECT_EQ(ids(desk.SourceMenu()),
             (std::vector<std::string>{"layers.source.properties", "layers.source.show_all", "layers.source.hide_all",
                                       "layers.source.zoom_to", "layers.source.new_layer", "file.save",

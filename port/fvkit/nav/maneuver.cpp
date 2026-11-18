@@ -152,38 +152,114 @@ std::vector<Maneuver> BuildManeuvers(const RouteShape& shape,
     out.push_back(depart);
   }
 
-  for (size_t c = 0; c < candidates.size(); ++c) {
-    const size_t idx = candidates[c].index;
-    // The window stops at the neighbouring candidates: reaching through the
-    // next corner would average two turns into one angle that is neither.
-    const size_t back_limit = c == 0 ? 0 : candidates[c - 1].index;
-    const size_t fwd_limit = c + 1 < candidates.size() ? candidates[c + 1].index : last;
-
+  // The neighbouring leg boundaries either side of `idx`, which bound the
+  // angle window: reaching through the next corner would average two turns
+  // into one angle that is neither.
+  auto limits = [&](size_t idx, size_t* back_limit, size_t* fwd_limit) {
+    *back_limit = 0;
+    *fwd_limit = last;
+    for (const Candidate& c : candidates) {
+      if (c.index < idx) *back_limit = c.index;
+      if (c.index > idx) {
+        *fwd_limit = c.index;
+        break;
+      }
+    }
+  };
+  // The bearings into and out of `idx` over the window.
+  auto bearings = [&](size_t idx, double* in_deg, double* out_deg) {
+    size_t back_limit = 0;
+    size_t fwd_limit = 0;
+    limits(idx, &back_limit, &fwd_limit);
     size_t back = 0;
     size_t fwd = 0;
-    if (!WindowEnd(cum, idx, back_limit, -1, settings.angle_window_m, &back)) continue;
-    if (!WindowEnd(cum, idx, fwd_limit, +1, settings.angle_window_m, &fwd)) continue;
-
-    double in_deg = 0.0;
-    double out_deg = 0.0;
-    if (!BearingBetween(g[back], g[idx], &in_deg)) continue;
-    if (!BearingBetween(g[idx], g[fwd], &out_deg)) continue;
-
-    const double turn = SignedDelta(in_deg, out_deg);
-    if (std::fabs(turn) < settings.straight_deg) continue;  // a name change
-    if (cum[idx] < settings.end_margin_m) continue;         // still departing
-    if (cum.back() - cum[idx] < settings.end_margin_m) continue;  // arriving
-
+    if (!WindowEnd(cum, idx, back_limit, -1, settings.angle_window_m, &back)) return false;
+    if (!WindowEnd(cum, idx, fwd_limit, +1, settings.angle_window_m, &fwd)) return false;
+    return BearingBetween(g[back], g[idx], in_deg) && BearingBetween(g[idx], g[fwd], out_deg);
+  };
+  auto inside_ends = [&](size_t idx) {
+    return cum[idx] >= settings.end_margin_m && cum.back() - cum[idx] >= settings.end_margin_m;
+  };
+  // The leg the rider is on just after `idx`, and the one just before it.
+  auto leg_at = [&](size_t idx, bool before) -> const RouteShape::Leg* {
+    const RouteShape::Leg* found = nullptr;
+    for (const RouteShape::Leg& leg : shape.legs) {
+      if (before ? leg.geometry_begin >= idx : leg.geometry_begin > idx) break;
+      found = &leg;
+    }
+    return found;
+  };
+  auto make = [&](size_t idx, double turn, const RouteShape::Leg* joined) {
     Maneuver m;
     m.at = g[idx];
     m.distance_m = cum[idx];
     m.turn_deg = turn;
     m.type = Classify(turn, settings);
-    m.road = candidates[c].leg->name;
-    m.klass = candidates[c].leg->klass;
     m.geometry_index = static_cast<uint32_t>(idx);
-    out.push_back(m);
+    const RouteShape::Leg* left = leg_at(idx, true);
+    if (joined != nullptr) {
+      m.road = joined->name;
+      m.klass = joined->klass;
+    }
+    m.continues = joined != nullptr && left != nullptr && joined->name == left->name;
+    return m;
+  };
+
+  std::vector<Maneuver> turns;
+  for (const Candidate& c : candidates) {
+    double in_deg = 0.0;
+    double out_deg = 0.0;
+    if (!bearings(c.index, &in_deg, &out_deg)) continue;
+    const double turn = SignedDelta(in_deg, out_deg);
+    if (std::fabs(turn) < settings.straight_deg) continue;  // a name change
+    if (!inside_ends(c.index)) continue;
+    turns.push_back(make(c.index, turn, c.leg));
   }
+
+  // Junctions inside a leg. Only a junction where the rider could go another
+  // way is a turn worth naming; a bend with no other exit is just the road.
+  std::vector<Maneuver> junction_turns;
+  for (const RouteShape::Junction& j : shape.junctions) {
+    const size_t idx = j.geometry_index;
+    if (idx == 0 || idx >= last || j.exit_bearings_deg.empty()) continue;
+    if (!inside_ends(idx)) continue;
+    double in_deg = 0.0;
+    double out_deg = 0.0;
+    if (!bearings(idx, &in_deg, &out_deg)) continue;
+    const double turn = SignedDelta(in_deg, out_deg);
+    const double mag = std::fabs(turn);
+    if (mag < settings.straight_deg) continue;
+    // An exit that doubles back past `sharp_deg` is not one a rider takes by
+    // mistake, so it does not make a bend into a junction turn.
+    bool plausible_exit = false;
+    bool straighter_exit = false;
+    for (double exit_deg : j.exit_bearings_deg) {
+      const double exit_mag = std::fabs(SignedDelta(in_deg, exit_deg));
+      if (exit_mag < settings.sharp_deg) plausible_exit = true;
+      if (exit_mag < mag) straighter_exit = true;
+    }
+    if (!straighter_exit && !(mag >= settings.slight_deg && plausible_exit)) continue;
+
+    // One corner, one maneuver: an announced leg boundary nearby already
+    // names this corner, and of two junctions on one bend the larger wins.
+    bool near_boundary = false;
+    for (const Maneuver& t : turns)
+      if (std::fabs(t.distance_m - cum[idx]) <= settings.angle_window_m) near_boundary = true;
+    if (near_boundary) continue;
+    const Maneuver m = make(idx, turn, leg_at(idx, false));
+    if (!junction_turns.empty() &&
+        m.distance_m - junction_turns.back().distance_m <= settings.angle_window_m) {
+      if (mag > std::fabs(junction_turns.back().turn_deg)) junction_turns.back() = m;
+      continue;
+    }
+    junction_turns.push_back(m);
+  }
+
+  turns.insert(turns.end(), junction_turns.begin(), junction_turns.end());
+  std::stable_sort(turns.begin(), turns.end(), [](const Maneuver& x, const Maneuver& y) {
+    return x.geometry_index < y.geometry_index;
+  });
+  out.insert(out.end(), turns.begin(), turns.end());
 
   {
     Maneuver arrive;

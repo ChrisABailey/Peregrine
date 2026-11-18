@@ -174,7 +174,11 @@ Scene MakeScene(const std::string& mb_path, const std::string& style_path) {
 // still reads true off the PNG.
 // 0 = probe mode (prints the hash, asserts nothing).
 // Area holes are cut (even-odd over every ring): 312 px moved, re-checked.
-constexpr uint64_t kHashAtlanta = 0x4ffbfef5390d4232ull;
+// Area boundaries are stroked from the unclipped ring, not the clipped fill
+// ring (0x4ffbfef5390d4232 -> 0x7441765f77a94647): 479 px, 309 of them the
+// building outlines that ran along the canvas edge; the other 170 are 1-2 px
+// of outline grey (198,188,178) at building corners the rounded clip had cut.
+constexpr uint64_t kHashAtlanta = 0x7441765f77a94647ull;
 
 TEST(OsmRender, AtlantaViewport) {
   SKIP_WITHOUT_DATA();
@@ -583,10 +587,10 @@ constexpr struct {
   double zoom;
   uint64_t hash;
 } kLegendGoldens[] = {
-    {"atlanta-streets.json", 12, 0x59cbc04fc919e31bull},
-    {"atlanta-streets.json", 14, 0xf30d7a95b43b0b77ull},
-    {"atlanta-streets.json", 16, 0xc8f80ca89cf6c02ull},
-    {"atlanta-streets.json", 19, 0x1efa5a7e2b122f15ull},
+    {"atlanta-streets.json", 12, 0xb1e8204aeb896de1ull},
+    {"atlanta-streets.json", 14, 0x3d5204f1f14dc757ull},
+    {"atlanta-streets.json", 16, 0x79dbd53fc54b4f86ull},
+    {"atlanta-streets.json", 19, 0xfb839befdfa855f9ull},
     {"atlanta-streets-dark.json", 12, 0x7953956ab3f6bd97ull},
     {"atlanta-streets-dark.json", 14, 0xd8586dfc8bc31eafull},
     {"atlanta-streets-dark.json", 16, 0x1daef83f75450a6bull},

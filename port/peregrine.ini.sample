@@ -329,12 +329,25 @@ simplify_pixels = 0.5
 # speed_mps = 15.0
 # tick_ms = 100
 
-# The ownship symbol's full width in pixels, and whether to draw the APRON —
+# The ownship symbol (fv.north, Pippin's chevron; fv.ownship is the aircraft),
+# its size in pixels, and whether to draw the APRON —
 # the box the ship may wander inside before the map moves. The apron is the
 # hardest part of the moving map to believe, and a picture of it settles an
 # argument that a log line does not.
-# symbol_px = 24.0
+# symbol = fv.north
+# symbol_px = 9.0
 # show_apron = false
+
+# THE TRAIL. A live map records every raw fix it receives, which is what Save
+# writes, up to record_max fixes; at the limit it stops recording and the
+# status bar says so. The trail drawn is the newest trail_max of those; a
+# replay's trail is its whole file, the fixes after the clock drawn faint.
+# Dots closer than 3 px to the previous one are skipped. Trail Dots and Trail
+# Line are also in the moving map editor.
+# show_trail_dots = true
+# show_trail_line = false
+# trail_max = 5000
+# record_max = 500000
 
 # SNAP TO ROAD (MM5). Puts the ship on the road it is most likely on before
 # anything else sees the fix — the heading, the apron, the drawn symbol — and
@@ -377,10 +390,12 @@ simplify_pixels = 0.5
 # nmea_host = 192.168.1.42
 # nmea_port = 10110
 
-# Two knobs for a recorded track. track_max_gap_s caps a gap between
-# consecutive fixes (0 = replay the 40-minute coffee stop as well), and
+# Two knobs for a recorded track in PythonView. track_max_gap_s caps a gap
+# between consecutive fixes (0 = replay the 40-minute coffee stop as well), and
 # track_time_scale is the replay rate — 10 watches a 28-minute ride in under
 # three. Both leave the fixes themselves alone; only the schedule changes.
+# Peregrine places opened tracks on one replay clock instead: see
+# [ownship] playback_rate.
 # track_max_gap_s = 0.0
 # track_time_scale = 1.0
 
@@ -390,6 +405,13 @@ simplify_pixels = 0.5
 # phone under trees — which is what makes the snapping visible. Seeded, so a
 # demonstration runs the same way twice. 0 = the clean track.
 # noise_m = 0.0
+
+[ownship]
+# Peregrine's replay clock rate: track seconds per second while playing.
+# Opened tracks land on their last fix, paused; the Ownship window plays them.
+# playback_rate = 1.0
+# How the Ownship window (View ▸ Ownship…) reads altitude and speed.
+# units = "nautical"             # nautical (ft, kt) | metric (m, km/h)
 
 [grid]
 # The lat/lon graticule (`fv.grid`, a STATIC overlay type). FalconView kept

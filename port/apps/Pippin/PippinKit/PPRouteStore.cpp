@@ -6,6 +6,7 @@
 #include "PPRouteStore.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <filesystem>
 #include <utility>
@@ -53,23 +54,102 @@ void RouteStore::PlanNow() {
         std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
     return;
   }
-  // The document's own profile and beach setting are the defaults, so only
-  // the tide is passed: a route saved as a cycle route replans as one.
-  depart_s_ = now_ ? now_()
-                   : std::chrono::duration<double>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
+  ++generation_;
+  depart_s_ = Now();
+  overlay_->FollowRoads(PlanOptions(depart_s_));
+  detour_stops_.clear();
+  last_plan_ms_ =
+      std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+}
+
+double RouteStore::Now() const {
+  return now_ ? now_()
+              : std::chrono::duration<double>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count();
+}
+
+fv::RoutePlanOptions RouteStore::PlanOptions(double depart_s) const {
   fv::RoutePlanOptions options;
+  // The document's own settings, which `FollowRoads` would fill in anyway; a
+  // detour is planned outside the overlay and needs them spelled out.
+  options.profile = overlay_->profile();
+  options.beach = fv::ToBeachUse(overlay_->beach());
+  options.avoid_hills = overlay_->avoid_hills();
   options.tide.enabled = true;
   options.tide.table = tide_.get();
-  options.tide.depart_s = depart_s_;
+  options.tide.depart_s = depart_s;
   options.tide.limits = tide_limits_;
   options.tide.foot_limits = tide_foot_limits_;
   options.avoid_hills_penalty = avoid_hills_penalty_;
   options.overrides = OverridesFor(overlay_->profile());
-  overlay_->FollowRoads(options);
-  last_plan_ms_ =
-      std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+  return options;
+}
+
+DetourOffer RouteStore::PlanDetour(const fv::GeoPoint& position, double heading_deg,
+                                   double last_along_m) {
+  pending_detour_ = fv::DetourPlan{};
+  pending_offer_ = DetourOffer{};
+  pending_offer_.position = position;
+  pending_generation_ = generation_;
+  if (straight_legs_ || !overlay_->has_plan()) return pending_offer_;
+
+  std::vector<fv::GeoPoint> stops;
+  const fv::RoutePlan* guided = &overlay_->plan();
+  if (overlay_->has_detour()) {
+    stops = detour_stops_;
+    guided = &overlay_->detour();
+  } else {
+    for (const fv::RouteWaypoint& w : overlay_->waypoints()) stops.push_back(w.position);
+  }
+  fv::DetourRequest request;
+  request.position = position;
+  request.heading_deg = heading_deg;
+  request.last_along_m = last_along_m;
+  request.u_turn_seconds = detour_u_turn_seconds_;
+  request.turn_around_margin_m = detour_turn_around_margin_m_;
+  const Clock::time_point t0 = Clock::now();
+  pending_detour_ = planner_->PlanDetour(request, stops, *guided, PlanOptions(Now()));
+  last_plan_ms_ = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+
+  const fv::DetourPlan& d = pending_detour_;
+  pending_offer_.pick = d.pick;
+  const fv::RoutePlan* picked = d.pick == fv::DetourPick::kReroute      ? &d.reroute
+                                : d.pick == fv::DetourPick::kTurnAround ? &d.turn_around
+                                                                        : nullptr;
+  if (picked != nullptr) {
+    pending_offer_.length_m = picked->length_m;
+    pending_offer_.seconds = picked->seconds;
+    pending_offer_.extra_m = picked->length_m - d.remaining_m;
+    pending_offer_.back_m = d.back_m;
+  }
+  return pending_offer_;
+}
+
+bool RouteStore::ApplyDetour() {
+  if (pending_generation_ != generation_ || !overlay_->has_plan()) return false;
+  fv::DetourPlan& d = pending_detour_;
+  fv::RoutePlan* picked = d.pick == fv::DetourPick::kReroute      ? &d.reroute
+                          : d.pick == fv::DetourPick::kTurnAround ? &d.turn_around
+                                                                  : nullptr;
+  if (picked == nullptr || picked->legs.empty()) return false;
+  std::vector<fv::GeoPoint> stops{pending_offer_.position};
+  stops.insert(stops.end(), d.stops_ahead.begin(), d.stops_ahead.end());
+  overlay_->SetDetour(std::move(*picked));
+  overlay_->ClearGhost();
+  detour_stops_ = std::move(stops);
+  pending_detour_ = fv::DetourPlan{};
+  ++generation_;
+  return true;
+}
+
+bool RouteStore::CancelDetour() {
+  pending_detour_ = fv::DetourPlan{};
+  if (!overlay_->has_detour()) return false;
+  overlay_->ClearDetour();
+  detour_stops_.clear();
+  ++generation_;
+  return true;
 }
 
 void RouteStore::Persist() {
@@ -226,6 +306,8 @@ RouteSnapshot RouteStore::ReplanShowingPrevious(ReplanChange* change) {
 }
 
 RouteSnapshot RouteStore::Clear() {
+  ++generation_;
+  detour_stops_.clear();
   overlay_->FileNew();
   straight_path_.SetPoints({});
   Persist();  // with no waypoints left, this is the remove
@@ -250,6 +332,7 @@ RouteSnapshot RouteStore::Snapshot() const {
   out.seconds = plan.seconds;
   out.status = plan.status;
   out.depart_s = depart_s_;
+  out.detouring = overlay_->has_detour();
   if (straight_legs_) {
     out.straight = true;
     // The planner's "no road graph" sentence does not describe this route.
@@ -265,7 +348,7 @@ RouteSnapshot RouteStore::Snapshot() const {
   if (out.calculated) {
     out.beach_stretches = plan.beach;
     out.beach_verdicts = plan.beach_verdicts;
-    const std::vector<fv::GeoPoint> path = RoutePath();
+    const std::vector<fv::GeoPoint> path = PathOf(plan);
     for (const fv::RouteBeachStretch& b : plan.beach) {
       const bool inside = b.geometry_begin < b.geometry_end && b.geometry_end < path.size();
       out.beach_headings_deg.push_back(
@@ -284,6 +367,7 @@ RouteSnapshot RouteStore::Snapshot() const {
 
 const std::vector<fv::nav::Maneuver>& RouteStore::RouteManeuvers() const {
   static const std::vector<fv::nav::Maneuver> kNone;
+  if (overlay_->has_detour()) return overlay_->detour().maneuvers;
   return overlay_->has_plan() ? overlay_->plan().maneuvers : kNone;
 }
 
@@ -317,7 +401,7 @@ fv::GpxDocument RouteStore::ExportGpx(const std::string& name) const {
   // A <trk>, not a dense <rte>: watches and bike computers follow a track as
   // drawn, while many recompute a route between its points on their own maps.
   line.type = Snapshot().is_bicycle ? "cycling" : "walking";
-  for (const fv::GeoPoint& p : RoutePath()) segment.points.push_back(fix_at(p));
+  for (const fv::GeoPoint& p : PathOf(overlay_->plan())) segment.points.push_back(fix_at(p));
   line.segments.push_back(std::move(segment));
   doc.tracks.push_back(std::move(line));
   for (const fv::RouteWaypoint& w : stops) {
@@ -329,6 +413,10 @@ fv::GpxDocument RouteStore::ExportGpx(const std::string& name) const {
 }
 
 std::vector<fv::GeoPoint> RouteStore::RoutePath() const {
+  return PathOf(overlay_->has_detour() ? overlay_->detour() : overlay_->plan());
+}
+
+std::vector<fv::GeoPoint> RouteStore::PathOf(const fv::RoutePlan& plan) const {
   if (straight_legs_) {
     // Densified so a consumer measuring along great-circle segments stays on
     // the rhumb line to within metres.
@@ -339,12 +427,12 @@ std::vector<fv::GeoPoint> RouteStore::RoutePath() const {
   if (!overlay_->has_plan()) return out;
 
   std::size_t total = 0;
-  for (const std::vector<fv::GeoPoint>& leg : overlay_->plan().legs) {
+  for (const std::vector<fv::GeoPoint>& leg : plan.legs) {
     total += leg.size();
   }
   out.reserve(total);
 
-  for (const std::vector<fv::GeoPoint>& leg : overlay_->plan().legs) {
+  for (const std::vector<fv::GeoPoint>& leg : plan.legs) {
     for (const fv::GeoPoint& p : leg) {
       // The joint between two legs, and any repeated vertex inside one.
       // Compared exactly rather than within a tolerance: these are the same
@@ -491,6 +579,150 @@ PlaceDescription RouteStore::DescribePoint(const fv::GeoPoint& p, double max_m,
     if (out.name.empty()) out.usable = false;
   }
   if (remember) described_arc_ = out.usable ? out.arc : fv::kNoRoadArc;
+  return out;
+}
+
+
+RoadInfo RouteStore::DescribeRoad(const fv::GeoPoint& p, double max_m) {
+  RoadInfo out;
+  const std::shared_ptr<const fv::routing::RoadGraphNetwork> network = EnsureRoadNetwork();
+  if (network == nullptr) return out;
+  const std::shared_ptr<const fv::routing::RoadGraph> graph = network->graph();
+  if (graph == nullptr) return out;
+
+  std::vector<fv::RoadCandidate> candidates;
+  network->QueryNear(p, max_m, &candidates);
+  // A sidewalk or footpath beside a street is a few metres nearer the finger
+  // than the street's centre line; the street is what was tapped.
+  auto walkway = [&](const fv::RoadCandidate& c) {
+    switch (graph->arc(static_cast<uint32_t>(c.arc)).klass) {
+      case fv::routing::RoadClass::kFootway:
+      case fv::routing::RoadClass::kPath:
+      case fv::routing::RoadClass::kPedestrian:
+      case fv::routing::RoadClass::kSteps:
+        return true;
+      default:
+        return false;
+    }
+  };
+  constexpr double kWalkwayYieldM = 15.0;
+  auto key = [&](const fv::RoadCandidate& c) {
+    return c.distance_m + (walkway(c) ? kWalkwayYieldM : 0.0);
+  };
+  const fv::RoadCandidate* best = nullptr;
+  for (const fv::RoadCandidate& c : candidates) {
+    if (c.arc > 0xFFFFFFFFull) continue;
+    if (best == nullptr || key(c) < key(*best)) best = &c;
+  }
+  if (best == nullptr) return out;
+
+  const uint32_t index = static_cast<uint32_t>(best->arc);
+  const fv::routing::RoadArc& arc = graph->arc(index);
+  out.found = true;
+  out.arc = arc;
+  out.arc_index = index;
+  out.name = best->name;
+  out.class_name = PrettyClassName(arc.klass);
+  out.distance_m = best->distance_m;
+  out.bearing_deg = best->bearing_deg;
+  if (graph->has_elevation() && arc.length_m > 0.0f) {
+    const double rise = graph->node_elevation_m(arc.target) -
+                        graph->node_elevation_m(graph->ArcSource(index));
+    out.has_elevation = true;
+    out.grade_pct = 100.0 * rise / arc.length_m;
+  }
+  return out;
+}
+
+namespace {
+
+/// Elevation at `along_m` on a profile ordered by distance; clamps at the ends.
+double ElevationAt(const std::vector<fv::routing::ElevationPoint>& profile, double along_m) {
+  if (along_m <= profile.front().along_m) return profile.front().elev_m;
+  if (along_m >= profile.back().along_m) return profile.back().elev_m;
+  const auto hi = std::lower_bound(
+      profile.begin(), profile.end(), along_m,
+      [](const fv::routing::ElevationPoint& e, double d) { return e.along_m < d; });
+  const auto lo = hi - 1;
+  const double span = hi->along_m - lo->along_m;
+  if (span <= 0.0) return hi->elev_m;
+  return lo->elev_m + (along_m - lo->along_m) / span * (hi->elev_m - lo->elev_m);
+}
+
+}  // namespace
+
+RouteSpot RouteStore::RouteSpotNear(const fv::GeoPoint& p, double max_m) const {
+  RouteSpot out;
+  if (straight_legs_ || !overlay_->has_plan()) return out;
+  const fv::RoutePlan& plan = overlay_->plan();
+  const std::vector<fv::GeoPoint> path = PathOf(plan);
+  if (path.size() < 2 || !(plan.length_m > 0.0)) return out;
+
+  // Local flat metres about the tap: a route spans kilometres, not degrees.
+  constexpr double kMPerDegLat = 111320.0;
+  const double m_per_deg_lon = kMPerDegLat * std::cos(p.lat * M_PI / 180.0);
+  auto x_of = [&](const fv::GeoPoint& g) { return (g.lon - p.lon) * m_per_deg_lon; };
+  auto y_of = [&](const fv::GeoPoint& g) { return (g.lat - p.lat) * kMPerDegLat; };
+
+  double walked = 0.0;
+  double best_d2 = max_m * max_m;
+  double best_along = -1.0;
+  fv::GeoPoint best_point;
+  for (size_t i = 0; i + 1 < path.size(); ++i) {
+    const double ax = x_of(path[i]), ay = y_of(path[i]);
+    const double dx = x_of(path[i + 1]) - ax, dy = y_of(path[i + 1]) - ay;
+    const double len2 = dx * dx + dy * dy;
+    double t = len2 > 0.0 ? -(ax * dx + ay * dy) / len2 : 0.0;
+    t = std::clamp(t, 0.0, 1.0);
+    const double qx = ax + t * dx, qy = ay + t * dy;
+    const double d2 = qx * qx + qy * qy;
+    const double len = std::sqrt(len2);
+    // Strictly nearer: where a route doubles back, the first pass wins a tie.
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_along = walked + t * len;
+      best_point = fv::GeoPoint{path[i].lat + t * (path[i + 1].lat - path[i].lat),
+                                path[i].lon + t * (path[i + 1].lon - path[i].lon)};
+    }
+    walked += len;
+  }
+  if (best_along < 0.0 || !(walked > 0.0)) return out;
+
+  out.found = true;
+  out.length_m = plan.length_m;
+  out.seconds = plan.seconds;
+  // The flat measure and the router's length agree to a rounding; the router's
+  // is what the sheet shows, so the spot is scaled onto it.
+  out.along_m = best_along / walked * plan.length_m;
+  out.distance_m = std::sqrt(best_d2);
+  out.point = best_point;
+
+  double road_start = 0.0, secs = 0.0;
+  out.seconds_from_start = plan.seconds * (out.along_m / plan.length_m);
+  if (!plan.roads.empty()) {
+    for (const fv::routing::RouteLeg& road : plan.roads) {
+      if (out.along_m <= road_start + road.length_m || &road == &plan.roads.back()) {
+        const double f =
+            road.length_m > 0.0 ? std::clamp((out.along_m - road_start) / road.length_m, 0.0, 1.0)
+                                : 1.0;
+        out.seconds_from_start = std::min(secs + f * road.seconds, plan.seconds);
+        break;
+      }
+      road_start += road.length_m;
+      secs += road.seconds;
+    }
+  }
+
+  if (plan.has_elevation && plan.elevation.size() >= 2) {
+    constexpr double kHalfWindowM = 25.0;
+    const double a = std::max(0.0, out.along_m - kHalfWindowM);
+    const double b = std::min(plan.length_m, out.along_m + kHalfWindowM);
+    if (b > a) {
+      out.has_elevation = true;
+      out.grade_pct = 100.0 * (ElevationAt(plan.elevation, b) - ElevationAt(plan.elevation, a)) /
+                      (b - a);
+    }
+  }
   return out;
 }
 

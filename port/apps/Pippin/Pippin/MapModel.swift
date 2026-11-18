@@ -10,6 +10,12 @@ import SwiftUI
 import UIKit
 import os
 
+/// What the rider colors the calculated route by, on the route sheet.
+enum RouteColoringChoice: String {
+    case pathType
+    case slope
+}
+
 /// The state that changes on every frame or camera step: the camera, the
 /// frame, and the readouts drawn from it. Written only by `MapModel`.
 ///
@@ -125,7 +131,25 @@ final class MapModel: ObservableObject {
         set {
             live.guidance = newValue
             updateRideActivity(newValue, trip: trip)
+            let button = Self.detourButton(for: newValue)
+            if button != detourButton { detourButton = button }
         }
+    }
+
+    /// The detour button under the turn banner, or nil. Published apart from
+    /// `live` and only on change: a view rebuilt with every frame of the
+    /// moving map drops taps.
+    @Published private(set) var detourButton: DetourButton?
+
+    private static func detourButton(for guidance: PPGuidance?) -> DetourButton? {
+        guard let guidance else { return nil }
+        if guidance.detourKind != .none {
+            return DetourText.offer(turnAround: guidance.detourKind == .turnAround,
+                                    extraMeters: guidance.detourExtraMeters,
+                                    backMeters: guidance.detourBackMeters,
+                                    units: DisplayUnits.shared.units)
+        }
+        return guidance.detouring ? DetourText.end : nil
     }
 
     /// The course deviation indicator for a straight-leg route, or nil outside
@@ -151,6 +175,11 @@ final class MapModel: ObservableObject {
     /// leaving GPS mode.
     private var arrivedRide = false
 
+    /// The next `route` is a detour applied or ended on the current ride,
+    /// which keeps its Live Activity: one cannot be started again until the
+    /// app is in the foreground.
+    private var routeContinuesRide = false
+
     /// The route on the map, or nil until one has been loaded or set. A
     /// snapshot taken on the render queue; see `PPRoute.h`.
     @Published private(set) var route: PPRoute? {
@@ -158,7 +187,11 @@ final class MapModel: ObservableObject {
             if gpsMode && route != nil { notices.requestPermission() }
             // A changed route is a new ride: the old card goes, and the next
             // guidance snapshot starts a fresh one.
-            rideActivity.end()
+            if routeContinuesRide {
+                routeContinuesRide = false
+            } else {
+                rideActivity.end()
+            }
             if arrivedRide {
                 arrivedRide = false
                 ridingDidChange()
@@ -381,6 +414,8 @@ final class MapModel: ObservableObject {
             checkChartUpdatesIfDue()
         }
         rideActivity.endStale()
+        // The Live Activity button and the notification action.
+        DetourAction.apply = { [weak self] in self?.applyDetour() }
         // The cached base map is the only large allocation not currently
         // needed; dropping it costs one render.
         memoryWarning = NotificationCenter.default.addObserver(
@@ -768,6 +803,7 @@ final class MapModel: ObservableObject {
                 Task { @MainActor in
                     self?.deliver(events)
                     self?.updateRideActivity(guidance, trip: trip)
+                    self?.noticeDetour(guidance)
                 }
             }
         }
@@ -1302,6 +1338,18 @@ final class MapModel: ObservableObject {
         let coordinate = vp.geo(at: flat)
         onRenderQueue({ $0.chartFeature(near: flat, in: vp) }) { _, feature in
             handle(coordinate, feature)
+        }
+    }
+
+    /// The route, road and base map feature under a tap, looked up on the
+    /// render queue. Nil when there is none, before the first layout, and
+    /// above a tilted view's horizon.
+    func mapInfo(under tap: CGPoint, then handle: @escaping (PPMapInfo?) -> Void) {
+        guard renderer != nil, let vp = viewport else { return handle(nil) }
+        let flat = vp.flatPoint(forScreen: tap)
+        guard flat.x.isFinite, flat.y.isFinite else { return handle(nil) }
+        onRenderQueue({ $0.mapInfo(near: flat, in: vp) }) { _, info in
+            handle(info)
         }
     }
 
@@ -2119,17 +2167,31 @@ final class MapModel: ObservableObject {
                            northEast: PPGeoPointMake(north, east))
     }
 
-    /// The route is drawn coloured by grade on packs with elevation.
-    @Published private(set) var routeSlopeColors =
-        UserDefaults.standard.bool(forKey: MapModel.routeSlopeColorsKey)
-    static let routeSlopeColorsKey = "routeSlopeColors"
+    /// What the rider colors the route by. Saved in UserDefaults under
+    /// `routeColoringKey`; path type unless the rider picked slope.
+    @Published private(set) var routeColoring = MapModel.savedRouteColoring()
+    nonisolated static let routeColoringKey = "routeColoring"
 
-    /// Sets and persists the route's slope colouring, and redraws.
-    func setRouteSlopeColors(_ on: Bool) {
-        guard on != routeSlopeColors else { return }
-        routeSlopeColors = on
-        UserDefaults.standard.set(on, forKey: Self.routeSlopeColorsKey)
-        onRenderQueue({ $0.setRouteSlopeColors(on) }) { model, _ in
+    nonisolated static func savedRouteColoring() -> RouteColoringChoice {
+        UserDefaults.standard.string(forKey: routeColoringKey)
+            .flatMap(RouteColoringChoice.init(rawValue:)) ?? .pathType
+    }
+
+    /// The coloring the map draws for `choice`: slope needs elevation and
+    /// falls back to path type; Osprey's routes stay plain.
+    nonisolated static func drawnColoring(_ choice: RouteColoringChoice,
+                                          elevation: Bool) -> PPRouteColoring {
+        guard AppFlavor.current == .pippin else { return .plain }
+        return choice == .slope && elevation ? .slope : .pathType
+    }
+
+    /// Sets and persists the route coloring, and redraws.
+    func setRouteColoring(_ choice: RouteColoringChoice) {
+        guard choice != routeColoring else { return }
+        routeColoring = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: Self.routeColoringKey)
+        let drawn = Self.drawnColoring(choice, elevation: elevationAvailable)
+        onRenderQueue({ $0.setRouteColoring(drawn) }) { model, _ in
             model.setContentDirty()
         }
     }
@@ -2183,6 +2245,32 @@ final class MapModel: ObservableObject {
                 lineChanged: replan.lineChanged,
                 units: DisplayUnits.shared.units))
             if replan.lineChanged { model.scheduleGhostClear() }
+        }
+    }
+
+    /// Makes the detour on offer the guided line: one tap, no confirm. The
+    /// route document is not edited.
+    func applyDetour() {
+        guard renderer != nil else { return }
+        onRenderQueue({ $0.applyDetour() }) { model, route in
+            guard let route else { return }
+            model.routeContinuesRide = true
+            model.route = route
+            // The off-route notice describes the line just replaced.
+            model.notices.clear()
+            model.setContentDirty()
+        }
+    }
+
+    /// Back to the planned line and its guidance.
+    func cancelDetour() {
+        guard renderer != nil else { return }
+        onRenderQueue({ $0.cancelDetour() }) { model, route in
+            guard let route else { return }
+            model.routeContinuesRide = true
+            model.route = route
+            model.notices.clear()
+            model.setContentDirty()
         }
     }
 
@@ -2463,7 +2551,9 @@ final class MapModel: ObservableObject {
     private func updateRideActivity(_ guidance: PPGuidance?, trip: PPTrip?) {
         guard gpsMode, route != nil, !arrivedRide, let guidance else { return }
         guard guidance.onRoute else {
-            rideActivity.show(RideActivityPolicy.offRoute)
+            let offer = Self.detourButton(for: guidance).flatMap { $0.ends ? nil : $0 }
+            rideActivity.show(RideActivityPolicy.offRoute(detour: offer?.label ?? "",
+                                                          detourSymbol: offer?.systemImage ?? ""))
             return
         }
         let speed = trip.flatMap { $0.hasSpeed ? $0.speedMetersPerSecond : nil }
@@ -2472,9 +2562,24 @@ final class MapModel: ObservableObject {
             then: guidance.hasThen ? TurnNotifications.turn(guidance.thenManeuver) : nil,
             distanceMeters: guidance.distanceMeters,
             road: guidance.road,
+            roadClass: guidance.roadClass,
+            continues: guidance.continues,
             speedMetersPerSecond: speed,
             now: Date(),
             units: DisplayUnits.shared.units))
+    }
+
+    /// Puts the detour on offer on the off-route notification. Background
+    /// only, like the guidance notifications.
+    private func noticeDetour(_ guidance: PPGuidance?) {
+        guard gpsMode, route != nil, !arrivedRide, let guidance else { return }
+        var offer: DetourNoticeOffer?
+        if !guidance.onRoute, guidance.detourKind != .none,
+           let button = Self.detourButton(for: guidance) {
+            offer = DetourNoticeOffer(turnAround: guidance.detourKind == .turnAround,
+                                      label: button.label)
+        }
+        notices.showDetour(offer, onRoute: guidance.onRoute)
     }
 
     // MARK: - Render loop
@@ -3057,7 +3162,8 @@ private final class Renderer: @unchecked Sendable {
         beachAvailable = map.beachAvailable
         elevationAvailable = map.elevationAvailable
         if let depart = TideClock.override { map.routeDepartureOverride = depart }
-        map.routeSlopeColors = UserDefaults.standard.bool(forKey: MapModel.routeSlopeColorsKey)
+        map.routeColoring = MapModel.drawnColoring(MapModel.savedRouteColoring(),
+                                                   elevation: elevationAvailable)
         map.routeAdjustments = MapModel.savedRouteAdjustments()
             .mapValues { $0.mapValues { NSNumber(value: $0) } }
         if drawsCharts { Self.apply(ChartSettings.load(from: .standard), to: map) }
@@ -3134,9 +3240,9 @@ private final class Renderer: @unchecked Sendable {
         map.push(aisLines: lines, heardAt: heardAt)
     }
 
-    /// Render queue only. See `PPMap.routeSlopeColors`.
-    func setRouteSlopeColors(_ on: Bool) {
-        map.routeSlopeColors = on
+    /// Render queue only. See `PPMap.routeColoring`.
+    func setRouteColoring(_ coloring: PPRouteColoring) {
+        map.routeColoring = coloring
     }
 
     /// Render queue only. See `PPMap.replanForAdjustments`.
@@ -3147,6 +3253,16 @@ private final class Renderer: @unchecked Sendable {
     /// Render queue only. See `PPMap.clearRouteGhost`.
     func clearRouteGhost() {
         map.clearRouteGhost()
+    }
+
+    /// Render queue only. See `PPMap.applyDetour`.
+    func applyDetour() -> PPRoute? {
+        map.applyDetour()
+    }
+
+    /// Render queue only. See `PPMap.cancelDetour`.
+    func cancelDetour() -> PPRoute? {
+        map.cancelDetour()
     }
 
     /// Render queue only. See `PPMap.routeAdjustments`.
@@ -3342,6 +3458,11 @@ private final class Renderer: @unchecked Sendable {
     }
 
     /// Names the base map feature under a press with the pack's tolerance.
+    /// Render queue only. See `PPMap.mapInfo(near:in:tolerance:)`.
+    func mapInfo(near tap: CGPoint, in viewport: PPViewport) -> PPMapInfo? {
+        map.mapInfo(near: tap, in: viewport, tolerance: map.chartFeatureHitTolerance)
+    }
+
     func chartFeature(near press: CGPoint, in viewport: PPViewport) -> PPChartFeature? {
         map.chartFeature(near: press, in: viewport,
                          tolerance: map.chartFeatureHitTolerance)

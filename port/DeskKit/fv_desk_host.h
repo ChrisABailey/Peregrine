@@ -65,6 +65,8 @@ struct HostTick {
   bool layers_hide_requested = false;  ///< hide the layers panel; see TakeLayersHideRequest
   bool layers_changed = false;     ///< the layer rows changed; reload the panel
   bool find_requested = false;     ///< show the Find dialog; see TakeFindRequest
+  bool web_requested = false;      ///< show Add Web Layer; see TakeAddWebLayerRequest
+  bool web_changed = false;        ///< a web connection finished; re-read its rows and status
   bool form_requested = false;     ///< show the feature form; see TakeFeatureFormRequest
   bool table_requested = false;    ///< show the attribute table; see TakeAttributeTableRequest
   bool style_requested = false;    ///< show the style dialog; see TakeLayerStyleRequest
@@ -83,6 +85,32 @@ struct HostTick {
   /// or reloaded, or the table's selection moved; re-read them (a closed one
   /// reads as not open).
   bool features_changed = false;
+  bool ownship_requested = false;  ///< show the Ownship window; see TakeOwnshipRequest
+  /// The Ownship window's contents changed: a fix, a clock move, play or
+  /// pause, the rate or the replay range. Re-read `DeskHost::OwnshipPanel`.
+  bool ownship_changed = false;
+};
+
+/// The Ownship window's contents, formatted (`desk::OwnshipPanel`). A
+/// read-out that is not known is "—".
+struct HostOwnshipPanel {
+  int mode = 0;  ///< 0 none (no moving map open), 1 live, 2 replay
+  std::string status;  ///< "No moving map", "Live" or "Replay"
+  std::string source;  ///< the ownship map's name
+  std::string time;
+  std::string position;
+  std::string altitude;
+  std::string heading;
+  bool heading_derived = false;  ///< show the heading as derived, not reported
+  std::string speed;
+  bool clock_enabled = false;  ///< a replay map is open: the time row works
+  double clock_s = 0.0;  ///< seconds since 1970-01-01 UTC
+  double start_s = 0.0;  ///< slider range
+  double end_s = 0.0;
+  std::string clock_text;  ///< "14:03:22", "" when disabled
+  bool playing = false;
+  int rate_index = -1;  ///< into OwnshipRateLabel; -1 when the rate is not offered
+  std::string rate_label;  ///< "10×", the current rate
 };
 
 /// Shortcut modifier bits (`fv::desk::Modifier`). Primary is Command on
@@ -143,6 +171,7 @@ using HostRequestFn = void (*)(void* context);
 enum HostOptionsKind : int {
   kOptionsMap = 0,      ///< Map ▸ Options
   kOptionsOverlay = 1,  ///< Overlay ▸ Options
+  kOptionsFeed = 2,     ///< a moving map's Feed dialog
 };
 
 /// A field's control; the values match `fv::app::PropertyType`.
@@ -371,6 +400,37 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   std::string SearchStatus() const;
   /// Moves the map to a row of the last search (`Desk::GoToSearchRow`).
   void GoToSearchRow(int row);
+
+  // MARK: Add Web Layer
+
+  /// True once after the core asked to show the dialog (Overlay ▸ Add Web Layer…).
+  bool TakeAddWebLayerRequest();
+  /// Starts listing the layers of the service at `url` on a worker; the tick
+  /// that sees it finish sets `web_changed`. The error message, or "".
+  std::string WebConnect(const std::string& url);
+  /// Stops a listing in progress (the dialog closed).
+  void WebCancel();
+  /// `WebConnectState` as an int: 0 idle, 1 connecting, 2 connected, 3 failed.
+  int WebState() const;
+  /// The URL of the last `WebConnect`, cleaned (`NormalizeWebUrl`).
+  std::string WebUrl() const;
+  /// "Connecting to …", "3 layers", or the error.
+  std::string WebStatus() const;
+  /// The service's layers once connected. Out-of-range rows read as empty.
+  int WebLayerCount() const;
+  std::string WebLayerTitle(int row) const;
+  std::string WebLayerId(int row) const;
+  /// "Point", "Area"…; "" when the service does not say.
+  std::string WebLayerGeometry(int row) const;
+  std::string WebLayerDescription(int row) const;
+  bool WebLayerChosen(int row) const;
+  void SetWebLayerChosen(int row, bool chosen);
+  /// Opens the ticked layers as overlays and remembers the URL. The error
+  /// message, or "".
+  std::string AddWebLayers();
+  /// The remembered service URLs, most recent first.
+  int WebRecentCount() const;
+  std::string WebRecentUrl(int i) const;
 
   // MARK: Layers panel
 
@@ -1081,6 +1141,23 @@ class SWIFT_SHARED_REFERENCE(fv_desk_host_retain, fv_desk_host_release) DeskHost
   void WaitForRender();
   /// Frames delivered since creation; an interrupted render is not counted.
   uint64_t FramesRendered() const;
+
+  // MARK: Ownship
+
+  /// True once after `View ▸ Ownship…`; then show or raise the Ownship window.
+  bool TakeOwnshipRequest();
+  /// The Ownship window's contents. Re-read after `HostTick::ownship_changed`.
+  HostOwnshipPanel OwnshipPanel() const;
+  /// The playback speeds the window offers, and their labels ("10×").
+  int OwnshipRateCount() const;
+  std::string OwnshipRateLabel(int index) const;
+  /// Sets the replay rate to `OwnshipRateLabel(index)`'s and saves it.
+  void SetOwnshipRate(int index);
+  /// Moves the replay clock (seconds since 1970-01-01 UTC), clamped to the
+  /// slider range; every replay map jumps there.
+  void SeekReplay(double time_s);
+  /// Plays or pauses the replay clock; play from the end starts again.
+  void SetReplayPlaying(bool playing);
 
   // MARK: Status bar
 

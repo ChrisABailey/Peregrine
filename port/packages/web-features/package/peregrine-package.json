@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "id": "peregrine.web",
+  "name": "Web Feature Layers",
+  "version": "1.0.0",
+  "publisher": "Peregrine",
+  "license": "LGPL-3.0-or-later",
+  "description": "Opens OGC API – Features collections and Esri FeatureServer or MapServer layers by URL as feature layers, cached for offline use. Esri layers keep their publisher's style.",
+  "requires": { "peregrine": "0.1" },
+  "libraries": {
+    "macos": "lib/macos/libwebfeatures.dylib",
+    "linux-x86_64": "lib/linux-x86_64/libwebfeatures.so",
+    "linux-aarch64": "lib/linux-aarch64/libwebfeatures.so",
+    "windows-x86_64": "lib/windows-x86_64/webfeatures.dll"
+  },
+  "feature_sources": [
+    { "id": "peregrine.web.services", "display_name": "Web feature services",
+      "implementation": { "native": "web" } }
+  ]
+}

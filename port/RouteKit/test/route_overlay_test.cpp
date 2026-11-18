@@ -22,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 #include "fvkit/canvas/cpu_canvas.h"
@@ -776,14 +777,15 @@ TEST(RouteOverlay, AShortSegmentTakesTheGradeAroundIt) {
   EXPECT_NEAR(5.0, s[1], 1e-9);
 }
 
-TEST(RouteOverlay, SlopeColoursIsAPropertyAndOffByDefault) {
+TEST(RouteOverlay, ColoringIsAPropertyAndPlainByDefault) {
   RouteOverlay ov;
-  EXPECT_FALSE(ov.slope_colors());
+  EXPECT_EQ(fv::RouteColoring::kPlain, ov.coloring());
   fv::app::PropertyValue v;
-  ASSERT_TRUE(ov.GetProperty("slope_colors", &v).ok());
-  EXPECT_FALSE(v.b);
-  ASSERT_TRUE(ov.SetProperty("slope_colors", fv::app::PropertyValue::Bool(true)).ok());
-  EXPECT_TRUE(ov.slope_colors());
+  ASSERT_TRUE(ov.GetProperty("route_coloring", &v).ok());
+  EXPECT_EQ(0, v.i);
+  ASSERT_TRUE(ov.SetProperty("route_coloring", fv::app::PropertyValue::Choice(2)).ok());
+  EXPECT_EQ(fv::RouteColoring::kPathType, ov.coloring());
+  EXPECT_FALSE(ov.SetProperty("route_coloring", fv::app::PropertyValue::Choice(3)).ok());
 }
 
 // Paces Mill up to Buckhead climbs out of the river valley: with slope colours
@@ -808,7 +810,7 @@ TEST(RouteOverlay, AnAtlantaClimbIsDrawnInSlopeColours) {
   proj.SetCenter({33.8596, -84.4139});
   proj.SetScale(60000.0);
   auto count = [&](bool on, const fv::FvColor& c) {
-    ov.SetSlopeColors(on);
+    ov.SetColoring(on ? fv::RouteColoring::kSlope : fv::RouteColoring::kPlain);
     fv::CpuCanvas canvas(1000, 600);
     EXPECT_TRUE(ov.OnDraw(proj, canvas).ok());
     return CountColour(canvas.Buffer(), c);
@@ -821,6 +823,62 @@ TEST(RouteOverlay, AnAtlantaClimbIsDrawnInSlopeColours) {
   EXPECT_GT(count(true, RouteOverlay::kRoadColor), 50u);
   EXPECT_EQ(0u, count(false, RouteOverlay::kClimbSteepColor));
   EXPECT_EQ(0u, count(false, RouteOverlay::kClimbEasyColor));
+}
+
+// The same ride colored by path type: the plan carries tier runs end to end,
+// and the halo shows more than one tier and none of the slope colors.
+TEST(RouteOverlay, AnAtlantaRideIsDrawnInPathTypeColors) {
+  const std::filesystem::path p =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(p)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  RoutePlanner planner(p.string(), FV_ROUTE_RULES_FILE);
+  RouteOverlay ov("Ride");
+  ov.SetPlanner(&planner);
+  ov.SetShowLabels(false);
+  ov.SetShowStatus(false);
+  ov.SetDrawMarkers(false);
+  ov.SetWaypoints({{"Paces Mill", {33.8712, -84.4545}}, {"Buckhead", {33.8480, -84.3732}}});
+  ov.SetProfile("bicycle");
+  ASSERT_TRUE(ov.FollowRoads()) << ov.status();
+  const std::vector<fv::routing::RouteTierRun>& tiers = ov.plan().tiers;
+  ASSERT_GE(tiers.size(), 2u);
+  // Tiers follow the way, not the grade: every residential street on this
+  // hilly ride shares a tier, and the cycleway ranks above all of them.
+  auto tier_at = [&](uint32_t g) {
+    for (const fv::routing::RouteTierRun& t : tiers)
+      if (t.geometry_begin <= g && g < t.geometry_end) return t.tier;
+    return -1;
+  };
+  std::set<int> residential, cycleway;
+  for (const fv::routing::RouteLeg& r : ov.plan().roads) {
+    if (r.klass == "residential") residential.insert(tier_at(r.geometry_begin));
+    if (r.klass == "cycleway") cycleway.insert(tier_at(r.geometry_begin));
+  }
+  ASSERT_FALSE(residential.empty());
+  ASSERT_FALSE(cycleway.empty());
+  EXPECT_EQ(1u, residential.size());
+  EXPECT_LT(*cycleway.rbegin(), *residential.begin());
+  size_t points = 0;
+  for (const std::vector<fv::GeoPoint>& leg : ov.plan().legs) points += leg.size() - 1;
+  EXPECT_EQ(0u, tiers.front().geometry_begin);
+  EXPECT_EQ(points, tiers.back().geometry_end);
+  for (size_t i = 1; i < tiers.size(); ++i) {
+    EXPECT_EQ(tiers[i - 1].geometry_end, tiers[i].geometry_begin);
+    EXPECT_NE(tiers[i - 1].tier, tiers[i].tier);
+  }
+
+  fv::MapProjection proj;
+  proj.SetSurfaceSize(1000, 600);
+  proj.SetCenter({33.8596, -84.4139});
+  proj.SetScale(60000.0);
+  ov.SetColoring(fv::RouteColoring::kPathType);
+  fv::CpuCanvas canvas(1000, 600);
+  ASSERT_TRUE(ov.OnDraw(proj, canvas).ok());
+  int shown = 0;
+  for (const fv::FvColor& c : RouteOverlay::kTierColors)
+    if (CountColour(canvas.Buffer(), c) > 50u) ++shown;
+  EXPECT_GE(shown, 2);
+  EXPECT_EQ(0u, CountColour(canvas.Buffer(), RouteOverlay::kClimbSteepColor));
 }
 
 // A plan without elevation keeps the line colour with slope colours on.
@@ -837,7 +895,7 @@ TEST(RouteOverlay, AFlatGraphIgnoresSlopeColours) {
   opts.profile = "bicycle";
   ASSERT_TRUE(ov.FollowRoads(opts)) << ov.status();
   if (ov.plan().has_elevation) GTEST_SKIP() << "kiawah.fvroad was built with --dem";
-  ov.SetSlopeColors(true);
+  ov.SetColoring(fv::RouteColoring::kSlope);
   fv::CpuCanvas canvas(800, 600);
   ASSERT_TRUE(Draw(ov, KiawahProj(), canvas).ok());
   EXPECT_GT(CountColour(canvas.Buffer(), RouteOverlay::kRoadColor), 50u);
@@ -876,4 +934,56 @@ TEST(RouteOverlay, AGhostLineDrawsUntilTheRoadsAreCleared) {
   ov.SetGhost({{{32.600, -80.115}, {32.600, -80.105}}});
   ov.ClearGhost();
   EXPECT_TRUE(ov.ghost().empty());
+}
+
+namespace {
+
+/// Inked mid-grey pixels: the ghost colour after blending, whatever its alpha.
+size_t CountGrey(const fv::PixelBuffer& buf) {
+  size_t n = 0;
+  for (int y = 0; y < buf.Height(); ++y) {
+    const unsigned char* row = buf.Row(y);
+    for (int x = 0; x < buf.Width(); ++x) {
+      const unsigned char* p = row + 4 * x;
+      n += p[3] != 0 && p[0] == p[1] && p[1] == p[2] && p[0] > 30 && p[0] < 200;
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
+// A detour draws as the route with the planned line in the ghost colour, and a
+// new plan of the document drops it.
+TEST(RouteOverlay, ADetourDrawsOverThePlannedLineUntilTheNextPlan) {
+  const std::string graph = KiawahGraph();
+  if (graph.empty()) GTEST_SKIP() << "no TestData/OSM/kiawah.fvroad";
+  RoutePlanner planner(graph, FV_ROUTE_RULES_FILE);
+  RouteOverlay ov("Route1");
+  ov.SetPlanner(&planner);
+  ov.SetShowLabels(false);
+  ov.SetShowStatus(false);
+  ov.SetDrawMarkers(false);
+  ASSERT_TRUE(ov.FileOpen(FV_ROUTE_FIXTURE_FILE).ok());
+  ASSERT_TRUE(ov.FollowRoads()) << ov.status();
+
+  fv::CpuCanvas before(800, 600);
+  ASSERT_TRUE(Draw(ov, KiawahProj(), before).ok());
+  const size_t grey_before = CountGrey(before.Buffer());
+
+  fv::RoutePlan detour;
+  detour.legs = {{{32.600, -80.115}, {32.600, -80.105}}};
+  ov.SetDetour(detour);
+  ASSERT_TRUE(ov.has_detour());
+  fv::CpuCanvas during(800, 600);
+  ASSERT_TRUE(Draw(ov, KiawahProj(), during).ok());
+  EXPECT_GT(CountGrey(during.Buffer()), grey_before + 200u);
+  EXPECT_GT(CountColour(during.Buffer(), RouteOverlay::kRoadColor), 50u);
+  EXPECT_FALSE(ov.is_dirty());
+
+  ov.SetDetour(fv::RoutePlan{});
+  EXPECT_FALSE(ov.has_detour());
+  ov.SetDetour(detour);
+  ASSERT_TRUE(ov.FollowRoads());
+  EXPECT_FALSE(ov.has_detour());
 }

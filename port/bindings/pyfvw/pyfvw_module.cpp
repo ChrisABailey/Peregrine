@@ -21,12 +21,15 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "pyfvw_common.h"
 
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/manager_host.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/properties.h"
 #include "fvkit/app/search.h"
 #include "fvkit/overlay/vector_map_overlay.h"
@@ -109,6 +112,28 @@ fv::app::PropertyValue PropertyFromPy(const fv::app::PropertySpec& spec,
 
 namespace {
 
+/// `Overlay.host`: the application's services for one overlay. Each call
+/// looks the host up again, so a handle kept after the overlay leaves the
+/// stack does nothing (or raises) instead of reaching a stale window.
+struct HostHandle {
+  std::weak_ptr<fv::Overlay> overlay;
+
+  /// The overlay and its host, or {null, null} once either is gone.
+  std::pair<std::shared_ptr<fv::Overlay>, fv::app::OverlayHost*> Resolve() const {
+    std::shared_ptr<fv::Overlay> o = overlay.lock();
+    fv::app::HostAware* aware = o ? o->AsHostAware() : nullptr;
+    fv::app::OverlayHost* h = aware != nullptr ? aware->host() : nullptr;
+    return {h != nullptr ? o : nullptr, h};
+  }
+  /// As Resolve, raising FvError when the overlay is no longer in a window.
+  std::pair<std::shared_ptr<fv::Overlay>, fv::app::OverlayHost*> Require() const {
+    auto r = Resolve();
+    if (r.second == nullptr)
+      throw FvErrorCpp{fv::Status::Error(fv::kNotFound, "the overlay is not in a map window")};
+    return r;
+  }
+};
+
 // Trampoline: Python exceptions never cross the SPI (contracts D3) —
 // on_draw errors become failed Status, event-handler errors log + decline.
 //
@@ -136,9 +161,23 @@ class PyOverlay : public fv::Overlay,
                   public fv::app::ContextMenu,
                   public fv::app::RoutingOverrides,
                   public fv::app::EditTarget,
-                  public fv::app::SearchProvider {
+                  public fv::app::SearchProvider,
+                  public fv::app::EditHint,
+                  public fv::app::ItemInfo,
+                  public fv::app::HostAware {
  public:
   using fv::Overlay::Overlay;
+
+  // Every Python overlay may reach the host through `Overlay.host`.
+  fv::app::HostAware* AsHostAware() override { return this; }
+
+  /// Binds the host, then calls the subclass's `on_host_changed()`, if any,
+  /// while it is bound: on joining a window and when the window's services
+  /// (elevation data, display scale) change.
+  void SetHost(fv::app::OverlayHost* host) override {
+    fv::app::HostAware::SetHost(host);
+    if (host != nullptr) CallVoid("on_host_changed");
+  }
 
   // --- capability discovery (A6) ---------------------------------------
 
@@ -172,6 +211,12 @@ class PyOverlay : public fv::Overlay,
   }
   fv::app::SearchProvider* AsSearch() override {
     return Capable(kCapSearch, {"search"}) ? this : nullptr;
+  }
+  fv::app::EditHint* AsEditHint() override {
+    return Capable(kCapEditHint, {"edit_hint"}) ? this : nullptr;
+  }
+  fv::app::ItemInfo* AsItemInfo() override {
+    return Capable(kCapItemInfo, {"item_info"}) ? this : nullptr;
   }
 
   // --- Persistence ------------------------------------------------------
@@ -334,6 +379,45 @@ class PyOverlay : public fv::Overlay,
     }
   }
 
+  // --- EditHint / ItemInfo ----------------------------------------------
+
+  /// `edit_hint(x, y)` returns the status line, or None/"" for nothing.
+  std::string EditHintAt(fv::PixelPoint p) override {
+    py::gil_scoped_acquire gil;
+    py::function o = py::get_override(this, "edit_hint");
+    if (!o) return {};
+    try {
+      py::object hint = o(p.x, p.y);
+      return hint.is_none() ? std::string() : hint.cast<std::string>();
+    } catch (py::error_already_set&) {
+      PyErr_Clear();
+    } catch (const py::cast_error&) {
+    }
+    return {};
+  }
+
+  /// `item_info(proj, x, y, tolerance_px)` returns an app.ItemInfoSheet or
+  /// None. An empty title becomes the overlay's name, as for a C plugin.
+  std::optional<fv::app::ItemInfoSheet> InfoAt(const fv::MapProjection& proj,
+                                               fv::PixelPoint p,
+                                               double tolerance_px) override {
+    py::gil_scoped_acquire gil;
+    py::function o = py::get_override(this, "item_info");
+    if (!o) return std::nullopt;
+    try {
+      py::object sheet = o(py::cast(proj, py::return_value_policy::reference),
+                           p.x, p.y, tolerance_px);
+      if (sheet.is_none()) return std::nullopt;
+      fv::app::ItemInfoSheet out = sheet.cast<fv::app::ItemInfoSheet>();
+      if (out.title.empty()) out.title = Name();
+      return out;
+    } catch (py::error_already_set&) {
+      PyErr_Clear();
+    } catch (const py::cast_error&) {
+    }
+    return std::nullopt;
+  }
+
   // --- RoutingOverrides / EditTarget ------------------------------------
 
   bool WantsDirectRouting() const override {
@@ -406,6 +490,8 @@ class PyOverlay : public fv::Overlay,
     kCapEditTarget,
     kCapSearch,
     kCapProperties,
+    kCapEditHint,
+    kCapItemInfo,
     kCapCount,
   };
 
@@ -434,6 +520,13 @@ class PyOverlay : public fv::Overlay,
         if (d.contains("max")) spec.max = py::cast<double>(d["max"]);
         if (d.contains("choices"))
           spec.choices = py::cast<std::vector<std::string>>(d["choices"]);
+        // The same keys describe_properties writes for a kPath row.
+        if (d.contains("path_kind") &&
+            py::cast<std::string>(d["path_kind"]) == "directory")
+          spec.path_kind = fv::app::PathKind::kDirectory;
+        if (d.contains("path_filters"))
+          spec.path_filters =
+              py::cast<std::vector<std::pair<std::string, std::string>>>(d["path_filters"]);
         spec.default_value.type = spec.type;
         if (d.contains("default"))
           spec.default_value = PropertyFromPy(spec, d["default"]);
@@ -563,7 +656,7 @@ class PyOverlay : public fv::Overlay,
   }
 
   // -1 = not asked yet. Mutable-free: every accessor is non-const.
-  signed char cap_[kCapCount] = {-1, -1, -1, -1, -1, -1, -1, -1};
+  signed char cap_[kCapCount] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
   std::vector<fv::app::PropertySpec> specs_;
   bool specs_read_ = false;
 };
@@ -1422,6 +1515,68 @@ void pyfvw::DefineModule(py::module_& m) {
     keys.attr(("F" + std::to_string(n)).c_str()) = int(fv::Key::kF1) + n - 1;
 
 
+  py::class_<HostHandle>(
+      ovl, "OverlayHost",
+      "The application's services for one overlay, from Overlay.host. "
+      "redraw() may be called from any thread; everything else from the "
+      "thread that calls the overlay's handlers.")
+      .def("redraw",
+           [](const HostHandle& h) {
+             if (fv::app::OverlayHost* host = h.Resolve().second) host->RequestRedraw();
+           },
+           "Schedule a repaint of the map, e.g. when background work finishes. "
+           "Requests before the next frame coalesce; a no-op once the overlay "
+           "has left the window.")
+      .def("capture_mouse",
+           [](const HostHandle& h) {
+             auto [o, host] = h.Require();
+             ThrowIfError(host->CaptureMouse(*o));
+           },
+           "Send every mouse event to this overlay until release_mouse().")
+      .def("release_mouse",
+           [](const HostHandle& h) {
+             auto [o, host] = h.Resolve();
+             if (host != nullptr) host->ReleaseMouse(*o);
+           },
+           "End this overlay's capture; nothing when it does not hold the mouse.")
+      .def("elevation_at",
+           [](const HostHandle& h, double lat, double lon) -> py::object {
+             double metres = 0;
+             if (!h.Require().second->ElevationAt(fv::GeoPoint{lat, lon}, &metres))
+               return py::none();
+             return py::float_(metres);
+           },
+           "lat"_a, "lon"_a,
+           "Ground elevation in metres from the catalog's DTED or lidar, or "
+           "None off coverage.")
+      .def("open_elevation",
+           [](const HostHandle& h) -> std::shared_ptr<fv::IElevationSource> {
+             return h.Require().second->OpenElevation();
+           },
+           "A new elevation source (formats.IElevationSource) over the catalog's "
+           "lidar and DTED, for one thread of the caller's; None when the catalog "
+           "has no elevation data. on_host_changed() follows a change of catalog.")
+      .def("show_status",
+           [](const HostHandle& h, const std::string& text) {
+             h.Require().second->ShowStatus(text);
+           },
+           "text"_a, "Show text in the status bar until the next hover replaces it.")
+      .def(
+          "coverage",
+          [](const HostHandle& h, const std::string& format, std::optional<fv::GeoRect> area) {
+            return h.Require().second->Coverage(format, area ? *area : fv::GeoRect::World());
+          },
+          "format"_a, "area"_a = py::none(),
+          "The catalog's coverage rows (catalog.CoverageRow) of format ('osm', 'enc', ...) "
+          "meeting area (default the world). on_host_changed() follows a change of catalog.")
+      .def_property_readonly(
+          "label_font", [](const HostHandle& h) { return h.Require().second->LabelFont(); },
+          "A TrueType font path for labels, or '' when the machine has none.")
+      .def_property_readonly(
+          "display_scale",
+          [](const HostHandle& h) { return h.Require().second->DisplayScale(); },
+          "Device pixels per layout pixel; 1 on a standard display.");
+
   py::class_<fv::Overlay, PyOverlay, std::shared_ptr<fv::Overlay>>(
       ovl, "Overlay",
       "Subclass and override on_draw(proj, canvas), on_mouse_down(e) -> "
@@ -1440,6 +1595,9 @@ void pyfvw::DefineModule(py::module_& m) {
       "pickable (hover, click, context menu). `overlay` is stamped for you.\n"
       "  snap_to_point(proj, x, y, tolerance_px) -> [app.SnapToItem]\n"
       "  menu_items(proj, x, y) -> [app.MenuNode] -> a right-click section\n"
+      "  item_info(proj, x, y, tolerance_px) -> app.ItemInfoSheet | None -> "
+      "Get Info on the context menu\n"
+      "  edit_hint(x, y) -> str -> the status line while the overlay is edited\n"
       "  wants_direct_routing() -> bool -> the mouse first, mid-gesture\n"
       "  enter_edit_focus() / release_edit_focus() / can_undo() / undo() / "
       "can_redo() / redo() -> the per-instance half of the editor contract.")
@@ -1474,6 +1632,15 @@ void pyfvw::DefineModule(py::module_& m) {
       // has none) and settable only on one that does -- a silent no-op here
       // would hide the commonest mistake, which is forgetting to define
       // file_open and wondering why Save does nothing.
+      .def_property_readonly(
+          "host",
+          [](std::shared_ptr<fv::Overlay> o) -> py::object {
+            HostHandle h{o};
+            if (h.Resolve().second == nullptr) return py::none();
+            return py::cast(std::move(h));
+          },
+          "The application's services (OverlayHost) while the overlay is in "
+          "a map window, else None.")
       .def_property_readonly(
           "is_file_overlay",
           [](fv::Overlay& o) { return o.AsPersistence() != nullptr; })
@@ -1914,11 +2081,6 @@ void pyfvw::DefineModule(py::module_& m) {
                              "The editing session. Always present -- an "
                              "overlay nobody edits simply never calls into "
                              "it.")
-      .def("set_manager", &fv::PointOverlay::SetManager, "manager"_a.none(true),
-           py::keep_alive<1, 2>(),
-           "The stack, for mouse CAPTURE and for the snap walk, and for "
-           "nothing else. Null is legal: the gestures still work, they are "
-           "just uncaptured and unsnapped.")
       .def_property_readonly("has_projection",
                              &fv::PointOverlay::has_projection)
       .def_property("dimmed", &fv::PointOverlay::dimmed,
@@ -2303,6 +2465,36 @@ void pyfvw::DefineModule(py::module_& m) {
       .def("route_mouse_wheel", &fv::OverlayManager::RouteMouseWheel, "e"_a,
            "delta"_a)
       .def("route_key_down", &fv::OverlayManager::RouteKeyDown, "event"_a);
+
+  py::class_<fv::app::ManagerHost>(
+      ovl, "ManagerHost",
+      "The services a window offers its overlays (mouse capture, snapping, "
+      "undo, elevation, label font, display scale), over a bare "
+      "OverlayManager. Bind each overlay after adding it; keep the host alive "
+      "while overlays are bound.")
+      .def(py::init<fv::OverlayManager&>(), "manager"_a, py::keep_alive<1, 2>())
+      .def("bind",
+           [](fv::app::ManagerHost& h, fv::Overlay& o) { return h.Bind(o); },
+           "overlay"_a,
+           "Gives the overlay this host; False when it takes no host services.")
+      .def("unbind",
+           [](fv::app::ManagerHost& h, fv::Overlay& o) { h.Unbind(o); },
+           "overlay"_a, "Takes the host away and drops the overlay's undo entries.")
+      .def("take_redraw", &fv::app::ManagerHost::TakeRedraw,
+           "True once after an overlay asked for a redraw.")
+      .def("set_elevation", &fv::app::ManagerHost::SetElevation, "source"_a.none(true))
+      .def("set_label_font", &fv::app::ManagerHost::SetLabelFont, "path"_a)
+      .def(
+          "set_catalog",
+          [](fv::app::ManagerHost& h, std::shared_ptr<fv::Catalog> c) { h.SetCatalog(std::move(c)); },
+          "catalog"_a.none(true), "The catalog coverage() reads; None for none.")
+      .def("set_display_scale", &fv::app::ManagerHost::SetDisplayScale, "scale"_a)
+      .def("can_undo", [](fv::app::ManagerHost& h) { return h.History().CanUndo(); })
+      .def("undo", [](fv::app::ManagerHost& h) { ThrowIfError(h.History().Undo()); })
+      .def("can_redo", [](fv::app::ManagerHost& h) { return h.History().CanRedo(); })
+      .def("redo", [](fv::app::ManagerHost& h) { ThrowIfError(h.History().Redo()); })
+      .def_property_readonly("status", &fv::app::ManagerHost::status,
+                             "The last text an overlay showed in the status bar.");
 
   // ---- pyfvw.catalog ---------------------------------------------------
   py::module_ catalog =

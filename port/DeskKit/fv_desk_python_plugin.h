@@ -18,6 +18,7 @@
 #include <string>
 
 #include "fv_desk_tools.h"
+#include "fvkit/app/editor.h"
 #include "fvkit/overlay/overlay.h"
 
 namespace fv {
@@ -42,6 +43,11 @@ class PythonBridge {
   /// a pyfvw.app.ToolContext over the tool's context and `package_dir`.
   virtual Status ResolveTool(const std::string& spec, const std::string& package_dir,
                              ToolRun* out) = 0;
+  /// Imports `spec` ("module:Class") and answers an editor factory that
+  /// constructs the class. kNotFound when the class is missing or not a
+  /// pyfvw.app.OverlayEditor subclass; the other errors as for ResolveOverlay.
+  virtual Status ResolveEditor(const std::string& spec,
+                               std::function<std::unique_ptr<app::OverlayEditor>()>* out) = 0;
 };
 
 /// The bridge's C entry point, `fv_python_bridge_open`. Starts Python with

@@ -10,12 +10,21 @@ incremental port: modules move over one at a time, each one compiler-driven,
 test-pinned against real map data, and kept byte-faithful to the Windows
 original.
 
-Status: **the core raster and vector readers work headlessly, and there is now
-an application layer over them.** You can render a georeferenced map to a PNG
-from the command line, pan it interactively in the Python demo, read DNC, ENC
-and OpenStreetMap vector data, stack and save overlays, and compute a road
-route — all without Windows, MFC or COM. There is also an iOS application,
-Pippin, built on the same core; see below.
+Status: **the core raster and vector readers work headlessly, and there are
+applications over them.** You can render a georeferenced map to a PNG from the
+command line, read DNC, ENC and OpenStreetMap vector data, stack and save
+overlays, edit feature layers, load web feature services, and compute a road
+route — all without Windows, MFC or COM. Four applications are built on the
+same core:
+
+| App | Platform | State |
+|-----|----------|-------|
+| **Peregrine** (`port/apps/Peregrine`) | macOS, AppKit | The FalconView-style desktop map application; the most complete shell |
+| **Peregrine for Linux** (`port/apps/PeregrineGtk`) | Linux, GTK4 | The same application over the same core; behind the macOS app (see *Desktop apps*) |
+| **Pippin** (`port/apps/Pippin`) | iOS | An offline cycling map; 1.0 submitted to the App Store |
+| **Osprey** (`port/apps/Osprey`) | iOS | A moving map for boats over NOAA electronic navigational charts |
+
+PythonView, a Tk viewer over the Python bindings, is kept as a test harness.
 
 ## Build
 
@@ -33,9 +42,9 @@ ctest --test-dir build  # run tests
 
 `ctest` reports a skipped test as passing; the `(Skipped)` lines in its output
 show which tests skipped and why. With the sample data in `testdata/` (see
-*Test data*) the suite is **2396 tests on macOS, 179 of them skipped**, and
-**2657 on Linux, 186 skipped**: the skips need map data too large to ship
-(CADRG, DNC/GeoSym, the full OSM pyramid).
+*Test data*) the suite is **3447 tests on macOS, 208 of them skipped**; the
+Linux CI job reports its own count. The skips need map data too large to ship
+(CADRG, DNC/GeoSym, the full OSM pyramid) or an app's staged data pack.
 
 ### macOS
 
@@ -50,7 +59,7 @@ NumPy, pytest and Tk for the Python suites, DejaVu fonts for the text goldens):
 
 ```sh
 sudo apt-get install -y build-essential cmake ninja-build pkg-config git \
-    libsqlite3-dev libgtkmm-4.0-dev xvfb fonts-dejavu-core \
+    libsqlite3-dev libgtkmm-4.0-dev libcurl4-openssl-dev xvfb fonts-dejavu-core \
     python3-dev python3-numpy python3-pytest python3-tk
 cmake -B build -G Ninja
 cmake --build build -j
@@ -60,6 +69,9 @@ xvfb-run -a ctest --test-dir build -j8
 - `xvfb-run` around `ctest` gives the Tk tests of the Python app a display;
   without it they skip. The GTK app's own screenshot tests start their own
   Xvfb either way.
+- `libcurl4-openssl-dev` is needed only for the packages that use the network
+  (`peregrine.web`, web feature layers; `peregrine.ais`, live AIS traffic);
+  without it the configure prints a message and skips them.
 - `libgtkmm-4.0-dev` (gtkmm 4.10 or later) is needed only for the desktop app,
   `peregrine-gtk`; without it the configure prints a message and the rest of
   the tree builds and tests. See `port/apps/PeregrineGtk/README.md`.
@@ -119,7 +131,11 @@ package*).
 | App layer | Overlay stack with a type registry, session save/restore, editors and click-to-pick — the shell an interactive map application needs, headless and testable |
 | File overlays | `.fvpoints` — a SQLite point document that carries its own PNG symbol artwork, so a file opens with its symbology anywhere |
 | Bindings | `pyfvw` (pybind11) — zero-copy NumPy pixel buffers, Python-subclassable overlays, vector sources, style engines, routing and the app layer |
-| Apps | `PythonView.py` — a desktop map viewer over the bindings (family menus, coverage overlay, identify, route editing) |
+| Feature layers | Editable point, line and area layers in GeoPackage and GeoJSON: attribute table, feature form, fields editor, definition queries, select by attributes, and styles that vary by field value or by numeric class (equal interval or quantile, colour or size) |
+| Web feature layers | OGC API – Features and Esri FeatureServer/MapServer layers opened by URL, fetched by tile in the background into a per-service GeoPackage cache; an Esri layer arrives in the service's own symbology |
+| Moving map | Ownship from GPX/NMEA replay or a live UDP/TCP NMEA feed, trail, course-up, snap to road, replay clock |
+| Packages | Overlay plug-ins in C, C++ or Python, installed as `.pgpkg` files and listed in the Overlay Manager; shipped: OSM overlay, AIS traffic, web feature layers (`port/sdk/PACKAGING.md`) |
+| Apps | Peregrine (macOS), Peregrine for Linux, Pippin and Osprey (iOS), and `PythonView.py`, a viewer over the bindings |
 | Tools | `fvrender` renders a map to PNG; `fvpack` builds offline GeoPackage tile packs; `fvgraph` builds and queries road graphs |
 | Overlays | Overlay Architecture modeled after the FalconView Overlay Interfaces but implemented in portable C++17, with a type registry and a Python subclassable base class. The overlay stack is headless and testable, and can be used to build a map application shell without Windows dependancies. | 
 
@@ -140,8 +156,16 @@ port/                  all new Peregrine code (LGPL-3.0-or-later)
   fvkit/               the portable map library (formats, catalog, canvas, engine, overlays)
   bindings/pyfvw/      Python bindings
   <Module>/            per-module CMake targets + tests, compiling fvw_core sources in place
-  apps/PythonView.py   the Tk desktop demo over the bindings
-  apps/Pippin/         Pippin, the iOS app: SwiftUI shell, PippinKit, Xcode project
+  DeskKit/             the desktop application core both desktop shells drive (commands, menus, dialogs' models)
+  ViewKit/             the map view the desktop shells draw
+  apps/Peregrine/      Peregrine for macOS: AppKit shell in Swift over DeskKit
+  apps/PeregrineGtk/   Peregrine for Linux: GTK4 shell in C++ over DeskKit
+  apps/Pippin/         Pippin, the iOS cycling app: SwiftUI shell, PippinKit, Xcode project
+  apps/Osprey/         Osprey, the iOS marine app: what differs from Pippin (built from Pippin's project)
+  apps/PythonView.py   the Tk viewer over the bindings
+  packages/            packages shipped with Peregrine (OSM overlay, AIS, web features)
+  sdk/                 the plug-in SDK, libperegrine_core and example packages
+  *-plan.md            one design plan per feature; linux-plan.md is the brief for the Linux app
   PORTING.md           the ledger: module status, decisions, preserved quirks  ← start here
 fvw_core/              FalconView sources used by the port (LGPL-3.0-or-later, upstream)
 third_party/           GEOTRANS 3.3, libjpeg
@@ -213,6 +237,42 @@ per-phase decisions.
 
 ![Orthographic](Screenshots/Projection.png)
 
+## Desktop apps
+
+Peregrine is one application on two toolkits. Every decision — commands, menus,
+shortcuts, the status bar, dialogs' contents, settings, workspace files — lives
+in C++ in `port/DeskKit` and is tested there; the macOS and Linux shells hold
+only windows, event translation and the frame blit. A feature reaches Linux
+once its DeskKit part is synced here and the GTK window that shows it is
+written (`port/linux-plan.md`).
+
+**Peregrine for macOS** (`port/apps/Peregrine/README.md`) has:
+- the map window with every data family: CADRG, GeoTIFF, DTED and shaded
+  relief, TIROS, DNC/VPF, ENC with S-52 symbology, OpenStreetMap vector tiles
+  with MapLibre styles; five projections and map rotation;
+- Map Data Sources and the coverage catalog, Go To / Find, the layer manager
+  (sources and layers), Properties with Symbology, Labels, Fields, Display,
+  Selection and Definition Query pages;
+- feature layers to create, edit, query and style; routes with an elevation
+  profile; the moving map and Ownship window over GPX/NMEA replay or a live feed;
+- packages: the Overlay Manager, the Tools menu, the OSM overlay, AIS traffic
+  and web feature layers (Overlay ▸ Add Web Layer…: paste an OGC API or Esri
+  FeatureServer URL, tick the layers, Add).
+
+**Peregrine for Linux** (`port/apps/PeregrineGtk/README.md`) has the map
+window, generated menus, toolbar and shortcuts, file and question dialogs, Map
+Data Sources, Map and Overlay Options, Go To / Find, the docked layers panel,
+Properties with all its pages, the attribute table, feature form, style and
+fields panels, New Feature Layer and the route profile. CI builds it on every
+pull request and publishes a `.deb` for version tags. Not yet on Linux, each
+briefed in `port/linux-plan.md`:
+- loading packages (so no OSM overlay, AIS, plug-ins or web layers yet) and
+  package icons — row LX-PX;
+- the Ownship window, the moving map's Feed dialog and its editor icons — LX-OS;
+- the Add Web Layer window, and libcurl in CI and the `.deb` — LX-WF;
+- the Overlay Manager, Select by Attributes and the style-rule windows, which
+  follow once the packages land.
+
 ## PythonView (Python test App)
 
 PythonView is a small Python / Tkinter GUI that exercises the bindings. It is a
@@ -268,6 +328,32 @@ is the design. The tracked Xcode project signs against no team — set
 `PP_DEVELOPMENT_TEAM`, along with the app's display name and support address,
 in a git-ignored `local/Local.xcconfig` (`Pippin.xcconfig` documents all three).
 
+## Osprey (iOS marine app)
+
+Osprey is a moving map for boats that draws NOAA S-57 electronic navigational
+charts with S-52 symbology. It is a second target in Pippin's Xcode project:
+the same Swift sources and PippinKit, with `port/apps/Osprey` holding only what
+differs (its Info.plist flavour, icon and chart pack). What it does:
+
+- ENC charts by usage band, chosen for the display scale, with safety depth,
+  safety contour, shallow and deep contours, soundings in the chosen depth
+  unit, light descriptions, and day, dusk and night palettes that the whole
+  interface follows;
+- chart download from NOAA by state or Coast Guard district, chart zips
+  imported from Files, an update check against NOAA's product catalog, and
+  S-57 update files applied to their base cells;
+- straight-leg (rhumb-line) routes with labelled waypoints and a course
+  deviation indicator in place of turn-by-turn; COG vector, SOG and COG on the
+  moving map, and GPX track recording;
+- chart search by object name, feature query on a tap, a help sheet, and live
+  AIS traffic from Open Waters or a local receiver;
+- nautical miles and knots, and a "Not for Navigation" notice until acknowledged.
+
+Build it with `port/apps/Osprey/README.md`; the plan and per-step notes are in
+`port/pippin-enc-plan.md`. A chart pack is staged from the ENC cells in
+`testdata/enc` with `stage_data.py --region charleston-enc`, so a clone can run
+it in the simulator on the Charleston sample.
+
 ## Test data
 
 `testdata/` is a small sample set (about 60 MB) centred on Kiawah Island and
@@ -284,9 +370,11 @@ out the same way.
 ## Known limitations
 
 - **The Linux desktop app is behind the macOS one.** The whole suite runs
-  green on Ubuntu 24.04, and `peregrine-gtk` has the map window, menus,
-  toolbar, shortcuts, file and question dialogs, and Map Data Sources, but no
-  options windows yet: Map ▸ Options and Overlay ▸ Options do nothing on Linux.
+  green on Ubuntu 24.04; what `peregrine-gtk` still lacks is listed under
+  *Desktop apps*.
+- Osprey is not for navigation: it is not a certified ECDIS.
+- Web feature layers have no cache eviction yet; the per-service cache files
+  under the user cache directory only grow.
 - Rendering is CPU-only; there is no GPU. The desktop demo uses Tk; Pippin
   composites the CPU canvas into a SwiftUI view.
 - Pippin ships without its data pack, so a clone cannot run the app until it

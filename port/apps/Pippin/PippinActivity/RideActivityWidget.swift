@@ -7,9 +7,11 @@
 // Dynamic Island and a paired watch's Smart Stack.
 //
 // Draws `RideActivityContent` as the app formatted it. The watch uses the
-// compact leading and trailing views.
+// compact leading and trailing views. Off route, the lock screen and the
+// expanded island carry the detour button (`ApplyDetourIntent`).
 
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -36,6 +38,9 @@ struct RideActivityWidget: Widget {
                     CardText(content: content, large: 24)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                DynamicIslandExpandedRegion(.bottom) {
+                    DetourButtonView(content: content)
+                }
             } compactLeading: {
                 TurnGlyph(content: content, size: 18, showsThen: false)
             } compactTrailing: {
@@ -52,14 +57,34 @@ private struct LockScreenCard: View {
     let content: RideActivityContent
 
     var body: some View {
-        HStack(spacing: 14) {
-            TurnGlyph(content: content, size: 40)
-            CardText(content: content, large: 30)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 14) {
+                TurnGlyph(content: content, size: 40)
+                CardText(content: content, large: 30)
+                Spacer(minLength: 0)
+            }
+            DetourButtonView(content: content)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .foregroundStyle(.white)
+    }
+}
+
+/// The detour on offer as a button that applies it in the app, or nothing.
+private struct DetourButtonView: View {
+    let content: RideActivityContent
+
+    var body: some View {
+        if content.phase == .offRoute, !content.detour.isEmpty {
+            Button(intent: ApplyDetourIntent()) {
+                Label(content.detour, systemImage: content.detourSymbol)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+        }
     }
 }
 
@@ -111,8 +136,8 @@ private struct CardText: View {
                     }
                 }
                 .monospacedDigit()
-                if !content.road.isEmpty {
-                    Text("Onto \(content.road)")
+                if !content.roadLine.isEmpty {
+                    Text(content.roadLine)
                         .font(.system(size: 15, weight: .medium, design: .rounded))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

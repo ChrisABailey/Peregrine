@@ -44,6 +44,7 @@ namespace app {
 // session to create one -- so it is wired after construction on both sides
 // rather than through either constructor.
 class OverlaySession;
+class EditorManager;
 
 // What the frame must stop offering while this editor is active
 // (~ IFvOverlayLimitUserInterface). The shell reads these and greys its own
@@ -79,8 +80,17 @@ class OverlayEditor {
   // description, not a widget leaking into the core.
   virtual std::vector<MenuNode> Tools() const { return {}; }
 
+  /// The manager that made this editor; null until it does.
+  EditorManager* editors() const { return editors_; }
+  /// The overlay in edit focus while this is the active editor, else null.
+  Overlay* edited() const;
+
  protected:
   OverlayEditor() = default;
+
+ private:
+  friend class EditorManager;
+  EditorManager* editors_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------

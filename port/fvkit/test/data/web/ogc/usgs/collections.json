@@ -1,0 +1,384 @@
+{
+ "collections": [
+  {
+   "id": "daily",
+   "links": [
+    {
+     "type": "application/json",
+     "rel": "root",
+     "title": "The landing page of this server as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "root",
+     "title": "The landing page of this server as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1?f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "self",
+     "title": "This document as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily?f=json"
+    },
+    {
+     "type": "application/ld+json",
+     "rel": "alternate",
+     "title": "This document as RDF (JSON-LD)",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily?f=jsonld"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "This document as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily?f=html"
+    },
+    {
+     "type": "application/schema+json",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/schema",
+     "title": "Schema of collection in JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/schema?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/schema",
+     "title": "Schema of collection in HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/schema?f=html"
+    },
+    {
+     "type": "application/schema+json",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+     "title": "Queryables for this collection as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/queryables?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+     "title": "Queryables for this collection as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/queryables?f=html"
+    },
+    {
+     "type": "application/geo+json",
+     "rel": "items",
+     "title": "Items as GeoJSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items?f=json"
+    },
+    {
+     "type": "application/ld+json",
+     "rel": "items",
+     "title": "Items as RDF (GeoJSON-LD)",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items?f=jsonld"
+    },
+    {
+     "type": "text/html",
+     "rel": "items",
+     "title": "Items as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items?f=html"
+    },
+    {
+     "type": "text/csv; charset=utf-8",
+     "rel": "items",
+     "title": "Items as CSV",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/items?f=csv"
+    }
+   ],
+   "title": "Daily values",
+   "description": "Daily data provide one data value to represent water conditions for the day. Throughout much of the history of the USGS, the primary water data available was daily data collected manually at the monitoring location once each day. With improved availability of computer storage and automated transmission of data, the daily data published today are generally a statistical summary or metric of the continuous data collected each day, such as the daily mean, minimum, or maximum value. Daily data are automatically calculated from the continuous data of the same parameter code and are described by parameter code and a statistic code. These data have also been referred to as “daily values” or “DV”.\n",
+   "keywords": [
+    "automated",
+    "daily",
+    "statistics",
+    "current",
+    "single location",
+    "data",
+    "features"
+   ],
+   "extent": {
+    "spatial": {
+     "bbox": [
+      [
+       -180,
+       -90,
+       180,
+       90
+      ]
+     ],
+     "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+    },
+    "temporal": {
+     "interval": [
+      [
+       null,
+       null
+      ]
+     ],
+     "trs": "http://www.opengis.net/def/uom/ISO-8601/0/Gregorian"
+    }
+   },
+   "itemType": "feature",
+   "crs": [
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS83",
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS27"
+   ],
+   "storageCrs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+  },
+  {
+   "id": "monitoring-locations",
+   "links": [
+    {
+     "type": "application/json",
+     "rel": "root",
+     "title": "The landing page of this server as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "root",
+     "title": "The landing page of this server as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1?f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "self",
+     "title": "This document as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations?f=json"
+    },
+    {
+     "type": "application/ld+json",
+     "rel": "alternate",
+     "title": "This document as RDF (JSON-LD)",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations?f=jsonld"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "This document as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations?f=html"
+    },
+    {
+     "type": "application/schema+json",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/schema",
+     "title": "Schema of collection in JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/schema?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/schema",
+     "title": "Schema of collection in HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/schema?f=html"
+    },
+    {
+     "type": "application/schema+json",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+     "title": "Queryables for this collection as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/queryables?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+     "title": "Queryables for this collection as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/queryables?f=html"
+    },
+    {
+     "type": "application/geo+json",
+     "rel": "items",
+     "title": "Items as GeoJSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=json"
+    },
+    {
+     "type": "application/ld+json",
+     "rel": "items",
+     "title": "Items as RDF (GeoJSON-LD)",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=jsonld"
+    },
+    {
+     "type": "text/html",
+     "rel": "items",
+     "title": "Items as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=html"
+    },
+    {
+     "type": "text/csv; charset=utf-8",
+     "rel": "items",
+     "title": "Items as CSV",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=csv"
+    }
+   ],
+   "title": "Monitoring locations",
+   "description": "Location information is basic information about the monitoring location including the name, identifier, agency responsible for data collection, and the date the location was established. It also includes information about the type of location, such as stream, lake, or groundwater, and geographic information about the location, such as state, county, latitude and longitude, and hydrologic unit code (HUC).\n",
+   "keywords": [
+    "single location",
+    "measured",
+    "computed",
+    "current",
+    "data",
+    "features"
+   ],
+   "extent": {
+    "spatial": {
+     "bbox": [
+      [
+       -180,
+       -90,
+       180,
+       90
+      ]
+     ],
+     "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+    },
+    "temporal": {
+     "interval": [
+      [
+       null,
+       null
+      ]
+     ],
+     "trs": "http://www.opengis.net/def/uom/ISO-8601/0/Gregorian"
+    }
+   },
+   "itemType": "feature",
+   "crs": [
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS84",
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS83",
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS27"
+   ],
+   "storageCrs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+  },
+  {
+   "id": "agency-codes",
+   "links": [
+    {
+     "type": "application/json",
+     "rel": "root",
+     "title": "The landing page of this server as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "root",
+     "title": "The landing page of this server as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1?f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "self",
+     "title": "This document as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes?f=json"
+    },
+    {
+     "type": "application/ld+json",
+     "rel": "alternate",
+     "title": "This document as RDF (JSON-LD)",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes?f=jsonld"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "This document as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes?f=html"
+    },
+    {
+     "type": "application/schema+json",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/schema",
+     "title": "Schema of collection in JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/schema?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/schema",
+     "title": "Schema of collection in HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/schema?f=html"
+    },
+    {
+     "type": "application/schema+json",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+     "title": "Queryables for this collection as JSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/queryables?f=json"
+    },
+    {
+     "type": "text/html",
+     "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+     "title": "Queryables for this collection as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/queryables?f=html"
+    },
+    {
+     "type": "application/geo+json",
+     "rel": "items",
+     "title": "Items as GeoJSON",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/items?f=json"
+    },
+    {
+     "type": "application/ld+json",
+     "rel": "items",
+     "title": "Items as RDF (GeoJSON-LD)",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/items?f=jsonld"
+    },
+    {
+     "type": "text/html",
+     "rel": "items",
+     "title": "Items as HTML",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/items?f=html"
+    },
+    {
+     "type": "text/csv; charset=utf-8",
+     "rel": "items",
+     "title": "Items as CSV",
+     "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/agency-codes/items?f=csv"
+    }
+   ],
+   "title": "Agency codes",
+   "description": "Code identifying the agency or organization used for site information, data sources, and permitting agencies. Agency codes are fixed values assigned by the National Water Information System (NWIS).\n",
+   "keywords": [
+    "metadata",
+    "features"
+   ],
+   "extent": {
+    "spatial": {
+     "bbox": [
+      [
+       -180,
+       -90,
+       180,
+       90
+      ]
+     ],
+     "crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+    },
+    "temporal": {
+     "interval": [
+      [
+       null,
+       null
+      ]
+     ]
+    }
+   },
+   "itemType": "feature",
+   "crs": [
+    "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+   ],
+   "storageCrs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+  }
+ ],
+ "links": [
+  {
+   "type": "application/json",
+   "rel": "self",
+   "title": "This document as JSON",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections?f=json"
+  },
+  {
+   "type": "application/ld+json",
+   "rel": "alternate",
+   "title": "This document as RDF (JSON-LD)",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections?f=jsonld"
+  },
+  {
+   "type": "text/html",
+   "rel": "alternate",
+   "title": "This document as HTML",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections?f=html"
+  }
+ ]
+}

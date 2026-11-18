@@ -1,0 +1,74 @@
+{
+ "links": [
+  {
+   "rel": "about",
+   "type": "text/html",
+   "title": "USGS Water Data APIs",
+   "href": "https://api.waterdata.usgs.gov"
+  },
+  {
+   "rel": "self",
+   "type": "application/json",
+   "title": "This document as JSON",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0?f=json"
+  },
+  {
+   "rel": "alternate",
+   "type": "application/ld+json",
+   "title": "This document as RDF (JSON-LD)",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0?f=jsonld"
+  },
+  {
+   "rel": "alternate",
+   "type": "text/html",
+   "title": "This document as HTML",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0?f=html",
+   "hreflang": "en-US"
+  },
+  {
+   "rel": "service-desc",
+   "type": "application/vnd.oai.openapi+json;version=3.0",
+   "title": "The OpenAPI definition as JSON",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/openapi"
+  },
+  {
+   "rel": "service-doc",
+   "type": "text/html",
+   "title": "The OpenAPI definition as HTML",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/openapi?f=html",
+   "hreflang": "en-US"
+  },
+  {
+   "rel": "conformance",
+   "type": "application/json",
+   "title": "Conformance",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/conformance"
+  },
+  {
+   "rel": "data",
+   "type": "application/json",
+   "title": "Collections",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/collections"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/processes",
+   "type": "application/json",
+   "title": "Processes",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/processes"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/tiling-schemes",
+   "type": "application/json",
+   "title": "The list of supported tiling schemes as JSON",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/TileMatrixSets?f=json"
+  },
+  {
+   "rel": "http://www.opengis.net/def/rel/ogc/1.0/tiling-schemes",
+   "type": "text/html",
+   "title": "The list of supported tiling schemes as HTML",
+   "href": "https://api.waterdata.usgs.gov/ogcapi/v0/TileMatrixSets?f=html"
+  }
+ ],
+ "title": "USGS Water Data APIs",
+ "description": "The United States Geological Survey (USGS) collects water data at monitoring locations across the United States using both automated sensors and manual data collection. These APIs provide access to that data, alongside metadata about data collections and monitoring locations, in standardized machine-readable formats.\n"
+}

@@ -3,42 +3,24 @@
 // Part of Peregrine, a cross-platform port of FalconView(tm).
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
-// fvkit/nav/maneuver.h — the turn list a route implies (guidance plan GD1).
-//
-// FalconView has no maneuvers to port and there is no third-party router to
-// ask, so this derives them: a route is a drawn line plus a list of legs, each
-// leg a run of arcs sharing a road name, and a maneuver is a leg boundary that
-// is actually a turn.
-//
-// TWO THINGS DECIDE WHAT A MANEUVER IS.
-//
-// 1. A LEG BOUNDARY IS A CANDIDATE, NOT A TURN. Road names change mid-block
-//    all the time — a street becomes an avenue at a county line, a lane
-//    becomes a track where the surface changes — and none of that is
-//    something to tell a rider. A boundary whose turn angle is inside
-//    `straight_deg` is dropped. The rider is told about corners, not about
-//    the cartography.
-//
-// 2. THE ANGLE IS MEASURED OVER A WINDOW, NOT OVER THE TWO ADJACENT POINTS.
-//    OSM shape points around a bend can be a metre apart, so the bearing into
-//    and out of a junction taken from the immediate neighbours is mostly
-//    receiver-grade noise about the road's curvature. The bearings are taken
-//    from `angle_window_m` back and forward instead, clamped so the window
-//    never reaches past the neighbouring candidates — a window that ran
-//    through the next corner would average the two into one wrong angle.
-//
-// Angles are SIGNED and in degrees, positive to the right, in (-180, +180].
-// Distances are metres along the route from its start (contract D2/D4), and
-// they are the PORT'S metre — the WGS-84 mean-radius great circle that
-// port/Routing measures arc lengths in. Guidance counts these distances down
-// against its own projection onto the same line, so a second definition of a
-// metre here would show up as a countdown that never reaches zero.
-//
-// THE INPUT IS NOT `fv::routing::Route`, deliberately. fvkit does not link
-// port/Routing (stated in both modules' CMakeLists) so this takes the shape a
-// route has — the line and the leg boundaries on it — and `port/RouteKit`
-// fills it from a real route. Same D6 seam as nav/road_snap.h, and it is also
-// what lets the tests here build a junction by hand.
+/**
+ * @file fvkit/nav/maneuver.h
+ * The turn list a route implies.
+ *
+ * Candidates are leg boundaries (a change of road name or class) and graph
+ * junctions inside a leg. A leg boundary is announced when it turns at least
+ * `straight_deg`; a junction only when the rider could go another way there
+ * (`BuildManeuvers`). Turn angles are measured over `angle_window_m` either
+ * side of the point, not over the adjacent shape points, and the window stops
+ * at the neighbouring leg boundaries.
+ *
+ * Angles are signed degrees, right positive, in (-180, +180]. Distances are
+ * metres along the route on the WGS-84 mean-radius sphere, the metre
+ * port/Routing measures arcs in, so Guidance's countdown reaches zero.
+ *
+ * The input is `RouteShape`, not `routing::Route`: fvkit does not link
+ * port/Routing, and RouteKit fills the shape from a routed route.
+ */
 
 #ifndef FVKIT_NAV_MANEUVER_H_
 #define FVKIT_NAV_MANEUVER_H_
@@ -94,7 +76,7 @@ struct ManeuverSettings {
   double end_margin_m = 20.0;
 };
 
-// One instruction.
+/// One instruction.
 struct Maneuver {
   GeoPoint at;                 // the junction itself
   double distance_m = 0.0;     // along the route from its start
@@ -103,6 +85,9 @@ struct Maneuver {
   std::string road;            // the road being JOINED ("" when unnamed)
   std::string klass;           // that road's OSM highway value
   uint32_t geometry_index = 0; // where `at` is in RouteShape::geometry
+  /// True when the road joined has the name of the road left (both unnamed
+  /// counts), so the instruction reads "left to stay on NAME".
+  bool continues = false;
 };
 
 // A route as this file needs it: the drawn line, and where each named run
@@ -114,15 +99,32 @@ struct RouteShape {
     std::string klass;
   };
 
+  /// A graph junction on the line and the other ways a rider could leave it.
+  struct Junction {
+    uint32_t geometry_index = 0;  // index into `geometry`
+    /// True bearings, degrees, of each other usable exit, measured about
+    /// `angle_window_m` out along it. The route's own exit and the way back
+    /// along the route are not listed.
+    std::vector<double> exit_bearings_deg;
+  };
+
   std::vector<GeoPoint> geometry;
   std::vector<Leg> legs;  // ordered, `geometry_begin` non-decreasing, [0] == 0
+  /// Ordered by `geometry_index`. Empty when the caller has no graph, and
+  /// then only leg boundaries are candidates.
+  std::vector<Junction> junctions;
 };
 
-// The turn list, in travel order, always beginning with kDepart and ending
-// with kArrive when the shape has a line at all.
-//
-// A shape with fewer than two points yields nothing: there is no route to
-// give instructions about, and a single point has no direction to depart in.
+/**
+ * The turn list, in travel order, beginning with kDepart and ending with
+ * kArrive. A shape with fewer than two points yields nothing.
+ *
+ * A junction inside a leg is announced when the route turns `slight_deg` or
+ * more and another exit turns less than `sharp_deg`, or turns `straight_deg`
+ * or more and another exit is straighter than the route's. A junction within
+ * `angle_window_m` of an announced leg boundary merges into it; of two such
+ * junctions the larger turn is kept.
+ */
 std::vector<Maneuver> BuildManeuvers(const RouteShape& shape,
                                      const ManeuverSettings& settings = {});
 

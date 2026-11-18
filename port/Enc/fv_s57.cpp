@@ -35,6 +35,10 @@ constexpr int kTopiEndNode = 2;
 
 // FSPT.USAG — a ring's role in an area feature.
 constexpr int kUsageInterior = 2;
+constexpr int kUsageExteriorTruncated = 3;
+
+// FSPT.MASK — 1 masks the edge from the boundary symbolization.
+constexpr int kMaskMasked = 1;
 
 // FSPT/VRPT.ORNT — 2 means the referenced edge runs against the feature.
 constexpr int kOrientationReverse = 2;
@@ -295,15 +299,40 @@ void S57Cell::AssembleGeometry(const S57FeatureRecord& record,
     uint64_t key;
     bool reverse;
     int usage;
+    bool hidden;  // kept in the geometry, left out of the boundary stroke
   };
   std::vector<Pointer> pointers;
   pointers.reserve(record.pointers.size());
-  // MASK (1 = masked) is ignored: masking says which parts of a boundary
-  // S-52 draws, not which parts exist.
   for (const S57SpatialPointer& sp : record.pointers)
-    pointers.push_back({sp.name, sp.orientation == kOrientationReverse, sp.usage});
+    pointers.push_back({sp.name, sp.orientation == kOrientationReverse,
+                        sp.usage,
+                        sp.mask == kMaskMasked ||
+                            sp.usage == kUsageExteriorTruncated});
 
   S57Geometry& geom = feature->geometry;
+  // Edge flags of the run being built, one per vertex; `any_hidden` decides
+  // whether the part keeps them.
+  std::vector<uint8_t> flags;
+  bool any_hidden = false;
+  auto start_flags = [&](size_t n, bool hidden) {
+    flags.assign(n, hidden ? 1 : 0);
+    if (n > 0) flags.back() = 0;
+    any_hidden = hidden;
+  };
+  // Appends an edge whose first vertex is already the run's last.
+  auto join_flags = [&](size_t n, bool hidden) {
+    if (n == 0) return;
+    if (!flags.empty()) flags.back() = hidden ? 1 : 0;
+    flags.insert(flags.end(), n - 1, hidden ? 1 : 0);
+    flags.back() = 0;
+    any_hidden = any_hidden || hidden;
+  };
+  auto push_part = [&](std::vector<S57Vertex> part, bool hole) {
+    geom.parts.push_back(std::move(part));
+    geom.part_is_hole.push_back(hole);
+    geom.unstroked_edges.resize(geom.parts.size());
+    if (any_hidden) geom.unstroked_edges.back() = flags;
+  };
   switch (feature->primitive) {
     case S57Primitive::kPoint: {
       for (const Pointer& p : pointers) {
@@ -328,18 +357,14 @@ void S57Cell::AssembleGeometry(const S57FeatureRecord& record,
         }
         if (!run.empty() && SamePoint(run.back(), pts.front())) {
           run.insert(run.end(), pts.begin() + 1, pts.end());
+          join_flags(pts.size(), p.hidden);
         } else {
-          if (!run.empty()) {
-            geom.parts.push_back(run);
-            geom.part_is_hole.push_back(false);
-          }
+          if (!run.empty()) push_part(std::move(run), false);
+          start_flags(pts.size(), p.hidden);
           run = std::move(pts);
         }
       }
-      if (!run.empty()) {
-        geom.parts.push_back(std::move(run));
-        geom.part_is_hole.push_back(false);
-      }
+      if (!run.empty()) push_part(std::move(run), false);
       break;
     }
     case S57Primitive::kArea: {
@@ -356,25 +381,28 @@ void S57Cell::AssembleGeometry(const S57FeatureRecord& record,
           continue;
         }
         if (ring.empty()) {
+          start_flags(pts.size(), p.hidden);
           ring = std::move(pts);
           ring_is_hole = p.usage == kUsageInterior;
         } else if (SamePoint(ring.back(), pts.front())) {
           ring.insert(ring.end(), pts.begin() + 1, pts.end());
+          join_flags(pts.size(), p.hidden);
         } else {
           // A gap inside a ring: keep the vertices (the boundary is still the
-          // producer's) and note the feature as incomplete.
+          // producer's) and note the feature as incomplete. The gap itself is
+          // stroked.
           ring.insert(ring.end(), pts.begin(), pts.end());
+          flags.push_back(0);
+          join_flags(pts.size(), p.hidden);
           feature->geometry_complete = false;
         }
         if (ring.size() > 2 && SamePoint(ring.front(), ring.back())) {
-          geom.parts.push_back(std::move(ring));
-          geom.part_is_hole.push_back(ring_is_hole);
+          push_part(std::move(ring), ring_is_hole);
           ring.clear();
         }
       }
       if (!ring.empty()) {  // never closed
-        geom.parts.push_back(std::move(ring));
-        geom.part_is_hole.push_back(ring_is_hole);
+        push_part(std::move(ring), ring_is_hole);
         feature->geometry_complete = false;
       }
       break;

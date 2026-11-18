@@ -36,7 +36,7 @@ class EditorManager;
 namespace desk {
 
 constexpr int kPackageFormat = 1;   ///< the highest `format` this build reads
-constexpr int kPluginApiMajor = 1;  ///< the C plugin API (`fv_plugin.h`) this build hosts
+constexpr int kPluginApiMajor = 2;  ///< the C plugin API (`fv_plugin.h`) this build hosts
 constexpr char kPackageManifestName[] = "peregrine-package.json";
 
 /// One `tools` entry: a ToolDesc without its `run`, and where that comes from.
@@ -44,6 +44,14 @@ struct ToolManifestEntry {
   ToolDesc desc;
   std::string implementation_kind;  ///< "builtin", "library", "native" or "python"
   std::string implementation_name;
+};
+
+/// One `feature_sources` entry: a source of feature layers a native library
+/// adds (`NativeRegistrar::AddFeatureSource`), registered under `id`.
+struct FeatureSourceManifestEntry {
+  std::string id;
+  std::string display_name;
+  std::string implementation_name;  ///< the name the library added it under; always native
 };
 
 /// A parsed `peregrine-package.json`.
@@ -62,6 +70,7 @@ struct PackageManifest {
   std::string python_path;                       ///< relative to the package root
   std::vector<OverlayManifestEntry> overlays;
   std::vector<ToolManifestEntry> tools;
+  std::vector<FeatureSourceManifestEntry> feature_sources;
 
   /// The kinds of code the package runs, as an install confirmation names
   /// them ("C library", "native C++ library", "Python"); empty when every
@@ -149,8 +158,6 @@ class PackageManager {
   void Scan(std::vector<std::string>* warnings);
   /// Registers the overlays and tools of every enabled package that wins its id.
   void LoadAll();
-  /// The editor manager native editor factories are given; set before loading.
-  void SetEditorManager(app::EditorManager* editors) { editors_ = editors; }
 
   const std::vector<PackageInfo>& packages() const { return packages_; }
   /// The copy of `id` that wins, or null.
@@ -196,7 +203,6 @@ class PackageManager {
   app::OverlayTypeRegistry& types_;
   ToolRegistry& tools_;
   std::string host_version_;
-  app::EditorManager* editors_ = nullptr;
   State state_;
   std::vector<PackageInfo> packages_;
   std::map<std::string, std::string> loaded_;  ///< id → directory loaded from

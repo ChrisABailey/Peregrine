@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "id": "peregrine.osm",
+  "name": "OpenStreetMap Overlay",
+  "version": "1.0.0",
+  "publisher": "Peregrine",
+  "license": "LGPL-3.0-or-later",
+  "description": "Draws the catalog's OpenStreetMap coverage over any map with a style sheet of its own, chosen under Overlay ▸ Options.",
+  "requires": { "peregrine": "0.1" },
+  "libraries": {
+    "macos": "lib/macos/libosmoverlay.dylib",
+    "linux-x86_64": "lib/linux-x86_64/libosmoverlay.so",
+    "linux-aarch64": "lib/linux-aarch64/libosmoverlay.so",
+    "windows-x86_64": "lib/windows-x86_64/osmoverlay.dll"
+  },
+  "overlays": [
+    { "id": "peregrine.osm.overlay", "display_name": "OpenStreetMap",
+      "icon": "resources/osm.svg", "kind": "static", "display_order": 20,
+      "opacity": 100,
+      "implementation": { "native": "osm" } }
+  ]
+}

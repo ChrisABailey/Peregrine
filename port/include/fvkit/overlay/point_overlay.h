@@ -69,6 +69,7 @@
 #include <vector>
 
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/search.h"
 #include "fvkit/canvas/canvas.h"
 #include "fvkit/canvas/geo_draw.h"
@@ -176,7 +177,8 @@ class PointOverlay : public Overlay,
                      public app::EditTarget,
                      public app::EditHint,
                      public app::SearchProvider,
-                     public app::ItemInfo {
+                     public app::ItemInfo,
+                     public app::HostAware {
  public:
   explicit PointOverlay(std::string name = "Points");
   ~PointOverlay() override;
@@ -191,6 +193,7 @@ class PointOverlay : public Overlay,
   app::SnapTo* AsSnapTo() override { return this; }
   app::ContextMenu* AsContextMenu() override { return this; }
   app::EditTarget* AsEditTarget() override { return this; }
+  app::HostAware* AsHostAware() override { return this; }
   app::SearchProvider* AsSearch() override { return this; }
   app::EditHint* AsEditHint() override { return this; }
   app::ItemInfo* AsItemInfo() override { return this; }
@@ -225,11 +228,6 @@ class PointOverlay : public Overlay,
   bool OnMouseUp(const MouseEvent& e) override;
   bool OnKeyDown(const KeyEvent& e) override;
 
-  /// The stack, for mouse CAPTURE and for the snap walk, and for nothing else.
-  /// Null is legal: the gestures still work, they are just uncaptured and
-  /// unsnapped.
-  void SetManager(OverlayManager* manager) { manager_ = manager; }
-  OverlayManager* manager() const { return manager_; }
 
   /// A copy of the projection the last frame was drawn with. The input SPI
   /// carries no projection, so an overlay that turns a click into a position
@@ -473,7 +471,6 @@ class PointOverlay : public Overlay,
   std::unique_ptr<EmbeddedSymbolLibrary> symbol_library_;
 
   std::unique_ptr<PointEditSession> edit_;
-  OverlayManager* manager_ = nullptr;
   MapProjection last_proj_;
   bool have_proj_ = false;
 

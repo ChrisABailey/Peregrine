@@ -203,3 +203,137 @@ TEST(Maneuver, DistancesAreCumulativeAlongTheLine) {
 
 }  // namespace nav
 }  // namespace fv
+
+// Junction candidates (JT-D2, JT-D3). Bearings are compass degrees: the route
+// comes in heading east (90), so an exit straight on is 90, left 0, right 180.
+
+namespace fv {
+namespace nav {
+namespace {
+
+/// One unnamed-change road east 200 m, then `turn_east`/`turn_north` metres,
+/// with no leg boundary at the bend (index 2).
+RouteShape Bend(double turn_east, double turn_north) {
+  RouteShape s = Corner(turn_east, turn_north);
+  s.legs = {Leg(0, "Main St")};
+  return s;
+}
+
+RouteShape::Junction Junction(uint32_t index, std::vector<double> exits) {
+  RouteShape::Junction j;
+  j.geometry_index = index;
+  j.exit_bearings_deg = std::move(exits);
+  return j;
+}
+
+/// The maneuvers between depart and arrive.
+std::vector<Maneuver> Turns(const RouteShape& s) {
+  std::vector<Maneuver> m = BuildManeuvers(s);
+  if (m.size() < 2) return {};
+  return std::vector<Maneuver>(m.begin() + 1, m.end() - 1);
+}
+
+}  // namespace
+
+TEST(ManeuverJunction, ABendWithNoOtherExitIsNotATurn) {
+  RouteShape s = Bend(0, 200);
+  EXPECT_TRUE(Turns(s).empty());
+  s.junctions = {Junction(2, {})};
+  EXPECT_TRUE(Turns(s).empty());
+}
+
+TEST(ManeuverJunction, ATurnWithAnotherExitIsAnnouncedAndContinues) {
+  RouteShape s = Bend(0, 200);
+  s.junctions = {Junction(2, {90.0})};
+  const std::vector<Maneuver> t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_EQ(t[0].type, ManeuverType::kLeft);
+  EXPECT_NEAR(t[0].turn_deg, -90.0, 1.0);
+  EXPECT_EQ(t[0].geometry_index, 2u);
+  EXPECT_EQ(t[0].road, "Main St");
+  EXPECT_TRUE(t[0].continues);
+}
+
+// A slight turn is announced only when another exit is straighter.
+TEST(ManeuverJunction, ASlightTurnNeedsAStraighterExit) {
+  RouteShape s = Bend(173.2, -100.0);  // 30 degrees right
+  s.junctions = {Junction(2, {0.0})};  // 90 left: not straighter
+  EXPECT_TRUE(Turns(s).empty());
+  s.junctions = {Junction(2, {90.0})};  // straight on
+  const std::vector<Maneuver> t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_EQ(t[0].type, ManeuverType::kSlightRight);
+}
+
+// A fork: the route takes the 35 degree right arm, the other arm bears 25 left.
+TEST(ManeuverJunction, AForkTakingTheLessStraightArmIsAnnounced) {
+  RouteShape s = Bend(163.8, -114.7);
+  s.junctions = {Junction(2, {65.0})};
+  const std::vector<Maneuver> t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_EQ(t[0].type, ManeuverType::kSlightRight);
+  EXPECT_NEAR(t[0].turn_deg, 35.0, 1.0);
+
+  // Taking the straighter arm needs no instruction.
+  s.junctions = {Junction(2, {130.0})};  // other arm 40 right
+  EXPECT_TRUE(Turns(s).empty());
+}
+
+// An exit that doubles back past sharp_deg is not a way to go wrong at a bend.
+TEST(ManeuverJunction, AnExitSharplyBackDoesNotMakeABendATurn) {
+  RouteShape s = Bend(100.0, 173.2);    // 60 degrees left
+  s.junctions = {Junction(2, {230.0})};  // 140 right
+  EXPECT_TRUE(Turns(s).empty());
+  s.junctions = {Junction(2, {180.0})};  // 90 right
+  EXPECT_EQ(Turns(s).size(), 1u);
+}
+
+// Two graph nodes 10 m apart on one corner give one maneuver.
+TEST(ManeuverJunction, TwoNodesOnOneBendAreOneTurn) {
+  RouteShape s;
+  s.geometry = {At(0, 0),        At(100, 0),       At(200, 0),
+                At(207.07, 7.07), At(207.07, 107), At(207.07, 207)};
+  s.legs = {Leg(0, "Main St")};
+  s.junctions = {Junction(2, {90.0}), Junction(3, {45.0})};
+  const std::vector<Maneuver> t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_EQ(t[0].type, ManeuverType::kLeft);
+}
+
+// A junction at, or within the window of, an announced leg boundary merges into
+// it, and the boundary keeps its road name.
+TEST(ManeuverJunction, AJunctionOnALegBoundaryMergesIntoIt) {
+  RouteShape s = Corner(0, 200);
+  s.junctions = {Junction(2, {90.0})};
+  std::vector<Maneuver> t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_EQ(t[0].road, "Second St");
+  EXPECT_FALSE(t[0].continues);
+
+  s.geometry = {At(0, 0), At(100, 0), At(190, 0), At(200, 0), At(200, 100), At(200, 200)};
+  s.legs = {Leg(0, "First St"), Leg(3, "Second St")};
+  s.junctions = {Junction(2, {0.0})};
+  t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_EQ(t[0].geometry_index, 3u);
+  EXPECT_EQ(t[0].road, "Second St");
+}
+
+// `continues` at a leg boundary: same name (a class change) or both unnamed.
+TEST(ManeuverJunction, ContinuesComparesTheNamesAtALegBoundary) {
+  RouteShape s = Corner(0, 200);
+  s.legs = {Leg(0, "Main St"), Leg(2, "Main St")};
+  s.legs[1].klass = "tertiary";
+  std::vector<Maneuver> t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_TRUE(t[0].continues);
+
+  s.legs = {Leg(0, ""), Leg(2, "")};
+  s.legs[1].klass = "service";
+  t = Turns(s);
+  ASSERT_EQ(t.size(), 1u);
+  EXPECT_TRUE(t[0].continues);
+}
+
+}  // namespace nav
+}  // namespace fv

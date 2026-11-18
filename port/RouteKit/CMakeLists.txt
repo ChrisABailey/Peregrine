@@ -35,6 +35,7 @@ if(FVW_BUILD_TESTS)
   add_executable(fv_routekit_test
     test/road_graph_overlay_test.cpp
     test/road_graph_search_test.cpp
+    test/route_detour_test.cpp
     test/route_doc_test.cpp
     test/route_edit_test.cpp
     test/route_editor_test.cpp
@@ -51,6 +52,7 @@ if(FVW_BUILD_TESTS)
   # copied into this one.
   target_compile_definitions(fv_routekit_test PRIVATE
     FV_ROUTE_RULES_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/route-weights.json"
+    FV_ROUTE_CITY_RULES_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/route-weights-city.json"
     FV_ROUTE_FIXTURE_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/Ruddy Turnstone to the beachclub.fvrte"
     FV_ROUTE_BEACH_FIXTURE_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/Boardwalk 29 to Boardwalk 41 by the beach.fvrte")
   gtest_discover_tests(fv_routekit_test

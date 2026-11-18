@@ -135,6 +135,9 @@ struct S52LookupAttribute {
 struct S52Instruction {
   std::string op;                    // SY, LS, LC, AC, AP, TX, TE, CS
   std::vector<std::string> params;
+  /// Per parameter: written in single quotes. A quoted TX text is a literal
+  /// string, an unquoted one an attribute acronym.
+  std::vector<bool> quoted;
 };
 
 struct S52Lookup {
@@ -245,8 +248,9 @@ class S52PresentationLibrary {
   // Every row of `table` whose object class is `acronym`, in file order. The
   // style engine walks them in order and takes the first whose attribute
   // conditions all match, which is S-52's rule.
-  std::vector<const S52Lookup*> Lookups(S52LookupTable table,
-                                        const std::string& acronym) const;
+  // Empty when nothing matches. Valid until the library is reopened.
+  const std::vector<const S52Lookup*>& Lookups(S52LookupTable table,
+                                               const std::string& acronym) const;
   size_t lookup_count(S52LookupTable table) const;
 
   // --- symbol definitions -------------------------------------------------

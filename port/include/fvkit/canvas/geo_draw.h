@@ -273,8 +273,9 @@ class GeoDraw {
   // never a silent nothing, because a mistyped id is the most likely failure
   // and it is invisible otherwise.
   //
-  // PR2: `style.rotation_deg` is measured against the CHART'S NORTH, so a
-  // turned projection turns this symbol with it (SymbolAngleOnChart).
+  // `style.rotation_deg` is measured against the chart's north, so a turned
+  // projection turns this symbol with it, unless `style.turns_with_chart` is
+  // false.
   Status DrawSymbol(const GeoPoint& at, const std::string& symbol_id,
                     const PointSymbolStyle& style = PointSymbolStyle{});
 

@@ -76,7 +76,10 @@ struct OverlayTypeDesc {
   // means a hidden type needs no separate flag.
   std::string display_name;
   std::string parent_display_name;  // menu grouping; may be empty
-  std::string icon;                 // symbolic name; the shell maps it to art
+  std::string icon;                 // symbolic name, or the absolute path of a .svg/.png/.pdf
+  // The package (or manifest) directory. Editor tool icons that name an art
+  // file by a relative path resolve against it; empty for a built-in type.
+  std::string resource_dir;
 
   // Where a NEW instance lands in the stack -- insertion is by display order,
   // not blindly on top (~ AddOverlayToStack). Larger = nearer the top.
@@ -108,6 +111,11 @@ class OverlayTypeRegistry {
   // factory cannot be instantiated and would fail later, at the point where
   // the user clicked something -- so it fails here instead.
   Status Register(OverlayTypeDesc desc);
+
+  /// Replaces a registered type's descriptor, keeping its place in the
+  /// registration order; kNotFound when `desc.id` is not registered. For an
+  /// application that describes a built-in type its own way.
+  Status Replace(OverlayTypeDesc desc);
 
   const OverlayTypeDesc* Find(const TypeId& id) const;
 

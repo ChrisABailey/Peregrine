@@ -283,6 +283,13 @@ NS_SWIFT_SENDABLE
 @property(nonatomic, readonly) BOOL cameraIsAnimating;
 @end
 
+/// What colors the halo around a calculated route; `fv::RouteColoring`.
+typedef NS_ENUM(NSInteger, PPRouteColoring) {
+  PPRouteColoringPlain = 0,
+  PPRouteColoringSlope = 1,
+  PPRouteColoringPathType = 2,
+};
+
 /// The slider a map key row offers for its setting.
 typedef NS_ENUM(NSInteger, PPLegendSettingKind) {
   /// No slider: pace, paved surface, or a row with no single setting.
@@ -388,6 +395,65 @@ NS_SWIFT_SENDABLE
 /// What kind of thing it is, from the tile's `class`, else `subclass`
 /// ("grass", "pitch", "town"), with underscores as spaces. Never empty.
 @property(nonatomic, readonly, copy) NSString *kind;
+@end
+
+/// The road under a tap, in the map key's words.
+NS_SWIFT_SENDABLE
+@interface PPRoadInfo : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// The road's own name; empty when it has none.
+@property(nonatomic, readonly, copy) NSString *name;
+/// The key's row for the road's type ("Quiet street"), else the OSM class
+/// ("living street").
+@property(nonatomic, readonly, copy) NSString *typeLabel;
+/// What moves the road's routing tier beyond its type: the key's rows
+/// ("Painted bike lane", "National route") in key order, then every other
+/// multiplier the router applies ("Private", "Fast traffic", "Toll").
+@property(nonatomic, readonly, copy) NSArray<NSString *> *markings;
+/// The tier word under the rider's key settings ("Most preferred" … "Never").
+@property(nonatomic, readonly, copy) NSString *tierWord;
+/// Index of `tierWord` in the rules' tiers, best first; -1 for Never.
+@property(nonatomic, readonly) NSInteger tierRank;
+/// The cost terms, e.g. "secondary 2.5 × painted lane 0.6 = 1.5".
+@property(nonatomic, readonly, copy) NSString *termsLine;
+/// Posted speed limit, km/h; 0 when the map has none.
+@property(nonatomic, readonly) NSInteger speedLimitKph;
+/// The map's surface word ("paved", "compacted", "unpaved"), or empty.
+@property(nonatomic, readonly, copy) NSString *surface;
+/// The graph has elevation here; the next two are 0 otherwise.
+@property(nonatomic, readonly) BOOL hasGrade;
+/// Average grade of the block, percent, never negative.
+@property(nonatomic, readonly) double gradePercent;
+/// The direction the block rises toward, degrees true.
+@property(nonatomic, readonly) double uphillBearingDegrees;
+@end
+
+/// Where a tap falls on the planned route.
+NS_SWIFT_SENDABLE
+@interface PPRouteSpot : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+@property(nonatomic, readonly) double metersFromStart;
+@property(nonatomic, readonly) double metersToEnd;
+/// Estimated riding seconds from the start to here, and from here to the end.
+@property(nonatomic, readonly) double secondsFromStart;
+@property(nonatomic, readonly) double secondsToEnd;
+/// The route's elevation profile covers this spot.
+@property(nonatomic, readonly) BOOL hasGrade;
+/// Grade in the direction of travel over about 50 m, percent; negative downhill.
+@property(nonatomic, readonly) double gradePercent;
+@end
+
+/// What is under a tap on the map: the route, the road, and the base map's
+/// own feature, each nil when absent.
+NS_SWIFT_SENDABLE
+@interface PPMapInfo : NSObject
+- (instancetype)init NS_UNAVAILABLE;
+/// The tapped point, or the point on the route when `routeSpot` is set.
+@property(nonatomic, readonly) PPGeoPoint coordinate;
+@property(nonatomic, readonly, nullable) PPRouteSpot *routeSpot;
+@property(nonatomic, readonly, nullable) PPRoadInfo *road;
+/// The base map feature drawn there, given only when no road is.
+@property(nonatomic, readonly, nullable) PPChartFeature *feature;
 @end
 
 /// Which S-52 display categories a chart draws; each includes the ones before.
@@ -828,10 +894,11 @@ NS_SWIFT_SENDABLE
 /// Loads the graph on first call; call it on the render queue.
 @property(nonatomic, readonly) BOOL elevationAvailable;
 
-/// Draws the calculated route coloured by grade where the graph has
-/// elevation: green downhill, blue on the flat, yellow to red uphill.
-/// Off by default. Set it on the render queue.
-@property(nonatomic) BOOL routeSlopeColors;
+/// What the halo around the calculated route shows: the casing alone, the
+/// grade (green downhill, yellow to red uphill, where the graph has
+/// elevation), or the map-key tier of each road (green most preferred to red
+/// avoided). Plain by default. Set it on the render queue.
+@property(nonatomic) PPRouteColoring routeColoring;
 
 /// The rider's map-key adjustments: profile name → (`PPLegendEntry.settingId`
 /// → stop index into its `stopWords`). Each plan on a profile and the legend
@@ -850,6 +917,16 @@ NS_SWIFT_SENDABLE
 
 /// Stops drawing the previous line `replanForAdjustments` kept.
 - (void)clearRouteGhost;
+
+/// Makes the detour `PPGuidance.detourKind` offers the guided line, without
+/// editing the route document; the planned line stays drawn faded. Re-planned
+/// first when the rider has moved on from where it was offered. Nil when
+/// nothing is on offer. Call it on the render queue.
+- (nullable PPRoute *)applyDetour;
+
+/// Back to the planned line and its guidance. Nil when not detouring. Call it
+/// on the render queue. Leaving GPS mode also ends a detour.
+- (nullable PPRoute *)cancelDetour;
 
 /// No route, and no document on disk either. Clear Route in the sheet.
 - (PPRoute *)clearRoute;
@@ -1226,6 +1303,17 @@ NS_SWIFT_SENDABLE
                                     tolerance:(double)tolerance
     NS_SWIFT_NAME(chartFeature(near:in:tolerance:));
 
+/// The route, road and base map feature under a tap, or nil when there is
+/// none of them. The route counts within `tolerance` points of the tap; a
+/// road within the same, held to 5–40 m on the ground. The road's tier uses
+/// the map key's profile and the rider's key settings.
+///
+/// Render queue only; coordinates as in `chartFeatureNear:inViewport:tolerance:`.
+- (nullable PPMapInfo *)mapInfoNear:(CGPoint)screenPoint
+                         inViewport:(PPViewport *)viewport
+                          tolerance:(double)tolerance
+    NS_SWIFT_NAME(mapInfo(near:in:tolerance:));
+
 /// How far from drawn ink a press still names a feature, in iOS points
 /// (`points.feature_hit_tolerance`, 12 by default).
 @property(nonatomic, readonly) double chartFeatureHitTolerance;
@@ -1271,7 +1359,7 @@ NS_SWIFT_SENDABLE
 @property(nonatomic) PPChartPalette chartPalette;
 /// Draws buoy and beacon names on the chart (YES by default, S-52's own).
 @property(nonatomic) BOOL chartNavaidNames;
-/// Depths in `chartFeaturesNear:` summaries are in feet rather than metres.
+/// Soundings and `chartFeaturesNear:` summaries are in feet rather than metres.
 @property(nonatomic) BOOL chartDepthsInFeet;
 
 #pragma mark - Recording the ride

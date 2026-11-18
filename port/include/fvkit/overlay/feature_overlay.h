@@ -9,6 +9,9 @@
 /// MapLibre JSON and renders through `MapLibreStyleEngine` and
 /// `VectorRenderer`, like any other vector product. The style travels with
 /// the file: in `layer_styles` in a GeoPackage, in `fv_style` in GeoJSON.
+/// A spec a registered feature source claims (a web service URL,
+/// `fvkit/feature/feature_source.h`) opens read-only, and its style travels
+/// in the workspace instead (`ConfigurationProperties`).
 #pragma once
 
 #include <memory>
@@ -16,6 +19,8 @@
 #include <vector>
 
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/properties.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/search.h"
 #include "fvkit/feature/feature_filter.h"
 #include "fvkit/feature/geopackage.h"
@@ -30,6 +35,9 @@
 namespace fv {
 
 class OverlayManager;
+namespace web {
+class RemoteFeatureLayer;
+}  // namespace web
 
 /// Where `FeatureOverlay::ExportSelection` writes the selected features.
 struct FeatureExport {
@@ -58,7 +66,8 @@ class FeatureOverlay : public Overlay,
                        public app::HitTest,
                        public app::EditHint,
                        public app::SnapTo,
-                       public app::ItemInfo {
+                       public app::ItemInfo,
+                       public app::HostAware {
  public:
   explicit FeatureOverlay(std::string name = "Features");
   ~FeatureOverlay() override;
@@ -72,7 +81,12 @@ class FeatureOverlay : public Overlay,
 
   app::Persistence* AsPersistence() override { return this; }
   app::SearchProvider* AsSearch() override { return this; }
-  app::EditTarget* AsEditTarget() override { return this; }
+  /// Null for a layer from a feature source, which cannot be edited.
+  app::EditTarget* AsEditTarget() override { return from_source_ ? nullptr : this; }
+  app::HostAware* AsHostAware() override { return this; }
+  /// Takes the label font, display scale and the window's undo stack from
+  /// the host; without one, edits keep their own history.
+  void SetHost(app::OverlayHost* host) override;
   app::SnapTo* AsSnapTo() override { return this; }
   app::HitTest* AsHitTest() override { return this; }
   app::EditHint* AsEditHint() override { return this; }
@@ -111,11 +125,8 @@ class FeatureOverlay : public Overlay,
   /// The topmost feature's attributes, as the form shows them.
   std::optional<app::ItemInfoSheet> InfoAt(const MapProjection& proj, PixelPoint p,
                                            double tolerance_px) override;
-  std::string EditHintAt(PixelPoint p) override { return edit_->HintAt(p); }
+  std::string EditHintAt(PixelPoint p) override;
 
-  /// The stack, for mouse capture and snapping to other overlays; null is legal.
-  void SetManager(OverlayManager* manager) { manager_ = manager; }
-  OverlayManager* manager() const { return manager_; }
   /// The projection of the last draw; hit testing uses it.
   bool has_projection() const { return have_proj_; }
   const MapProjection& last_projection() const { return last_proj_; }
@@ -134,6 +145,18 @@ class FeatureOverlay : public Overlay,
   /// from `spec`. kInvalidArg for a layer of a file of several saved over
   /// that file under its plain path, which would replace the other layers.
   Status FileSaveAs(const std::string& spec, int format_index) override;
+  /// For a layer from a feature source, its style document (key "style"),
+  /// so a workspace restores the style the user gave it; null otherwise.
+  app::Properties* ConfigurationProperties() override;
+  /// True when the layer came from a feature source rather than a file.
+  bool from_source() const { return from_source_; }
+  /// The style the feature source gave the layer when it opened (a
+  /// `WriteFeatureStyleJson` document); empty for the default style or a file layer.
+  const std::string& source_style_json() const { return source_style_json_; }
+  /// The cached web layer under a feature-source layer; null for any other.
+  web::RemoteFeatureLayer* remote_layer() const;
+  /// The hint edits of a feature-source layer are refused with.
+  static const char kReadOnlySourceHint[];
   /// The identifiers of the other tables of the GeoPackage at `spec` that a
   /// format-0 save to its plain path would replace, when it holds two or more.
   /// Empty for a spec naming a table, one table, a missing file, GeoJSON, and
@@ -263,6 +286,8 @@ class FeatureOverlay : public Overlay,
 
  private:
   Status Load(const std::string& spec);
+  /// Opens `spec` through the feature-source registry.
+  Status LoadSource(const std::string& spec);
   /// Replaces the style with the one read from `spec`'s `style_json`, or the default.
   void UseStoredStyle(const std::string& spec, const std::string& style_json);
   /// The style JSON a save stores: the style and the layer's settings. The
@@ -297,10 +322,16 @@ class FeatureOverlay : public Overlay,
   /// The rules style `Draws` asks, without selection halos; rebuilt when the style changes.
   mutable std::unique_ptr<MapLibreStyleEngine> draws_engine_;
   mutable FeatureStyle draws_style_;
-  OverlayManager* manager_ = nullptr;
   MapProjection last_proj_;
   bool have_proj_ = false;
   std::unique_ptr<FeatureEditSession> edit_;
+  bool from_source_ = false;
+  std::string source_style_json_;
+  /// Carries a remote layer's change callback to the host, which may come and go.
+  struct RedrawRelay;
+  std::shared_ptr<RedrawRelay> redraw_;
+  class SourceProperties;
+  std::unique_ptr<SourceProperties> source_props_;
 };
 
 /// Adds an empty feature table for a layer named `name` with `schema` and the

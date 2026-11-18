@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "fvkit/app/manager_host.h"
 #include "fvkit/app/undo.h"
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/feature/layer.h"
@@ -88,8 +89,8 @@ struct Fixture {
     layer = std::make_shared<fv::MemoryFeatureLayer>("Edits", schema);
     overlay = std::make_shared<FeatureOverlay>();
     overlay->SetLayer(layer);
-    overlay->SetManager(&manager);
     EXPECT_TRUE(manager.Add(overlay).ok());
+    host.Bind(*overlay);
     overlay->edit().EnterEditFocus();
     Draw(*overlay, proj);
   }
@@ -112,6 +113,7 @@ struct Fixture {
 
   fv::MapProjection proj = View();
   fv::OverlayManager manager;
+  fv::app::ManagerHost host{manager};
   std::shared_ptr<fv::MemoryFeatureLayer> layer;
   std::shared_ptr<FeatureOverlay> overlay;
 };

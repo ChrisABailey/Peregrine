@@ -55,6 +55,17 @@ Status OverlayTypeRegistry::Register(OverlayTypeDesc desc) {
   return Status::Ok();
 }
 
+Status OverlayTypeRegistry::Replace(OverlayTypeDesc desc) {
+  auto it = by_id_.find(desc.id);
+  if (it == by_id_.end())
+    return Status::Error(kNotFound, "overlay type '" + desc.id + "' is not registered");
+  if (!desc.factory)
+    return Status::Error(kInvalidArg, "overlay type '" + desc.id + "' has no factory");
+  // In place, so pointers handed out by Find stay valid.
+  *it->second = std::move(desc);
+  return Status::Ok();
+}
+
 bool OverlayTypeRegistry::SetEditorFactory(
     const TypeId& id, std::function<std::unique_ptr<OverlayEditor>()> factory) {
   auto it = by_id_.find(id);

@@ -5,6 +5,7 @@
 
 #include "fvkit/app/session.h"
 
+#include "fvkit/feature/feature_source.h"
 #include "fvkit/app/properties.h"
 
 #include <algorithm>
@@ -14,6 +15,8 @@
 
 #include "fvkit/app/editor.h"
 #include "fvkit/app/source_spec.h"
+#include "fvkit/feature/feature_source.h"
+#include "fvkit/settings.h"
 
 namespace fv {
 namespace app {
@@ -315,7 +318,13 @@ FlowResult OverlaySession::OpenFileImpl(const TypeId& type,
   }
 
   const OverlayTypeDesc* desc = nullptr;
-  if (type.empty()) {
+  if (type.empty() && IsFeatureSourceSpec(spec)) {
+    // A web service URL has no extension; the feature overlay opens every source.
+    desc = registry_.Find(kFeatureSourceOverlayType);
+    if (desc == nullptr) {
+      return Fail(Status::Error(kNotFound, "no overlay type opens '" + spec + "'"));
+    }
+  } else if (type.empty()) {
     const std::string ext = ExtensionOf(spec);
     desc = registry_.FindByExtension(ext);
     if (desc == nullptr) {
@@ -654,8 +663,21 @@ Status OverlaySession::BuildConfiguration(
     const std::string row = prefix + std::to_string(written) + ".";
     out->emplace_back(row + "type", o->type_id());
     std::string spec;
-    if (Persistence* p = o->AsPersistence()) spec = p->file_spec();
+    Properties* props = nullptr;
+    if (Persistence* p = o->AsPersistence()) {
+      spec = p->ConfigurationSpec();
+      props = p->ConfigurationProperties();
+    }
     out->emplace_back(row + "file", spec);
+    if (props != nullptr) {
+      // Written in full: a restore must not fall back to defaults that may differ by then.
+      Settings saved;
+      props->SaveTo(&saved, row + "prop.", false);
+      for (const PropertySpec& ps : props->Describe())
+        if (saved.Has(row + "prop." + ps.key))
+          out->emplace_back(row + "prop." + ps.key, saved.GetString(row + "prop." + ps.key));
+      if (spec.empty()) out->emplace_back(row + "new", "true");
+    }
     out->emplace_back(row + "visible", o->IsVisible() ? "true" : "false");
     if (o->SupportsOpacity()) out->emplace_back(row + "opacity", std::to_string(o->opacity()));
     out->emplace_back(row + "name", o->Name());
@@ -718,7 +740,15 @@ Status OverlaySession::RestoreConfiguration(const std::string& name) {
     }
 
     std::shared_ptr<Overlay> overlay;
-    if (desc->file.has_value()) {
+    if (desc->file.has_value() && spec.empty() && settings_.GetBool(row + "new", false)) {
+      // A document whose state is its properties: made afresh, then loaded below.
+      if (NewFileOverlayImpl(type) != FlowResult::kDone) {
+        Warn("configuration '" + name + "' could not recreate a '" + type + "' overlay");
+        continue;
+      }
+      for (const std::shared_ptr<Overlay>& o : manager_.Overlays())
+        if (o.get() == manager_.current()) overlay = o;
+    } else if (desc->file.has_value()) {
       if (spec.empty()) {
         // An untitled document. There is no file to reopen and inventing a
         // blank one would be a different document, so it is dropped.
@@ -743,6 +773,13 @@ Status OverlaySession::RestoreConfiguration(const std::string& name) {
       }
     }
     if (overlay == nullptr) continue;
+    if (Persistence* p = overlay->AsPersistence()) {
+      if (Properties* props = p->ConfigurationProperties()) {
+        std::vector<std::string> warnings;
+        props->LoadFrom(settings_, row + "prop.", &warnings);
+        for (const std::string& w : warnings) Warn("configuration '" + name + "': " + w);
+      }
+    }
 
     overlay->SetVisible(settings_.GetBool(row + "visible", true));
     overlay->SetOpacity(static_cast<int>(settings_.GetInt(row + "opacity", 100)));

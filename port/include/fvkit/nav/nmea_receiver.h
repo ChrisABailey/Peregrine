@@ -4,13 +4,13 @@
 // See COPYING.LESSER and NOTICE.md for the full licensing picture.
 
 /// @file
-/// A local AIS receiver or boat network: NMEA 0183 over TCP or UDP, split into
-/// AIS sentences for the `fv.ais` overlay and position fixes for the moving
-/// map. Owns the connection and its reconnect schedule; time comes from the
-/// caller, so it runs on whatever thread polls it. Plan: port/ais-plan.md (AIS5).
+/// An NMEA 0183 connection over TCP or UDP: a GPS, an AIS receiver or a boat
+/// network. Lines are split into AIS sentences for the `fv.ais` overlay and
+/// position fixes for a moving map. Owns the connection and its reconnect
+/// schedule; time comes from the caller, so it runs on whatever thread polls it.
 
-#ifndef FVKIT_AIS_RECEIVER_H_
-#define FVKIT_AIS_RECEIVER_H_
+#ifndef FVKIT_NAV_NMEA_RECEIVER_H_
+#define FVKIT_NAV_NMEA_RECEIVER_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -25,7 +25,6 @@
 #include "fvkit/nav/position.h"
 
 namespace fv {
-namespace ais {
 
 enum class ReceiverProtocol { kTcp, kUdp };
 
@@ -35,6 +34,12 @@ struct ReceiverConfig {
   ReceiverProtocol protocol = ReceiverProtocol::kTcp;
   std::string host;
   uint16_t port = 10110;
+
+  bool operator==(const ReceiverConfig& o) const {
+    return protocol == o.protocol && port == o.port &&
+           (protocol == ReceiverProtocol::kUdp || host == o.host);
+  }
+  bool operator!=(const ReceiverConfig& o) const { return !(*this == o); }
 };
 
 enum class ReceiverState {
@@ -92,6 +97,10 @@ class NmeaReceiver {
   /// Time of the last line; 0 before the first.
   double last_line_s() const { return last_line_s_; }
 
+  /// Emits a fix for every position sentence instead of once per epoch, so a
+  /// live map does not wait for the next epoch to show the last one.
+  void SetEmitPerSentence(bool per_sentence) { assembler_.SetEmitPerSentence(per_sentence); }
+
   /// Live becomes silent after this long without a line (default 15 s).
   void set_silence_s(double s) { silence_s_ = s; }
   /// A silent TCP connection is closed and retried after this (default 60 s).
@@ -117,7 +126,7 @@ class NmeaReceiver {
   std::shared_ptr<ILineTransport> transport_;
   bool datagram_ = false;
   NmeaFixAssembler assembler_;
-  AisDecoder vdo_decoder_;
+  ais::AisDecoder vdo_decoder_;
   bool has_gps_fix_ = false;
   double last_gps_fix_s_ = 0.0;
   ReceiverState state_ = ReceiverState::kOff;
@@ -142,7 +151,6 @@ class NmeaReceiver {
 /// True for an AIS sentence (`!xxVDM`, `!xxVDO`), with or without a TAG block.
 bool IsAisSentence(const std::string& line);
 
-}  // namespace ais
 }  // namespace fv
 
-#endif  // FVKIT_AIS_RECEIVER_H_
+#endif  // FVKIT_NAV_NMEA_RECEIVER_H_

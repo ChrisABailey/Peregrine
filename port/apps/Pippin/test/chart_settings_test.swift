@@ -67,6 +67,22 @@ expect(odd.depthUnit, .feet, "unknown unit falls back")
 expect(DepthUnit.feet.label(metres: odd.safetyContour), "30 ft", "stored 10 m snaps into feet")
 defaults.removePersistentDomain(forName: suite)
 
+// Interface luminance follows the palette; automatic follows Dark Mode.
+expect(ChartLuminance.resolve(palette: .automatic, darkMode: false), .day, "automatic, light")
+expect(ChartLuminance.resolve(palette: .automatic, darkMode: true), .night, "automatic, dark")
+expect(ChartLuminance.resolve(palette: .day, darkMode: true), .day, "day stays day in Dark Mode")
+expect(ChartLuminance.resolve(palette: .dusk, darkMode: false), .dusk, "dusk in Light Mode")
+expect(ChartLuminance.resolve(palette: .night, darkMode: false), .night, "night in Light Mode")
+expect(ChartLuminance.day.ceiling == nil, true, "day is not dimmed")
+expect(ChartPalette.allCases.filter(\.forcesDarkAppearance), [.dusk, .night],
+       "only an explicit dusk or night overrides the system appearance")
+for level in [ChartLuminance.dusk, .night] {
+    let c = level.ceiling!
+    expect(max(c.red, c.green, c.blue) <= 80, true, "\(level) ceiling is low")
+}
+expect(ChartLuminance.night.ceiling!.green < ChartLuminance.dusk.ceiling!.green, true,
+       "night is dimmer than dusk")
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

@@ -46,6 +46,12 @@
 
 namespace fv {
 
+/** Pseudo-attribute on DEPCNT features: the VALDCO of the next shoaler contour
+ *  in the same cell, absent on the cell's shoalest contour. DEPCNT02 uses it
+ *  to promote the next deeper contour when the mariner's safety contour is not
+ *  one the cell carries. */
+inline constexpr char kEncShoalerContourAttribute[] = "VALDCO_SHOALER";
+
 /** A cell to open by path with its extent known in advance (a CATALOG.031 row
  *  or a cell index), so it need not be parsed until a query reaches it. */
 struct EncCellEntry {

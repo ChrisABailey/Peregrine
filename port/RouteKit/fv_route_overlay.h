@@ -86,12 +86,14 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "fv_route_doc.h"
 #include "fv_route_planner.h"
 #include "fvkit/app/capabilities.h"
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/properties.h"
 #include "fvkit/app/search.h"
 #include "fvkit/app/type_registry.h"
@@ -113,6 +115,10 @@ class OverlayManager;
 // parse the editor to include this header.
 class RouteEditSession;
 
+/// What the halo around a calculated route shows. Values are the
+/// `route_coloring` property's choice indices.
+enum class RouteColoring { kPlain = 0, kSlope = 1, kPathType = 2 };
+
 class RouteOverlay : public Overlay,
                      public app::Persistence,
                      public app::HitTest,
@@ -121,7 +127,8 @@ class RouteOverlay : public Overlay,
                      public app::EditHint,
                      public app::SearchProvider,
                      public app::Properties,
-                     public app::ItemInfo {
+                     public app::ItemInfo,
+                     public app::HostAware {
  public:
   explicit RouteOverlay(std::string name = "Route");
   ~RouteOverlay() override;
@@ -168,6 +175,12 @@ class RouteOverlay : public Overlay,
   static constexpr double kSlopeHaloPt = 2.0;
   static constexpr double kSlopeFringePt = 1.0;
 
+  /// Path-type colors, by `legend_tiers` index: Most preferred, Preferred,
+  /// Acceptable, Avoided, Last resort. A profile with more tiers repeats the last.
+  static const FvColor kTierColors[5];
+  /// The halo color for a `RouteTierRun::tier`.
+  static FvColor TierColor(int tier);
+
   /// The line colour for a grade in percent (positive is uphill), with
   /// `flat` for level ground.
   static FvColor SlopeColor(double grade_percent, FvColor flat);
@@ -181,6 +194,7 @@ class RouteOverlay : public Overlay,
   app::HitTest* AsHitTest() override { return this; }
   app::SnapTo* AsSnapTo() override { return this; }
   app::EditTarget* AsEditTarget() override { return this; }
+  app::HostAware* AsHostAware() override { return this; }
   app::SearchProvider* AsSearch() override { return this; }
   app::Properties* AsProperties() override { return this; }
   app::EditHint* AsEditHint() override { return this; }
@@ -199,13 +213,6 @@ class RouteOverlay : public Overlay,
   RouteEditSession& edit() { return *edit_; }
   const RouteEditSession& edit() const { return *edit_; }
 
-  // The stack, for mouse CAPTURE and for the snap walk, and for nothing else.
-  // An overlay does not otherwise know its manager and should not want to; a
-  // drag is precisely the case capture exists for, and a snap is a question
-  // about the whole stack that only the stack can answer. Null is legal: the
-  // gesture still works, it is just uncaptured and unsnapped.
-  void SetManager(OverlayManager* manager) { manager_ = manager; }
-  OverlayManager* manager() const { return manager_; }
 
   // A copy of the projection the last frame was drawn with, and whether there
   // has been one. See the header note: the input SPI carries no projection, so
@@ -249,12 +256,14 @@ class RouteOverlay : public Overlay,
   /// avoid_hills_penalty`). A shell setting, not a document field.
   void SetAvoidHillsPenalty(double penalty) { avoid_hills_penalty_ = penalty; }
 
-  /// Draws a calculated route with a halo coloured by grade (`SlopeColor`)
-  /// in place of its casing when its plan has elevation; the line itself
-  /// keeps its colour and style, and flat ground keeps the casing. Not a
-  /// document field: the `slope_colors` property.
-  void SetSlopeColors(bool on) { slope_colors_ = on; }
-  bool slope_colors() const { return slope_colors_; }
+  /// What colors the halo drawn in place of a calculated route's casing; the
+  /// line itself keeps its color and style. kSlope colors by grade
+  /// (`SlopeColor`) where the plan has elevation, keeping the casing on the
+  /// flat; kPathType colors by map-key tier (`TierColor`) where the plan has
+  /// tiers, keeping the sand casing on the beach. Either falls back to the plain casing without its data. Not a
+  /// document field: the `route_coloring` property.
+  void SetColoring(RouteColoring c) { coloring_ = c; }
+  RouteColoring coloring() const { return coloring_; }
 
   /// A previous plan's legs, drawn in `kGhostColor` under the route so a
   /// re-plan can be compared with the line it replaced. Not a document field;
@@ -294,6 +303,15 @@ class RouteOverlay : public Overlay,
 
   bool has_plan() const { return has_plan_; }
   const RoutePlan& plan() const { return plan_; }
+
+  /// A plan from somewhere other than the waypoints (an off-route rider's
+  /// detour) drawn as the route, with `plan()` drawn in `kGhostColor` under
+  /// it. Not a document field. `FollowRoads` and `ClearRoads` drop it, and a
+  /// detour with no legs is not kept.
+  void SetDetour(RoutePlan detour);
+  void ClearDetour() { detour_ = RoutePlan{}; has_detour_ = false; }
+  bool has_detour() const { return has_detour_; }
+  const RoutePlan& detour() const { return detour_; }
 
   // The one line of map the route explains itself on, or empty. Drawn by
   // `OnDraw` unless `SetShowStatus(false)`.
@@ -482,6 +500,8 @@ class RouteOverlay : public Overlay,
 
   RoutePlan plan_;
   bool has_plan_ = false;
+  RoutePlan detour_;
+  bool has_detour_ = false;
 
   std::string selected_;
   bool show_labels_ = true;
@@ -492,21 +512,22 @@ class RouteOverlay : public Overlay,
   FvColor casing_color_ = kCasingColor;
   int casing_width_ = 4;      // extra pixels beyond the line; 0 draws none
   FvColor beach_casing_color_ = kBeachCasingColor;
-  bool slope_colors_ = false;
+  RouteColoring coloring_ = RouteColoring::kPlain;
   std::vector<std::vector<GeoPoint>> ghost_;
   bool draw_markers_ = true;
   double dpi_scale_ = 1.0;
   double wind_scale_ = 1.0;
   LineKind leg_kind_ = LineKind::kGreatCircle;
 
-  OverlayManager* manager_ = nullptr;
   std::unique_ptr<RouteEditSession> edit_;
 
   std::vector<BeachWindMark> wind_marks_;
   double wind_warn_mps_ = 0.0;
   std::vector<DrawnChevron> drawn_wind_;
-  /// The casing pass of a slope-coloured route: halo and fringe by grade.
-  Status DrawSlopeHalo(GeoDraw& draw);
+  /// The casing pass of a colored route: halo and fringe in `colors`, one per
+  /// segment of the joined legs; an empty entry keeps the casing.
+  Status DrawColorHalo(GeoDraw& draw, const RoutePlan& plan,
+                       const std::vector<std::optional<FvColor>>& colors);
   /// The wind arrows along each marked stretch of `line`, the plan's legs joined.
   Status DrawBeachWind(const MapProjection& proj, ICanvas& canvas,
                        const std::vector<GeoPoint>& line);

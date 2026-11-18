@@ -100,6 +100,18 @@ TEST(OverlayManifest, IconFileResolvesBesideTheManifestAndANameStaysSymbolic) {
   EXPECT_EQ(e[0].desc.icon, "grid");
 }
 
+TEST(OverlayManifest, ResourceDirIsTheManifestDirectoryAndResolvesToolArt) {
+  fv::Status s;
+  auto e = Parse(kRingsManifest, &s);
+  ASSERT_TRUE(s.ok());
+  EXPECT_EQ(e[0].desc.resource_dir, "/bundle/overlays");
+  EXPECT_EQ(fv::desk::ResolveIconFile("art/../tool.PNG", "/pkg"), "/pkg/tool.PNG");
+  EXPECT_EQ(fv::desk::ResolveIconFile("tool.pdf", "/pkg"), "/pkg/tool.pdf");
+  EXPECT_EQ(fv::desk::ResolveIconFile("/abs/tool.svg", "/pkg"), "/abs/tool.svg");
+  EXPECT_EQ(fv::desk::ResolveIconFile("labels", "/pkg"), "labels");
+  EXPECT_EQ(fv::desk::ResolveIconFile("tool.svg", ""), "tool.svg");
+}
+
 TEST(OverlayManifest, KindFollowsFromFileAndDefaultsAreTheDescriptors) {
   fv::Status s;
   auto e = Parse(R"({"overlays":[
@@ -145,6 +157,34 @@ TEST(OverlayManifest, BadDocumentsAreRefusedWhole) {
     EXPECT_NE(s.message.find("bad.json"), std::string::npos) << s.message;
     EXPECT_EQ(out.size(), 1u) << "a refused document adds nothing: " << text;
   }
+}
+
+TEST(OverlayManifest, AnEditorIsNamedInTheImplementationsKind) {
+  fv::Status s;
+  std::vector<OverlayManifestEntry> out = Parse(
+      R"({"id":"a.b","implementation":{"python":"m:O"},"editor":{"python":"m:E"}})", &s);
+  ASSERT_TRUE(s.ok()) << s.message;
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].editor_kind, "python");
+  EXPECT_EQ(out[0].editor_name, "m:E");
+
+  out = Parse(R"({"id":"a.b","implementation":{"python":"m:O"}})", &s);
+  ASSERT_TRUE(s.ok()) << s.message;
+  EXPECT_TRUE(out[0].editor_kind.empty());
+
+  const char* bad[] = {
+      R"({"id":"a.b","implementation":{"python":"m:O"},"editor":"m:E"})",
+      R"({"id":"a.b","implementation":{"python":"m:O"},"editor":{"library":"e"}})",
+      R"({"id":"a.b","implementation":{"python":"m:O"},"editor":{"python":""}})",
+      R"({"id":"a.b","implementation":{"native":"o"},"editor":{"native":"e"}})",
+      R"({"id":"a.b","implementation":{"builtin":"o"},"editor":{"builtin":"e"}})",
+  };
+  for (const char* text : bad) {
+    Parse(text, &s);
+    EXPECT_EQ(s.code, fv::kInvalidArg) << text;
+  }
+  Parse(R"({"id":"a.b","implementation":{"python":"m:O"},"editor":{"library":"e"}})", &s);
+  EXPECT_NE(s.message.find("same kind as the implementation"), std::string::npos) << s.message;
 }
 
 // MARK: Builtins and registration

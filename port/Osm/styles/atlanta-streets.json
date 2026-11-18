@@ -217,7 +217,7 @@
      "filter": ["all", ["==", "$type", "LineString"], ["in", "cycleway", "lane", "share_busway"]],
      "paint": {"line-color": "#2e9e57", "line-width": {"base": 1.4, "stops": [[13, 0.8], [16, 2], [19, 4]]},
                "line-dasharray": [3, 1.5]}},
-    {"id": "bike-route", "type": "line", "source-layer": "bike_route", "minzoom": 12, "paint": {"line-color": ["match", ["get", "network"], "national", "#0b6b3a", "regional", "#2e9e57", "#8fcfa6"], "line-width": {"base": 1.2, "stops": [[12, 1], [14, 1.8], [17, 4.5]]}}},
+    {"id": "bike-route", "type": "line", "source-layer": "bike_route", "minzoom": 12, "paint": {"line-color": ["match", ["get", "network"], "national", "#0b6b3a80", "regional", "#2e9e5780", "#8fcfa680"], "line-width": {"base": 1.2, "stops": [[12, 1], [14, 1.8], [17, 4.5]]}}},
     {"id": "bike-shared", "type": "line", "source-layer": "transportation", "minzoom": 15,
      "filter": ["all", ["==", "$type", "LineString"], ["==", "cycleway", "shared_lane"]],
      "paint": {"line-color": "#2e9e57", "line-width": {"stops": [[15, 1], [19, 2.5]]},

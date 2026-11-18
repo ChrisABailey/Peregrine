@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fvkit/geo.h"
@@ -52,6 +53,35 @@ struct TextStyle {
   FvColor color;
 };
 
+/// A repeating fill texture: one RGBA tile and the inked runs of each of its
+/// rows, found once so a fill costs the tile's ink and not its area.
+class PatternTile {
+ public:
+  PatternTile() = default;
+  explicit PatternTile(PixelBuffer pixels) : pixels_(std::move(pixels)) {
+    runs_.resize(static_cast<size_t>(pixels_.Height()));
+    for (int y = 0; y < pixels_.Height(); ++y) {
+      const unsigned char* p = pixels_.Row(y);
+      for (int x = 0; x < pixels_.Width(); ++x) {
+        if (p[4 * x + 3] == 0) continue;
+        const int first = x;
+        while (x + 1 < pixels_.Width() && p[4 * (x + 1) + 3] != 0) ++x;
+        runs_[static_cast<size_t>(y)].emplace_back(first, x);
+      }
+    }
+  }
+
+  const PixelBuffer& pixels() const { return pixels_; }
+  /// Runs of non-transparent pixels in row `y`, as [first, last] columns.
+  const std::vector<std::pair<int, int>>& runs(int y) const {
+    return runs_[static_cast<size_t>(y)];
+  }
+
+ private:
+  PixelBuffer pixels_;
+  std::vector<std::vector<std::pair<int, int>>> runs_;
+};
+
 struct ICanvas {
   virtual ~ICanvas() = default;
   ICanvas(const ICanvas&) = delete;
@@ -68,6 +98,24 @@ struct ICanvas {
   // outline. Rings need not be explicitly closed.
   virtual Status DrawPolyPolygon(const std::vector<std::vector<PixelPoint>>& rings,
                                  const Brush* fill, const Pen* outline) = 0;
+
+  /// Even-odd fill of `rings` with `tile` repeated along both axes and
+  /// alpha-blended. Tile pixel (0,0) lands on (origin_x, origin_y) and on every
+  /// whole tile from it, so the texture does not depend on the rings. A
+  /// non-null `under` is filled solid beneath the tile in the same pass.
+  /// Not pure: a canvas without a tiled fill draws nothing and returns
+  /// kUnsupported.
+  virtual Status FillPolyPolygonTiled(
+      const std::vector<std::vector<PixelPoint>>& rings,
+      const PatternTile& tile, int origin_x, int origin_y,
+      const Brush* under = nullptr) {
+    (void)rings;
+    (void)tile;
+    (void)origin_x;
+    (void)origin_y;
+    (void)under;
+    return Status::Error(kUnsupported, "canvas has no tiled fill");
+  }
 
   virtual Status DrawRectangle(const PixelRect& r, const Brush* fill,
                                const Pen* outline) = 0;

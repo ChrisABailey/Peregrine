@@ -107,7 +107,96 @@ struct MapMenuButton: View, Equatable {
         onDownloadCharts != nil || onCheckChartUpdates != nil || onImportCharts != nil
     }
 
+    /// One tappable menu item.
+    private struct Entry: Identifiable {
+        let title: String
+        let symbol: String
+        let action: () -> Void
+        var id: String { title }
+    }
+
+    /// The items above the Charts group, in menu order.
+    private var leadingEntries: [Entry] {
+        var entries: [Entry] = []
+        if let onAisSettings {
+            entries.append(Entry(title: "AIS Settings…",
+                                 symbol: "antenna.radiowaves.left.and.right",
+                                 action: onAisSettings))
+        }
+        if let onTides {
+            entries.append(Entry(title: "Tides", symbol: "water.waves", action: onTides))
+        }
+        if let onMapKey {
+            entries.append(Entry(title: "Map Key", symbol: "list.bullet.rectangle",
+                                 action: onMapKey))
+        }
+        if let onSettings {
+            entries.append(Entry(title: "Settings", symbol: "gearshape", action: onSettings))
+        }
+        return entries
+    }
+
+    /// The Charts group; empty when the pack offers none of it.
+    private var chartEntries: [Entry] {
+        var entries: [Entry] = []
+        if let onDownloadCharts {
+            entries.append(Entry(title: "Download Charts", symbol: "icloud.and.arrow.down",
+                                 action: onDownloadCharts))
+        }
+        if let onCheckChartUpdates {
+            entries.append(Entry(title: "Check for Chart Updates",
+                                 symbol: "arrow.triangle.2.circlepath",
+                                 action: onCheckChartUpdates))
+        }
+        if let onImportCharts {
+            entries.append(Entry(title: "Import Charts", symbol: "square.and.arrow.down",
+                                 action: onImportCharts))
+        }
+        return entries
+    }
+
+    /// The items below the Charts group.
+    private var trailingEntries: [Entry] {
+        var entries: [Entry] = []
+        if let onChartHelp {
+            entries.append(Entry(title: "Help", symbol: "questionmark.circle",
+                                 action: onChartHelp))
+        }
+        entries.append(Entry(title: "Export\u{2026}", symbol: "square.and.arrow.up",
+                             action: onExport))
+        entries.append(Entry(title: "About", symbol: "info.circle", action: onAbout))
+        entries.append(Entry(title: "Report a Problem", symbol: "exclamationmark.bubble",
+                             action: onReportProblem))
+        return entries
+    }
+
+    @ObservedObject private var luminance = InterfaceLuminance.shared
+    @State private var dimMenuShown = false
+
     var body: some View {
+        Group {
+            // A system menu cannot be dimmed, so under a dusk or night chart
+            // palette the same items open in a popover the app draws.
+            if luminance.level == .day {
+                systemMenu
+            } else {
+                Button { dimMenuShown = true } label: {
+                    CircleControlFace(systemName: "line.3.horizontal")
+                }
+                .popover(isPresented: $dimMenuShown) {
+                    dimMenu
+                        .chartDimmedSheet()
+                        .presentationCompactAdaptation(.popover)
+                }
+            }
+        }
+        .buttonStyle(.circleControl)
+        .tint(.primary)
+        .accessibilityLabel("Menu")
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+
+    private var systemMenu: some View {
         Menu {
             // `.menu` puts each picker behind its own title. The default
             // flattens a picker into an unheaded section, leaving "Small /
@@ -131,61 +220,26 @@ struct MapMenuButton: View, Equatable {
                     Label("AIS Traffic", systemImage: "ferry")
                 }
             }
-            if let onAisSettings {
-                Button(action: onAisSettings) {
-                    Label("AIS Settings…", systemImage: "antenna.radiowaves.left.and.right")
-                }
-            }
-            if let onTides {
-                Button(action: onTides) {
-                    Label("Tides", systemImage: "water.waves")
-                }
-            }
-            if let onMapKey {
-                Button(action: onMapKey) {
-                    Label("Map Key", systemImage: "list.bullet.rectangle")
-                }
-            }
-            if let onSettings {
-                Button(action: onSettings) {
-                    Label("Settings", systemImage: "gearshape")
+            ForEach(leadingEntries) { entry in
+                Button(action: entry.action) {
+                    Label(entry.title, systemImage: entry.symbol)
                 }
             }
             if hasChartItems {
                 Menu {
-                    if let onDownloadCharts {
-                        Button(action: onDownloadCharts) {
-                            Label("Download Charts", systemImage: "icloud.and.arrow.down")
-                        }
-                    }
-                    if let onCheckChartUpdates {
-                        Button(action: onCheckChartUpdates) {
-                            Label("Check for Chart Updates",
-                                  systemImage: "arrow.triangle.2.circlepath")
-                        }
-                    }
-                    if let onImportCharts {
-                        Button(action: onImportCharts) {
-                            Label("Import Charts", systemImage: "square.and.arrow.down")
+                    ForEach(chartEntries) { entry in
+                        Button(action: entry.action) {
+                            Label(entry.title, systemImage: entry.symbol)
                         }
                     }
                 } label: {
                     Label("Charts", systemImage: "map")
                 }
             }
-            if let onChartHelp {
-                Button(action: onChartHelp) {
-                    Label("Help", systemImage: "questionmark.circle")
+            ForEach(trailingEntries) { entry in
+                Button(action: entry.action) {
+                    Label(entry.title, systemImage: entry.symbol)
                 }
-            }
-            Button(action: onExport) {
-                Label("Export\u{2026}", systemImage: "square.and.arrow.up")
-            }
-            Button(action: onAbout) {
-                Label("About", systemImage: "info.circle")
-            }
-            Button(action: onReportProblem) {
-                Label("Report a Problem", systemImage: "exclamationmark.bubble")
             }
         } label: {
             CircleControlFace(systemName: "line.3.horizontal")
@@ -197,10 +251,65 @@ struct MapMenuButton: View, Equatable {
         // Same reason as the round buttons: the automatic style puts a tinted
         // capsule behind the label, wider than the circle it sits under.
         .menuStyle(.button)
-        .buttonStyle(.circleControl)
-        .tint(.primary)
-        .accessibilityLabel("Menu")
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+
+    /// The menu's items as a list the app draws. The Charts group is inline
+    /// under its heading; the symbol size and unit pickers are not offered,
+    /// which the settings sheet carries whenever this list is shown.
+    private var dimMenu: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let aisTraffic {
+                    dimRow("AIS Traffic",
+                           symbol: aisTraffic.wrappedValue ? "checkmark" : "ferry") {
+                        aisTraffic.wrappedValue.toggle()
+                    }
+                    .accessibilityAddTraits(aisTraffic.wrappedValue ? .isSelected : [])
+                    Divider()
+                }
+                ForEach(leadingEntries) { entry in
+                    dimRow(entry.title, symbol: entry.symbol, action: entry.action)
+                    Divider()
+                }
+                if hasChartItems {
+                    Text("Charts")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
+                    ForEach(chartEntries) { entry in
+                        dimRow(entry.title, symbol: entry.symbol, action: entry.action)
+                    }
+                    Divider()
+                }
+                ForEach(trailingEntries) { entry in
+                    dimRow(entry.title, symbol: entry.symbol, action: entry.action)
+                    if entry.id != trailingEntries.last?.id { Divider() }
+                }
+            }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 260)
+    }
+
+    /// One row of `dimMenu`; closes the popover before acting, as a menu does.
+    private func dimRow(_ title: String, symbol: String,
+                        action: @escaping () -> Void) -> some View {
+        Button {
+            dimMenuShown = false
+            action()
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                Image(systemName: symbol).frame(width: 24)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// Compared on what the menu draws, so a redraw of the map behind it does

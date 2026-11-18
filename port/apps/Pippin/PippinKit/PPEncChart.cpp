@@ -139,7 +139,8 @@ bool EncChartSettings::operator==(const EncChartSettings& o) const {
          shallow_contour == o.shallow_contour && deep_contour == o.deep_contour &&
          category == o.category && palette == o.palette &&
          navaid_names == o.navaid_names &&
-         symbolized_boundaries == o.symbolized_boundaries;
+         symbolized_boundaries == o.symbolized_boundaries &&
+         sounding_units == o.sounding_units;
 }
 
 std::string EncFeatureSummary(const fv::FeatureDescription& d, EncDepthUnits units) {
@@ -187,6 +188,51 @@ int EncBandForScale(const std::vector<int>& bands, double scale_denominator) {
     }
   }
   return best;
+}
+
+namespace {
+
+/** True when the union of non-crossing `cells` holds non-crossing `view`.
+ *  Splits the view along every cell edge inside it and tests each piece's
+ *  midpoint, so cells that only meet along an edge still cover. */
+bool CellsCoverPlainRect(const std::vector<fv::GeoRect>& cells, const fv::GeoRect& view) {
+  std::vector<double> lats{view.ll.lat, view.ur.lat};
+  std::vector<double> lons{view.ll.lon, view.ur.lon};
+  for (const fv::GeoRect& c : cells) {
+    if (c.Contains(view.ll) && c.Contains(view.ur)) return true;
+    for (double v : {c.ll.lat, c.ur.lat})
+      if (v > view.ll.lat && v < view.ur.lat) lats.push_back(v);
+    for (double v : {c.ll.lon, c.ur.lon})
+      if (v > view.ll.lon && v < view.ur.lon) lons.push_back(v);
+  }
+  std::sort(lats.begin(), lats.end());
+  std::sort(lons.begin(), lons.end());
+  for (size_t i = 0; i + 1 < lats.size(); ++i) {
+    if (lats[i + 1] <= lats[i]) continue;
+    for (size_t j = 0; j + 1 < lons.size(); ++j) {
+      if (lons[j + 1] <= lons[j]) continue;
+      const fv::GeoPoint mid{(lats[i] + lats[i + 1]) / 2, (lons[j] + lons[j + 1]) / 2};
+      bool held = false;
+      for (const fv::GeoRect& c : cells)
+        if (c.Contains(mid)) {
+          held = true;
+          break;
+        }
+      if (!held) return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+bool EncCellsCoverRect(const std::vector<fv::GeoRect>& cells, const fv::GeoRect& view) {
+  std::vector<fv::GeoRect> plain;
+  for (const fv::GeoRect& c : cells)
+    for (const fv::GeoRect& p : c.SplitAtAntimeridian()) plain.push_back(p);
+  for (const fv::GeoRect& v : view.SplitAtAntimeridian())
+    if (!CellsCoverPlainRect(plain, v)) return false;
+  return true;
 }
 
 /** Search over a chart: names from its table, areas from its last drawn band.
@@ -396,6 +442,9 @@ void EncChart::ApplySettings() {
   m.safety_depth = settings_.safety_depth;
   m.shallow_contour = settings_.shallow_contour;
   m.deep_contour = settings_.deep_contour;
+  m.depth_unit = settings_.sounding_units == EncDepthUnits::kFeet
+                     ? fv::DepthUnit::kFeet
+                     : fv::DepthUnit::kMetres;
   if (m != style_->mariner()) style_->SetMariner(m);
 
   int max_category = fv::kDisplayOther;
@@ -403,6 +452,8 @@ void EncChart::ApplySettings() {
   if (settings_.category == EncDisplayCategory::kStandard)
     max_category = fv::kDisplayStandard;
   style_->viewing_groups().SetMaxCategory(max_category);
+  // Light descriptions are S-52 "other" text: shown only at All.
+  style_->SetShowLightDescriptions(settings_.category == EncDisplayCategory::kAll);
 
   fv::S52ColorScheme scheme = fv::S52ColorScheme::kDay;
   if (settings_.palette == EncPalette::kDusk) scheme = fv::S52ColorScheme::kDusk;
@@ -498,21 +549,15 @@ std::vector<int> EncChart::BandsForView(const fv::MapProjection& proj) const {
   const int wanted = EncBandForScale(bands_, proj.Scale());
   const fv::GeoRect view = proj.VmapBounds();
   std::vector<int> out;
+  std::vector<fv::GeoRect> in_view;
   for (auto it = bands_.rbegin(); it != bands_.rend(); ++it) {
     if (*it > wanted) continue;
-    bool meets = false, covers = false;
-    for (const fv::EncCellEntry& c : cells_.at(*it)) {
-      if (!c.bounds.Intersects(view)) continue;
-      meets = true;
-      if (c.bounds.Contains(view.ll) && c.bounds.Contains(view.ur) &&
-          c.bounds.Contains({view.ll.lat, view.ur.lon}) &&
-          c.bounds.Contains({view.ur.lat, view.ll.lon})) {
-        covers = true;
-        break;
-      }
-    }
-    if (meets) out.push_back(*it);
-    if (covers) break;
+    in_view.clear();
+    for (const fv::EncCellEntry& c : cells_.at(*it))
+      if (c.bounds.Intersects(view)) in_view.push_back(c.bounds);
+    if (in_view.empty()) continue;
+    out.push_back(*it);
+    if (EncCellsCoverRect(in_view, view)) break;
   }
   // Nothing charted in view: draw the scale's band as before (an empty ground).
   if (out.empty() && wanted != 0) out.push_back(wanted);

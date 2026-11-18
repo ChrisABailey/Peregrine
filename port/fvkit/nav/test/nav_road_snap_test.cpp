@@ -263,7 +263,26 @@ TEST(RoadSnapper, ReversesATwoWayRoadsBearingToMatchTheHeading) {
   EXPECT_NEAR(s.Applied().true_heading_deg, 270.0, 0.05);
 }
 
-TEST(RoadSnapper, KeepsAOneWayRoadsOwnDirectionWhateverTheHeadingSays) {
+TEST(RoadSnapper, NoticesATurnRoundThatThePriorHeadingMisses) {
+  RoadSnapper snapper(ParallelRoads(40.0));
+  // The caller's prior is the road's eastbound bearing from before the turn;
+  // the fixes now move west, 5 m apart.
+  (void)snapper.Snap(MovingFixAt(Offset(kAnchor, 10.0, 1.0), 5.0), 90.0, true);
+  const SnappedFix s = snapper.Snap(MovingFixAt(Offset(kAnchor, 5.0, 1.0), 5.0), 90.0, true);
+  ASSERT_TRUE(s.has_bearing);
+  EXPECT_NEAR(s.bearing_deg, 270.0, 0.05);
+}
+
+TEST(RoadSnapper, TakesThePriorHeadingOverMovementShorterThanJitter) {
+  RoadSnapper snapper(ParallelRoads(40.0));
+  (void)snapper.Snap(MovingFixAt(Offset(kAnchor, 10.0, 1.0), 5.0), 90.0, true);
+  // One metre west is within the receiver's scatter.
+  const SnappedFix s = snapper.Snap(MovingFixAt(Offset(kAnchor, 9.0, 1.0), 5.0), 90.0, true);
+  ASSERT_TRUE(s.has_bearing);
+  EXPECT_NEAR(s.bearing_deg, 90.0, 0.05);
+}
+
+TEST(RoadSnapper, ReportsTheWayTheShipGoesAgainstAOneWayRoad) {
   auto net = std::make_shared<FakeNetwork>();
   net->Add(FakeRoad{1, Offset(kAnchor, -200.0, 0.0), Offset(kAnchor, 200.0, 0.0),
                     10, 11, true, "One Way East"});
@@ -273,7 +292,35 @@ TEST(RoadSnapper, KeepsAOneWayRoadsOwnDirectionWhateverTheHeadingSays) {
   f.has_true_heading = true;
   const SnappedFix s = snapper.Snap(f);
   ASSERT_TRUE(s.snapped);
-  EXPECT_NEAR(s.bearing_deg, 90.0, 0.05);
+  EXPECT_EQ(s.road_name, "One Way East");
+  EXPECT_NEAR(s.bearing_deg, 270.0, 0.05);
+}
+
+TEST(RoadSnapper, NoticesAContraflowRideFromTheMovementAlone) {
+  auto net = std::make_shared<FakeNetwork>();
+  net->Add(FakeRoad{1, Offset(kAnchor, -200.0, 0.0), Offset(kAnchor, 200.0, 0.0),
+                    10, 11, true, "One Way East"});
+  RoadSnapper snapper(net);
+  // No reported heading; the fixes move west 5 m apart and the prior is the road's.
+  (void)snapper.Snap(MovingFixAt(Offset(kAnchor, 10.0, 1.0), 5.0), 90.0, true);
+  const SnappedFix s = snapper.Snap(MovingFixAt(Offset(kAnchor, 5.0, 1.0), 5.0), 90.0, true);
+  ASSERT_TRUE(s.has_bearing);
+  EXPECT_NEAR(s.bearing_deg, 270.0, 0.05);
+}
+
+TEST(RoadSnapper, StillPrefersTheCarriagewayPointingTheShipsWay) {
+  auto net = std::make_shared<FakeNetwork>();
+  net->Add(FakeRoad{1, Offset(kAnchor, -200.0, 0.0), Offset(kAnchor, 200.0, 0.0),
+                    10, 11, true, "Eastbound"});
+  net->Add(FakeRoad{2, Offset(kAnchor, 200.0, 12.0), Offset(kAnchor, -200.0, 12.0),
+                    12, 13, true, "Westbound"});
+  RoadSnapper snapper(net);
+  PositionFix f = MovingFixAt(Offset(kAnchor, 0.0, 4.0), 10.0);
+  f.true_heading_deg = 270.0;
+  f.has_true_heading = true;
+  const SnappedFix s = snapper.Snap(f);
+  EXPECT_EQ(s.road_name, "Westbound");
+  EXPECT_NEAR(s.bearing_deg, 270.0, 0.05);
 }
 
 TEST(RoadSnapper, ReportsNoBearingForATwoWayRoadWithNoHeadingToChooseFrom) {

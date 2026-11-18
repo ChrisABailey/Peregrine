@@ -72,12 +72,30 @@ int HaloOffsets(double width_px, double dx[kMaxHaloOffsets],
   dx[2] =  0.0; dy[2] =  r;
   dx[3] =  0.0; dy[3] = -r;
   if (r < 2.0) return 4;
-  const double d = r * 0.7071067811865476;
-  dx[4] =  d; dy[4] =  d;
-  dx[5] = -d; dy[5] =  d;
-  dx[6] =  d; dy[6] = -d;
-  dx[7] = -d; dy[7] = -d;
-  return 8;
+  if (r < kHaloFillRadiusPx) {
+    const double d = r * 0.7071067811865476;
+    dx[4] =  d; dy[4] =  d;
+    dx[5] = -d; dy[5] =  d;
+    dx[6] =  d; dy[6] = -d;
+    dx[7] = -d; dy[7] = -d;
+    return 8;
+  }
+  // Past a thin stem's width one ring leaves gaps, around the glyph and
+  // between it and the ring, so the disc is filled with concentric rings
+  // whose stamps are at most `step` apart.
+  const double step = (std::max)(2.0, 0.21 * r);
+  const int rings = static_cast<int>(std::ceil(r / step));
+  int n = 0;
+  for (int k = rings; k >= 1 && n < kMaxHaloOffsets; --k) {
+    const double rk = r * k / rings;
+    const int around = (std::max)(6, static_cast<int>(std::ceil(2.0 * 3.141592653589793 * rk / step)));
+    for (int i = 0; i < around && n < kMaxHaloOffsets; ++i, ++n) {
+      const double a = 2.0 * 3.141592653589793 * i / around;
+      dx[n] = rk * std::cos(a);
+      dy[n] = rk * std::sin(a);
+    }
+  }
+  return n;
 }
 
 // The halo width for a label that has been resized. `halo_width` is authored in

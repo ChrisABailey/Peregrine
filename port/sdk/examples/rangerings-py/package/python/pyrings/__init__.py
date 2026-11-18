@@ -8,8 +8,11 @@
 Concentric range rings about a centre the user places with a click: the
 rangerings-c example, call for call, so the two draw the same pixels. The
 rings are a file overlay (``.prng``, plain text), offer four properties and
-hit-test their centre and each ring. The package also contributes one tool,
-which opens the sample file shipped in the package.
+hit-test their centre and each ring. An editor gives them a toolbar button
+and a palette; clicks reach the rings only while it is active, and each
+centre move undoes and redoes from Edit ▸ Undo. The package
+also contributes one tool, which opens the sample file shipped in the
+package.
 """
 
 import copy
@@ -19,9 +22,11 @@ import os
 import pyfvw
 
 MAX_RINGS = 10
+MAX_HISTORY = 32
 METRES_PER_NM = 1852.0
 EARTH_RADIUS_M = 6371008.8
 WHITE = (255, 255, 255, 255)
+HOME = (32.7765, -79.9311)  # Charleston
 
 GeoPoint = pyfvw.geo.GeoPoint
 draw = pyfvw.draw
@@ -47,12 +52,14 @@ class Rings(pyfvw.overlay.Overlay):
 
     def __init__(self):
         super().__init__("Range Rings")
-        self.center = GeoPoint(32.7765, -79.9311)  # Charleston, until a click or a file
+        self.center = GeoPoint(*HOME)  # until a click or a file
         self.count = 3
         self.spacing_nm = 1.0
         self.color = (255, 0, 0, 255)
         self.labels = True
         self._proj = None
+        self._undo = []  # earlier centres, oldest first
+        self._redo = []
 
     # MARK: Drawing
 
@@ -91,6 +98,7 @@ class Rings(pyfvw.overlay.Overlay):
                 elif len(words) == 2 and words[0] == "spacing_nm" and float(words[1]) > 0:
                     spacing = float(words[1])
         self.center, self.count, self.spacing_nm = center, count, spacing
+        self._undo, self._redo = [], []
 
     def file_save_as(self, spec, format_index):
         with open(spec, "w") as f:
@@ -115,6 +123,26 @@ class Rings(pyfvw.overlay.Overlay):
                 return [pyfvw.app.HitItem(feature=i, distance_px=off_px,
                                           hint=pyfvw.app.HintText(tip))]
         return []
+
+    def item_info(self, proj, x, y, tolerance_px):
+        """Get Info for the centre or the ring under (x, y)."""
+        hits = self.hit_test_point(proj, x, y, tolerance_px)
+        if not hits:
+            return None
+        sheet = pyfvw.app.ItemInfoSheet("Range Rings", edit_label="Edit Rings…")
+        ring = hits[0].feature
+        if ring > 0:
+            sheet.row("Ring", "Number", "%d" % ring)
+            sheet.row("Ring", "Radius", "%g nm" % (ring * self.spacing_nm))
+        sheet.row("Centre", "Latitude", "%.6f" % self.center.lat)
+        sheet.row("Centre", "Longitude", "%.6f" % self.center.lon)
+        sheet.row("Rings", "Count", "%d" % self.count)
+        sheet.row("Rings", "Spacing", "%g nm" % self.spacing_nm)
+        return sheet
+
+    def edit_hint(self, x, y):
+        """While editing, any left press moves the centre."""
+        return "Move the centre here"
 
     # MARK: Properties
 
@@ -150,9 +178,61 @@ class Rings(pyfvw.overlay.Overlay):
         """A left click moves the centre to the clicked point."""
         if self._proj is None or e.button != 0:
             return False
-        self.center = self._proj.surface_to_geo(e.x, e.y)
-        self.dirty = True
+        self.move_centre(self._proj.surface_to_geo(e.x, e.y))
         return True
+
+    # MARK: History
+
+    def move_centre(self, to):
+        """Moves the centre to ``to`` as one undoable edit and dirties the document."""
+        self._undo = (self._undo + [self.center])[-MAX_HISTORY:]
+        self._redo = []
+        self.center = to
+        self.dirty = True
+
+    def can_undo(self):
+        return bool(self._undo)
+
+    def undo(self):
+        if self._undo:
+            self._redo = (self._redo + [self.center])[-MAX_HISTORY:]
+            self.center = self._undo.pop()
+            self.dirty = True
+
+    def can_redo(self):
+        return bool(self._redo)
+
+    def redo(self):
+        if self._redo:
+            self._undo = (self._undo + [self.center])[-MAX_HISTORY:]
+            self.center = self._redo.pop()
+            self.dirty = True
+
+
+class RingsEditor(pyfvw.app.OverlayEditor):
+    """The palette shown while editing Python range rings."""
+
+    def tools(self):
+        rings = self.edited
+        node = pyfvw.app.MenuNode
+        return [
+            node("Show Labels", self._toggle_labels, icon="resources/labels.svg",
+                 enabled=rings is not None, checked=rings is not None and rings.labels),
+            node("Reset Centre", self._reset_centre, icon="recenter",
+                 enabled=rings is not None and (rings.center.lat, rings.center.lon) != HOME),
+        ]
+
+    def _toggle_labels(self):
+        rings = self.edited
+        if rings is not None:
+            rings.labels = not rings.labels
+            rings.host.redraw()
+
+    def _reset_centre(self):
+        rings = self.edited
+        if rings is not None:
+            rings.move_centre(GeoPoint(*HOME))
+            rings.host.redraw()
 
 
 def open_sample(ctx):

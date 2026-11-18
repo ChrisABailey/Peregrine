@@ -10,6 +10,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <cstring>
+#include <map>
 #include <sstream>
 
 #include "fv_desk_fake.h"
@@ -214,6 +216,150 @@ TEST_F(LibraryPluginTest, TheToolOpensTheSampleAsAnOverlay) {
   EXPECT_EQ(open[0]->AsProperties()->GetInt("ring_count", 0), 4);
 }
 
+// MARK: Editor
+
+/// The editor palette's commands by label.
+std::map<std::string, std::string> EditorTools(const fv::desk::Desk& desk) {
+  std::map<std::string, std::string> by_label;
+  const fv::desk::Menu* editor = desk.menus().Find("editor");
+  if (editor == nullptr) return by_label;
+  for (const fv::desk::MenuItem& item : editor->items)
+    if (!item.is_separator()) by_label[item.label] = item.command_id;
+  return by_label;
+}
+
+bool OnToolbar(const fv::desk::Desk& desk, const std::string& command_id) {
+  for (const fv::desk::MenuItem& item : desk.menus().Toolbar())
+    if (item.command_id == command_id) return true;
+  return false;
+}
+
+int DifferentPixels(const fv::PixelBuffer& a, const fv::PixelBuffer& b) {
+  int n = 0;
+  for (int y = 0; y < a.Height(); ++y)
+    for (int x = 0; x < a.Width(); ++x)
+      if (std::memcmp(a.Row(y) + x * 4, b.Row(y) + x * 4, 4) != 0) ++n;
+  return n;
+}
+
+class LibraryEditorTest : public LibraryPluginTest {
+ protected:
+  void SetUp() override {
+    LibraryPluginTest::SetUp();
+    if (HasFatalFailure()) return;
+    auto& mv = desk().map_view();
+    mv.SetViewport(mv.View().WithCamera(fv::GeoPoint{32.7765, -79.9311}, 100000, 0));
+  }
+
+  const std::string mode_ = std::string("editor.mode.") + kType;
+};
+
+TEST_F(LibraryEditorTest, TheModeButtonAndPaletteAreOnTheToolbar) {
+  const fv::app::OverlayTypeDesc* type = desk().types().Find(kType);
+  ASSERT_NE(type, nullptr);
+  EXPECT_TRUE(type->editor_factory);
+  EXPECT_NE(type->icon.find("rings.svg"), std::string::npos) << type->icon;
+  EXPECT_TRUE(OnToolbar(desk(), mode_));
+
+  ASSERT_TRUE(fake_.Run({mode_}).ok());
+  ASSERT_TRUE(desk().Editing());
+  EXPECT_TRUE(desk().commands().IsChecked(mode_));
+  ASSERT_NE(desk().overlays().FirstOfType(kType), nullptr);  // the mode made one
+  std::map<std::string, std::string> tools = EditorTools(desk());
+  ASSERT_EQ(tools.count("Show Labels"), 1u);
+  ASSERT_EQ(tools.count("Reset Centre"), 1u);
+  EXPECT_TRUE(OnToolbar(desk(), tools["Show Labels"]));
+  EXPECT_TRUE(OnToolbar(desk(), tools["Reset Centre"]));
+  EXPECT_TRUE(desk().commands().IsEnabled(tools["Show Labels"]));
+  EXPECT_TRUE(desk().commands().IsChecked(tools["Show Labels"]));
+  EXPECT_FALSE(desk().commands().IsEnabled(tools["Reset Centre"]));  // already at home
+}
+
+TEST_F(LibraryEditorTest, ClicksMoveTheCentreOnlyWhileEditing) {
+  ASSERT_TRUE(fake_.Run({mode_}).ok());
+  std::shared_ptr<fv::Overlay> rings = desk().overlays().FirstOfType(kType);
+  ASSERT_NE(rings, nullptr);
+  fv::PixelBuffer before;
+  ASSERT_TRUE(fake_.Render(&before).ok());  // the overlay maps clicks through its last frame
+
+  ASSERT_TRUE(desk().OverlayPointerDown(120, 90));
+  desk().OverlayPointerUp(120, 90);
+  EXPECT_TRUE(rings->AsPersistence()->is_dirty());
+  fv::PixelBuffer after;
+  ASSERT_TRUE(fake_.Render(&after).ok());
+  EXPECT_GT(DifferentPixels(before, after), 500);
+
+  std::map<std::string, std::string> tools = EditorTools(desk());
+  ASSERT_TRUE(desk().commands().IsEnabled(tools["Reset Centre"]));
+  ASSERT_TRUE(desk().Execute(tools["Reset Centre"]).ok());
+  EXPECT_FALSE(desk().commands().IsEnabled(tools["Reset Centre"]));
+  EXPECT_TRUE(desk().FlushOverlayRedraw());  // the tool asked through request_redraw
+  fv::PixelBuffer reset;
+  ASSERT_TRUE(fake_.Render(&reset).ok());
+  EXPECT_EQ(DifferentPixels(before, reset), 0);
+
+  ASSERT_TRUE(desk().Execute(tools["Show Labels"]).ok());
+  EXPECT_FALSE(desk().commands().IsChecked(tools["Show Labels"]));
+
+  ASSERT_TRUE(fake_.Run({mode_}).ok());  // leave the mode
+  EXPECT_FALSE(desk().Editing());
+  EXPECT_FALSE(desk().OverlayPointerDown(120, 90));
+}
+
+TEST_F(LibraryEditorTest, EditUndoStepsThroughTheCentreHistory) {
+  ASSERT_TRUE(fake_.Run({mode_}).ok());
+  fv::PixelBuffer home, moved, now;
+  ASSERT_TRUE(fake_.Render(&home).ok());
+  auto& commands = desk().commands();
+  EXPECT_FALSE(commands.IsEnabled("edit.undo"));
+
+  ASSERT_TRUE(desk().OverlayPointerDown(120, 90));
+  desk().OverlayPointerUp(120, 90);
+  ASSERT_TRUE(fake_.Render(&moved).ok());
+  std::map<std::string, std::string> tools = EditorTools(desk());
+  ASSERT_TRUE(desk().Execute(tools["Reset Centre"]).ok());
+  EXPECT_FALSE(desk().undo().CanUndo());  // the history is the overlay's own
+
+  ASSERT_TRUE(commands.IsEnabled("edit.undo"));
+  ASSERT_TRUE(fake_.Run({"edit.undo"}).ok());
+  ASSERT_TRUE(fake_.Render(&now).ok());
+  EXPECT_EQ(DifferentPixels(moved, now), 0);
+  ASSERT_TRUE(fake_.Run({"edit.undo"}).ok());
+  ASSERT_TRUE(fake_.Render(&now).ok());
+  EXPECT_EQ(DifferentPixels(home, now), 0);
+  EXPECT_FALSE(commands.IsEnabled("edit.undo"));
+
+  ASSERT_TRUE(commands.IsEnabled("edit.redo"));
+  ASSERT_TRUE(fake_.Run({"edit.redo"}).ok());
+  ASSERT_TRUE(fake_.Render(&now).ok());
+  EXPECT_EQ(DifferentPixels(moved, now), 0);
+
+  ASSERT_TRUE(fake_.Run({mode_}).ok());  // leave the mode: Edit ▸ Undo no longer reaches it
+  EXPECT_FALSE(commands.IsEnabled("edit.undo"));
+  EXPECT_FALSE(commands.IsEnabled("edit.redo"));
+}
+
+TEST_F(LibraryEditorTest, AnUnknownEditorClassFails) {
+  const fs::path stage = fs::path(FV_RANGERINGS_PGPKG).parent_path() / "stage" / kPackage;
+  const fs::path dir = fs::path(scratch_.Path("user")) / "com.example.noeditor";
+  fs::create_directories(dir);
+  fs::copy(stage / "lib", dir / "lib", fs::copy_options::recursive);
+  std::string manifest = ReadFile(stage / "peregrine-package.json");
+  auto replace = [&manifest](const std::string& from, const std::string& to) {
+    for (size_t at = manifest.find(from); at != std::string::npos; at = manifest.find(from, at + to.size()))
+      manifest.replace(at, from.size(), to);
+  };
+  replace("com.example.rangerings", "com.example.noeditor");
+  replace("\"rings_editor\"", "\"no_such_editor\"");
+  replace("\"rng\"", "\"nrng\"");
+  std::ofstream(dir / "peregrine-package.json") << manifest;
+  desk().LoadPackages(fv::desk::PackageDirs{std::string(), scratch_.Path("user")});
+  const fv::desk::PackageInfo* p = desk().packages()->Find("com.example.noeditor");
+  ASSERT_NE(p, nullptr);
+  EXPECT_EQ(p->state, PackageState::kFailed);
+  EXPECT_NE(p->reason.find("no editor class 'no_such_editor'"), std::string::npos) << p->reason;
+}
+
 // MARK: Refusals
 
 class LibraryRefusalTest : public ::testing::Test {
@@ -227,7 +373,7 @@ class LibraryRefusalTest : public ::testing::Test {
     fs::copy_file(library, dir / "lib" / lib_name);
     std::ofstream(dir / "peregrine-package.json") << R"({
   "format": 1, "id": "com.example.refused", "name": "Refused", "version": "1.0",
-  "requires": { "plugin_api": 1 },
+  "requires": { "plugin_api": 2 },
   "libraries": { ")" + platform_key + R"(": "lib/)" + lib_name + R"(" },
   "overlays": [ { "id": "com.example.refused.rings", "display_name": "Refused",
                   "implementation": { "library": ")" + class_name + R"(" } } ]
@@ -250,12 +396,12 @@ class LibraryRefusalTest : public ::testing::Test {
   std::unique_ptr<fv::desk::PackageManager> manager_;
 };
 
-TEST_F(LibraryRefusalTest, APluginBuiltForApi2IsUnavailable) {
-  WritePackage(FV_API2_PLUGIN, fv::desk::PluginPlatformKeys().front());
+TEST_F(LibraryRefusalTest, APluginBuiltForApi1IsUnavailable) {
+  WritePackage(FV_API1_PLUGIN, fv::desk::PluginPlatformKeys().front());
   const fv::desk::PackageInfo* p = Launch();
   ASSERT_NE(p, nullptr);
   EXPECT_EQ(p->state, PackageState::kUnavailable);
-  EXPECT_NE(p->reason.find("built for plugin API 2; this Peregrine hosts API 1"), std::string::npos)
+  EXPECT_NE(p->reason.find("built for plugin API 1; this Peregrine hosts API 2"), std::string::npos)
       << p->reason;
   EXPECT_EQ(types_.Find("com.example.refused.rings"), nullptr);
 }
@@ -263,7 +409,7 @@ TEST_F(LibraryRefusalTest, APluginBuiltForApi2IsUnavailable) {
 TEST_F(LibraryRefusalTest, NoLibraryForThisPlatformIsUnavailable) {
   const std::vector<std::string> mine = fv::desk::PluginPlatformKeys();
   const std::string other = mine.front().rfind("linux", 0) == 0 ? "macos" : "linux-x86_64";
-  WritePackage(FV_API2_PLUGIN, other);
+  WritePackage(FV_API1_PLUGIN, other);
   const fv::desk::PackageInfo* p = Launch();
   ASSERT_NE(p, nullptr);
   EXPECT_EQ(p->state, PackageState::kUnavailable);

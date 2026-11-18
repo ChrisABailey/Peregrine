@@ -1199,7 +1199,7 @@ def route_geo_path(route):
 # The editor — a palette and nothing else
 # ---------------------------------------------------------------------------
 
-class AnalysisEditor:
+class AnalysisEditor(app.OverlayEditor):
     """The ANALYSIS TOOL. One per type, whatever is on the map, exactly as
     `RouteEditor` is — "I am measuring" is a statement about the user.
 
@@ -1208,6 +1208,7 @@ class AnalysisEditor:
     toolbar at all."""
 
     def __init__(self, app_window=None):
+        super().__init__()
         self.app = app_window
         self.active = False
 

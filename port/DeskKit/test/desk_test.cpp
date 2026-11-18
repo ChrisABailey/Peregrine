@@ -19,10 +19,12 @@
 #include "fv_map_enums.h"
 #include "fvkit/app/capabilities.h"
 #include "fvkit/catalog/catalog.h"
+#include "fvkit/feature/feature_source.h"
 #include "fvkit/formats/registry.h"
 #include "fv_route_edit.h"
 #include "fv_route_overlay.h"
 #include "fvkit/overlay/contour_overlay.h"
+#include "fvkit/overlay/feature_overlay.h"
 #include "fvkit/overlay/ta_mask_overlay.h"
 #include "fvkit/overlay/point_overlay.h"
 #include "fvkit/raster.h"
@@ -435,6 +437,48 @@ TEST_F(DeskTest, WorkspaceRoundTrips) {
   EXPECT_EQ(docs[0]->AsPersistence()->file_spec(), points_file);
 }
 
+TEST_F(DeskTest, AWorkspaceReopensAWebLayerThroughItsSourceWithItsStyle) {
+  int opens = 0;
+  fv::FeatureSourceDesc source;
+  source.name = "desk-test";
+  source.matches = [](const std::string& spec) { return spec.rfind("https://desk.test/", 0) == 0; };
+  source.open = [&opens](const std::string&, fv::FeatureSourceResult* out) {
+    ++opens;
+    auto layer = std::make_shared<fv::MemoryFeatureLayer>("Gauges", fv::FeatureSchema());
+    fv::Feature f;
+    f.geometry = fv::Geometry::Point(GeoPoint{32.8, -79.9});
+    layer->Insert(&f);
+    out->layer = layer;
+    return fv::Status::Ok();
+  };
+  ASSERT_TRUE(fv::RegisterFeatureSource(source).ok());
+  const std::string spec = "https://desk.test/ogcapi|layername=gauges";
+
+  FakeDesk a;
+  EXPECT_EQ(a.desk().session().OpenFile(fv::app::TypeId(), spec), FlowResult::kDone);
+  auto opened = a.desk().overlays().OfType(fv::FeatureOverlay::kTypeId);
+  ASSERT_EQ(opened.size(), 1u);
+  auto* overlay = static_cast<fv::FeatureOverlay*>(opened[0].get());
+  fv::FeatureStyle style = overlay->style();
+  style.symbol.marker_size_px = 17;
+  overlay->SetStyle(style);
+  const Workspace saved = a.desk().CaptureWorkspace();
+  EXPECT_EQ(saved.overlays.at("0.file"), spec);
+  EXPECT_NE(saved.overlays.find("0.prop.style"), saved.overlays.end());
+
+  FakeDesk b;
+  EXPECT_EQ(b.desk().ApplyWorkspace(saved), FlowResult::kDone);
+  EXPECT_TRUE(b.desk().warnings().empty()) << b.desk().warnings()[0];
+  EXPECT_EQ(opens, 2);
+  auto reopened = b.desk().overlays().OfType(fv::FeatureOverlay::kTypeId);
+  ASSERT_EQ(reopened.size(), 1u);
+  auto* restored = static_cast<fv::FeatureOverlay*>(reopened[0].get());
+  EXPECT_EQ(restored->AsPersistence()->file_spec(), spec);
+  EXPECT_TRUE(restored->from_source());
+  EXPECT_EQ(restored->style().symbol.marker_size_px, 17);
+  fv::UnregisterFeatureSource("desk-test");
+}
+
 TEST_F(DeskTest, WorkspaceRestoreIsBestEffort) {
   FakeDesk fd;
   Workspace w;
@@ -680,7 +724,7 @@ TEST_F(DeskTest, PointEditorAddsAPointWhereClicked) {
   auto points = std::dynamic_pointer_cast<fv::PointOverlay>(
       desk.overlays().FirstOfType(fv::PointOverlay::kTypeId));
   ASSERT_NE(points, nullptr);
-  EXPECT_EQ(points->manager(), &desk.overlays());
+  EXPECT_NE(points->host(), nullptr);
   const Menu* editor = desk.menus().Find("editor");
   ASSERT_NE(editor, nullptr);
   EXPECT_EQ(editor->title, "Points");
@@ -732,7 +776,7 @@ TEST_F(DeskTest, RouteEditorAddsWaypointsWhereClicked) {
   auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
       desk.overlays().FirstOfType(fv::RouteOverlay::kTypeId));
   ASSERT_NE(route, nullptr);
-  EXPECT_EQ(route->manager(), &desk.overlays());
+  EXPECT_NE(route->host(), nullptr);
   ASSERT_NE(desk.menus().Find("editor"), nullptr);
 
   fv::PixelBuffer buf;
@@ -769,6 +813,79 @@ TEST_F(DeskTest, RouteEditorAddsWaypointsWhereClicked) {
   desk.OverlayHover(200, 150);
   desk.OverlayHoverExit();
   EXPECT_EQ(desk.CurrentStatus().feedback, "");
+}
+
+/// A core overlay takes its services from the host: a feature overlay joining
+/// the stack gets the window's undo stack and display scale, and a change of
+/// display scale reaches it by rebinding.
+TEST_F(DeskTest, FeatureOverlayTakesItsServicesFromTheHost) {
+  FakeDesk fd(400, 300);
+  fv::desk::Desk& desk = fd.desk();
+  auto feature = std::make_shared<fv::FeatureOverlay>();
+  ASSERT_TRUE(desk.overlays().Add(feature).ok());
+  ASSERT_NE(feature->host(), nullptr);
+  EXPECT_EQ(feature->display_scale(), desk.map_view().View().DisplayScale());
+
+  desk.map_view().Resize(400, 300, 2.0, 0.3528);
+  desk.DisplayScaleChanged();
+  EXPECT_EQ(feature->display_scale(), 2.0);
+
+  ASSERT_TRUE(desk.overlays().Remove(feature).ok());
+  EXPECT_EQ(feature->host(), nullptr);
+}
+
+TEST_F(DeskTest, EditUndoUndoesAWaypointDrag) {
+  FakeDesk fd(400, 300);
+  fv::desk::Desk& desk = fd.desk();
+  auto& mv = desk.map_view();
+  mv.SetViewport(mv.View().WithCamera(GeoPoint{32.6, -80.0}, 50000, 0));
+  ASSERT_TRUE(fd.Run({std::string("editor.mode.") + fv::RouteOverlay::kTypeId}).ok());
+  auto route = std::dynamic_pointer_cast<fv::RouteOverlay>(
+      desk.overlays().FirstOfType(fv::RouteOverlay::kTypeId));
+  ASSERT_NE(route, nullptr);
+  fv::PixelBuffer buf;
+  ASSERT_TRUE(fd.Render(&buf).ok());
+  fv::KeyEvent a;
+  a.key = 'A';
+  ASSERT_TRUE(desk.OverlayKeyDown(a));
+  for (double x : {200.0, 300.0}) {
+    ASSERT_TRUE(desk.OverlayPointerDown(x, 150));
+    desk.OverlayPointerUp(x, 150);
+  }
+  fv::KeyEvent escape;
+  escape.key = fv::Key::kEscape;
+  ASSERT_TRUE(desk.OverlayKeyDown(escape));
+  ASSERT_EQ(route->waypoints().size(), 2u);
+  const GeoPoint placed = route->waypoints()[0].position;
+
+  ASSERT_TRUE(fd.Render(&buf).ok());
+  ASSERT_TRUE(desk.OverlayPointerDown(200, 150));
+  desk.OverlayPointerDrag(220, 180);
+  desk.OverlayPointerDrag(240, 200);
+  desk.OverlayPointerUp(240, 200);
+  const GeoPoint dragged = route->waypoints()[0].position;
+  ASSERT_LT(dragged.lat, placed.lat);
+  EXPECT_FALSE(desk.undo().CanUndo());  // routes keep their own history
+
+  ASSERT_TRUE(desk.commands().IsEnabled("edit.undo"));
+  const int invalidates = fd.shell().invalidate_calls;
+  ASSERT_TRUE(fd.Run({"edit.undo"}).ok());
+  EXPECT_GT(fd.shell().invalidate_calls, invalidates);
+  EXPECT_DOUBLE_EQ(route->waypoints()[0].position.lat, placed.lat);
+  EXPECT_DOUBLE_EQ(route->waypoints()[0].position.lon, placed.lon);
+  ASSERT_TRUE(fd.Run({"edit.redo"}).ok());
+  EXPECT_DOUBLE_EQ(route->waypoints()[0].position.lat, dragged.lat);
+  EXPECT_DOUBLE_EQ(route->waypoints()[0].position.lon, dragged.lon);
+
+  // A workspace edit on the Desk stack comes first.
+  int undone = 0;
+  desk.undo().Push(fv::app::UndoEntry{"Nudge", nullptr,
+                                      [&undone] { ++undone; return fv::Status::Ok(); },
+                                      [] { return fv::Status::Ok(); }});
+  ASSERT_TRUE(fd.Run({"edit.undo"}).ok());
+  EXPECT_EQ(undone, 1);
+  EXPECT_DOUBLE_EQ(route->waypoints()[0].position.lat, dragged.lat);
+  EXPECT_DOUBLE_EQ(route->waypoints()[0].position.lon, dragged.lon);
 }
 
 TEST_F(DeskTest, RoutesShareThePlannerFromTheSettings) {
@@ -863,8 +980,8 @@ TEST_F(DeskTest, TheToolbarShowsOnlyCommandsWithIcons) {
   desk.Refresh();
   EXPECT_EQ(Ids(desk.menus().Toolbar()),
             (std::vector<std::string>{"overlay.layers_panel", "editor.mode.fv.points",
-                                      "editor.mode.fv.features", "editor.mode.fv.route",
-                                      "editor.mode.test.sketch"}));
+                                      "editor.mode.fv.features", "editor.mode.fv.movingmap",
+                                      "editor.mode.fv.route", "editor.mode.test.sketch"}));
 
   // While editing, the tools with icons follow; "Locked" and "More ▸ Inner"
   // have none and stay in the Sketch menu.

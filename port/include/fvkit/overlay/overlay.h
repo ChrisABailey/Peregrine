@@ -44,6 +44,7 @@ class EditTarget;
 class SearchProvider;
 class Properties;
 class ItemInfo;
+class HostAware;
 }  // namespace app
 
 struct MouseEvent {
@@ -188,6 +189,8 @@ class Overlay {
   virtual app::Properties* AsProperties() { return nullptr; }
   /// What Get Info shows about the item under a point (fvkit/app/capabilities.h).
   virtual app::ItemInfo* AsItemInfo() { return nullptr; }
+  /// Receives the application's services (fvkit/app/overlay_host.h).
+  virtual app::HostAware* AsHostAware() { return nullptr; }
 
   // Draw in surface space for the given projection. Default: nothing.
   virtual Status OnDraw(const MapProjection& proj, ICanvas& canvas) {

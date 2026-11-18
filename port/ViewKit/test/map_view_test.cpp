@@ -421,3 +421,27 @@ TEST_F(CatalogLadder, TirosToCadrgToGeoTiffToCadrgUnderTheCursor) {
 }
 
 }  // namespace
+
+TEST(MapView, FollowingIsAPanUntilTheScaleChanges) {
+  MapView mv = EncView();
+  double now = 10.0;
+  mv.SetClock([&now] { return now; });
+  const uint64_t f0 = mv.FrameGeneration();
+  const Viewport& v = mv.View();
+  for (int i = 1; i <= 5; ++i) {
+    now += 0.1;
+    // 10 points a tick to the east: the content moves left.
+    const Viewport next = mv.View().Panned(-10, 0);
+    mv.FollowTo(next);
+  }
+  EXPECT_EQ(mv.FrameGeneration(), f0);
+  EXPECT_TRUE(mv.Panning());
+  EXPECT_NEAR(mv.PanVelocity().x, -100, 1);
+  // Turning the chart (track up) is still a pan.
+  mv.FollowTo(mv.View().WithCamera(mv.View().Center(), mv.View().ScaleDenom(), 30.0));
+  EXPECT_EQ(mv.FrameGeneration(), f0);
+  EXPECT_EQ(mv.View().Rotation(), 30.0);
+  // A new scale is a new frame.
+  mv.FollowTo(v.WithCamera(v.Center(), v.ScaleDenom() / 2, v.Rotation()));
+  EXPECT_GT(mv.FrameGeneration(), f0);
+}

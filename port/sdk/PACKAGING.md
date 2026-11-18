@@ -11,15 +11,17 @@ Peregrine checks when it installs and loads one. The format is read by
 `port/DeskKit/fv_desk_packages.cpp`, and the tests in
 `port/DeskKit/test/packages_test.cpp` are its executable reference.
 
-How to write the code inside a package (C library, native C++, Python) is covered in
-`port/sdk/README.md` as each kind becomes available.
+The code inside a package is written against `port/sdk/include/peregrine/fv_plugin.h` (C),
+`fv_native.h` (C++) or `pyfvw` (Python); the examples in `port/sdk/examples/` show each kind.
+[What an overlay can do](#what-an-overlay-can-do) lists every capability and how each kind
+supplies it.
 
 | Implementation kind | Status in this build |
 |---|---|
 | `builtin` (code compiled into Peregrine, named by the manifest) | loads |
-| `library` (C ABI, `fv_plugin.h`) | loads (API 1); header `port/sdk/include/peregrine/fv_plugin.h`, example `port/sdk/examples/rangerings-c` |
+| `library` (C ABI, `fv_plugin.h`) | loads (API 2; API 1 libraries are refused); header `port/sdk/include/peregrine/fv_plugin.h`, example `port/sdk/examples/rangerings-c` |
 | `native` (C++ against the Peregrine SDK, locked to one build) | loads when the build id matches; header `port/sdk/include/peregrine/fv_native.h`, example `port/sdk/examples/rangerings-cpp` |
-| `python` (`pyfvw` subclass or function) | loads when the Python bridge (`libperegrine_python`) opens; otherwise *unavailable*; example `port/sdk/examples/rangerings-py` |
+| `python` (`pyfvw` subclass or function) | loads when the Python bridge (`libperegrine_python`) opens; otherwise *unavailable*; examples `port/sdk/examples/rangerings-py` and `port/sdk/examples/analysis-py` |
 
 ## Layout
 
@@ -47,7 +49,7 @@ Everything else in the directory belongs to the package.
   "publisher": "Example Corp",
   "license": "LGPL-3.0-or-later",
   "description": "Concentric range rings around any point.",
-  "requires": { "peregrine": "1.1", "plugin_api": 1, "python": "3.12" },
+  "requires": { "peregrine": "1.1", "plugin_api": 2, "python": "3.12" },
   "libraries": {
     "macos": "lib/macos/librangerings.dylib",
     "linux-x86_64": "lib/linux-x86_64/librangerings.so"
@@ -96,6 +98,15 @@ The same fields as a standalone overlay manifest (`port/DeskKit/fv_desk_overlay_
 `id`, `title` (required), `icon`, `description`, and `submenu`. Tools that share a submenu
 title are grouped under it in Tools.
 
+### Feature source entries
+
+`"feature_sources"` lists sources of feature layers for specs that are not files, such as a web
+service URL: `id`, optional `display_name`, and `"implementation": {"native": "name"}`, the name
+the library passed to `NativeRegistrar::AddFeatureSource`. Feature sources are native only.
+When the package loads, each is registered under its `id`
+(`fvkit/feature/feature_source.h`), and a spec it claims opens in the Feature Layer overlay
+read-only. `peregrine.web` (`port/packages/web-features`) is the example.
+
 ### Implementation
 
 Each overlay and tool entry has `"implementation"` with exactly one key:
@@ -109,6 +120,58 @@ Each overlay and tool entry has `"implementation"` with exactly one key:
 
 A package holds C libraries or native libraries, not both.
 
+### Editors
+
+A `python` or `library` overlay may add `"editor": {"python": "module:Class"}` or
+`"editor": {"library": "name"}`, in the same kind as its implementation; a library editor
+names an `fv_editor_class` in the table `fv_plugin_entry` returns. An overlay with an editor gets a toolbar mode button (from its `icon`), an
+Editor menu and toolbar tools from the editor, and pointer and key events while its editor is
+active; without one it is a plain static or file overlay. A `native` overlay registers its
+editor in code.
+
+## What an overlay can do
+
+An overlay has a capability when it supplies the function or method in its kind's column;
+absent ones are simply not offered (no Save for an overlay without a save function, no menu
+section without a context menu). A C function is a member of `fv_overlay_class` (or
+`fv_editor_class`, `fv_host_api`); a Python method is defined on the `pyfvw.overlay.Overlay`
+subclass (editor rows: on the `pyfvw.app.OverlayEditor` subclass); a native overlay returns the
+`fv::app` interface from the matching `As*()` override, and reaches host services through
+`AsHostAware` (`fv::app::HostAware::host()`).
+
+| Capability | `library` (C) | `python` | `native` (C++) |
+|---|---|---|---|
+| Draw | `draw` (required) | `on_draw(proj, canvas)` | `Overlay::OnDraw` |
+| File overlay: New, Open, Save, Save As, Close, Recent, workspaces | `open`, `save(path, format_index)` | `file_new`, `file_open`, `file_save_as(spec, format_index)` | `AsPersistence` |
+| Several save formats | manifest `save_filters`; `format_index` picks one | same | same |
+| Revert | `revert` | `revert` | `Persistence::SupportsRevert`, `Revert` |
+| Mark the document edited | host `set_dirty` (only way) | `self.dirty = True` | `Persistence::set_dirty` |
+| Hover tool tip and status text | `hit_test` | `hit_test_point` | `AsHitTest` |
+| Status text while editing | `edit_hint` | `edit_hint(x, y)` | `AsEditHint` |
+| Context menu section | `context_menu` + `menu_command` | `menu_items` | `AsContextMenu` |
+| Get Info sheet | `item_info` | `item_info(proj, x, y, tolerance_px)` → `pyfvw.app.ItemInfoSheet` | `AsItemInfo` |
+| Snap-to candidates | `snap_to` | `snap_to_point` | `AsSnapTo` |
+| Search | `search` | `search` | `AsSearch` |
+| Property page | `properties_schema`, `get_property`, `set_property` | `properties_schema`, `read_property`, `write_property` | `AsProperties` |
+| Editor: toolbar mode button, Editor menu, palette, cursor, UI constraints | manifest `editor.library` → `fv_editor_class` | manifest `editor.python` → `OverlayEditor` subclass | `editor_factory` in code |
+| Pointer presses and drags (editor active, or mouse held) | `on_mouse` | `on_mouse_down`/`_up`/`_move`, `on_double_click`, `on_mouse_wheel` | `Overlay::OnMouse*` |
+| Keys (editor active) | `on_key` (virtual-key codes) | `on_key_down` | `Overlay::OnKeyDown` |
+| Edit focus and per-overlay undo; Edit ▸ Undo falls back to it | `enter_edit_focus`, `release_edit_focus`, `can_undo`/`undo`/`can_redo`/`redo` | same names | `AsEditTarget` |
+| Redraw request from any thread | host `request_redraw` | `host.redraw()` | `OverlayHost::RequestRedraw` |
+| Mouse capture during a drag | host `capture_mouse`/`release_mouse` | `host.capture_mouse()`/`release_mouse()` | `OverlayHost::CaptureMouse` |
+| Ground elevation | host `elevation_at` | `host.elevation_at`, `host.open_elevation()` (worker threads) | `OverlayHost::ElevationAt`, `OpenElevation` |
+| Status bar message | host `show_status` | `host.show_status` | `OverlayHost::ShowStatus` |
+| Catalog coverage of a map format (the rows the base map draws from) | — | `host.coverage(format, area=None)` → `catalog.CoverageRow` list | `OverlayHost::Coverage` |
+| Ownship fix (moving map, live or replay), from any thread | — | — | `OverlayHost::OwnshipFix` |
+| Alarm the user must see (shown as a notice on the UI thread), from any thread | — | — | `OverlayHost::RaiseAlarm` |
+| Label font, display scale | — (`fv_view.dpi_scale`) | `host.label_font`, `host.display_scale` | `OverlayHost` |
+| Push onto the Desk undo stack | — | — | `OverlayHost::PushUndo` |
+| Toolbar and tool icons from the package | manifest `icon`, tool `icon` (`.svg`/`.png`/`.pdf` path or symbolic name) | same | same |
+
+Not available to any package: selection, the Edit Feature form, the attribute table and export
+selection belong to the built-in feature and point overlays. A native overlay may implement
+`IEditableFeatureLayer` itself.
+
 ### Python entries
 
 Python runs inside Peregrine through `libperegrine_python`, which embeds `pyfvw` and links one
@@ -121,18 +184,34 @@ installed, python packages are *unavailable* and everything else loads.
   manifest's `display_name` names each instance. Capabilities come from the methods it defines:
   `file_open`/`file_save_as` (a file overlay), `hit_test_point`, `properties_schema` with
   `read_property`/`write_property`, `menu_items`, `search`, and the mouse and key handlers.
+- An editor class subclasses `pyfvw.app.OverlayEditor` and takes no constructor arguments.
+  `self.edited` is the overlay being edited while the editor is active (else None). It
+  overrides whichever of `activate()`, `deactivate()`, `tools()` (a list of
+  `pyfvw.app.MenuNode`), `default_cursor()`, `ui_constraints()` and `auto_enter_on_create()`
+  it needs.
+- `overlay.host` (a `pyfvw.overlay.OverlayHost`, None outside a map window) offers
+  `redraw()` from any thread, `capture_mouse()`/`release_mouse()`, `elevation_at(lat, lon)`,
+  `open_elevation()` (a new source over the catalog's DTED and lidar, for one worker thread;
+  None without any), `show_status(text)`, `label_font` and `display_scale`. An overlay that
+  defines `on_host_changed()` is called when it joins a window and when the window's catalog
+  or display scale changes.
 - A tool function is called as `function(ctx)`. `ctx` is a `pyfvw.app.ToolContext`
   (`package_dir`, `open_file(path)`, `request_redraw()`), valid only during the call.
 - Importing the module happens at load time: an import that raises, or a name that is not an
   `Overlay` subclass or a callable, makes the package *failed* with the Python error.
 - Every call into Python takes the GIL, including draws on the render worker.
+- Pointer presses and keys reach an overlay only while its editor is active (or while it holds
+  the mouse), so an interactive Python overlay names an editor. `port/sdk/examples/analysis-py`
+  edits through its editor's palette and keeps `menu_items` for per-item commands.
+- A `properties_schema()` row of type `path` may add `"path_kind": "directory"` and
+  `"path_filters": [["Label", "*.ext"], ...]`.
 
 ## Rules Peregrine enforces
 
 A package that breaks any of these is refused at install, or listed as *failed* when it is found
 on disk.
 
-- Every overlay and tool id starts with the package id and a dot (`com.example.rangerings.rings`).
+- Every overlay, tool and feature source id starts with the package id and a dot (`com.example.rangerings.rings`).
 - Every path in the manifest is relative and stays inside the package: no `..`, no leading `/`,
   no backslashes, no drive letters. An icon ending in `.svg`, `.png` or `.pdf` is such a path.
   Any other icon is a symbolic name.

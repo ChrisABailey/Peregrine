@@ -56,6 +56,7 @@ if(FVW_BUILD_TESTS)
     test/route_legend_test.cpp
     test/route_rules_test.cpp
     test/router_elevation_test.cpp
+    test/router_heading_test.cpp
     test/router_test.cpp
   )
   # fv_zlib: osm_reader_test encodes its own .osm.pbf fixture, so it needs the

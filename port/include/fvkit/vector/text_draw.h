@@ -37,7 +37,12 @@ namespace fv {
 // draws of a string the backend has already shaped. A real halo dilates glyph
 // COVERAGE in the rasterizer, which only CpuCanvas could do and which every
 // other backend would then have to grow.
-constexpr int kMaxHaloOffsets = 8;
+//
+// From kHaloFillRadiusPx out, wider than a stem, the ring leaves gaps both
+// around the glyph and between the glyph and the ring, so the disc is filled
+// with concentric rings instead.
+constexpr double kHaloFillRadiusPx = 3.0;
+constexpr int kMaxHaloOffsets = 96;
 
 int HaloOffsets(double width_px, double dx[kMaxHaloOffsets],
                 double dy[kMaxHaloOffsets]);

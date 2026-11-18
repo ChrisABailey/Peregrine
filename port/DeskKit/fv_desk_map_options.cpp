@@ -14,8 +14,11 @@
 #include <memory>
 
 #include "fv_desk_enc_import.h"
+#include "fv_desk_moving_map.h"
+#include "fv_desk_ownship.h"
 #include "fv_desk_vector_map.h"
 #include "fv_route_overlay.h"
+#include "fvkit/overlay/moving_map_overlay.h"
 #include "fvkit/formats/dted_shaded.h"
 
 namespace fv {
@@ -352,6 +355,96 @@ MapOptionsSource RoutingOptions(std::function<void()> changed) {
                  "needs a road network built with elevation.";
     return std::make_unique<SpecProperties>(
         std::vector<app::PropertySpec>{graph, rules, profile, hills});
+  };
+  src.apply = [changed](const app::Properties&) {
+    if (changed) changed();
+  };
+  return src;
+}
+
+MapOptionsSource MovingMapOptions(std::function<void()> changed) {
+  MapOptionsSource src;
+  src.group_id = MovingMapOverlay::kTypeId;
+  src.make = [] {
+    auto spec = [](const char* key, const char* label, const char* group, app::PropertyType type,
+                   app::PropertyValue def, const char* help) {
+      app::PropertySpec s;
+      s.key = key;
+      s.label = label;
+      s.group = group;
+      s.type = type;
+      s.default_value = std::move(def);
+      s.help = help;
+      return s;
+    };
+    using T = app::PropertyType;
+    using V = app::PropertyValue;
+    std::vector<app::PropertySpec> specs;
+    app::PropertySpec feed = spec("movingmap.feed", "Feed", "Default Feed", T::kChoice, V::Choice(0),
+                                  "What a new moving map listens to. demo replays the open "
+                                  "route (or circles the map); nmea_tcp connects to a receiver "
+                                  "serving NMEA 0183; nmea_udp listens for NMEA broadcasts.");
+    feed.choices = MovingMapFeedNames();
+    specs.push_back(feed);
+    specs.push_back(spec("movingmap.nmea_host", "NMEA host", "Default Feed", T::kString,
+                         V::String(std::string()), "The receiver's address for nmea_tcp."));
+    app::PropertySpec port = spec("movingmap.nmea_port", "NMEA port", "Default Feed", T::kInt,
+                                  V::Int(10110), "The TCP port to connect to, or the UDP port "
+                                                 "to listen on.");
+    port.min = 1;
+    port.max = 65535;
+    specs.push_back(port);
+    specs.push_back(spec("movingmap.speed_mps", "Demo speed (m/s)", "Default Feed", T::kDouble,
+                         V::Double(15.0), "Ground speed of the demo replay."));
+    specs.push_back(spec("movingmap.noise_m", "Demo scatter (m)", "Default Feed", T::kDouble,
+                         V::Double(0.0),
+                         "Scatters the demo fixes by up to this distance, as a receiver under "
+                         "cover would; shows snapping at work."));
+    specs.push_back(spec("ownship.playback_rate", "Replay speed", "Replay", T::kDouble,
+                         V::Double(1.0), "1 plays opened tracks in real time, 10 ten times "
+                                         "faster."));
+    app::PropertySpec units = spec("ownship.units", "Ownship units", "Replay", T::kChoice,
+                                   V::Choice(0), "How the Ownship window reads altitude and "
+                                                 "speed: nautical is ft and kt, metric is m and "
+                                                 "km/h.");
+    units.choices = OwnshipUnitNames();
+    specs.push_back(units);
+    specs.push_back(spec("movingmap.auto_rotate", "Track up", "Following", T::kBool, V::Bool(false),
+                         "Turn the chart so the ship's course points up the screen while "
+                         "centring on every fix."));
+    specs.push_back(spec("movingmap.continuous", "Centre on every fix", "Following", T::kBool,
+                         V::Bool(false),
+                         "Keep the ship centred on each fix. Off, the map does not follow "
+                         "the ship."));
+    specs.push_back(spec("movingmap.slew_seconds", "Slew time (s)", "Following", T::kDouble,
+                         V::Double(0.35), "How long the map takes to glide to a new centre; "
+                                          "0 jumps."));
+    specs.push_back(spec("movingmap.snap_to_road", "Snap to road", "Following", T::kBool,
+                         V::Bool(true), "Whether a new moving map puts its ship on the road it "
+                                        "is most likely on; needs the Route page's road network."));
+    specs.push_back(spec("movingmap.show_apron", "Show the apron", "Following", T::kBool,
+                         V::Bool(false),
+                         "Draw the box the ship may move in before the map recentres."));
+    specs.push_back(spec("movingmap.symbol_px", "Ship size (px)", "Following", T::kDouble,
+                         V::Double(9.0), "Size of the ownship chevron."));
+    specs.push_back(spec("movingmap.show_trail_dots", "Trail dots", "Trail", T::kBool,
+                         V::Bool(true), "A dot at each fix the ship has passed; on a replay "
+                                        "the fixes still to come are faint."));
+    specs.push_back(spec("movingmap.show_trail_line", "Trail line", "Trail", T::kBool,
+                         V::Bool(false), "A line through the trail."));
+    app::PropertySpec trail_max = spec("movingmap.trail_max", "Trail length (fixes)", "Trail",
+                                       T::kInt, V::Int(5000),
+                                       "How many of a live map's newest fixes the trail shows. "
+                                       "Saving writes every recorded fix.");
+    trail_max.min = 0;
+    specs.push_back(trail_max);
+    app::PropertySpec record_max = spec("movingmap.record_max", "Recording limit (fixes)",
+                                        "Trail", T::kInt, V::Int(500000),
+                                        "A live map stops recording at this many fixes and "
+                                        "says so in the status bar.");
+    record_max.min = 1;
+    specs.push_back(record_max);
+    return std::make_unique<SpecProperties>(std::move(specs));
   };
   src.apply = [changed](const app::Properties&) {
     if (changed) changed();

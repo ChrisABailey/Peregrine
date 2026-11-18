@@ -169,5 +169,19 @@ std::string DefaultUserSettingsPath() {
 #endif
 }
 
+std::string DefaultUserCacheDir() {
+#if defined(_WIN32)
+  if (const char* local = Env("LOCALAPPDATA")) return (fs::path(local) / "Peregrine" / "cache").string();
+  return std::string();
+#elif defined(__APPLE__)
+  if (const char* home = Env("HOME")) return (fs::path(home) / "Library" / "Caches" / "Peregrine").string();
+  return std::string();
+#else
+  if (const char* xdg = Env("XDG_CACHE_HOME")) return (fs::path(xdg) / "peregrine").string();
+  if (const char* home = Env("HOME")) return (fs::path(home) / ".cache" / "peregrine").string();
+  return std::string();
+#endif
+}
+
 }  // namespace desk
 }  // namespace fv

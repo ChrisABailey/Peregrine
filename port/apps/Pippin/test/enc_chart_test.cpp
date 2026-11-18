@@ -7,10 +7,13 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "fvkit/app/search.h"
 #include "fvkit/canvas/cpu_canvas.h"
@@ -63,6 +66,7 @@ size_t InkedPixels(const fv::CpuCanvas& canvas) {
 }  // namespace
 
 using pippin::EncBandForScale;
+using pippin::EncCellsCoverRect;
 
 TEST(EncBandForScale, PicksTheNearestBandInLogScale) {
   const std::vector<int> all = {1, 2, 3, 4, 5};
@@ -77,6 +81,42 @@ TEST(EncBandForScale, FallsBackToTheBandsPresent) {
   EXPECT_EQ(3, EncBandForScale({2, 3}, 12000)) << "no harbour cells: coastal";
   EXPECT_EQ(5, EncBandForScale({5}, 3000000));
   EXPECT_EQ(0, EncBandForScale({}, 50000));
+}
+
+TEST(EncCellsCoverRect, CellsThatTileTheViewCoverIt) {
+  const fv::GeoRect view{{0.5, 0.5}, {1.5, 1.5}};
+  const std::vector<fv::GeoRect> quad{{{0, 0}, {1, 1}}, {{0, 1}, {1, 2}},
+                                      {{1, 0}, {2, 1}}, {{1, 1}, {2, 2}}};
+  EXPECT_TRUE(EncCellsCoverRect(quad, view)) << "four cells meeting at the view's centre";
+  EXPECT_FALSE(EncCellsCoverRect({quad[0], quad[1], quad[2]}, view)) << "one quarter bare";
+  EXPECT_TRUE(EncCellsCoverRect({{{0, 0}, {2, 2}}}, view));
+  EXPECT_FALSE(EncCellsCoverRect({}, view));
+}
+
+TEST(EncCellsCoverRect, OverlappingCellsWithAGapBetweenThemDoNotCover) {
+  const fv::GeoRect view{{0, 0}, {1, 3}};
+  EXPECT_FALSE(EncCellsCoverRect({{{-1, -1}, {2, 1.4}}, {{-1, 1.6}, {2, 4}}}, view));
+  EXPECT_TRUE(EncCellsCoverRect({{{-1, -1}, {2, 1.6}}, {{-1, 1.4}, {2, 4}}}, view));
+}
+
+TEST(EncCellsCoverRect, CellsEitherSideOfTheAntimeridianCoverACrossingView) {
+  const fv::GeoRect view{{0, 179}, {1, -179}};
+  EXPECT_TRUE(EncCellsCoverRect({{{-1, 178}, {2, 180}}, {{-1, -180}, {2, -178}}}, view));
+  EXPECT_FALSE(EncCellsCoverRect({{{-1, 178}, {2, 180}}}, view));
+  EXPECT_TRUE(EncCellsCoverRect({{{-1, 170}, {2, -170}}}, view));
+}
+
+TEST(EncChart, AViewAcrossTheHarbourCellSeamsDrawsOnlyTheHarbourBand) {
+  const std::string root = EncRoot();
+  if (root.empty()) GTEST_SKIP() << "no ENC test data";
+  pippin::EncChart chart;
+  ASSERT_TRUE(chart.Open(root, root).ok());
+  fv::CpuCanvas canvas(400, 400);
+  // The corner shared by US5CHSDC, DD, EC and ED: no one cell holds the view.
+  ASSERT_TRUE(chart.Render(ProjectionAt(32.775, -79.95, 12000), 254.0, 1.0,
+                           pippin::EncChartPass::kBase, &canvas)
+                  .ok());
+  EXPECT_EQ(std::vector<int>{5}, chart.last_bands());
 }
 
 TEST(EncChart, ACharlestonHarbourDrawDrawsTheHarbourBand) {
@@ -385,16 +425,109 @@ TEST(EncChartBench, DISABLED_FloridaFootprint) {
                 chart.last_renderer()->draws_emitted(),
                 chart.resident_cell_count(), r.second);
   }
-  double worst_ms = 0.0;
-  for (int i = 0; i <= 40; ++i) {
-    const double f = i / 40.0;
-    const auto r = draw(25.77 + f * (24.55 - 25.77), -80.17 + f * (-81.80 + 80.17),
-                        50000.0);
-    worst_ms = std::max(worst_ms, r.first);
+  for (double scale : {50000.0, 12000.0}) {
+    double worst_ms = 0.0, total_ms = 0.0;
+    size_t bands = 0;
+    for (int i = 0; i <= 40; ++i) {
+      const double f = i / 40.0;
+      const auto r = draw(25.77 + f * (24.55 - 25.77), -80.17 + f * (-81.80 + 80.17),
+                          scale);
+      worst_ms = std::max(worst_ms, r.first);
+      total_ms += r.first;
+      bands += chart.last_bands().size();
+    }
+    std::printf("Keys run at 1:%.0f: worst draw %.0f ms, total %.0f ms, %zu bands "
+                "over 41 draws, footprint %+.0f MB\n",
+                scale, worst_ms, total_ms, bands, FootprintMb() - before);
   }
-  std::printf("Keys run at 1:50000: worst draw %.0f ms, footprint %+.0f MB\n",
-              worst_ms, FootprintMb() - before);
   std::printf("peak footprint %+.0f MB\n", peak);
+}
+
+/** Scene rebuilds with every cell resident: a pinch over Charleston harbour,
+ *  each frame at a new scale. Run with --gtest_also_run_disabled_tests. */
+TEST(EncChartBench, DISABLED_CharlestonPinch) {
+  const std::string root = EncRoot();
+  if (root.empty()) GTEST_SKIP() << "no ENC test data";
+  pippin::EncChart chart;
+  ASSERT_TRUE(chart.Open(root, root).ok());
+  chart.SetDrawLabels(true);
+  fv::CpuCanvas canvas(1320, 2868);
+  auto draw = [&](double scale) {
+    fv::MapProjection proj;
+    proj.SetSurfaceSize(1320, 2868);
+    proj.SetCenter({32.78, -79.93});
+    proj.SetPhysicalScale(scale, 0.0554);
+    EXPECT_TRUE(chart.Render(proj, 288.0, 3.0, pippin::EncChartPass::kBase, &canvas).ok());
+  };
+  draw(20000.0);
+  const int kFrames = 60;
+  // Thread CPU time, so a busy machine changes the figure less than wall time.
+  auto cpu_ms = [] {
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+  };
+  double best = 1e30;
+  for (int run = 0; run < 5; ++run) {
+    const double t0 = cpu_ms();
+    for (int i = 0; i < kFrames; ++i) draw(20000.0 * std::pow(0.5, (i + 1.0) / kFrames));
+    best = std::min(best, cpu_ms() - t0);
+  }
+  std::printf("Charleston pinch 1:20000 -> 1:10000: %d frames, best of 5 %.2f CPU ms a "
+              "frame, bands",
+              kFrames, best / kFrames);
+  for (int b : chart.last_bands()) std::printf(" %d", b);
+  std::printf("\n");
+}
+/** Base redraws of a moving map: up Charleston harbour at 1:12000, course-up,
+ *  one draw per 2.5 degrees of turn, with the app's scene margin. Reports the
+ *  draws that reused the scene apart from the ones that rebuilt it. Run with
+ *  --gtest_also_run_disabled_tests. */
+TEST(EncChartBench, DISABLED_CharlestonCourseUp) {
+  const std::string root = EncRoot();
+  if (root.empty()) GTEST_SKIP() << "no ENC test data";
+  pippin::EncChart chart;
+  ASSERT_TRUE(chart.Open(root, root).ok());
+  chart.SetDrawLabels(true);
+  chart.SetSceneMargin(0.25);
+  fv::CpuCanvas canvas(1320, 2868);
+  auto cpu_ms = [] {
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+  };
+  const int kFrames = 60;
+  double best_reused = 1e30, best_rebuilt = 1e30;
+  int reused = 0;
+  size_t draws = 0;
+  for (int run = 0; run < 6; ++run) {
+    double reused_ms = 0.0, rebuilt_ms = 0.0;
+    reused = 0;
+    draws = 0;
+    for (int i = 0; i < kFrames; ++i) {
+      const double f = i / (kFrames - 1.0);
+      fv::MapProjection proj;
+      proj.SetSurfaceSize(1320, 2868);
+      proj.SetCenter({32.745 + f * 0.035, -79.875 - f * 0.055});
+      proj.SetPhysicalScale(12000.0, 0.0554);
+      proj.SetRotation(300.0 + 2.5 * i);
+      const double t0 = cpu_ms();
+      EXPECT_TRUE(
+          chart.Render(proj, 288.0, 3.0, pippin::EncChartPass::kBase, &canvas).ok());
+      const double ms = cpu_ms() - t0;
+      const bool hit = chart.last_renderer()->scene_reused();
+      (hit ? reused_ms : rebuilt_ms) += ms;
+      reused += hit ? 1 : 0;
+      draws += chart.last_renderer()->draws_emitted();
+    }
+    if (run == 0) continue;  // the first run loads the cells
+    best_reused = std::min(best_reused, reused_ms);
+    best_rebuilt = std::min(best_rebuilt, rebuilt_ms);
+  }
+  std::printf("Charleston course-up 1:12000: %d draws, %d on a reused scene at %.2f CPU ms, "
+              "%d rebuilds at %.2f CPU ms (best of 5), %zu finest-band draw calls\n",
+              kFrames, reused, reused ? best_reused / reused : 0.0, kFrames - reused,
+              kFrames - reused ? best_rebuilt / (kFrames - reused) : 0.0, draws);
 }
 #endif  // __APPLE__
 

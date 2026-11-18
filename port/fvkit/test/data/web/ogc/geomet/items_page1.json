@@ -1,0 +1,328 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "CREDIT RIVER AT ERINDALE",
+    "IDENTIFIER": "02HB002",
+    "STATION_NUMBER": "02HB002",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Discontinued",
+    "STATUS_FR": "Fermée",
+    "CONTRIBUTOR_EN": "WATER SURVEY OF CANADA (DOE) (CANADA)",
+    "CONTRIBUTOR_FR": "RELEVES HYDROLOGIQUES DU CANADA (MDE) (CANADA)",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 0,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 844.2000122070312,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB002&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB002"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB002"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB002",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB002",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB002"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for CREDIT RIVER AT ERINDALE (02HB002)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB002"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.65721893310547,
+     43.542781829833984
+    ]
+   },
+   "id": "02HB002"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "SIXTEEN MILE CREEK AT MILTON",
+    "IDENTIFIER": "02HB005",
+    "STATION_NUMBER": "02HB005",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Active",
+    "STATUS_FR": "En service",
+    "CONTRIBUTOR_EN": "WATER SURVEY OF CANADA (DOE) (CANADA)",
+    "CONTRIBUTOR_FR": "RELEVES HYDROLOGIQUES DU CANADA (MDE) (CANADA)",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 1,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 102.0,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB005&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB005"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB005"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB005",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB005",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB005"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for SIXTEEN MILE CREEK AT MILTON (02HB005)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB005"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.87972259521484,
+     43.51388931274414
+    ]
+   },
+   "id": "02HB005"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "CREDIT RIVER WEST BRANCH AT NORVAL",
+    "IDENTIFIER": "02HB008",
+    "STATION_NUMBER": "02HB008",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Active",
+    "STATUS_FR": "En service",
+    "CONTRIBUTOR_EN": "ONTARIO MINISTRY OF NATURAL RESOURCES",
+    "CONTRIBUTOR_FR": "MINISTERE DES RICHESSES NATURELLES DE L'ONTARIO",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 1,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 128.10000610351562,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB008&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB008"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB008"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB008",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB008",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB008"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for CREDIT RIVER WEST BRANCH AT NORVAL (02HB008)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB008"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.86627960205078,
+     43.64656066894531
+    ]
+   },
+   "id": "02HB008"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "STATION_NAME": "CREDIT RIVER AT BOSTON MILLS",
+    "IDENTIFIER": "02HB018",
+    "STATION_NUMBER": "02HB018",
+    "PROV_TERR_STATE_LOC": "ON",
+    "STATUS_EN": "Active",
+    "STATUS_FR": "En service",
+    "CONTRIBUTOR_EN": "ONTARIO MINISTRY OF NATURAL RESOURCES",
+    "CONTRIBUTOR_FR": "MINISTERE DES RICHESSES NATURELLES DE L'ONTARIO",
+    "VERTICAL_DATUM": "ASSUMED DATUM",
+    "REAL_TIME": 1,
+    "RHBN": 0,
+    "DRAINAGE_AREA_GROSS": 415.5,
+    "DRAINAGE_AREA_EFFECT": null
+   },
+   "links": [
+    {
+     "type": "text/html",
+     "rel": "related",
+     "title": "Station Information for CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?STATION_NUMBER=02HB018&f=html"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Daily Mean of Water Level or Discharge for CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?STATION_NUMBER=02HB018"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Monthly Mean of Water Level or Discharge for CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-monthly-mean/items?STATION_NUMBER=02HB018"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Station Information for CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_e.html?stn=02HB018",
+     "hreflang": "en-CA"
+    },
+    {
+     "type": "text/html",
+     "rel": "alternate",
+     "title": "Informations pour la station CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://wateroffice.ec.gc.ca/report/historical_f.html?stn=02HB018",
+     "hreflang": "fr-CA"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Instantaneous Water Level or Discharge for CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-peaks/items?STATION_NUMBER=02HB018"
+    },
+    {
+     "type": "application/json",
+     "rel": "related",
+     "title": "Annual Maximum and Minimum Daily Water Level or Discharge for CREDIT RIVER AT BOSTON MILLS (02HB018)",
+     "href": "https://api.weather.gc.ca/collections/hydrometric-annual-statistics/items?STATION_NUMBER=02HB018"
+    }
+   ],
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -79.92682647705078,
+     43.77357864379883
+    ]
+   },
+   "id": "02HB018"
+  }
+ ],
+ "numberMatched": 67,
+ "numberReturned": 4,
+ "links": [
+  {
+   "type": "application/geo+json",
+   "rel": "self",
+   "title": "This document as GeoJSON",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=json&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "rel": "alternate",
+   "type": "application/ld+json",
+   "title": "This document as RDF (JSON-LD)",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=jsonld&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "text/html",
+   "rel": "alternate",
+   "title": "This document as HTML",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?f=html&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "application/geo+json",
+   "rel": "next",
+   "title": "Items (next)",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations/items?offset=4&bbox=-80,43.5,-79,44&limit=4"
+  },
+  {
+   "type": "application/json",
+   "title": "Hydrometric Data - Monitoring Stations",
+   "rel": "collection",
+   "href": "https://api.weather.gc.ca/collections/hydrometric-stations"
+  }
+ ],
+ "timeStamp": "2026-11-17T21:58:25.688862Z"
+}

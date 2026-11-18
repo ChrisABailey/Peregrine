@@ -35,6 +35,7 @@
 #include "fv_enc_vector_source.h"
 #include "fv_route_legend.h"
 #include "fvkit/analysis/measure.h"
+#include "fvkit/app/manager_host.h"
 #include "fvkit/app/pick.h"
 #include "fvkit/app/search.h"
 #include "fvkit/canvas/cpu_canvas.h"
@@ -57,6 +58,7 @@
 // the follow slew should take, and whether the cached base map still covers
 // the live camera.
 #include "PPBaseCoverage.h"
+#include "PPDetourTrigger.h"
 #include "PPEncChart.h"
 #include "PPFollowCadence.h"
 
@@ -115,6 +117,10 @@ constexpr double kRefLatStep = 0.5;
 // property of any screen, which is why feeding a screen's true dpi in is
 // wrong.
 constexpr double kStyleNominalDpi = 96.0;
+
+/// Copies of one name closer than this, in points, are drawn once: a road
+/// split into several ways or carriageways carries its name on each.
+constexpr double kLabelRepeatPoints = 120.0;
 
 /// The DPI at which an S-52 pen unit (0.32 mm) is one symbol pixel. Pens
 /// converted at this times the symbol scale keep the proportions S-52 draws
@@ -407,6 +413,95 @@ NSArray<NSNumber*>* ParseZoomSteps(const std::string& text) {
 
 @end
 
+@interface PPRoadInfo ()
+- (instancetype)initWithName:(NSString*)name
+                   typeLabel:(NSString*)typeLabel
+                    markings:(NSArray<NSString*>*)markings
+                    tierWord:(NSString*)tierWord
+                    tierRank:(NSInteger)tierRank
+                   termsLine:(NSString*)termsLine
+               speedLimitKph:(NSInteger)speedLimitKph
+                     surface:(NSString*)surface
+                    hasGrade:(BOOL)hasGrade
+                gradePercent:(double)gradePercent
+        uphillBearingDegrees:(double)uphillBearingDegrees;
+@end
+
+@implementation PPRoadInfo
+
+- (instancetype)initWithName:(NSString*)name
+                   typeLabel:(NSString*)typeLabel
+                    markings:(NSArray<NSString*>*)markings
+                    tierWord:(NSString*)tierWord
+                    tierRank:(NSInteger)tierRank
+                   termsLine:(NSString*)termsLine
+               speedLimitKph:(NSInteger)speedLimitKph
+                     surface:(NSString*)surface
+                    hasGrade:(BOOL)hasGrade
+                gradePercent:(double)gradePercent
+        uphillBearingDegrees:(double)uphillBearingDegrees {
+  self = [super init];
+  if (self == nil) return nil;
+  _name = [name copy];
+  _typeLabel = [typeLabel copy];
+  _markings = [markings copy];
+  _tierWord = [tierWord copy];
+  _tierRank = tierRank;
+  _termsLine = [termsLine copy];
+  _speedLimitKph = speedLimitKph;
+  _surface = [surface copy];
+  _hasGrade = hasGrade;
+  _gradePercent = gradePercent;
+  _uphillBearingDegrees = uphillBearingDegrees;
+  return self;
+}
+
+@end
+
+@interface PPRouteSpot ()
+- (instancetype)initWithSpot:(const pippin::RouteSpot&)spot;
+@end
+
+@implementation PPRouteSpot
+
+- (instancetype)initWithSpot:(const pippin::RouteSpot&)spot {
+  self = [super init];
+  if (self == nil) return nil;
+  _metersFromStart = spot.along_m;
+  _metersToEnd = std::max(0.0, spot.length_m - spot.along_m);
+  _secondsFromStart = spot.seconds_from_start;
+  _secondsToEnd = std::max(0.0, spot.seconds - spot.seconds_from_start);
+  _hasGrade = spot.has_elevation ? YES : NO;
+  _gradePercent = spot.grade_pct;
+  return self;
+}
+
+@end
+
+@interface PPMapInfo ()
+- (instancetype)initWithCoordinate:(PPGeoPoint)coordinate
+                         routeSpot:(PPRouteSpot*)routeSpot
+                              road:(PPRoadInfo*)road
+                           feature:(PPChartFeature*)feature;
+@end
+
+@implementation PPMapInfo
+
+- (instancetype)initWithCoordinate:(PPGeoPoint)coordinate
+                         routeSpot:(PPRouteSpot*)routeSpot
+                              road:(PPRoadInfo*)road
+                           feature:(PPChartFeature*)feature {
+  self = [super init];
+  if (self == nil) return nil;
+  _coordinate = coordinate;
+  _routeSpot = routeSpot;
+  _road = road;
+  _feature = feature;
+  return self;
+}
+
+@end
+
 @implementation PPCameraStep
 
 - (instancetype)initWithOwnship:(PPOwnship*)ownship
@@ -540,6 +635,16 @@ NSString* NSStr(const std::string& s) {
   return [NSString stringWithUTF8String:s.c_str()] ?: @"";
 }
 
+/// A routing multiplier as the info card's Markings row words it, e.g. "Private".
+NSString* MarkingWord(const fv::routing::CostTerm& t) {
+  if (t.setting == "speed_factor") return t.factor > 1.0 ? @"Fast traffic" : @"Slow traffic";
+  if (t.setting == "surface_factor.compacted") return @"Compacted surface";
+  if (t.setting == "surface_factor.rough") return @"Unpaved surface";
+  NSString* label = NSStr(t.label);
+  if (label.length == 0) return label;
+  return [[label substringToIndex:1].uppercaseString stringByAppendingString:[label substringFromIndex:1]];
+}
+
 }  // namespace
 
 @interface PPChartFeatureInfo ()
@@ -664,6 +769,9 @@ NSString* NSStr(const std::string& s) {
   int64_t _pointDragPriorSelection;
 
   std::unique_ptr<fv::OverlayManager> _overlays;
+  /// Mouse capture and snapping for the route overlay; declared after
+  /// `_overlays`, so it is destroyed first.
+  std::unique_ptr<fv::app::ManagerHost> _host;
 
   // The two search-only overlays, built on the first search and never drawn
   // (see `ensureSearchProviders`). Borrowed pointers into the manager, held
@@ -715,6 +823,11 @@ NSString* NSStr(const std::string& s) {
   // correspond one to one: a frame that swallowed two fixes carries both
   // fixes' events, and an alert is never dropped for being early.
   std::vector<fv::nav::GuidanceEvent> _pendingGuidanceEvents;
+
+  // When to offer an off-route rider a detour, and the offer on screen.
+  pippin::DetourTrigger _detourTrigger;
+  pippin::DetourOffer _detourOffer;
+  BOOL _hasDetourOffer;
 
   // The course deviation indicator for a straight-leg route, fed and given its
   // route beside `_guidance`; `_courseNames` are the route points' labels.
@@ -869,13 +982,16 @@ NSString* NSStr(const std::string& s) {
     // is the settings key's default rather than nothing.
     _renderer->SetSceneMargin(_settings.GetDouble("vector.scene_margin", 0.25));
     _renderer->SetSimplifyPixels(_settings.GetDouble("vector.simplify_pixels", 0.0));
+    _renderer->SetLabelCollision(true);
     // No scene margin: an underlay is redrawn at a new camera, never re-panned.
     _underlayRenderer = std::make_unique<fv::VectorRenderer>(_source, _style);
     _underlayRenderer->SetSceneMargin(0.0);
+    _underlayRenderer->SetLabelCollision(true);
     _underlayRenderer->SetSimplifyPixels(
         _settings.GetDouble("vector.simplify_pixels", 0.0));
   }
   _overlays = std::make_unique<fv::OverlayManager>();
+  _host = std::make_unique<fv::app::ManagerHost>(*_overlays);
 
   // The label font. The pack carries its own because iOS gives an app no
   // readable path to a system face; a pack without one still draws a map,
@@ -940,6 +1056,10 @@ NSString* NSStr(const std::string& s) {
   [self loadWindSettings];
   _routeStore->set_avoid_hills_penalty(
       _settings.GetDouble("routing.avoid_hills_penalty", fv::kDefaultAvoidHillsPenalty));
+  _routeStore->set_detour_u_turn_seconds(
+      _settings.GetDouble("routing.reroute_u_turn_seconds", 45.0));
+  _routeStore->set_detour_turn_around_margin_m(
+      _settings.GetDouble("routing.reroute_turn_around_margin_m", 200.0));
   return self;
 }
 
@@ -1069,13 +1189,9 @@ NSString* NSStr(const std::string& s) {
   const fv::Status s = _overlays->Add(_routeStore->overlay());
   (void)s;  // a fresh manager with no type registry cannot refuse an Add
 
-  // The back-pointer, which `Add` does not set. `fv::RouteOverlay` keeps its
-  // own manager pointer — an overlay does not otherwise know its stack — and
-  // that is what `RouteEditSession::ResolvePixel` asks
-  // `fv::app::SnapCandidates` through, and what takes the mouse capture. Null,
-  // the drag still works and simply never snaps, which shows up as a
-  // coordinate eleven metres from the marker the waypoint was dropped on.
-  _routeStore->overlay()->SetManager(_overlays.get());
+  // `Add` does not bind the host. Without it the route's drag still works but
+  // never snaps: a waypoint dropped on a marker lands eleven metres from it.
+  _host->Bind(*_routeStore->overlay());
 }
 
 // The moving map joins the stack at construction and stays there. It is a
@@ -1334,6 +1450,11 @@ NSString* NSStr(const std::string& s) {
   }
   _darkStyle = dark;
   _styleName = [NSString stringWithUTF8String:_style->style_name().c_str()];
+  // The dark sheet's road casings are the same oranges as the path-type halo,
+  // so the route's dashed centre line goes near-white there to stay readable.
+  _routeStore->overlay()->SetProperty(
+      "road_color", fv::app::PropertyValue::Color(dark ? fv::FvColor{221, 238, 255, 255}
+                                                       : fv::RouteOverlay::kRoadColor));
   // Point names: near-white on dark brown over the dark sheet, the overlay's
   // own black on white otherwise. Matches the dark sheet's road names.
   if (_pointStore) {
@@ -1346,6 +1467,7 @@ NSString* NSStr(const std::string& s) {
   }
   ++_contentEpoch;
   [self invalidateBaseLayer];
+  [self overlayContentChanged];
 }
 
 /// Pushes the chart settings, with the palette resolved against dark mode, to
@@ -1437,6 +1559,9 @@ NSString* NSStr(const std::string& s) {
 
 - (void)setChartDepthsInFeet:(BOOL)feet {
   _chartDepthsInFeet = feet;
+  _chartSettings.sounding_units =
+      feet ? pippin::EncDepthUnits::kFeet : pippin::EncDepthUnits::kMetres;
+  [self applyChartSettings];
 }
 
 - (BOOL)hasLegend {
@@ -1484,6 +1609,24 @@ NSString* NSStr(const std::string& s) {
   return YES;
 }
 
+/// The profile the map key speaks for, with the rider's key settings applied.
+/// `rules` keeps the profiles alive; `adjusted` holds the adjusted copy.
+/// `shipped` is the rule file's own; both are null with no profile.
+- (const fv::routing::RouteProfile*)
+    keyProfileWithRules:(std::shared_ptr<const fv::routing::RouteRules>*)rules
+                shipped:(const fv::routing::RouteProfile**)shipped
+               adjusted:(fv::routing::RouteProfile*)adjusted {
+  *rules = _routeStore ? _routeStore->rules() : fv::routing::RouteRules::Builtin();
+  *shipped = (*rules)->Find(_routeDefaultProfile.UTF8String);
+  if (*shipped == nullptr) *shipped = (*rules)->default_profile();
+  if (*shipped != nullptr && _routeStore) {
+    const fv::routing::ProfileOverrides overrides = _routeStore->OverridesFor((*shipped)->name);
+    if (!overrides.empty() && fv::routing::ApplyOverrides(**shipped, overrides, adjusted).ok())
+      return adjusted;
+  }
+  return *shipped;
+}
+
 - (NSArray<PPLegendGroup*>*)legendForViewport:(PPViewport*)viewport
                                    swatchSize:(CGSize)swatchSize
                                       appName:(NSString*)appName {
@@ -1509,25 +1652,14 @@ NSString* NSStr(const std::string& s) {
   const int quarter = static_cast<int>(std::lround(zoom * 4.0));
   const double drawScale = scale * std::exp2(zoom - quarter / 4.0);
 
-  std::shared_ptr<const fv::routing::RouteRules> rules =
-      _routeStore ? _routeStore->rules() : fv::routing::RouteRules::Builtin();
-  const fv::routing::RouteProfile* shipped = rules->Find(_routeDefaultProfile.UTF8String);
-  if (shipped == nullptr) shipped = rules->default_profile();
-  const fv::routing::RouteProfile* profile = shipped;
+  std::shared_ptr<const fv::routing::RouteRules> rules;
+  const fv::routing::RouteProfile* shipped = nullptr;
   fv::routing::RouteProfile adjusted;
-  if (shipped != nullptr && _routeStore) {
-    const fv::routing::ProfileOverrides overrides = _routeStore->OverridesFor(shipped->name);
-    if (!overrides.empty() && fv::routing::ApplyOverrides(*shipped, overrides, &adjusted).ok())
-      profile = &adjusted;
-  }
+  const fv::routing::RouteProfile* profile =
+      [self keyProfileWithRules:&rules shipped:&shipped adjusted:&adjusted];
   const std::string app = appName.UTF8String ?: "";
   auto tierRank = [profile](const fv::routing::LegendCost& c) -> NSInteger {
-    if (c.excluded) return -1;
-    NSInteger rank = 0;
-    while (rank + 1 < static_cast<NSInteger>(profile->legend_tiers.size()) &&
-           c.factor > profile->legend_tiers[rank].first)
-      ++rank;
-    return rank;
+    return c.excluded ? -1 : profile->TierRank(c.factor);
   };
 
   // Keeps about eight quarter zooms of swatches; a pinch through the whole
@@ -1697,9 +1829,12 @@ NSString* NSStr(const std::string& s) {
   // underlay back to the live scale its lines and text are the sharp map's
   // size rather than four times it.
   [self prepareStyleForViewport:under];
-  if (_underlayRenderer)
+  if (_underlayRenderer) {
     _underlayRenderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint *
                                     _symbolZoom / pippin::kUnderlayZoomOut);
+    _underlayRenderer->SetLabelRepeatPixels(kLabelRepeatPoints * pixelsPerPoint *
+                                            _symbolZoom / pippin::kUnderlayZoomOut);
+  }
 
   // The background under the live camera, for the shell to paint behind
   // everything, and the one at the underlay's own scale to clear it with.
@@ -1836,7 +1971,10 @@ NSString* NSStr(const std::string& s) {
     // grows lines, text, halos, icons and an area pattern's pitch together and
     // touches neither the tile level nor the projection. See `symbolZoom` in
     // the header.
-    if (_renderer) _renderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint * _symbolZoom);
+    if (_renderer) {
+      _renderer->SetDeviceDpi(kStyleNominalDpi * pixelsPerPoint * _symbolZoom);
+      _renderer->SetLabelRepeatPixels(kLabelRepeatPoints * pixelsPerPoint * _symbolZoom);
+    }
 
     // A GL style states its own background, and `background` is a layer rather
     // than a feature, so it cannot arrive as a StyleResult: the application
@@ -2275,9 +2413,9 @@ NSString* NSStr(const std::string& s) {
     return;
   }
   _trip.OnFix(raw);
-  for (const fv::nav::GuidanceEvent& e : _guidance.OnFix(raw)) {
-    _pendingGuidanceEvents.push_back(e);
-  }
+  const std::vector<fv::nav::GuidanceEvent> events = _guidance.OnFix(raw);
+  _pendingGuidanceEvents.insert(_pendingGuidanceEvents.end(), events.begin(), events.end());
+  [self updateDetourOfferWithFix:raw events:events];
   for (const fv::nav::CourseEvent& e : _course.OnFix(raw)) {
     _pendingCourseEvents.push_back(e);
   }
@@ -2292,6 +2430,36 @@ NSString* NSStr(const std::string& s) {
     _lastTripFixTime = raw.time_s;
     _hasLastTripFixTime = YES;
   }
+}
+
+// Plans the detour offer when the trigger says so, re-plans it once the rider
+// has gone `kDetourRefreshM` from where it was planned, and drops it on rejoin.
+// Planning is synchronous on this queue, about 0.2 s on the Atlanta graph.
+static constexpr double kDetourRefreshM = 100.0;
+
+static double PPMetresBetween(const fv::GeoPoint& a, const fv::GeoPoint& b) {
+  const double k = 6371008.8 * M_PI / 180.0;
+  return std::hypot((b.lon - a.lon) * k * std::cos(a.lat * M_PI / 180.0), (b.lat - a.lat) * k);
+}
+
+- (void)updateDetourOfferWithFix:(const fv::PositionFix&)raw
+                          events:(const std::vector<fv::nav::GuidanceEvent>&)events {
+  _detourTrigger.OnFix(raw, _guidance.state(), events);
+  if (!_gpsModeEnabled || !_detourTrigger.ready() || !_guidance.has_route()) {
+    _hasDetourOffer = NO;
+    return;
+  }
+  if (_hasDetourOffer &&
+      PPMetresBetween(_detourOffer.position, _detourTrigger.position()) < kDetourRefreshM) {
+    return;
+  }
+  [self planDetourOffer];
+}
+
+- (void)planDetourOffer {
+  _detourOffer = _routeStore->PlanDetour(_detourTrigger.position(), _detourTrigger.heading_deg(),
+                                         _detourTrigger.last_along_m());
+  _hasDetourOffer = _detourOffer.pick != fv::DetourPick::kNone ? YES : NO;
 }
 
 // The wall clock the trip is timed against, in epoch seconds rather than
@@ -2320,12 +2488,21 @@ static double PPEpochNow() {
   if (!state.valid) return nil;
   if (state.on_route && !state.has_next) return nil;
 
-  NSString* road = @"";
+  const fv::nav::Maneuver* next = nullptr;
   if (state.has_next && state.next_index < _guidance.maneuvers().size()) {
-    const std::string& name = _guidance.maneuvers()[state.next_index].road;
-    if (!name.empty()) road = @(name.c_str());
+    next = &_guidance.maneuvers()[state.next_index];
   }
-  return [[PPGuidance alloc] initWithState:state road:road];
+  PPDetourKind kind = PPDetourKindNone;
+  if (_hasDetourOffer && !state.on_route) {
+    kind = _detourOffer.pick == fv::DetourPick::kTurnAround ? PPDetourKindTurnAround
+                                                           : PPDetourKindReroute;
+  }
+  return [[PPGuidance alloc] initWithState:state
+                                      next:next
+                                detourKind:kind
+                         detourExtraMeters:_detourOffer.extra_m
+                          detourBackMeters:_detourOffer.back_m
+                                 detouring:_routeStore->detouring() ? YES : NO];
 }
 
 - (nullable PPGuidance*)currentGuidance {
@@ -2344,11 +2521,9 @@ static double PPEpochNow() {
       [NSMutableArray arrayWithCapacity:_pendingGuidanceEvents.size()];
   const std::vector<fv::nav::Maneuver>& maneuvers = _guidance.maneuvers();
   for (const fv::nav::GuidanceEvent& e : _pendingGuidanceEvents) {
-    NSString* road = @"";
-    if (e.maneuver_index < maneuvers.size() && !maneuvers[e.maneuver_index].road.empty()) {
-      road = @(maneuvers[e.maneuver_index].road.c_str());
-    }
-    [out addObject:[[PPGuidanceEvent alloc] initWithEvent:e road:road]];
+    const fv::nav::Maneuver* m =
+        e.maneuver_index < maneuvers.size() ? &maneuvers[e.maneuver_index] : nullptr;
+    [out addObject:[[PPGuidanceEvent alloc] initWithEvent:e maneuver:m]];
   }
   _pendingGuidanceEvents.clear();
   for (const fv::nav::CourseEvent& e : _pendingCourseEvents) {
@@ -2471,6 +2646,8 @@ static double PPEpochNow() {
   // A cadence learned on a ride that ended twenty minutes ago describes
   // nothing about this one.
   _cadence.Reset();
+  _detourTrigger.Reset();
+  _hasDetourOffer = NO;
 
   // The snapper goes on with the mode and off without it. The graph loads at
   // the first press rather than at launch, so a rider who never presses GPS
@@ -2488,6 +2665,12 @@ static double PPEpochNow() {
     _trip.Start(PPEpochNow());
   } else {
     _trip.Stop(PPEpochNow());
+    // A detour belongs to the ride, and the ride is over.
+    if (_routeStore->CancelDetour()) {
+      [self overlayContentChanged];
+      _trip.SetRoute(_routeStore->RoutePath());
+      _guidance.SetRoute(_routeStore->RoutePath(), _routeStore->RouteManeuvers());
+    }
     // Anything not yet drawn is not announced either: the ride is over.
     _pendingGuidanceEvents.clear();
     _pendingCourseEvents.clear();
@@ -2636,6 +2819,9 @@ static double PPEpochNow() {
   // ...and the guidance's, for the same reason: a rider being counted down to
   // a corner on a route they have just replaced is the same defect.
   _guidance.SetRoute(_routeStore->RoutePath(), _routeStore->RouteManeuvers());
+  // A new guided line starts the off-route watch over.
+  _detourTrigger.Reset();
+  _hasDetourOffer = NO;
   [self setCourseRoute];
   return [[PPRoute alloc] initWithSnapshot:snapshot
                           planMilliseconds:_routeStore->last_plan_ms()];
@@ -2766,13 +2952,14 @@ static double PPEpochNow() {
   return _routeStore->ElevationAvailable() ? YES : NO;
 }
 
-- (BOOL)routeSlopeColors {
-  return _routeStore->overlay()->slope_colors() ? YES : NO;
+- (PPRouteColoring)routeColoring {
+  return static_cast<PPRouteColoring>(_routeStore->overlay()->coloring());
 }
 
-- (void)setRouteSlopeColors:(BOOL)on {
-  if ((on ? true : false) == _routeStore->overlay()->slope_colors()) return;
-  _routeStore->overlay()->SetSlopeColors(on);
+- (void)setRouteColoring:(PPRouteColoring)coloring {
+  const auto c = static_cast<fv::RouteColoring>(coloring);
+  if (c == _routeStore->overlay()->coloring()) return;
+  _routeStore->overlay()->SetColoring(c);
   [self overlayContentChanged];
 }
 
@@ -2802,6 +2989,27 @@ static double PPEpochNow() {
   if (_routeStore->overlay()->ghost().empty()) return;
   _routeStore->ClearGhost();
   [self overlayContentChanged];
+}
+
+// The offer is re-planned first when the rider has moved on from where it was
+// made, so what is applied starts where they are.
+static constexpr double kDetourStaleM = 30.0;
+
+- (nullable PPRoute*)applyDetour {
+  if (!_hasDetourOffer || !_detourTrigger.has_position()) return nil;
+  if (PPMetresBetween(_detourOffer.position, _detourTrigger.position()) > kDetourStaleM) {
+    [self planDetourOffer];
+    if (!_hasDetourOffer) return nil;
+  }
+  if (!_routeStore->ApplyDetour()) return nil;
+  [self overlayContentChanged];
+  return [self routeFromSnapshot:_routeStore->Snapshot()];
+}
+
+- (nullable PPRoute*)cancelDetour {
+  if (!_routeStore->CancelDetour()) return nil;
+  [self overlayContentChanged];
+  return [self routeFromSnapshot:_routeStore->Snapshot()];
 }
 
 - (PPRoute*)clearRoute {
@@ -3381,6 +3589,113 @@ static inline fv::PixelPoint PPSurfacePixel(CGPoint p, PPViewport* viewport) {
   if (fallbackKind.empty()) return nil;
   NSString* k = [NSString stringWithUTF8String:fallbackKind.c_str()];
   return k.length > 0 ? [[PPChartFeature alloc] initWithName:@"" kind:k] : nil;
+}
+
+- (nullable PPMapInfo*)mapInfoNear:(CGPoint)screenPoint
+                        inViewport:(PPViewport*)viewport
+                         tolerance:(double)tolerance {
+  if (viewport == nil || !viewport.hasSurface) return nil;
+  const PPGeoPoint g = [viewport geoAtPoint:screenPoint];
+  if (!std::isfinite(g.latitude) || !std::isfinite(g.longitude)) return nil;
+  const fv::GeoPoint here{g.latitude, g.longitude};
+
+  // The tolerance on the ground. The route is drawn, so it gets all of it;
+  // the road search is held to a block's width so an overview tap on a park
+  // is not answered by a road a few hundred metres off.
+  const PPGeoPoint edge =
+      [viewport geoAtPoint:CGPointMake(screenPoint.x + tolerance, screenPoint.y)];
+  constexpr double kMPerDegLat = 111320.0;
+  const double dx = (edge.longitude - g.longitude) * kMPerDegLat *
+                    std::cos(g.latitude * M_PI / 180.0);
+  const double dy = (edge.latitude - g.latitude) * kMPerDegLat;
+  double reach = std::hypot(dx, dy);
+  if (!std::isfinite(reach)) reach = 20.0;
+  const double radius = std::clamp(reach, 5.0, 40.0);
+
+  PPRouteSpot* spot = nil;
+  fv::GeoPoint roadAt = here;
+  PPGeoPoint coordinate = g;
+  if (_routeStore) {
+    const pippin::RouteSpot s = _routeStore->RouteSpotNear(here, std::max(reach, 5.0));
+    if (s.found) {
+      spot = [[PPRouteSpot alloc] initWithSpot:s];
+      roadAt = s.point;
+      coordinate = PPGeoPoint{s.point.lat, s.point.lon};
+    }
+  }
+
+  PPRoadInfo* road = nil;
+  if (_routeStore) {
+    const pippin::RoadInfo r = _routeStore->DescribeRoad(roadAt, spot != nil ? 10.0 : radius);
+    if (r.found) road = [self roadInfoFor:r];
+  }
+
+  PPChartFeature* feature = nil;
+  if (road == nil) feature = [self chartFeatureNear:screenPoint inViewport:viewport tolerance:tolerance];
+  if (spot == nil && road == nil && feature == nil) return nil;
+  return [[PPMapInfo alloc] initWithCoordinate:coordinate routeSpot:spot road:road feature:feature];
+}
+
+/// A road in the map key's words: its rows, and its tier under the key's profile.
+- (PPRoadInfo*)roadInfoFor:(const pippin::RoadInfo&)r {
+  std::shared_ptr<const fv::routing::RouteRules> rules;
+  const fv::routing::RouteProfile* shipped = nullptr;
+  fv::routing::RouteProfile adjusted;
+  const fv::routing::RouteProfile* profile =
+      [self keyProfileWithRules:&rules shipped:&shipped adjusted:&adjusted];
+
+  // The key's rows, flattened in key order, as specimens.
+  std::vector<std::string> labels;
+  std::vector<std::vector<fv::routing::OsmTag>> specimens;
+  if (_style) {
+    for (const fv::MapLibreLegendGroup& group : _style->legend()) {
+      for (const fv::MapLibreLegendEntry& e : group.entries) {
+        std::vector<fv::routing::OsmTag> tags;
+        for (const auto& kv : e.osm) tags.push_back({kv.first, kv.second});
+        labels.push_back(e.label);
+        specimens.push_back(std::move(tags));
+      }
+    }
+  }
+  const fv::routing::LegendRowMatch match = fv::routing::MatchLegendRows(r.arc, specimens);
+  NSString* type = match.type_row >= 0 ? NSStr(labels[match.type_row]) : NSStr(r.class_name);
+  NSMutableArray<NSString*>* markings = [NSMutableArray array];
+  for (int row : match.modifier_rows) [markings addObject:NSStr(labels[row])];
+
+  NSString* tier = @"";
+  NSString* terms = @"";
+  NSInteger rank = -1;
+  if (profile != nullptr) {
+    for (const fv::routing::CostTerm& t :
+         fv::routing::LegendMarkingTerms(*profile, r.arc, specimens, match)) {
+      [markings addObject:MarkingWord(t)];
+    }
+    const fv::routing::LegendCost cost = fv::routing::CostOfArc(*profile, r.arc);
+    tier = NSStr(fv::routing::LegendTierWord(*profile, cost));
+    terms = NSStr(fv::routing::LegendTermsLine(cost));
+    rank = cost.excluded ? -1 : profile->TierRank(cost.factor);
+  }
+
+  NSString* surface = @"";
+  switch (r.arc.surface) {
+    case fv::routing::RoadSurface::kPaved: surface = @"paved"; break;
+    case fv::routing::RoadSurface::kCompacted: surface = @"compacted"; break;
+    case fv::routing::RoadSurface::kRough: surface = @"unpaved"; break;
+    case fv::routing::RoadSurface::kUnknown: break;
+  }
+  const double grade = std::fabs(r.grade_pct);
+  const double uphill = std::fmod(r.bearing_deg + (r.grade_pct < 0.0 ? 180.0 : 0.0), 360.0);
+  return [[PPRoadInfo alloc] initWithName:NSStr(r.name)
+                                typeLabel:type
+                                 markings:markings
+                                 tierWord:tier
+                                 tierRank:rank
+                                termsLine:terms
+                            speedLimitKph:r.arc.speed_posted() ? r.arc.speed_kph : 0
+                                  surface:surface
+                                 hasGrade:r.has_elevation ? YES : NO
+                             gradePercent:grade
+                     uphillBearingDegrees:uphill];
 }
 
 - (NSArray<PPChartFeatureInfo*>*)chartFeaturesNear:(CGPoint)screenPoint

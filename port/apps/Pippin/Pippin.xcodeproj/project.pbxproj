@@ -80,6 +80,7 @@
 		AA0100010000000000000037 /* DistanceUnits.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000040 /* DistanceUnits.swift */; };
 		AA0100010000000000000062 /* TideText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000063 /* TideText.swift */; };
 		AA01000100000000000000B5 /* ReplanNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000B5 /* ReplanNotice.swift */; };
+		AA0100010000000000000100 /* DetourText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000100 /* DetourText.swift */; };
 		AA0100010000000000000072 /* WindText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000073 /* WindText.swift */; };
 		AA0100010000000000000073 /* WindFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000074 /* WindFeed.swift */; };
 		AA0100010000000000000063 /* TideCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000064 /* TideCard.swift */; };
@@ -90,6 +91,8 @@
 		AA0100010000000000000F21 /* RideActivityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F21 /* RideActivityPolicy.swift */; };
 		AA0100010000000000000F22 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
 		AA0100010000000000000F23 /* RideActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F23 /* RideActivity.swift */; };
+		AA0100010000000000000F26 /* DetourIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F26 /* DetourIntent.swift */; };
+		AA0100010000000000000F34 /* DetourIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F26 /* DetourIntent.swift */; };
 		AA0100010000000000000F30 /* RideActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F24 /* RideActivityWidget.swift */; };
 		AA0100010000000000000F31 /* RideActivityContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F20 /* RideActivityContent.swift */; };
 		AA0100010000000000000F32 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
@@ -103,6 +106,7 @@
 		AA0100010000000000000F45 /* ChartDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F45 /* ChartDownloader.swift */; };
 		AA0100010000000000000F44 /* ChartRegions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F44 /* ChartRegions.swift */; };
 		AA0100010000000000000F43 /* ChartSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F43 /* ChartSheets.swift */; };
+		AA0100010000000000000F46 /* InterfaceLuminance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F46 /* InterfaceLuminance.swift */; };
 		AB0100010000000000000007 /* PippinApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000007 /* PippinApp.swift */; };
 		AB0100010000000000000032 /* AppName.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA020001000000000000003B /* AppName.swift */; };
 		AB0100010000000000000F40 /* AppFlavor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F40 /* AppFlavor.swift */; };
@@ -114,12 +118,14 @@
 		AB0100010000000000000F45 /* ChartDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F45 /* ChartDownloader.swift */; };
 		AB0100010000000000000F44 /* ChartRegions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F44 /* ChartRegions.swift */; };
 		AB0100010000000000000F43 /* ChartSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F43 /* ChartSheets.swift */; };
+		AB0100010000000000000F46 /* InterfaceLuminance.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F46 /* InterfaceLuminance.swift */; };
 		AB0100010000000000000008 /* MapScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000008 /* MapScreen.swift */; };
 		AB0100010000000000000038 /* AlertTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000041 /* AlertTone.swift */; };
 		AB0100010000000000000039 /* TurnAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000042 /* TurnAlerts.swift */; };
 		AB0100010000000000000037 /* DistanceUnits.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000040 /* DistanceUnits.swift */; };
 		AB0100010000000000000062 /* TideText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000063 /* TideText.swift */; };
 		AB01000100000000000000B5 /* ReplanNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA02000100000000000000B5 /* ReplanNotice.swift */; };
+		AB0100010000000000000100 /* DetourText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000100 /* DetourText.swift */; };
 		AB0100010000000000000072 /* WindText.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000073 /* WindText.swift */; };
 		AB0100010000000000000073 /* WindFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000074 /* WindFeed.swift */; };
 		AB0100010000000000000063 /* TideCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000064 /* TideCard.swift */; };
@@ -141,6 +147,7 @@
 		AB0100010000000000000F21 /* RideActivityPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F21 /* RideActivityPolicy.swift */; };
 		AB0100010000000000000F22 /* RideActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F22 /* RideActivityAttributes.swift */; };
 		AB0100010000000000000F23 /* RideActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F23 /* RideActivity.swift */; };
+		AB0100010000000000000F26 /* DetourIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000F26 /* DetourIntent.swift */; };
 		AB0100010000000000000051 /* EnergyLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000051 /* EnergyLog.swift */; };
 		AB0100010000000000000052 /* EnergyRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000052 /* EnergyRecorder.swift */; };
 		AB0100010000000000000053 /* FramePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0200010000000000000053 /* FramePolicy.swift */; };
@@ -235,6 +242,7 @@
 		AA0200010000000000000F45 /* ChartDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartDownloader.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F44 /* ChartRegions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartRegions.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F43 /* ChartSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartSheets.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F46 /* InterfaceLuminance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterfaceLuminance.swift; sourceTree = "<group>"; };
 		AB0200010000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AB0200010000000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AB0200010000000000000003 /* Data */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Data; sourceTree = "<group>"; };
@@ -329,6 +337,7 @@
 		AA0200010000000000000040 /* DistanceUnits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistanceUnits.swift; sourceTree = "<group>"; };
 		AA0200010000000000000063 /* TideText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideText.swift; sourceTree = "<group>"; };
 		AA02000100000000000000B5 /* ReplanNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplanNotice.swift; sourceTree = "<group>"; };
+		AA0200010000000000000100 /* DetourText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetourText.swift; sourceTree = "<group>"; };
 		AA0200010000000000000073 /* WindText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindText.swift; sourceTree = "<group>"; };
 		AA0200010000000000000074 /* WindFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindFeed.swift; sourceTree = "<group>"; };
 		AA0200010000000000000064 /* TideCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideCard.swift; sourceTree = "<group>"; };
@@ -342,6 +351,7 @@
 		AA0200010000000000000F21 /* RideActivityPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityPolicy.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F22 /* RideActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityAttributes.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F23 /* RideActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivity.swift; sourceTree = "<group>"; };
+		AA0200010000000000000F26 /* DetourIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetourIntent.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F24 /* RideActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideActivityWidget.swift; sourceTree = "<group>"; };
 		AA0200010000000000000F25 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA030001000000000000000D /* PippinActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PippinActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -479,12 +489,14 @@
 				AA0200010000000000000F45 /* ChartDownloader.swift */,
 				AA0200010000000000000F44 /* ChartRegions.swift */,
 				AA0200010000000000000F43 /* ChartSheets.swift */,
+				AA0200010000000000000F46 /* InterfaceLuminance.swift */,
 				AA0200010000000000000008 /* MapScreen.swift */,
 				AA0200010000000000000041 /* AlertTone.swift */,
 				AA0200010000000000000042 /* TurnAlerts.swift */,
 				AA0200010000000000000040 /* DistanceUnits.swift */,
 				AA0200010000000000000063 /* TideText.swift */,
 				AA02000100000000000000B5 /* ReplanNotice.swift */,
+				AA0200010000000000000100 /* DetourText.swift */,
 				AA0200010000000000000073 /* WindText.swift */,
 				AA0200010000000000000074 /* WindFeed.swift */,
 				AA0200010000000000000064 /* TideCard.swift */,
@@ -506,6 +518,7 @@
 				AA0200010000000000000F21 /* RideActivityPolicy.swift */,
 				AA0200010000000000000F22 /* RideActivityAttributes.swift */,
 				AA0200010000000000000F23 /* RideActivity.swift */,
+				AA0200010000000000000F26 /* DetourIntent.swift */,
 				AA0200010000000000000F15 /* Pippin.entitlements */,
 				AA0200010000000000000051 /* EnergyLog.swift */,
 				AA0200010000000000000052 /* EnergyRecorder.swift */,
@@ -857,12 +870,14 @@
 				AA0100010000000000000F45 /* ChartDownloader.swift in Sources */,
 				AA0100010000000000000F44 /* ChartRegions.swift in Sources */,
 				AA0100010000000000000F43 /* ChartSheets.swift in Sources */,
+				AA0100010000000000000F46 /* InterfaceLuminance.swift in Sources */,
 				AA0100010000000000000008 /* MapScreen.swift in Sources */,
 				AA0100010000000000000038 /* AlertTone.swift in Sources */,
 				AA0100010000000000000039 /* TurnAlerts.swift in Sources */,
 				AA0100010000000000000037 /* DistanceUnits.swift in Sources */,
 				AA0100010000000000000062 /* TideText.swift in Sources */,
 				AA01000100000000000000B5 /* ReplanNotice.swift in Sources */,
+				AA0100010000000000000100 /* DetourText.swift in Sources */,
 				AA0100010000000000000072 /* WindText.swift in Sources */,
 				AA0100010000000000000073 /* WindFeed.swift in Sources */,
 				AA0100010000000000000063 /* TideCard.swift in Sources */,
@@ -884,6 +899,7 @@
 				AA0100010000000000000F21 /* RideActivityPolicy.swift in Sources */,
 				AA0100010000000000000F22 /* RideActivityAttributes.swift in Sources */,
 				AA0100010000000000000F23 /* RideActivity.swift in Sources */,
+				AA0100010000000000000F26 /* DetourIntent.swift in Sources */,
 				AA0100010000000000000051 /* EnergyLog.swift in Sources */,
 				AA0100010000000000000052 /* EnergyRecorder.swift in Sources */,
 				AA0100010000000000000053 /* FramePolicy.swift in Sources */,
@@ -910,6 +926,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0100010000000000000F30 /* RideActivityWidget.swift in Sources */,
+				AA0100010000000000000F34 /* DetourIntent.swift in Sources */,
 				AA0100010000000000000F31 /* RideActivityContent.swift in Sources */,
 				AA0100010000000000000F32 /* RideActivityAttributes.swift in Sources */,
 			);
@@ -930,12 +947,14 @@
 				AB0100010000000000000F45 /* ChartDownloader.swift in Sources */,
 				AB0100010000000000000F44 /* ChartRegions.swift in Sources */,
 				AB0100010000000000000F43 /* ChartSheets.swift in Sources */,
+				AB0100010000000000000F46 /* InterfaceLuminance.swift in Sources */,
 				AB0100010000000000000008 /* MapScreen.swift in Sources */,
 				AB0100010000000000000038 /* AlertTone.swift in Sources */,
 				AB0100010000000000000039 /* TurnAlerts.swift in Sources */,
 				AB0100010000000000000037 /* DistanceUnits.swift in Sources */,
 				AB0100010000000000000062 /* TideText.swift in Sources */,
 				AB01000100000000000000B5 /* ReplanNotice.swift in Sources */,
+				AB0100010000000000000100 /* DetourText.swift in Sources */,
 				AB0100010000000000000072 /* WindText.swift in Sources */,
 				AB0100010000000000000073 /* WindFeed.swift in Sources */,
 				AB0100010000000000000063 /* TideCard.swift in Sources */,
@@ -957,6 +976,7 @@
 				AB0100010000000000000F21 /* RideActivityPolicy.swift in Sources */,
 				AB0100010000000000000F22 /* RideActivityAttributes.swift in Sources */,
 				AB0100010000000000000F23 /* RideActivity.swift in Sources */,
+				AB0100010000000000000F26 /* DetourIntent.swift in Sources */,
 				AB0100010000000000000051 /* EnergyLog.swift in Sources */,
 				AB0100010000000000000052 /* EnergyRecorder.swift in Sources */,
 				AB0100010000000000000053 /* FramePolicy.swift in Sources */,
@@ -1339,7 +1359,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OSPREY_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1373,7 +1393,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(OSPREY_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

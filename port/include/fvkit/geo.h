@@ -133,6 +133,10 @@ struct GeoRect {
   }
 
   bool Intersects(const GeoRect& other) const {
+    // Neither crosses: compare directly rather than allocate the split boxes.
+    if (!CrossesAntimeridian() && !other.CrossesAntimeridian())
+      return ll.lat <= other.ur.lat && other.ll.lat <= ur.lat && ll.lon <= other.ur.lon &&
+             other.ll.lon <= ur.lon;
     for (const GeoRect& a : SplitAtAntimeridian())
       for (const GeoRect& b : other.SplitAtAntimeridian())
         if (a.ll.lat <= b.ur.lat && b.ll.lat <= a.ur.lat &&

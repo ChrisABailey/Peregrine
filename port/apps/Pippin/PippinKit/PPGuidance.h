@@ -48,6 +48,15 @@ typedef NS_ENUM(NSInteger, PPGuidanceRing) {
   PPGuidanceRingAt,
 };
 
+/// The way back onto the route offered to an off-route rider.
+typedef NS_ENUM(NSInteger, PPDetourKind) {
+  PPDetourKindNone = 0,
+  /// On from here without turning round: "Re-route: +0.3 mi".
+  PPDetourKindReroute,
+  /// Back the way the rider came: "Turn around: 250 ft back".
+  PPDetourKindTurnAround,
+};
+
 typedef NS_ENUM(NSInteger, PPGuidanceEventKind) {
   PPGuidanceEventApproach = 0,
   PPGuidanceEventPassed,
@@ -87,6 +96,12 @@ NS_SWIFT_SENDABLE
 /// The road being joined at that maneuver, or empty for an unnamed way. On a
 /// course event, the route point's label.
 @property(nonatomic, readonly) NSString *road;
+/// The joined road's OSM highway value, for naming an unnamed way ("the
+/// path"); empty on course events.
+@property(nonatomic, readonly) NSString *roadClass;
+/// YES when the road joined has the name of the road left (both unnamed
+/// counts): the instruction reads "to stay on NAME".
+@property(nonatomic, readonly) BOOL continues;
 /// Signed cross-track metres when a course event fired, positive right of
 /// track; 0 on turn events.
 @property(nonatomic, readonly) double crossTrackMeters;
@@ -117,6 +132,11 @@ NS_SWIFT_SENDABLE
 /// Kiawah, where a good deal of what a bicycle rides has no name in OSM, and
 /// the banner drops the line rather than drawing a blank one.
 @property(nonatomic, readonly) NSString *road;
+/// The joined road's OSM highway value.
+@property(nonatomic, readonly) NSString *roadClass;
+/// YES when the road joined has the name of the road left (both unnamed
+/// counts).
+@property(nonatomic, readonly) BOOL continues;
 
 /// A staggered junction: the corner immediately after this one, close enough
 /// that "right" alone would be the wrong instruction. The banner draws both
@@ -128,6 +148,17 @@ NS_SWIFT_SENDABLE
 /// say so at the end. Distinct from `PPTrip.remainingMeters`, which is the
 /// odometer's own projection and is absent on a ride with no route.
 @property(nonatomic, readonly) double remainingMeters;
+
+/// The detour on offer: none until off route has held and the rider is
+/// still moving away, and none again once they rejoin.
+@property(nonatomic, readonly) PPDetourKind detourKind;
+/// Metres the detour adds to what was left of the route; negative when it
+/// is shorter.
+@property(nonatomic, readonly) double detourExtraMeters;
+/// Metres back to the route when the offer is to turn round.
+@property(nonatomic, readonly) double detourBackMeters;
+/// YES while a detour is the guided line.
+@property(nonatomic, readonly) BOOL detouring;
 
 @end
 

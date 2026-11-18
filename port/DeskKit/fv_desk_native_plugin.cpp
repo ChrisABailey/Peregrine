@@ -41,6 +41,19 @@ Status NativeRegistrar::AddTool(const std::string& name, ToolRun run) {
   return Status::Ok();
 }
 
+Status NativeRegistrar::AddFeatureSource(const std::string& name, FeatureSourceDesc source) {
+  if (name.empty() || !source.matches || !source.open)
+    return Status::Error(kInvalidArg, "a native feature source needs a name, a matcher and an opener");
+  if (!feature_sources_.emplace(name, std::move(source)).second)
+    return Status::Error(kInvalidArg, "native feature source '" + name + "' is already added");
+  return Status::Ok();
+}
+
+const FeatureSourceDesc* NativeLibrary::FindFeatureSource(const std::string& name) const {
+  auto it = registry.feature_sources().find(name);
+  return it == registry.feature_sources().end() ? nullptr : &it->second;
+}
+
 const NativeOverlay* NativeLibrary::FindOverlay(const std::string& name) const {
   auto it = registry.overlays().find(name);
   return it == registry.overlays().end() ? nullptr : &it->second;

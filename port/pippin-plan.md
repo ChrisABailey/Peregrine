@@ -3148,7 +3148,7 @@ dimmed and say "From zoom 15".
 | LG2 | The tier: a specimen's cost under the active rules, in words | M | CR2–CR5 | mac — **BUILT 2026-10-14** |
 | LG3 | PPMap facade and the legend sheet | M | LG1, LG2 | sim — **BUILT 2026-10-14** |
 | LG4 | Only what is on screen | S–M | LG3 | mac + sim — **BUILT 2026-10-15** |
-| LG5 | Tap a road: why this colour | M | LG2, LG3 | sim + phone |
+| LG5 | Tap a road: why this colour | M | LG2, LG3 | sim — **BUILT 2026-11-06** (map info sheet) |
 | LG6 | The route's breakdown by tier | S–M | LG2 | mac + sim |
 
 LG1–LG3 make a complete feature. LG4–LG6 are optional and independent of each other.
@@ -3465,6 +3465,40 @@ The pick and info sheet gains a "How Pippin rides this" row for the road under t
 cost function and show `terms`: "Secondary 2.5 × painted lane 0.6 = 1.5 · Acceptable". Add the
 legend row whose `osm` specimen matches the arc, with its swatch. Explaining a road the rider is
 looking at is the most direct answer to "what does this colour mean".
+
+**As built (2026-11-06), widened to a map info sheet (Chris: "click on the route and get info",
+bike-focused).** A tap that hits no pin opens `MapInfoSheet` (in `LegendSheet.swift`, medium detent,
+map live above; another tap re-queries, a tap on nothing closes). Osprey keeps its chart list.
+- Core: `CostOfArc(profile, arc)` (CostOfTags now reads its specimen and calls it; climb, signal and
+  crossing cleared so it prices the way as the key does) and `MatchLegendRows(arc, specimens)`: a
+  specimen with a bike provision or signed route is a modifier row matched on that attribute; other
+  specimens are type rows matched on class (links as their road) plus no-bicycle / rough / golf /
+  structure, most specific wins. Tests `RouteLegend.MatchesARoadToItsKeyRows`,
+  `RouteLegend.AnArcCostsWhatItsTagsCost`.
+- `pippin::RouteStore::DescribeRoad(p, max_m)`: nearest arc regardless of profile; footway/path/
+  pedestrian/steps yield to a road up to 15 m further (a sidewalk beside an arterial was winning);
+  grade from the arc's end-node elevations. `RouteSpotNear(p, max_m)`: nearest point on `RoutePath()`
+  (flat metres), along-distance scaled onto `plan.length_m`, time pro-rated within each `plan.roads`
+  run, grade over ±25 m of `plan.elevation`. Tests `TheInfoCardFindsTheRoadEvenWhenNoBikeMayUseIt`,
+  `ASpotOnTheRouteSaysHowFarAndHowLongFromEachEnd`, `ARouteSpotUphillHasAPositiveGrade`.
+- PPMap `mapInfoNear:inViewport:tolerance:` → `PPMapInfo {coordinate, routeSpot, road, feature}`;
+  tolerance `points.feature_hit_tolerance`. The route gets the full screen tolerance; the road search
+  is held to 5–40 m; the base-map feature (`chartFeatureNear`) is given only when no road is. The tier
+  uses the key's profile with the rider's key settings (`keyProfileWithRules:` shared with the legend).
+- Sheet: route section (From start / To end as distance · time, Slope here up/downhill); road section
+  (Name on the route, Type = key row label or OSM class, Markings = key modifier rows then every other
+  multiplier no matched row names — `LegendMarkingTerms`: Private, Fast/Slow traffic, Compacted or
+  Unpaved surface, Golf cart path, Golf path, Toll, Ferry, Beach, a lane or route with no key row,
+  "Closed to bikes" for an access-tag exclusion; class and pace stay in Type and the tier, Routing tier
+  capsule, Slope "6%, rising to the N" off the route, Surface, Speed limit, terms line); feature (title
+  = name or kind, Kind row).
+- Sim (iPhone 17 Pro, Atlanta, overview zoom): route → 7.0 mi · 1 h 05 / 4.3 mi · 41 min, Paved trail,
+  Most preferred (`docs/lg5-map-info-route.png`); Northside Dr NW → Trunk, Last resort, 6% N, 35 mph
+  (`docs/lg5-map-info-road.png`); river → Chattahoochee River / River; Coronet Way NW → Quiet street,
+  Markings Private, Last resort, terms "residential 0.8 × private 25 = 20" (`docs/lg5-map-info-markings.png`).
+- Open: Atlanta's key has no trunk row, so trunks read "Trunk"; footway and sidewalk are one class in
+  the graph, so every footway reads the key's "Sidewalk"; iPad shows a sheet, not the tool card;
+  key-row markings (painted lane, route) not yet seen on the sim; phone not tried.
 
 #### LG6 — the route's breakdown by tier (S–M, mac + sim, optional)
 

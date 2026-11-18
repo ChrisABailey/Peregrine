@@ -514,12 +514,12 @@ TEST_F(PackagesTest, ADirectoryNotNamedAfterItsIdFails) {
 TEST_F(PackagesTest, KindsAndVersionsThisBuildLacksAreUnavailable) {
   WritePackage(User(), "com.example.clib",
                Manifest("com.example.clib", "1", R"({"library": "rings"})", "r1",
-                        R"("requires": {"plugin_api": 1}, "libraries": {"macos": "lib/r.dylib",
+                        R"("requires": {"plugin_api": 2}, "libraries": {"macos": "lib/r.dylib",
                            "linux-x86_64": "lib/r.so", "linux-aarch64": "lib/r.so",
                            "windows-x86_64": "lib/r.dll"},)"));
-  WritePackage(User(), "com.example.api2",
-               Manifest("com.example.api2", "1", R"({"library": "rings"})", "r2",
-                        R"("requires": {"plugin_api": 2}, "libraries": {"macos": "lib/r.dylib"},)"));
+  WritePackage(User(), "com.example.api1",
+               Manifest("com.example.api1", "1", R"({"library": "rings"})", "r2",
+                        R"("requires": {"plugin_api": 1}, "libraries": {"macos": "lib/r.dylib"},)"));
   WritePackage(User(), "com.example.future",
                Manifest("com.example.future", "1", R"({"builtin": "test.pkg.rings"})", "r3",
                         R"("requires": {"peregrine": "9.0"},)"));
@@ -530,7 +530,7 @@ TEST_F(PackagesTest, KindsAndVersionsThisBuildLacksAreUnavailable) {
     EXPECT_EQ(p->state, PackageState::kUnavailable) << id;
     EXPECT_NE(p->reason.find(phrase), std::string::npos) << id << ": " << p->reason;
   };
-  expect("com.example.api2", "plugin API 2");
+  expect("com.example.api1", "plugin API 1");
   expect("com.example.future", "needs Peregrine 9.0");
   // C libraries are supported; one whose file is missing fails to load.
   const PackageInfo* clib = launch.manager.Find("com.example.clib");

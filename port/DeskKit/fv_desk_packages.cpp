@@ -50,12 +50,6 @@ bool IsSafeRelativePath(const std::string& s) {
          IsSafeZipPath(s);
 }
 
-bool IsIconFile(const std::string& icon) {
-  std::string ext = fs::path(icon).extension().string();
-  for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return ext == ".svg" || ext == ".png" || ext == ".pdf";
-}
-
 /// Reverse-DNS: two or more dot-separated segments of letters, digits, '-'
 /// and '_', each starting with a letter or digit.
 bool IsValidPackageId(const std::string& id) {
@@ -139,6 +133,7 @@ std::set<std::string> KindsOf(const PackageManifest& m) {
   std::set<std::string> kinds;
   for (const OverlayManifestEntry& e : m.overlays) kinds.insert(e.implementation_kind);
   for (const ToolManifestEntry& e : m.tools) kinds.insert(e.implementation_kind);
+  if (!m.feature_sources.empty()) kinds.insert("native");
   return kinds;
 }
 
@@ -315,7 +310,28 @@ Status ParsePackageManifest(const std::string& text, const std::string& source,
     }
   }
 
-  if (m.overlays.empty() && m.tools.empty()) return fail("the package contributes no overlays or tools");
+  if (doc.contains("feature_sources")) {
+    if (!doc["feature_sources"].is_array()) return fail("feature_sources must be an array");
+    for (const json& f : doc["feature_sources"]) {
+      if (!f.is_object() || !f.contains("id") || !f["id"].is_string())
+        return fail("a feature source has no id");
+      FeatureSourceManifestEntry e;
+      e.id = f["id"].get<std::string>();
+      const std::string at = "feature source '" + e.id + "': ";
+      if (!HasPrefixId(e.id, m.id)) return fail(at + "the id must start with '" + m.id + ".'");
+      if (f.contains("display_name") && f["display_name"].is_string())
+        e.display_name = f["display_name"].get<std::string>();
+      std::string kind;
+      if (!ReadImplementation(f, at, &kind, &e.implementation_name, &why)) return fail(why);
+      if (kind != "native") return fail(at + "feature sources are native only");
+      for (const FeatureSourceManifestEntry& seen : m.feature_sources)
+        if (seen.id == e.id) return fail(at + "appears twice");
+      m.feature_sources.push_back(std::move(e));
+    }
+  }
+
+  if (m.overlays.empty() && m.tools.empty() && m.feature_sources.empty())
+    return fail("the package contributes no overlays, tools or feature sources");
   const std::set<std::string> kinds = KindsOf(m);
   if (kinds.count("library") && kinds.count("native"))
     return fail("a package holds C or native libraries, not both");
@@ -619,7 +635,8 @@ void PackageManager::Load(PackageInfo& p) {
     return std::any_of(m.overlays.begin(), m.overlays.end(),
                        [kind](const OverlayManifestEntry& e) { return e.implementation_kind == kind; }) ||
            std::any_of(m.tools.begin(), m.tools.end(),
-                       [kind](const ToolManifestEntry& e) { return e.implementation_kind == kind; });
+                       [kind](const ToolManifestEntry& e) { return e.implementation_kind == kind; }) ||
+           (std::string(kind) == "native" && !m.feature_sources.empty());
   };
   if (uses("library")) {
     const std::string rel = SelectPluginLibrary(m.libraries);
@@ -675,6 +692,13 @@ void PackageManager::Load(PackageInfo& p) {
       if (cls == nullptr)
         return settle(PackageState::kFailed, "'" + id + "': the library has no overlay class '" +
                                                  e.implementation_name + "'");
+      if (!e.editor_name.empty()) {
+        const fv_editor_class* ed = lib->FindEditor(e.editor_name);
+        if (ed == nullptr)
+          return settle(PackageState::kFailed, "'" + id + "': the library has no editor class '" +
+                                                   e.editor_name + "'");
+        d.editor_factory = MakeLibraryEditorFactory(*lib, *ed);
+      }
       const std::string name = e.desc.display_name;
       d.factory = [lib, cls, id, name] { return CreateLibraryOverlay(*lib, *cls, id, name); };
     } else if (e.implementation_kind == "native") {
@@ -683,13 +707,14 @@ void PackageManager::Load(PackageInfo& p) {
         return settle(PackageState::kFailed, "'" + id + "': the library has no native overlay '" +
                                                  e.implementation_name + "'");
       d.factory = impl->factory;
-      if (impl->editor_factory) {
-        const NativeEditorContext ctx{editors_};
-        d.editor_factory = [impl, ctx] { return impl->editor_factory(ctx); };
-      }
+      d.editor_factory = impl->editor_factory;
     } else if (e.implementation_kind == "python") {
       const Status s = python->ResolveOverlay(e.implementation_name, e.desc.display_name, &d.factory);
       if (!s.ok()) return settle(PackageState::kFailed, "'" + id + "': " + s.message);
+      if (!e.editor_name.empty()) {
+        const Status es = python->ResolveEditor(e.editor_name, &d.editor_factory);
+        if (!es.ok()) return settle(PackageState::kFailed, "'" + id + "' editor: " + es.message);
+      }
     } else {
       return settle(PackageState::kUnavailable,
                     e.implementation_kind + " overlays are not supported by this Peregrine yet");
@@ -737,6 +762,16 @@ void PackageManager::Load(PackageInfo& p) {
     if (tools_.Find(id) != nullptr)
       return settle(PackageState::kFailed, "tool '" + id + "' is already registered");
   }
+  std::vector<FeatureSourceDesc> sources;
+  for (const FeatureSourceManifestEntry& e : m.feature_sources) {
+    const FeatureSourceDesc* impl = native->FindFeatureSource(e.implementation_name);
+    if (impl == nullptr)
+      return settle(PackageState::kFailed, "'" + e.id + "': the library has no native feature source '" +
+                                               e.implementation_name + "'");
+    FeatureSourceDesc d = *impl;
+    d.name = e.id;
+    sources.push_back(std::move(d));
+  }
 
   for (app::OverlayTypeDesc& d : types) {
     const Status s = types_.Register(std::move(d));
@@ -746,6 +781,10 @@ void PackageManager::Load(PackageInfo& p) {
     ToolDesc d = m.tools[i].desc;
     d.run = runs[i];
     const Status s = tools_.Register(std::move(d));
+    if (!s.ok()) return settle(PackageState::kFailed, s.message);
+  }
+  for (FeatureSourceDesc& d : sources) {
+    const Status s = RegisterFeatureSource(std::move(d));
     if (!s.ok()) return settle(PackageState::kFailed, s.message);
   }
   p.state = PackageState::kLoaded;

@@ -56,11 +56,26 @@ struct FillStyle {
   Brush brush;
 };
 
+/// Where a point symbol or point-placed label sits on its geometry.
+/// kCentre on an area is one point per feature, inside the area at or near the
+/// centroid of its outer ring, computed in geographic space from the whole
+/// ring (VectorScene::Build), so it does not move as the view pans or clips.
+enum class LabelAnchor {
+  kFirstVertex = 0,  // the first vertex of each part
+  kCentre,           // a line's middle vertex; an area's interior centre
+};
+
 struct PointSymbolStyle {
   bool valid = false;
   std::string symbol_id;      // key for IStyleEngine::Symbol()
   double rotation_deg = 0.0;  // clockwise from north-up, GeoSym's convention
   double scale = 1.0;         // multiplies the renderer's symbol scale
+  LabelAnchor anchor = LabelAnchor::kFirstVertex;
+  /// True: `rotation_deg` is against the chart's north and the symbol turns
+  /// with a rotated chart (FalconView's VPF/GeoSym behaviour). False: the
+  /// symbol is screen-upright and `rotation_deg` is a screen angle (S-52,
+  /// except for attribute-driven bearings and light sectors).
+  bool turns_with_chart = true;
 };
 
 // How a label meets its geometry.
@@ -120,12 +135,6 @@ enum class LabelAlongAnchor {
   kCenter,        // the cap-height box straddles the path
 };
 
-// Where a point-placed label sits on its geometry.
-enum class LabelAnchor {
-  kFirstVertex = 0,  // the first vertex of each part
-  kCentre,           // a line's middle vertex; an area's outer-ring box centre
-};
-
 // What LabelStyle::style.size means.
 enum class LabelSizeUnit {
   kPixels = 0,  // a constant on-screen size at any scale
@@ -151,6 +160,9 @@ struct LabelStyle {
 
   LabelPlacement placement = LabelPlacement::kPoint;
   LabelAnchor anchor = LabelAnchor::kFirstVertex;  // kPoint only
+  /// Drawn even when the same text is already near (soundings: neighbouring
+  /// equal depths are data, not repeated names).
+  bool skip_repeat_filter = false;
 
   // --- halo (outlined text) -------------------------------------------------
   // A name lying on the road it belongs to, or on a dense fill, is unreadable
@@ -247,9 +259,9 @@ struct LinePatternStyle {
   double phase = 0.0;         // pixels into the cycle at the path's start
 };
 
-// A repeating symbol fill. ICanvas has only a solid brush, so this is how a
-// product's pattern brush (S-52 AP, GeoSym's bitmap stipples) says what it
-// really is; the renderer stamps the symbol on a grid clipped to the ring.
+/// A repeating symbol fill (S-52 AP, GeoSym's bitmap stipples). The renderer
+/// draws the symbol into a tile and fills the area with it; spacings are
+/// rounded to whole pixels.
 struct AreaPatternStyle {
   bool valid = false;
   std::string symbol_id;

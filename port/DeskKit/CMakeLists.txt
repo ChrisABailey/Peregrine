@@ -42,6 +42,11 @@ add_library(fv_deskkit STATIC
   fv_desk_map_groups.cpp
   fv_desk_map_options.cpp
   fv_desk_menu_model.cpp
+  fv_desk_format.cpp
+  fv_desk_feeds.cpp
+  fv_desk_moving_map.cpp
+  fv_desk_moving_map_editor.cpp
+  fv_desk_ownship.cpp
   fv_desk_native_plugin.cpp
   fv_desk_options.cpp
   fv_desk_overlay_manifest.cpp
@@ -53,6 +58,7 @@ add_library(fv_deskkit STATIC
   fv_desk_tools.cpp
   fv_desk_enc_import.cpp
   fv_desk_user_settings.cpp
+  fv_desk_web_layers.cpp
   fv_desk_vector_map.cpp
   fv_desk_workspace.cpp
 )
@@ -90,13 +96,20 @@ if(FVW_BUILD_TESTS)
     test/map_groups_test.cpp
     test/map_options_test.cpp
     test/menu_model_test.cpp
+    test/feeds_test.cpp
+    test/moving_map_editor_test.cpp
+    test/moving_map_test.cpp
+    test/moving_map_trail_test.cpp
+    test/ownship_test.cpp
     test/options_test.cpp
+    test/overlay_host_test.cpp
     test/overlay_manifest_test.cpp
     test/packages_test.cpp
     test/profile_test.cpp
     test/search_test.cpp
     test/user_settings_test.cpp
     test/vector_map_test.cpp
+    test/web_layers_test.cpp
     test/workspace_test.cpp
   )
   target_link_libraries(fv_deskkit_test PRIVATE fv_deskkit fv_routekit fv_enc fv_osm fv_json fv_libtiff GTest::gtest_main)
@@ -108,14 +121,22 @@ if(FVW_BUILD_TESTS)
     FV_FEATURE_RIVERS="${CMAKE_SOURCE_DIR}/port/fvkit/test/data/charleston-rivers.geojson"
     FV_MAP_GROUPS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/map-groups.json"
     FV_OSM_STYLE_JSON="${CMAKE_SOURCE_DIR}/port/Osm/styles/peregrine-osm.json")
-  # A plugin built for API 2, which the loader must refuse.
-  add_library(fv_test_api2_plugin SHARED test/plugins/api2_plugin.c)
-  target_include_directories(fv_test_api2_plugin PRIVATE ${CMAKE_SOURCE_DIR}/port/sdk/include)
-  set_target_properties(fv_test_api2_plugin PROPERTIES C_VISIBILITY_PRESET hidden)
-  add_dependencies(fv_deskkit_test fv_test_api2_plugin rangerings_pgpkg)
+  # A plugin built for API 1, which the loader must refuse.
+  add_library(fv_test_api1_plugin SHARED test/plugins/api1_plugin.c)
+  target_include_directories(fv_test_api1_plugin PRIVATE ${CMAKE_SOURCE_DIR}/port/sdk/include)
+  set_target_properties(fv_test_api1_plugin PROPERTIES C_VISIBILITY_PRESET hidden)
+  # A plugin that calls the host services and every optional overlay function.
+  add_library(fv_test_host_plugin SHARED test/plugins/host_plugin.cpp)
+  target_include_directories(fv_test_host_plugin PRIVATE ${CMAKE_SOURCE_DIR}/port/sdk/include)
+  target_compile_features(fv_test_host_plugin PRIVATE cxx_std_17)
+  set_target_properties(fv_test_host_plugin PROPERTIES CXX_VISIBILITY_PRESET hidden)
+  find_package(Threads REQUIRED)
+  target_link_libraries(fv_test_host_plugin PRIVATE Threads::Threads)
+  add_dependencies(fv_deskkit_test fv_test_api1_plugin fv_test_host_plugin rangerings_pgpkg)
   target_compile_definitions(fv_deskkit_test PRIVATE
     FV_RANGERINGS_PGPKG="${CMAKE_BINARY_DIR}/port/sdk/examples/rangerings-c/com.example.rangerings.pgpkg"
-    FV_API2_PLUGIN="$<TARGET_FILE:fv_test_api2_plugin>")
+    FV_API1_PLUGIN="$<TARGET_FILE:fv_test_api1_plugin>"
+    FV_HOST_PLUGIN="$<TARGET_FILE:fv_test_host_plugin>")
   gtest_discover_tests(fv_deskkit_test
     PROPERTIES
     ENVIRONMENT "FVW_TESTDATA_DIR=${CMAKE_SOURCE_DIR}/testdata"

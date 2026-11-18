@@ -100,9 +100,10 @@ def test_resolve_pixel_reports_whether_it_snapped():
     target.add_point(ovl.MapPoint(name="Ruddy Turnstone"))
     target.set_points([ovl.MapPoint(name="Ruddy Turnstone")])
     working = ovl.PointOverlay("Working")
-    working.set_manager(mgr)
+    host = ovl.ManagerHost(mgr)
     mgr.add(target)
     mgr.add(working)
+    host.bind(working)
 
     proj = harbour_proj()
     # The survey point sits at the surface centre.

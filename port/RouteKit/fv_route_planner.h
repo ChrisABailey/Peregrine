@@ -35,6 +35,7 @@
 
 #pragma once
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -117,12 +118,20 @@ struct RoutePlan {
   double descent_m = 0.0;
   std::vector<routing::ElevationPoint> elevation;
 
+  /// The through route's runs of one map-key tier (`routing::Route::tiers`),
+  /// indexing `legs` joined end to end. Empty on the per-pair fallback.
+  std::vector<routing::RouteTierRun> tiers;
+
   // How many legs came back straight because the pair would not route. 0 for a
   // through route by construction.
   int straight_legs = 0;
 
   // The stops the through route had to turn round at (`Route::u_turn_stops`).
   std::vector<uint32_t> u_turn_stops;
+
+  /// The through route sets off more than 90 degrees from
+  /// `RoutePlanOptions::start_heading_deg` (`Route::start_u_turn`).
+  bool start_u_turn = false;
 
   // Which consecutive pair the through route could not connect, or
   // `routing::Route::kNoLeg`. Reported by the router, not derived here.
@@ -222,6 +231,62 @@ struct RoutePlanOptions {
 
   /// Drops the beach when the tide would cover it on the way.
   BeachTideGate tide;
+
+  /// The rider's direction of travel at the first stop, degrees true, and what
+  /// setting off the other way costs (`RouteOptions::start_heading_deg`,
+  /// `start_u_turn_seconds`). NaN plans either way at no cost.
+  double start_heading_deg = std::numeric_limits<double>::quiet_NaN();
+  double start_u_turn_seconds = 45.0;
+};
+
+/// An off-route rider asking to be routed on (`RoutePlanner::PlanDetour`).
+struct DetourRequest {
+  GeoPoint position;
+  /// Direction of travel, degrees true. NaN plans the detour with no U-turn
+  /// penalty, and it then never starts with a U-turn.
+  double heading_deg = std::numeric_limits<double>::quiet_NaN();
+  /// Metres along the guided line (`legs` joined) of the last on-route fix.
+  double last_along_m = 0.0;
+  /// The penalty on the detour's first arc when it sets off behind the rider.
+  double u_turn_seconds = 45.0;
+  /// Turning round is picked when it is this much shorter than the detour.
+  double turn_around_margin_m = 200.0;
+  /// The penalty on going ahead when pricing the turn-round: large enough
+  /// that it turns round wherever it can.
+  double turn_around_force_seconds = 3600.0;
+  /// How near the original line the turn-round has to come to count as back
+  /// on it (`GuidanceSettings::rejoin_m`).
+  double rejoin_m = 15.0;
+};
+
+/// Which of the two plans in a `DetourPlan` the rider is offered.
+enum class DetourPick {
+  kNone,        ///< Neither plan routed.
+  kReroute,     ///< `reroute`: on from here, not starting with a U-turn.
+  kTurnAround,  ///< `turn_around`: back the way the rider came.
+};
+
+/// The two ways back onto a route for an off-route rider, and the pick.
+struct DetourPlan {
+  /// From the position, with the heading penalty, through the stops still
+  /// ahead on the original route.
+  RoutePlan reroute;
+  /// From the position, setting off opposite the heading, through the same
+  /// stops. Not found without a heading, or when no plan turns round.
+  RoutePlan turn_around;
+  /// The stops still ahead, ending with the destination.
+  std::vector<GeoPoint> stops_ahead;
+  /// The original line's metres from `last_along_m` to its end.
+  double remaining_m = 0.0;
+  /// `reroute.length_m - remaining_m`, the "+0.3 mi" on the button. Negative
+  /// when the detour is shorter than what was left of the route.
+  double extra_m = 0.0;
+  /// Metres along `turn_around` until it is within `rejoin_m` of the
+  /// original line, the "250 ft back".
+  double back_m = 0.0;
+  /// The reroute sets off more than 90 degrees from the heading.
+  bool reroute_starts_with_u_turn = false;
+  DetourPick pick = DetourPick::kNone;
 };
 
 /// The named road `after` rides least of what `before` rode: the road a
@@ -310,6 +375,17 @@ class RoutePlanner {
   // is what makes the two answers the same answer — the same rule file, the
   // same profile lookup, the same poll.
   Status BuildOptions(const RoutePlanOptions& in, routing::RouteOptions* out) const;
+
+  /// Plans the way on for a rider off `route`, which was planned through
+  /// `waypoints` with `options`. The waypoints already passed (at or before
+  /// `request.last_along_m`) are dropped; the destination is always kept.
+  /// Turning round is picked when the reroute starts with a U-turn or did
+  /// not route, or when turning round is shorter by the request's margin.
+  /// Plans the route twice; about 0.1 s each on the Atlanta graph. A tide
+  /// gate in `options` should carry the current time as `depart_s`.
+  DetourPlan PlanDetour(const DetourRequest& request,
+                        const std::vector<GeoPoint>& waypoints, const RoutePlan& route,
+                        const RoutePlanOptions& options) const;
 
  private:
   RoutePlan PlanOnce(const std::vector<GeoPoint>& stops,

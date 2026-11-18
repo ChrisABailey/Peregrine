@@ -406,3 +406,30 @@ TEST(Persistence, NotifiesOnChangeOnly) {
 }
 
 }  // namespace
+
+TEST(OverlayTypeRegistryReplace, SwapsTheDescriptorInPlace) {
+  OverlayTypeRegistry r;
+  ASSERT_TRUE(fv::app::RegisterBuiltinOverlayTypes(r).ok());
+  const OverlayTypeDesc* before = r.Find(fv::app::kGridTypeId);
+  ASSERT_NE(before, nullptr);
+  const size_t count = r.All().size();
+
+  OverlayTypeDesc d = *before;
+  d.display_name = "Graticule";
+  fv::app::FileTypeDesc file;
+  file.default_extension = "grd";
+  d.file = file;
+  ASSERT_TRUE(r.Replace(d).ok());
+  // The same pointer, now describing a file type; nothing added.
+  EXPECT_EQ(r.Find(fv::app::kGridTypeId), before);
+  EXPECT_EQ(before->display_name, "Graticule");
+  EXPECT_TRUE(r.IsFile(fv::app::kGridTypeId));
+  EXPECT_EQ(r.All().size(), count);
+
+  OverlayTypeDesc unknown = d;
+  unknown.id = "no.such.type";
+  EXPECT_EQ(r.Replace(unknown).code, fv::kNotFound);
+  OverlayTypeDesc no_factory = d;
+  no_factory.factory = nullptr;
+  EXPECT_EQ(r.Replace(no_factory).code, fv::kInvalidArg);
+}

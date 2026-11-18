@@ -1,0 +1,18 @@
+{
+  "format": 2,
+  "measurements": [
+    {"kind": "multi_point", "line_type": "great_circle",
+     "points": [[32.7765, -79.9311], [32.8100, -79.8700], [32.7500, -79.8300]]},
+    {"kind": "area", "line_type": "great_circle",
+     "points": [[32.7300, -79.9600], [32.7300, -79.9100], [32.7000, -79.9350]]}
+  ],
+  "line_type": "great_circle",
+  "observers": [{"lat": 32.7900, "lon": -79.9000, "height_m": 30.0, "range_m": 15000.0}],
+  "units": "nautical_miles",
+  "observer_height_m": 30.0,
+  "viewshed_range_m": 15000.0,
+  "viewshed_max_posts": 500000,
+  "show_profile": true,
+  "profile_samples": 200,
+  "show_masked": false
+}

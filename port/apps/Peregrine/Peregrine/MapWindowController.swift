@@ -29,9 +29,11 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
     private var dataSourcesWindow: DataSourcesWindowController?
     private var overlayManagerWindow: OverlayManagerWindowController?
     private var profileWindow: ProfileWindowController?
+    private var ownshipWindow: OwnshipWindowController?
     private var layersPanel: LayersPanelController?
     private static let layersShownKey = "layers_panel.shown"
     private var findWindow: FindWindowController?
+    private var addWebLayerWindow: AddWebLayerWindowController?
     private var featureFormWindow: FeatureFormWindowController?
     private var attributeTableWindow: AttributeTableWindowController?
     private var layerStyleWindow: LayerStyleWindowController?
@@ -231,10 +233,14 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         if t.overlay_manager_requested && host.TakeOverlayManagerRequest() { showOverlayManager() }
         if t.profile_requested && host.TakeRouteProfileRequest() { showRouteProfile() }
         if t.profile_changed { profileWindow?.reload() }
+        if t.ownship_requested && host.TakeOwnshipRequest() { showOwnship() }
+        if t.ownship_changed { ownshipWindow?.reload() }
         if t.layers_requested && host.TakeLayersRequest() { setLayersShown(true) }
         if t.layers_hide_requested && host.TakeLayersHideRequest() { setLayersShown(false) }
         if t.layers_changed, let panel = layersPanel, !panel.view.isHidden { panel.reload() }
         if t.find_requested && host.TakeFindRequest() { showFind() }
+        if t.web_requested && host.TakeAddWebLayerRequest() { showAddWebLayer() }
+        if t.web_changed { addWebLayerWindow?.reload() }
         if t.form_requested && host.TakeFeatureFormRequest() { showFeatureForm() }
         if t.table_requested && host.TakeAttributeTableRequest() { showAttributeTable() }
         if t.style_requested && host.TakeLayerStyleRequest() { showLayerStyle() }
@@ -332,6 +338,20 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
         controller.showWindow(nil)
     }
 
+    /// Brings up the Ownship window, reusing it when it is showing.
+    private func showOwnship() {
+        if let existing = ownshipWindow {
+            existing.reload()
+            existing.showWindow(nil)
+            return
+        }
+        let controller = OwnshipWindowController(host: host)
+        controller.onClose = { [weak self] in self?.ownshipWindow = nil }
+        ownshipWindow = controller
+        controller.window?.center()
+        controller.showWindow(nil)
+    }
+
     /// Brings up the Find dialog, reusing it when it is showing.
     private func showFind() {
         if let existing = findWindow {
@@ -347,6 +367,20 @@ final class MapWindowController: NSWindowController, NSMenuItemValidation {
             let frame = main.frame
             panel.setFrameTopLeftPoint(NSPoint(x: frame.minX + 40, y: frame.maxY - 60))
         }
+        controller.showWindow(nil)
+        controller.focusField()
+    }
+
+    private func showAddWebLayer() {
+        if let existing = addWebLayerWindow {
+            existing.showWindow(nil)
+            existing.focusField()
+            return
+        }
+        let controller = AddWebLayerWindowController(host: host)
+        controller.onClose = { [weak self] in self?.addWebLayerWindow = nil }
+        addWebLayerWindow = controller
+        controller.window?.center()
         controller.showWindow(nil)
         controller.focusField()
     }

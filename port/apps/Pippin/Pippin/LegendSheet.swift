@@ -545,3 +545,123 @@ private struct TierCapsule: View {
         }
     }
 }
+
+// MARK: - Map info
+
+/// What a tap on the map found: where it falls on the route, the road in the
+/// map key's words with its routing tier and slope, or the base map's feature.
+/// Presented at a medium detent over a live map, so another tap re-queries.
+struct MapInfoSheet: View {
+    let info: PPMapInfo
+    let units: DistanceUnits
+    let onClose: () -> Void
+
+    private var title: String {
+        if info.routeSpot != nil { return "On Your Route" }
+        if let road = info.road {
+            return road.name.isEmpty ? road.typeLabel.capitalizedFirst : road.name
+        }
+        if let feature = info.feature {
+            return feature.name.isEmpty ? feature.kind.capitalizedFirst : feature.name
+        }
+        return "Map"
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let spot = info.routeSpot { routeSection(spot) }
+                if let road = info.road { roadSection(road, onRoute: info.routeSpot != nil) }
+                if let feature = info.feature { featureSection(feature) }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onClose)
+                }
+            }
+        }
+    }
+
+    private func routeSection(_ spot: PPRouteSpot) -> some View {
+        Section("Route") {
+            LabeledContent("From start",
+                           value: leg(spot.metersFromStart, spot.secondsFromStart))
+            LabeledContent("To end", value: leg(spot.metersToEnd, spot.secondsToEnd))
+            if spot.hasGrade {
+                LabeledContent("Slope here", value: Self.routeGrade(spot.gradePercent))
+            }
+        }
+    }
+
+    private func roadSection(_ road: PPRoadInfo, onRoute: Bool) -> some View {
+        Section {
+            if onRoute, !road.name.isEmpty {
+                LabeledContent("Name", value: road.name)
+            }
+            LabeledContent("Type", value: road.typeLabel.capitalizedFirst)
+            if !road.markings.isEmpty {
+                LabeledContent("Markings", value: road.markings.joined(separator: ", "))
+            }
+            if !road.tierWord.isEmpty {
+                LabeledContent("Routing") {
+                    TierCapsule(word: road.tierWord, rank: road.tierRank)
+                }
+            }
+            if road.hasGrade, !onRoute {
+                LabeledContent("Slope", value: Self.roadGrade(road.gradePercent,
+                                                              uphill: road.uphillBearingDegrees))
+            }
+            if !road.surface.isEmpty {
+                LabeledContent("Surface", value: road.surface.capitalizedFirst)
+            }
+            if road.speedLimitKph > 0 {
+                LabeledContent("Speed limit",
+                               value: units.speed(Double(road.speedLimitKph) / 3.6))
+            }
+            if !road.termsLine.isEmpty {
+                Text(road.termsLine)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            if onRoute { Text("Road") }
+        }
+    }
+
+    /// The name is the sheet's title, so only the kind is listed.
+    private func featureSection(_ feature: PPChartFeature) -> some View {
+        Section {
+            LabeledContent("Kind", value: feature.kind.capitalizedFirst)
+        }
+    }
+
+    private func leg(_ meters: Double, _ seconds: Double) -> String {
+        units.distance(meters) + " · " + Course.timeToGoText(seconds)
+    }
+
+    /// "3% uphill", "2% downhill", or "Flat" under half a percent.
+    static func routeGrade(_ percent: Double) -> String {
+        guard abs(percent) >= 0.5 else { return "Flat" }
+        return String(format: "%.0f%% ", abs(percent)) + (percent > 0 ? "uphill" : "downhill")
+    }
+
+    /// "4%, rising to the NE", or "Flat" under half a percent.
+    static func roadGrade(_ percent: Double, uphill bearing: Double) -> String {
+        guard percent >= 0.5 else { return "Flat" }
+        return String(format: "%.0f%%, rising to the ", percent) + compassPoint(bearing)
+    }
+
+    /// The nearest of the eight compass points to `bearing`, degrees true.
+    static func compassPoint(_ bearing: Double) -> String {
+        let points = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        let b = bearing.truncatingRemainder(dividingBy: 360) + (bearing < 0 ? 360 : 0)
+        return points[Int((b / 45).rounded()) % 8]
+    }
+}
+
+private extension String {
+    /// The string with its first letter upper case: "grass" → "Grass".
+    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
+}

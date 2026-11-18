@@ -312,6 +312,35 @@ def test_catalog_scan_select_best():
     assert c.select_by_geo_rect(pyfvw.geo.GeoRect.world()) == []
 
 
+def test_host_coverage_reads_the_catalog_it_is_given():
+    """OverlayHost.coverage() answers from the host's catalog, filtered by
+    format and area; a host without a catalog has none."""
+    root = _testdata("rpf")
+    if root is None:
+        pytest.skip("no TestData")
+    pyfvw.catalog.register_builtin_formats()
+    c = pyfvw.catalog.Catalog()
+    c.scan(c.add_data_source(root, "cadrg"))
+
+    class Probe(pyfvw.overlay.Overlay):
+        pass
+
+    mgr = pyfvw.overlay.OverlayManager()
+    o = Probe("probe")
+    mgr.add(o)
+    host = pyfvw.overlay.ManagerHost(mgr)
+    host.bind(o)
+    assert o.host.coverage("cadrg") == []
+    host.set_catalog(c)
+    atl = pyfvw.geo.GeoRect(ll=pyfvw.geo.GeoPoint(33.6, -84.5),
+                            ur=pyfvw.geo.GeoPoint(33.9, -84.2))
+    rows = o.host.coverage("cadrg", atl)
+    assert rows and all(r.bounds.intersects(atl) for r in rows)
+    assert len(o.host.coverage("cadrg")) >= len(rows)
+    assert o.host.coverage("osm", atl) == []
+    host.unbind(o)
+
+
 def test_a_geotiff_series_is_ONE_resolution_not_one_name():
     """A GeoTIFF directory holds "Color" sheets at several ground resolutions
     (TestData: 0.3, 0.6, 1, 10 and 50 m/pixel, the last being a scanned
@@ -1968,7 +1997,8 @@ def _drag_fixture():
         ("WP2", 32.60, -79.90),
     ])
     mgr.add(overlay)
-    overlay.set_manager(mgr)
+    host = pyfvw.overlay.ManagerHost(mgr)
+    host.bind(overlay)
 
     proj = pyfvw.engine.MapProjection()
     proj.set_surface_size(400, 400)
@@ -1976,7 +2006,7 @@ def _drag_fixture():
     proj.set_resolution(0.0008, 0.0008)
     canvas = _canvas_with_font(400, 400)
     mgr.draw_all(proj, canvas)
-    return mgr, overlay, proj, canvas
+    return mgr, overlay, proj, canvas, host
 
 
 def _drawn(overlay, proj, index=0):
@@ -1994,7 +2024,7 @@ def _ev(x, y):
 
 
 def test_a_press_on_a_waypoint_captures_the_mouse_and_a_move_drags_it():
-    mgr, overlay, proj, canvas = _drag_fixture()
+    mgr, overlay, proj, canvas, _host = _drag_fixture()
     (label, wx, wy) = _drawn(overlay, proj, 0)
     before = _labelled(overlay)
 
@@ -2034,7 +2064,7 @@ def test_a_press_on_a_waypoint_captures_the_mouse_and_a_move_drags_it():
 
 
 def test_a_press_on_empty_map_is_declined_so_the_shell_can_pan():
-    mgr, overlay, _proj, _canvas = _drag_fixture()
+    mgr, overlay, _proj, _canvas, _host = _drag_fixture()
     assert not mgr.route_mouse_down(_ev(5, 5))
     assert mgr.mouse_capture is None
     assert not mgr.route_mouse_move(_ev(50, 50))
@@ -2042,7 +2072,7 @@ def test_a_press_on_empty_map_is_declined_so_the_shell_can_pan():
 
 
 def test_escape_mid_drag_puts_the_waypoint_back_and_leaves_no_history():
-    mgr, overlay, proj, _canvas = _drag_fixture()
+    mgr, overlay, proj, _canvas, _host = _drag_fixture()
     (label, wx, wy) = _drawn(overlay, proj, 0)
     before = _labelled(overlay)
 
@@ -2058,7 +2088,7 @@ def test_escape_mid_drag_puts_the_waypoint_back_and_leaves_no_history():
 
 
 def test_a_still_press_and_release_is_a_selection_and_not_an_edit():
-    mgr, overlay, proj, _canvas = _drag_fixture()
+    mgr, overlay, proj, _canvas, _host = _drag_fixture()
     (label, wx, wy) = _drawn(overlay, proj, 0)
     before = _labelled(overlay)
 
@@ -2071,7 +2101,7 @@ def test_a_still_press_and_release_is_a_selection_and_not_an_edit():
 
 
 def test_leaving_edit_focus_cancels_a_drag_in_flight():
-    mgr, overlay, proj, _canvas = _drag_fixture()
+    mgr, overlay, proj, _canvas, _host = _drag_fixture()
     (label, wx, wy) = _drawn(overlay, proj, 0)
     before = _labelled(overlay)
 

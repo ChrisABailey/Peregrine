@@ -75,8 +75,10 @@ struct SymbolPrimitive {
 };
 
 // A resolution-independent symbol. Extent is in the same HIMETRIC units and
-// is informational — the drawer anchors at the symbol's own (0,0), which is
-// where the authoring convention puts the hot spot.
+// bounds the primitives' geometry (pen width excluded); VectorRenderer uses it
+// to skip symbols that cannot reach the canvas, and treats an all-zero extent
+// as unknown. The drawer anchors at the symbol's own (0,0), which is where the
+// authoring convention puts the hot spot.
 struct VectorSymbol {
   std::vector<SymbolPrimitive> primitives;
   double min_x = 0.0, min_y = 0.0, max_x = 0.0, max_y = 0.0;

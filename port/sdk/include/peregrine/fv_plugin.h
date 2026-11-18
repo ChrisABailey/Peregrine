@@ -9,13 +9,16 @@
  *
  * C99, UTF-8 strings, no C++ types. A plugin exports one function,
  * `fv_plugin_entry`, which receives the host's function table and fills in
- * the plugin's. Every struct that crosses the boundary starts with
- * `struct_size`; a later minor version only appends fields, and each side
- * reads a field only when the other side's `struct_size` covers it
- * (`FV_HAS_FIELD`).
+ * the plugin's: overlay classes, editor classes and tools. Every struct that
+ * crosses the boundary starts with `struct_size`; a later minor version only
+ * appends fields, and each side reads a field only when the other side's
+ * `struct_size` covers it (`FV_HAS_FIELD`). The host refuses a plugin built
+ * for another major version.
  *
  * Threading: `draw` runs on the render worker; every other call, including
- * `hit_test` and tools, runs on the UI thread. A plugin never calls the UI.
+ * `hit_test`, editors and tools, runs on the UI thread. A plugin calls the host's
+ * functions from the UI thread, except `request_redraw`, which any thread may
+ * call; a plugin never calls the UI itself.
  *
  * Memory: what the host passes is valid for the duration of the call. Strings
  * a plugin returns are owned by the plugin and must stay valid until its next
@@ -25,6 +28,30 @@
  * Errors: functions returning `int` return FV_OK (0) or a negative
  * `fv_status`. Before returning an error a plugin may call
  * `host->set_error(msg)`; the message reaches the log and the user.
+ *
+ * Lifetime: `create` hands the overlay an `fv_overlay_ref`, which it passes
+ * to every per-overlay host call. After `destroy` returns, host calls through
+ * that ref do nothing, so a late `request_redraw` from a worker is harmless;
+ * `destroy` must still stop the worker before freeing what it uses.
+ *
+ * Editing: an overlay is edited through an editor (`fv_editor_class`, named by
+ * the manifest's `editor.library`). Pointer and key events reach the overlay
+ * only while its editor is active and it has edit focus, or while it holds
+ * the mouse. Hover (`hit_test`), the context menu and Get Info reach every
+ * overlay. Edit > Undo uses the overlay's `undo`/`redo` when the host's own
+ * undo stack has nothing to undo.
+ *
+ * API 2.0 differs from 1.x without compatibility; the host refuses 1.x
+ * libraries and manifests with `requires.plugin_api` 1:
+ * - `create` takes `fv_overlay_ref*`, and host calls take it in place of the
+ *   plugin's `self`.
+ * - A document becomes dirty only through `host->set_dirty`; a handled press
+ *   or property write no longer implies it.
+ * - `save` takes the save-filter index; `revert`, `context_menu`,
+ *   `menu_command`, `item_info`, `snap_to`, `search`, `on_key`, `edit_hint`,
+ *   edit focus and undo/redo are new, as are `fv_editor_class` and
+ *   `fv_plugin_api.editors`.
+ * - Host calls added: `show_status`, `edited`.
  */
 #ifndef PEREGRINE_FV_PLUGIN_H_
 #define PEREGRINE_FV_PLUGIN_H_
@@ -36,7 +63,7 @@
 extern "C" {
 #endif
 
-#define FV_PLUGIN_API_MAJOR 1
+#define FV_PLUGIN_API_MAJOR 2
 #define FV_PLUGIN_API_MINOR 0
 
 #if defined(_WIN32)
@@ -71,16 +98,47 @@ typedef enum fv_log_level {
 
 /* MARK: Host */
 
+typedef struct fv_geo_point {
+  double lat, lon; /**< degrees, WGS 84 */
+} fv_geo_point;
+
+/** The host's handle on one overlay, given to the overlay class's `create`
+ *  and valid until its `destroy` returns. Every per-overlay host call takes it. */
+typedef struct fv_overlay_ref fv_overlay_ref;
+/** The host's handle on one editor, given to the editor class's `create`. */
+typedef struct fv_editor_ref fv_editor_ref;
+
 /** What the host offers every plugin. One table per loaded library, valid for
- *  the life of the process. */
+ *  the life of the process. Calls naming an overlay that is not in a map
+ *  window do nothing or fail with FV_ERR_NOT_FOUND. */
 typedef struct fv_host_api {
   uint32_t struct_size;
   uint32_t api_major, api_minor; /**< what the host implements */
-  const char* host_version;      /**< "1.1.0" */
+  const char* host_version;      /**< Peregrine's version, "0.1.0" */
   const char* package_dir;       /**< the package root; resources resolve against it */
   void (*log)(int level, const char* message);
   /** Attaches a message to the error the current call is about to return. */
   void (*set_error)(const char* message);
+
+  /** Schedules a repaint of the map. Any thread, until `destroy` returns;
+   *  requests coalesce. */
+  void (*request_redraw)(fv_overlay_ref* overlay);
+  /** Sends every mouse event to `overlay` until `release_mouse`. */
+  int (*capture_mouse)(fv_overlay_ref* overlay);
+  /** Ends the capture; does nothing when `overlay` does not hold the mouse. */
+  void (*release_mouse)(fv_overlay_ref* overlay);
+  /** Marks the overlay's document edited (nonzero) or unchanged (0); Close
+   *  asks to save an edited document. The only way a document becomes dirty.
+   *  No effect on an overlay without `open`. */
+  void (*set_dirty)(fv_overlay_ref* overlay, int dirty);
+  /** Ground elevation at `p` in metres. FV_ERR_OUT_OF_COVERAGE off the
+   *  catalog's elevation data or when it has none. */
+  int (*elevation_at)(fv_overlay_ref* overlay, fv_geo_point p, double* metres);
+  /** Shows `text` in the status bar until the next hover replaces it. */
+  void (*show_status)(fv_overlay_ref* overlay, const char* text);
+  /** The `self` of the overlay in edit focus while `editor` is active, when
+   *  that overlay comes from this library; null otherwise. */
+  void* (*edited)(fv_editor_ref* editor);
 } fv_host_api;
 
 /* MARK: The view */
@@ -88,10 +146,6 @@ typedef struct fv_host_api {
 typedef struct fv_color {
   uint8_t r, g, b, a;
 } fv_color;
-
-typedef struct fv_geo_point {
-  double lat, lon; /**< degrees, WGS 84 */
-} fv_geo_point;
 
 typedef enum fv_projection {
   FV_PROJ_EQUAL_ARC = 0,
@@ -142,7 +196,7 @@ typedef struct fv_fill_style {
   fv_color color;
 } fv_fill_style;
 
-/** Symbols in API 1 are Peregrine's built-in shapes: "fv.circle", "fv.square",
+/** Symbols are Peregrine's built-in shapes: "fv.circle", "fv.square",
  *  "fv.triangle", "fv.diamond", "fv.cross", "fv.star", "fv.north",
  *  "fv.crosshair", "fv.ownship". */
 typedef struct fv_symbol_style {
@@ -221,6 +275,19 @@ typedef struct fv_mouse_event {
   double wheel_delta;  /**< FV_MOUSE_WHEEL only */
 } fv_mouse_event;
 
+/** One key press. `key` is a Windows virtual-key code (letters and digits are
+ *  their uppercase ASCII values; Return 0x0D, Escape 0x1B, Delete 0x2E, the
+ *  arrows 0x25-0x28) or 0 when the shell has no name for the key; `text` is
+ *  the Unicode code point the layout produced, or 0. */
+typedef struct fv_key_event {
+  uint32_t struct_size;
+  int key;
+  uint32_t text;
+  int shift, ctrl, alt, meta; /**< nonzero when held */
+} fv_key_event;
+
+/* MARK: Answers */
+
 /** What `hit_test` reports about the item under the cursor. */
 typedef struct fv_hit {
   uint32_t struct_size;
@@ -230,37 +297,180 @@ typedef struct fv_hit {
   const char* status;  /**< status-bar text; may be null; plugin-owned */
 } fv_hit;
 
+/** Flags for fv_menu::item. */
+enum { FV_ITEM_DISABLED = 1, FV_ITEM_CHECKED = 2 };
+
+/** A menu being built: a context-menu section or an editor's tool palette.
+ *  Valid for the duration of the call that receives it. Choosing an item
+ *  calls the class's `menu_command` or `run_tool` with the item's `id`. */
+typedef struct fv_menu {
+  uint32_t struct_size;
+  const void* host; /**< opaque */
+  /** Appends an item. `icon` names art for the shell (may be null); `flags`
+   *  is a combination of FV_ITEM_*. */
+  void (*item)(const struct fv_menu* m, const char* id, const char* label, const char* icon,
+               int flags);
+  void (*separator)(const struct fv_menu* m);
+  /** Appends a submenu and returns the menu to fill it through. */
+  const struct fv_menu* (*submenu)(const struct fv_menu* m, const char* label);
+} fv_menu;
+
+/** The Get Info sheet `item_info` fills. Valid for the duration of the call. */
+typedef struct fv_info {
+  uint32_t struct_size;
+  const void* host; /**< opaque */
+  void (*title)(const struct fv_info* i, const char* title);
+  /** Appends a row; a row whose section differs from the one before starts a new section. */
+  void (*row)(const struct fv_info* i, const char* section, const char* key, const char* value);
+  /** "Edit Rings…": the context menu item that puts the overlay in its editor. */
+  void (*edit_label)(const struct fv_info* i, const char* label);
+} fv_info;
+
+/** The candidates `snap_to` appends to. Valid for the duration of the call. */
+typedef struct fv_snap_list {
+  uint32_t struct_size;
+  const void* host; /**< opaque */
+  /** `description` is the chooser's row text; `distance_px` ranks candidates. */
+  void (*add)(const struct fv_snap_list* s, fv_geo_point p, const char* description,
+              double distance_px);
+} fv_snap_list;
+
+/** A search over every overlay. Valid for the duration of `search`. */
+typedef struct fv_search {
+  uint32_t struct_size;
+  const void* host;   /**< opaque */
+  const char* text;   /**< "" for a spatial-only search */
+  int has_area;       /**< nonzero when `south_west`/`north_east` limit the search */
+  fv_geo_point south_west, north_east;
+  size_t max_results; /**< the most `add` calls the host keeps; 0 is no cap */
+  /** How well `label` answers the text: 0 exact, 1 prefix, 2 every token a
+   *  prefix of a word, -1 no match. An empty text matches everything at 0. */
+  int (*match)(const struct fv_search* q, const char* label);
+  /** Nonzero when `p` lies in the area, or there is none. */
+  int (*in_area)(const struct fv_search* q, fv_geo_point p);
+  /** Nonzero when the search has been superseded; return with what you have. */
+  int (*cancelled)(const struct fv_search* q);
+  /** Appends a result. `detail` says what kind of thing it is; the bounds
+   *  are what "go there" frames (equal corners for a point). */
+  void (*add)(const struct fv_search* q, uint64_t feature, const char* title, const char* detail,
+              fv_geo_point position, fv_geo_point south_west, fv_geo_point north_east,
+              int match_quality);
+} fv_search;
+
 /* MARK: Overlays */
 
 /**
  * One overlay class. `create`, `destroy` and `draw` are required; a null
  * optional function means the capability is absent.
  *
+ * `create` receives the host's handle on the new overlay, which the overlay
+ * keeps for host calls. `destroy` must stop any thread that uses it.
+ *
  * Properties: `properties_schema` returns a JSON array of
  *   {"key", "label", "group", "type", "default", "min", "max", "choices", "help"}
  * with "type" one of "bool", "int", "double", "string", "color", "choice",
  * "path". A value crosses as text: "true"/"false", a decimal number, the
  * choice's index, "#RRGGBBAA", or the string itself.
+ *
+ * Pointer and key events arrive only while the overlay is edited (its editor
+ * is active and it has edit focus) or holds the mouse.
  */
 typedef struct fv_overlay_class {
   uint32_t struct_size;
   const char* name; /**< what the manifest's implementation.library names */
-  void* (*create)(const fv_host_api* host, const char* type_id);
+  void* (*create)(const fv_host_api* host, fv_overlay_ref* overlay, const char* type_id);
   void (*destroy)(void* self);
   int (*draw)(void* self, const fv_view* view, const fv_draw_api* draw);
-  /* Optional. */
+
+  /* Optional: documents. `open` makes the overlay a file overlay. */
   int (*open)(void* self, const char* path);
-  int (*save)(void* self, const char* path);
+  /** `format_index` indexes the manifest's save filters; 0 is the default format. */
+  int (*save)(void* self, const char* path, int format_index);
+  /** Re-reads `path`, discarding edits. */
+  int (*revert)(void* self, const char* path);
+
+  /* Optional: picking. `view` is the frame the point is in. */
   /** 1 and fills `out` when an item lies within `tolerance_px` of (x, y); 0 otherwise. */
   int (*hit_test)(void* self, const fv_view* view, double x, double y, double tolerance_px,
                   fv_hit* out);
+  /** Appends this overlay's section of the map's context menu at (x, y). */
+  void (*context_menu)(void* self, const fv_view* view, double x, double y, const fv_menu* menu);
+  /** Runs the context-menu item `id`. */
+  int (*menu_command)(void* self, const char* id);
+  /** 1 and fills `info` for the topmost item within `tolerance_px`; 0 otherwise. */
+  int (*item_info)(void* self, const fv_view* view, double x, double y, double tolerance_px,
+                   const fv_info* info);
+  /** Appends the points a cursor at (x, y) could snap to. */
+  void (*snap_to)(void* self, const fv_view* view, double x, double y, double tolerance_px,
+                  const fv_snap_list* out);
+  /** Appends the items that answer `query`; UI thread, poll `cancelled`. */
+  void (*search)(void* self, const fv_search* query);
+
+  /* Optional: properties. */
   const char* (*properties_schema)(void* self);
   /** The value as text, or null for an unknown key. */
   const char* (*get_property)(void* self, const char* key);
   int (*set_property)(void* self, const char* key, const char* value);
-  /** `view` is the last frame drawn, or null before the first. Nonzero = handled. */
+
+  /* Optional: editing. `view` is the last frame drawn, or null before the first. */
+  /** Nonzero = handled. */
   int (*on_mouse)(void* self, const fv_view* view, const fv_mouse_event* event);
+  /** Nonzero = handled. */
+  int (*on_key)(void* self, const fv_key_event* event);
+  /** The status line for what a press at (x, y) would do; null or "" for nothing. */
+  const char* (*edit_hint)(void* self, double x, double y);
+  /** Brackets the time the overlay is the one being edited. */
+  void (*enter_edit_focus)(void* self);
+  void (*release_edit_focus)(void* self);
+  /** The overlay's own undo history, reached by the editor's Undo and Redo. */
+  int (*can_undo)(void* self);
+  void (*undo)(void* self);
+  int (*can_redo)(void* self);
+  void (*redo)(void* self);
 } fv_overlay_class;
+
+/* MARK: Editors */
+
+typedef enum fv_cursor {
+  FV_CURSOR_CROSSHAIR = 0, /**< the default for an editor */
+  FV_CURSOR_ARROW = 1,
+  FV_CURSOR_HAND = 2,
+  FV_CURSOR_MOVE = 3,
+  FV_CURSOR_NO = 4,
+  FV_CURSOR_WAIT = 5
+} fv_cursor;
+
+/** Flags for fv_editor_class::flags. */
+enum {
+  /** Entering the mode waits for an overlay instead of creating one. */
+  FV_EDITOR_NO_AUTO_CREATE = 1,
+  FV_EDITOR_DISABLE_ROTATION = 2,
+  FV_EDITOR_DISABLE_PROJECTION_CHANGE = 4,
+  FV_EDITOR_REQUIRES_NORTH_UP = 8,
+  FV_EDITOR_DISABLE_OVERLAY_REORDER = 16
+};
+
+/**
+ * One editor class: the tool state for an overlay type, named by the
+ * manifest's `editor.library`. The host makes one per type, on the first
+ * entry into its mode, and keeps it. `name`, `create` and `destroy` are
+ * required; `host->edited(editor)` answers the overlay being edited.
+ */
+typedef struct fv_editor_class {
+  uint32_t struct_size;
+  const char* name;
+  void* (*create)(const fv_host_api* host, fv_editor_ref* editor);
+  void (*destroy)(void* self);
+  int cursor;    /**< an fv_cursor */
+  uint32_t flags; /**< FV_EDITOR_* */
+  /* Optional. */
+  int (*activate)(void* self);
+  int (*deactivate)(void* self);
+  /** Fills the editor's palette; asked again whenever the shell refreshes it. */
+  void (*tools)(void* self, const fv_menu* menu);
+  /** Runs the palette item `id`. */
+  int (*run_tool)(void* self, const char* id);
+} fv_editor_class;
 
 /* MARK: Tools */
 
@@ -291,6 +501,8 @@ typedef struct fv_plugin_api {
   size_t overlay_count;
   const fv_tool_class* tools;
   size_t tool_count;
+  const fv_editor_class* editors;
+  size_t editor_count;
 } fv_plugin_api;
 
 /** The one symbol the host looks up. `out` arrives zeroed with its

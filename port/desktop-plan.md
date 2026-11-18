@@ -3,7 +3,7 @@
 **Status: APPROVED, 2026-10-05.** K1–K15 decided (Chris accepted every recommendation); K16 made in DK5. DK1
 (ViewKit core), DK2 (DeskKit core) done 2026-10-05, DK3 (Overlay manifests) done 2026-10-06,
 DK4 (mac skeleton), DK5 (menus, toolbar, dialogs, catalog build), DK5b (overlay drawing) and
-DK6 (mac options dialogs, generated pages) done 2026-10-07. Next is DK7 (Linux spike, §5).
+DK6 (mac options dialogs, generated pages) done 2026-10-07. DK9 (moving map) done 2026-11-09. Next is DK7 (Linux spike, §5).
 
 ## Goal
 

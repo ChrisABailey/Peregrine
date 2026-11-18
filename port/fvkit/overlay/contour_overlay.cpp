@@ -180,6 +180,17 @@ ContourOverlay::ContourOverlay() : Overlay("contour") {
   for (const PropertySpec& s : Specs()) values_.push_back(s.default_value);
 }
 
+void ContourOverlay::SetHost(app::OverlayHost* host) {
+  app::HostAware::SetHost(host);
+  SetElevationSource(host != nullptr ? host->OpenElevation() : nullptr);
+}
+
+Status ContourOverlay::HostStatus() const {
+  if (host() != nullptr && source_ == nullptr)
+    return Status::Error(kNotFound, "needs elevation data (DTED or lidar); the catalog has none.");
+  return Status::Ok();
+}
+
 void ContourOverlay::SetElevationSource(std::shared_ptr<IElevationSource> src) {
   source_ = std::move(src);
   ClearCache();

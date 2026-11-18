@@ -390,6 +390,14 @@ double DelayCost(double seconds, const RouteProfile& p) {
   return p.metric == RouteMetric::kDistance ? seconds * p.fixed_kph / 3.6 : seconds;
 }
 
+/// Seconds as search cost under any options. Without a profile the bicycle
+/// cost is already seconds, and a distance query prices the wait at 50 km/h.
+double SecondsAsCost(double seconds, const RouteOptions& o) {
+  if (o.profile != nullptr) return DelayCost(seconds, *o.profile);
+  if (!o.cycle_only && o.metric == RouteMetric::kDistance) return seconds * 50.0 / 3.6;
+  return seconds;
+}
+
 }  // namespace
 
 // An unsignalled crossing is charged half on arriving at the busier road and
@@ -488,12 +496,41 @@ std::vector<uint32_t> ExtraSplits(const Terminals& sources, const Terminals& tar
   return extra;
 }
 
+// ExtraSplits plus what a headed first leg prices by arc: the start node, so
+// each arc out of it has a state, and the first junctions, so a U-turn there is
+// seen as one.
+template <typename Terminals>
+std::vector<uint32_t> HeadingSplits(const Terminals& sources, const Terminals& targets,
+                                    bool heading_at_node,
+                                    const std::vector<uint32_t>& first_junctions) {
+  std::vector<uint32_t> extra = ExtraSplits(sources, targets);
+  if (heading_at_node) extra.push_back(sources.front().node);
+  extra.insert(extra.end(), first_junctions.begin(), first_junctions.end());
+  return extra;
+}
+
 // Whether `state` is one of the seeded terminals, and which. The sets have at
 // most two entries each, so this is a scan.
 uint32_t TerminalAt(const std::vector<uint32_t>& states, uint32_t state) {
   for (uint32_t i = 0; i < states.size(); ++i)
     if (states[i] == state) return i;
   return kNoIndex;
+}
+
+/// The start penalty for leaving `node` along `arc` from `state` on a headed
+/// first leg: `departure(arc)` from a junction start's own state, the whole
+/// U-turn cost for leaving a first junction back along the arc it was reached
+/// by, else 0.
+template <typename Departure>
+double HeadedLegPenalty(const StateSpace& space, bool has_heading, double u_turn_cost,
+                        uint32_t heading_state, const std::vector<uint32_t>& first_junctions,
+                        uint32_t state, uint32_t node, uint32_t arc, Departure departure) {
+  if (!has_heading || arc == kNoArc) return 0.0;
+  if (state == heading_state) return departure(arc);
+  if (space.ArcOf(state, node) != arc) return 0.0;
+  for (uint32_t j : first_junctions)
+    if (j == node) return u_turn_cost;
+  return 0.0;
 }
 
 }  // namespace
@@ -535,6 +572,7 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
     t.step.arc = a.arc;
     t.step.t0 = a.t;
     t.step.t1 = 1.0;
+    t.cost += DeparturePenalty(seed, t.step);
     out->push_back(t);
   }
   if (arc.backward() && seed.banned_toward != u) {
@@ -546,6 +584,7 @@ void Router::SourcesFor(const RouteAnchor& a, const RouteOptions& o, const LegSe
     t.step.arc = a.arc;
     t.step.t0 = a.t;
     t.step.t1 = 0.0;
+    t.cost += DeparturePenalty(seed, t.step);
     out->push_back(t);
   }
 }
@@ -598,11 +637,14 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
                                   const std::vector<Terminal>& targets, const RouteOptions& o,
                                   const LegSeed& seed, std::vector<Step>* steps,
                                   uint32_t* source_used, uint32_t* target_used,
-                                  int64_t* expanded) const {
+                                  int64_t* expanded, double* cost) const {
   if (sources.empty() || targets.empty()) return false;
-  const StateSpace space =
-      SpaceFor(graph_, UseTurnRestrictions(o), ExtraSplits(sources, targets),
-               sources.front().node, seed.entry_arc, seed.banned_arc);
+  const bool heading_at_node = seed.has_heading() && !sources.front().partial;
+  const std::vector<uint32_t> first_junctions = FirstJunctions(sources, o, seed);
+  const StateSpace space = SpaceFor(
+      graph_, UseTurnRestrictions(o),
+      HeadingSplits(sources, targets, heading_at_node, first_junctions), sources.front().node,
+      seed.entry_arc, seed.banned_arc);
   const uint32_t n = space.count();
   // Scratch is per-query rather than a member: Router is const and shared,
   // and a full reset of two arrays costs a couple of milliseconds even on a
@@ -622,6 +664,11 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
       queue.push(QueueEntry{sources[i].cost, st});
     }
   }
+  const uint32_t heading_state = heading_at_node ? source_states.front() : kNoIndex;
+  auto start_penalty = [&](uint32_t state, uint32_t node, uint32_t arc) {
+    return HeadedLegPenalty(space, seed.has_heading(), seed.u_turn_cost, heading_state, first_junctions, state, node, arc,
+                            [&](uint32_t a) { return DeparturePenalty(seed, Step::Whole(a, true)); });
+  };
 
   // The cheapest state settled at a target is NOT the answer when the targets
   // carry different arrival costs — a near end of the road settles first and
@@ -646,7 +693,8 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
       // Leaving u along the target's own arc is a turn like any other, and at
       // a restricted junction the sign has the last word over it too.
       if (!space.Allowed(u, arrival, targets[i].arc)) continue;
-      const double total = top.key + targets[i].cost;
+      const double total =
+          top.key + targets[i].cost + start_penalty(top.state, u, targets[i].arc);
       if (total < best) {
         best = total;
         goal = top.state;
@@ -663,7 +711,8 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
       // back at u — which is the arc a restriction at v names as its `from`.
       const uint32_t next =
           space.split(v) ? space.StateOf(v, graph_.TwinArc(u, a)) : v;
-      const double nd = top.key + ArcCost(arc, o) + NodeDelayCost(arc, o);
+      const double nd =
+          top.key + ArcCost(arc, o) + NodeDelayCost(arc, o) + start_penalty(top.state, u, a);
       if (nd < dist[next]) {
         dist[next] = nd;
         parent_arc[next] = a;
@@ -674,12 +723,16 @@ bool Router::SearchUnidirectional(const std::vector<Terminal>& sources,
   }
 
   if (goal == kNoIndex) return false;
+  *cost = best;
 
   std::vector<Step> rev_steps;
   uint32_t source = kNoIndex;
+  // A terminal ends the walk only while it still holds its seeded cost: a
+  // priced start can be reached more cheaply round a loop, and then the loop
+  // is part of the path.
   for (uint32_t x = goal;;) {
     source = TerminalAt(source_states, x);
-    if (source != kNoIndex) break;
+    if (source != kNoIndex && parent_state[x] == kNoIndex) break;
     if (parent_state[x] == kNoIndex) return false;
     rev_steps.push_back(Step::Whole(parent_arc[x], true));
     x = parent_state[x];
@@ -699,11 +752,14 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
                                  const std::vector<Terminal>& targets, const RouteOptions& o,
                                  const LegSeed& seed, std::vector<Step>* steps,
                                  uint32_t* source_used, uint32_t* target_used,
-                                 int64_t* expanded) const {
+                                 int64_t* expanded, double* cost) const {
   if (sources.empty() || targets.empty()) return false;
-  const StateSpace space =
-      SpaceFor(graph_, UseTurnRestrictions(o), ExtraSplits(sources, targets),
-               sources.front().node, seed.entry_arc, seed.banned_arc);
+  const bool heading_at_node = seed.has_heading() && !sources.front().partial;
+  const std::vector<uint32_t> first_junctions = FirstJunctions(sources, o, seed);
+  const StateSpace space = SpaceFor(
+      graph_, UseTurnRestrictions(o),
+      HeadingSplits(sources, targets, heading_at_node, first_junctions), sources.front().node,
+      seed.entry_arc, seed.banned_arc);
   const uint32_t n = space.count();
   std::vector<double> df(n, kInf), dr(n, kInf);
   std::vector<uint32_t> fparent_arc(n, kNoIndex), fparent_state(n, kNoIndex);
@@ -738,6 +794,13 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
   double best = kInf;
   uint32_t meet_f = kNoIndex, meet_r = kNoIndex;
 
+  // Charged on a forward relaxation and on a meeting alike.
+  const uint32_t heading_state = heading_at_node ? source_states.front() : kNoIndex;
+  auto start_penalty = [&](uint32_t state, uint32_t node, uint32_t arc) {
+    return HeadedLegPenalty(space, seed.has_heading(), seed.u_turn_cost, heading_state, first_junctions, state, node, arc,
+                            [&](uint32_t a) { return DeparturePenalty(seed, Step::Whole(a, true)); });
+  };
+
   // The two frontiers label the same junction differently — forward by the
   // arc it came in on, reverse by the arc it will go out on — so a meeting is
   // a PAIR of states, and the pair only joins into a path if the turn between
@@ -750,7 +813,8 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
       const uint32_t fstate = from_forward ? state : ostate;
       const uint32_t rstate = from_forward ? ostate : state;
       if (!space.Allowed(node, space.ArcOf(fstate, node), space.ArcOf(rstate, node))) return;
-      const double total = cost + other[ostate];
+      const double total =
+          cost + other[ostate] + start_penalty(fstate, node, space.ArcOf(rstate, node));
       if (total < best) {
         best = total;
         meet_f = fstate;
@@ -803,7 +867,12 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
       // per-direction bike provision, route and the delay at u are on it.
       const RoadArc& travelled =
           go_forward ? arc : graph_.arc(graph_.TwinArc(u, a));
-      const double nd = top.key + ArcCost(travelled, o) + NodeDelayCost(travelled, o);
+      // A U-turn at a first junction is the same turn read from either end;
+      // the departure from the start state is forward-only.
+      const double nd = top.key + ArcCost(travelled, o) + NodeDelayCost(travelled, o) +
+                        (go_forward || top.state != heading_state
+                             ? start_penalty(top.state, u, a)
+                             : 0.0);
       const uint32_t w = arc.target;
       // Either way round, the state at w records the arc of w that faces u:
       // forward that is what it arrived along, reverse what it will leave
@@ -824,6 +893,7 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
   }
 
   if (meet_f == kNoIndex) return false;
+  *cost = best;
 
   std::vector<Step> path_steps;
 
@@ -831,8 +901,9 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
   std::vector<Step> head_steps;
   uint32_t source = kNoIndex;
   for (uint32_t x = meet_f;;) {
+    // As in the unidirectional walk: a re-reached terminal is passed through.
     source = TerminalAt(source_states, x);
-    if (source != kNoIndex) break;
+    if (source != kNoIndex && fparent_state[x] == kNoIndex) break;
     if (fparent_state[x] == kNoIndex) return false;  // defensive: no forward tree
     head_steps.push_back(Step::Whole(fparent_arc[x], true));
     x = fparent_state[x];
@@ -846,7 +917,7 @@ bool Router::SearchBidirectional(const std::vector<Terminal>& sources,
   uint32_t target = kNoIndex;
   for (uint32_t x = meet_r;;) {
     target = TerminalAt(target_states, x);
-    if (target != kNoIndex) break;
+    if (target != kNoIndex && rparent_state[x] == kNoIndex) break;
     const uint32_t px = rparent_state[x];
     if (px == kNoIndex) return false;
     path_steps.push_back(Step::Whole(rparent_arc[x], false));
@@ -899,7 +970,63 @@ GeoPoint PointAlong(const std::vector<GeoPoint>& shape, const std::vector<double
                   shape[i - 1].lon + f * (shape[i].lon - shape[i - 1].lon)};
 }
 
+/// Initial great-circle bearing from `a` to `b`, degrees true in [0, 360).
+double InitialBearingDeg(const GeoPoint& a, const GeoPoint& b) {
+  constexpr double kRad = 3.14159265358979323846 / 180.0;
+  const double phi1 = a.lat * kRad, phi2 = b.lat * kRad;
+  const double dl = (b.lon - a.lon) * kRad;
+  const double y = std::sin(dl) * std::cos(phi2);
+  const double x = std::cos(phi1) * std::sin(phi2) - std::sin(phi1) * std::cos(phi2) * std::cos(dl);
+  const double deg = std::atan2(y, x) / kRad;
+  return deg < 0.0 ? deg + 360.0 : deg;
+}
+
+/// How far along the road a departure bearing is measured: far enough that a
+/// short kink at the junction does not decide it.
+constexpr double kHeadingProbeMeters = 15.0;
+
 }  // namespace
+
+double Router::DepartureBearing(const Step& step) const {
+  std::vector<GeoPoint> shape;
+  std::vector<double> cum;
+  ArcShapeAndLengths(step.arc, &shape, &cum);
+  if (shape.size() < 2 || cum.back() <= 0.0) return std::numeric_limits<double>::quiet_NaN();
+  const double d0 = step.t0 * cum.back();
+  const double end = step.t1 * cum.back();
+  const double d1 = end >= d0 ? std::min(end, d0 + kHeadingProbeMeters)
+                              : std::max(end, d0 - kHeadingProbeMeters);
+  if (d1 == d0) return std::numeric_limits<double>::quiet_NaN();
+  return InitialBearingDeg(PointAlong(shape, cum, d0), PointAlong(shape, cum, d1));
+}
+
+bool Router::DepartsBehind(double heading_deg, const Step& step) const {
+  const double bearing = DepartureBearing(step);
+  if (!std::isfinite(heading_deg) || !std::isfinite(bearing)) return false;
+  double diff = std::fmod(std::fabs(bearing - heading_deg), 360.0);
+  if (diff > 180.0) diff = 360.0 - diff;
+  return diff > 90.0;
+}
+
+double Router::DeparturePenalty(const LegSeed& seed, const Step& step) const {
+  return seed.has_heading() && DepartsBehind(seed.heading_deg, step) ? seed.u_turn_cost : 0.0;
+}
+
+std::vector<uint32_t> Router::FirstJunctions(const std::vector<Terminal>& sources,
+                                             const RouteOptions& o, const LegSeed& seed) const {
+  std::vector<uint32_t> out;
+  if (!seed.has_heading() || sources.empty()) return out;
+  if (sources.front().partial) {
+    for (const Terminal& t : sources) out.push_back(t.node);
+    return out;
+  }
+  const uint32_t start = sources.front().node;
+  for (uint32_t a = graph_.arc_begin(start); a < graph_.arc_end(start); ++a) {
+    const RoadArc& arc = graph_.arc(a);
+    if (arc.forward() && ArcUsable(arc, o) && arc.target != start) out.push_back(arc.target);
+  }
+  return out;
+}
 
 uint32_t Router::StepEndNode(const Step& step) const {
   if (step.t1 >= 1.0) return graph_.arc(step.arc).target;
@@ -925,8 +1052,18 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
   out->climb_m = 0.0;
   out->descent_m = 0.0;
   out->profile.clear();
+  out->tiers.clear();
   if (geom_at_step != nullptr) geom_at_step->clear();
   if (steps.empty()) return;
+  // Tiers price the way itself, as the map key does: a flat arc, no avoid-hills
+  // excess. Slope has its own coloring.
+  RouteOptions tier_options = options;
+  tier_options.hill_penalty = 1.0;
+  if (options.profile != nullptr && options.profile->hills.any()) {
+    auto flat = std::make_shared<RouteProfile>(*options.profile);
+    flat->hills = RouteProfile::Hills{};
+    tier_options.profile = flat;
+  }
 
   uint32_t leg_name = kNoIndex;
   RoadClass leg_class = RoadClass::kNone;
@@ -992,6 +1129,19 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
                               static_cast<uint32_t>(out->geometry.size()) - 1u});
     }
 
+    if (tier_options.profile != nullptr && arc.length_m > 0) {
+      const RouteProfile& p = *tier_options.profile;
+      const double reference = p.metric == RouteMetric::kDistance
+                                   ? static_cast<double>(arc.length_m)
+                                   : arc.length_m / (p.fixed_kph / 3.6);
+      const int tier = p.TierRank(ArcCost(arc, tier_options) / reference);
+      const uint32_t step_end = static_cast<uint32_t>(out->geometry.size()) - 1u;
+      if (out->tiers.empty() || out->tiers.back().tier != tier)
+        out->tiers.push_back({step_begin, step_end, tier});
+      else
+        out->tiers.back().geometry_end = step_end;
+    }
+
     if (out->legs.empty() || arc.name != leg_name || arc.klass != leg_class) {
       RouteLeg leg;
       leg.name = graph_.name(arc.name);
@@ -1012,11 +1162,12 @@ void Router::Materialize(const std::vector<Step>& steps, const RouteOptions& opt
 
 bool Router::Search(const std::vector<Terminal>& sources, const std::vector<Terminal>& targets,
                     const RouteOptions& o, const LegSeed& seed, std::vector<Step>* steps,
-                    uint32_t* source_used, uint32_t* target_used, int64_t* expanded) const {
+                    uint32_t* source_used, uint32_t* target_used, int64_t* expanded,
+                    double* cost) const {
   return o.bidirectional ? SearchBidirectional(sources, targets, o, seed, steps, source_used,
-                                               target_used, expanded)
+                                               target_used, expanded, cost)
                          : SearchUnidirectional(sources, targets, o, seed, steps, source_used,
-                                                target_used, expanded);
+                                                target_used, expanded, cost);
 }
 
 // One leg end to end: the search between the two anchors' terminals, with each
@@ -1025,6 +1176,9 @@ bool Router::RouteLegBetween(const RouteAnchor& from, const RouteAnchor& to,
                              const RouteOptions& o, const LegSeed& seed,
                              std::vector<Step>* steps, int64_t* expanded) const {
   steps->clear();
+  // The same-road path, when it is legal but pays the start penalty.
+  Step direct;
+  double direct_cost = kInf;
 
   // BOTH ENDS ON THE SAME ROAD, and no search can find it: the path never
   // reaches a junction, so there is no node for a frontier to settle. It is
@@ -1039,25 +1193,41 @@ bool Router::RouteLegBetween(const RouteAnchor& from, const RouteAnchor& to,
     // and staying on the road heads away from it — so this is never the
     // U-turn the ban is about, whichever way along the road it runs.
     if (legal && from.t != to.t) {
-      Step step;
-      step.arc = from.arc;
-      step.t0 = from.t;
-      step.t1 = to.t;
-      steps->push_back(step);
-      return true;
+      direct.arc = from.arc;
+      direct.t0 = from.t;
+      direct.t1 = to.t;
+      // A start heading that points the other way makes this a U-turn, which
+      // is no longer free; going ahead and round may then be cheaper.
+      const double penalty = DeparturePenalty(seed, direct);
+      if (penalty == 0.0) {
+        steps->push_back(direct);
+        return true;
+      }
+      const uint32_t twin = graph_.TwinArc(from.node, from.arc);
+      const RoadArc& travelled = with_grain || twin == kNoArc ? arc : graph_.arc(twin);
+      direct_cost = direct.fraction() * ArcCost(travelled, o) + penalty;
     }
     if (legal && from.t == to.t) return true;  // a zero-length leg
   }
+  auto take_direct = [&]() {
+    if (!std::isfinite(direct_cost)) return false;
+    steps->clear();
+    steps->push_back(direct);
+    return true;
+  };
 
   std::vector<Terminal> sources, targets;
   SourcesFor(from, o, seed, &sources);
   TargetsFor(to, o, &targets);
-  if (sources.empty() || targets.empty()) return false;
+  if (sources.empty() || targets.empty()) return take_direct();
 
   std::vector<Step> found;
   uint32_t source_used = kNoIndex, target_used = kNoIndex;
-  if (!Search(sources, targets, o, seed, &found, &source_used, &target_used, expanded)) {
-    return false;
+  double found_cost = kInf;
+  if (!Search(sources, targets, o, seed, &found, &source_used, &target_used, expanded,
+              &found_cost) ||
+      direct_cost <= found_cost) {
+    return take_direct();
   }
 
   // A partial traversal of nothing is not a step. ArcSnap's end tolerance
@@ -1128,7 +1298,11 @@ Status Router::RouteAnchorsVia(const std::vector<RouteAnchor>& stops,
   std::vector<Step> steps;
   std::vector<size_t> stop_at_step{0};  // steps index each stop follows, 1-based
 
+  // The first leg carries the start heading. It stays on the seed through
+  // zero-length legs, since the traveller has not yet moved.
   LegSeed seed;
+  seed.heading_deg = options.start_heading_deg;
+  seed.u_turn_cost = SecondsAsCost(options.start_u_turn_seconds, options);
   for (size_t leg = 0; leg + 1 < stops.size(); ++leg) {
     std::vector<Step> leg_steps;
     bool found =
@@ -1186,6 +1360,9 @@ Status Router::RouteAnchorsVia(const std::vector<RouteAnchor>& stops,
       seed.banned_arc = options.allow_u_turn_at_stops ? kNoArc : arrival;
     }
   }
+
+  out->start_u_turn = std::isfinite(options.start_heading_deg) && !steps.empty() &&
+                      DepartsBehind(options.start_heading_deg, steps.front());
 
   std::vector<uint32_t> geom_at_step;
   Materialize(steps, options, out, &geom_at_step);

@@ -26,6 +26,7 @@
 
 #include "fv_desk_tools.h"
 #include "fvkit/app/editor.h"
+#include "fvkit/feature/feature_source.h"
 #include "fvkit/overlay/overlay.h"
 
 #if defined(_WIN32)
@@ -48,19 +49,11 @@
 namespace fv {
 namespace desk {
 
-/// What a native editor factory is given. `editors` is the Desk's editor
-/// manager, whose `edited()` is the overlay being edited; null when the
-/// package loads without a Desk (headless tests).
-struct NativeEditorContext {
-  app::EditorManager* editors = nullptr;
-};
-
-/// One overlay class: the same two factories a built-in overlay has, except
-/// that the editor factory is told where to find the edited overlay.
+/// One overlay class: the same two factories a built-in overlay has. An
+/// editor finds the overlay it edits with `OverlayEditor::edited()`.
 struct NativeOverlay {
-  std::function<std::shared_ptr<Overlay>()> factory;  ///< required
-  std::function<std::unique_ptr<app::OverlayEditor>(const NativeEditorContext&)>
-      editor_factory;  ///< may be null
+  std::function<std::shared_ptr<Overlay>()> factory;                   ///< required
+  std::function<std::unique_ptr<app::OverlayEditor>()> editor_factory;  ///< may be null
 };
 
 /// What `fv_native_register` fills: the classes the package manifest refers
@@ -73,16 +66,23 @@ class NativeRegistrar {
   Status AddOverlay(const std::string& name, NativeOverlay impl);
   /// kInvalidArg for an empty name, a null `run` or a name already added.
   Status AddTool(const std::string& name, ToolRun run);
+  /// A source of feature layers for specs that are not files (a web service
+  /// URL); registered under the manifest's `feature_sources` id when the
+  /// package loads. kInvalidArg for an empty name, a missing matcher or
+  /// opener, or a name already added.
+  Status AddFeatureSource(const std::string& name, FeatureSourceDesc source);
 
   /// The package's root directory; resources resolve against it.
   const std::string& package_dir() const { return package_dir_; }
   const std::map<std::string, NativeOverlay>& overlays() const { return overlays_; }
   const std::map<std::string, ToolRun>& tools() const { return tools_; }
+  const std::map<std::string, FeatureSourceDesc>& feature_sources() const { return feature_sources_; }
 
  private:
   std::string package_dir_;
   std::map<std::string, NativeOverlay> overlays_;
   std::map<std::string, ToolRun> tools_;
+  std::map<std::string, FeatureSourceDesc> feature_sources_;
 };
 
 }  // namespace desk

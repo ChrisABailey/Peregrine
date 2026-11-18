@@ -83,6 +83,19 @@ std::unique_ptr<OptionsPage> OptionsPage::ForType(const app::OverlayTypeDesc& ty
   return page;
 }
 
+std::unique_ptr<OptionsPage> OptionsPage::ForObject(
+    const app::TypeId& id, const std::string& title, const std::string& icon,
+    std::shared_ptr<app::Properties> props, std::function<void(const app::Properties&)> apply) {
+  std::unique_ptr<OptionsPage> page(new OptionsPage());
+  page->id_ = id;
+  page->title_ = title;
+  page->icon_ = icon;
+  page->persisted_ = false;
+  const Settings none;
+  if (!page->AddPart(std::move(props), std::string(), std::move(apply), none)) return nullptr;
+  return page;
+}
+
 std::unique_ptr<OptionsPage> OptionsPage::ForMapGroup(const std::string& title,
                                                       const MapOptionsSource& source,
                                                       const Settings& settings) {
@@ -173,6 +186,10 @@ OptionsModel::OptionsModel(const app::OverlayTypeRegistry& types, const Settings
     if (auto page = OptionsPage::ForType(*d, settings, extra)) pages_.push_back(std::move(page));
 }
 
+OptionsModel::OptionsModel(std::unique_ptr<OptionsPage> page) {
+  if (page != nullptr) pages_.push_back(std::move(page));
+}
+
 OptionsModel::OptionsModel(const MapGroups& groups,
                            const std::vector<MapOptionsSource>& sources,
                            const Settings& settings) {
@@ -217,13 +234,19 @@ Status OptionsModel::Apply(Settings& settings, OverlayManager& overlays, UserSet
                            std::vector<std::string>* warnings) {
   for (const auto& page : pages_) {
     if (!page->dirty()) continue;
-    for (const auto& kv : page->PendingSettings()) {
-      settings.Set(kv.first, kv.second);
-      if (user != nullptr) user->Set(kv.first, kv.second);
+    if (page->persisted_) {
+      for (const auto& kv : page->PendingSettings()) {
+        settings.Set(kv.first, kv.second);
+        if (user != nullptr) user->Set(kv.first, kv.second);
+      }
     }
     for (size_t part = 0; part < page->parts_.size(); ++part) {
       const OptionsPage::Part& p = page->parts_[part];
       if (p.apply && page->PartDirty(part)) p.apply(*p.prototype);
+    }
+    if (!page->persisted_) {
+      page->MarkApplied();
+      continue;
     }
     for (const std::shared_ptr<Overlay>& o : overlays.OfType(page->id())) {
       app::Properties* props = o->AsProperties();

@@ -95,6 +95,10 @@ EditorUiConstraints EditorManager::ActiveConstraints() const {
 // Editor instances and focus
 // ---------------------------------------------------------------------------
 
+Overlay* OverlayEditor::edited() const {
+  return editors_ != nullptr && editors_->CurrentEditor() == this ? editors_->edited() : nullptr;
+}
+
 OverlayEditor* EditorManager::EditorFor(const TypeId& id) {
   auto it = editors_.find(id);
   if (it != editors_.end()) return it->second.get();
@@ -103,6 +107,7 @@ OverlayEditor* EditorManager::EditorFor(const TypeId& id) {
   if (desc == nullptr || !desc->editor_factory) return nullptr;
   std::unique_ptr<OverlayEditor> made = desc->editor_factory();
   if (made == nullptr) return nullptr;
+  made->editors_ = this;
   OverlayEditor* raw = made.get();
   editors_.emplace(id, std::move(made));
   return raw;

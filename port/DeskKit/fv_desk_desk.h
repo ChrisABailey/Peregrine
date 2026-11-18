@@ -32,6 +32,9 @@
 #include "fv_desk_sources.h"
 #include "fv_desk_map_groups.h"
 #include "fv_desk_menu_model.h"
+#include "fv_desk_feeds.h"
+#include "fv_desk_moving_map.h"
+#include "fv_desk_ownship.h"
 #include "fv_desk_options.h"
 #include "fv_desk_packages.h"
 #include "fv_desk_profile.h"
@@ -39,6 +42,7 @@
 #include "fv_desk_rule_style.h"
 #include "fv_desk_search.h"
 #include "fv_desk_tools.h"
+#include "fv_desk_web_layers.h"
 #include "fv_desk_workspace.h"
 #include "fv_view_map_view.h"
 #include "fvkit/app/capabilities.h"
@@ -71,6 +75,9 @@ class DeskShell : public app::AppShell {
   /// Show the Overlay ▸ Options dialog over `model`; on OK the shell calls
   /// `Desk::ApplyOverlayOptions(*model)`.
   virtual void ShowOverlayOptions(std::shared_ptr<OptionsModel> model) = 0;
+  /// Show a moving map's Feed dialog: one page, applied with
+  /// `Desk::ApplyOverlayOptions(*model)`, that writes no settings.
+  virtual void ShowFeedOptions(std::shared_ptr<OptionsModel> /*model*/) {}
   /// Show the Map ▸ Options dialog over `model`; on OK the shell calls
   /// `Desk::ApplyMapOptions(*model)`.
   virtual void ShowMapOptions(std::shared_ptr<OptionsModel> /*model*/) {}
@@ -84,6 +91,9 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the route elevation profile window. It draws
   /// `Desk::route_profile()` and calls `Desk::CloseRouteProfile()` on close.
   virtual void ShowRouteProfile() {}
+  /// Show (or bring forward) the Ownship window (View ▸ Ownship…). It draws
+  /// `Desk::ownship_panel()` and drives the clock through `SeekReplay` and its siblings.
+  virtual void ShowOwnship() {}
   /// Show (or bring forward) the layers panel. It reads `Desk::layers()` and
   /// changes the stack through `Desk::SetLayerVisible` and its siblings.
   virtual void ShowLayers() {}
@@ -107,6 +117,9 @@ class DeskShell : public app::AppShell {
   /// Show (or bring forward) the New Layer dialog over `Desk::new_layer()`;
   /// the shell creates the layer through `Desk::CreateNewLayer`.
   virtual void ShowNewLayer() {}
+  /// Show (or bring forward) the Add Web Layer dialog over
+  /// `Desk::web_connection()`; the shell adds layers through `Desk::AddWebLayers`.
+  virtual void ShowAddWebLayer() {}
   /// Show (or bring forward) the Properties sheet: `Desk::properties_title()`
   /// over `Desk::properties()`, read-only, and the further tabs
   /// `Desk::PropertiesTabs()` names, opened at `Desk::properties_tab()`.
@@ -151,7 +164,7 @@ struct StatusBar {
 /// "1:50,000" — the denominator rounded to an integer, thousands separated.
 std::string FormatScale(double scale_denom);
 
-class Desk {
+class Desk : public IOwnshipProvider {
  public:
   /// Registers fvkit's built-in overlay types and Desk's own commands. More
   /// overlay types may be registered on `types()` before `Refresh()`.
@@ -263,6 +276,9 @@ class Desk {
   /// of the charts directory's `enc` folder, and its summary waits for that
   /// rescan. Call from the UI thread; true when a job finished.
   bool PollCatalogBuild();
+  /// Turns a redraw an overlay requested through its host, from any thread,
+  /// into a shell invalidate. Call from the UI thread; true when one was pending.
+  bool FlushOverlayRedraw();
 
   /// Imports ENC sets (NOAA zips or ENC_ROOT folders) into the charts
   /// directory (`enc.charts_dir`, else `DefaultChartsDir()`) in the
@@ -300,6 +316,21 @@ class Desk {
   /// 1:2,500.
   void GoToSearchRow(const DeskSearchRow& row);
 
+  // MARK: Web layers
+
+  /// The Add Web Layer dialog's connection to one service.
+  WebLayerConnection& web_connection() { return web_; }
+  /// The remembered service URLs, most recent first.
+  std::vector<std::string> RecentWebUrls() const;
+  /// Opens the connection's ticked layers as overlays and remembers its URL.
+  /// The first failure is returned; the layers before it stay open.
+  Status AddWebLayers();
+  /// Throws away the current web layer's cached tiles, so they are fetched again.
+  Status RefreshWebLayer();
+  /// Replaces the current feature-source layer's style with the one its
+  /// source gave it (the default style when it gave none); one undoable step.
+  Status ResetToServiceStyle();
+
   // MARK: Editing input
   /// True while an overlay editor is active (Tools ▸ Route and the like).
   bool Editing() const;
@@ -335,8 +366,55 @@ class Desk {
   /// null when `routing.graph` is unset.
   const RoutePlanner* route_planner() const { return planner_.get(); }
 
-  /// Gives overlays drawn in authored pixels the view's display scale. Call
-  /// after the scale changes, where the overlay stack may be changed.
+  // MARK: Moving map
+  /// One frame of the moving map: polls its feed and moves the view to follow
+  /// the ship. `dt_s` is the time since the previous call. True when the map
+  /// needs repainting. Does nothing while the moving map is off.
+  bool TickMovingMap(double dt_s);
+  /// The topmost moving map's driver, which feeds the ownship; null with none open.
+  const MovingMapDriver* ownship_map() const;
+  /// How many moving maps are open.
+  size_t moving_map_count() const { return moving_maps_.size(); }
+  /// Where the ship is, as the moving map last reported it; mode kNone while
+  /// no moving map is open.
+  const OwnshipState& ownship() const override { return ownship_; }
+
+  /// Gives `overlay`, an open moving map, a new feed config and restarts that
+  /// map's feed alone when it changed. False when `overlay` is not one.
+  bool SetMovingMapFeed(const Overlay& overlay, const FeedConfig& config);
+  /// The moving map the editor acts on: the edited one, else the topmost.
+  DeskMovingMap* EditedMovingMap() const;
+  /// Sets a window-wide `movingmap.*` follow setting, saves it and applies it.
+  void SetMovingMapFlag(const std::string& key, bool on);
+  /// Listen on or off for the edited live map (OS-D8); false for none or a replay.
+  bool ToggleMovingMapListening();
+  /// Snap to Road on or off for the edited map; false for none.
+  bool ToggleMovingMapSnap();
+  /// Asks the shell to show the Feed dialog for the edited map; false for none.
+  bool OpenMovingMapFeed();
+  /// The open NMEA connections the live moving maps share.
+  FeedReceivers& feed_receivers() { return feed_receivers_; }
+
+  /// The replay clock every replay map is placed at. Live maps ignore it.
+  const ReplayClock& replay_clock() const { return replay_clock_; }
+  /// The union of the open replay maps' [start, end]; false with none open.
+  bool ReplayRange(double* start_s, double* end_s) const;
+  /// Moves the clock to `t_s`, clamped to `ReplayRange`, and places every
+  /// replay map there as a jump. Does nothing with no replay map open.
+  void SeekReplay(double t_s);
+  /// Starts or pauses the clock. Playing from the end starts again from the start.
+  void SetReplayPlaying(bool playing);
+  /// Sets the playing rate and saves it as `ownship.playback_rate`; values
+  /// not above 0 are ignored.
+  void SetReplayRate(double rate);
+  /// Changes whenever the Ownship window's contents do: an ownship fix, a
+  /// clock move, play or pause, the rate, or the replay range.
+  uint64_t OwnshipPanelGeneration() const { return ownship_.generation + clock_generation_; }
+  /// The Ownship window's contents, formatted in the `ownship.units` setting.
+  OwnshipPanel ownship_panel() const;
+
+  /// Rebinds every HostAware overlay so those drawn in authored pixels take
+  /// the view's new display scale. Call where the overlay stack may be changed.
   void DisplayScaleChanged();
 
   // MARK: Undo
@@ -344,6 +422,10 @@ class Desk {
   /// Undo/Redo drive it. Cleared when a workspace is opened.
   app::UndoStack& undo() { return undo_; }
   const app::UndoStack& undo() const { return undo_; }
+
+  /// The edited overlay's own history, which Edit ▸ Undo/Redo use while the
+  /// workspace stack has nothing to undo (or redo). Null when not editing.
+  app::EditTarget* EditedHistory() const;
 
   // MARK: Layers panel
   /// The stack as panel rows. Read where the overlay stack may be read.
@@ -594,6 +676,8 @@ class Desk {
   /// default) keeps them in memory. Setting a store reads its recent list.
   void SetUserSettings(UserSettings* user);
   UserSettings* user_settings() const { return user_settings_; }
+  /// The window's settings.
+  const Settings& settings() const { return settings_; }
 
   // MARK: Recent overlays
   /// A file overlay opened earlier: its type and file path, without a layer.
@@ -653,16 +737,39 @@ class Desk {
   Overlay* FileTarget() const;
   std::vector<view::LadderProduct> ProductsAt(const GeoPoint& p) const;
   void ApplyGroupToView();
-  /// Reopens `elevation_` from the catalog and hands it to every open
-  /// elevation overlay.
+  /// Reopens the elevation sources from the catalog and rebinds every
+  /// HostAware overlay, which opens its own through OverlayHost::OpenElevation.
   void ResolveElevation();
-  /// Connects an overlay joining the stack to this window: the elevation
-  /// source for Contour Lines and the TA Mask, the stack and road graph for a
-  /// route. False when it needs elevation data and the catalog has none.
-  bool BindOverlay(Overlay& overlay);
+  /// Connects an overlay joining the stack to this window: the host services
+  /// for a HostAware overlay, and the road graph and routing settings for a
+  /// route. Returns the overlay's HostStatus (e.g. it needs elevation data).
+  Status BindOverlay(Overlay& overlay);
+  /// Calls SetHost again on every HostAware overlay after a host service's
+  /// answer changed (elevation data, display scale).
+  void RebindHosts();
   /// Reopens the route planner when the routing settings changed and hands
   /// it to every open route.
   void ResolveRoutePlanner();
+  /// Starts driving a moving map overlay that joined the stack.
+  void AttachMovingMap(Overlay& overlay);
+  /// The demo feed's path: the first planned route's roads, else its waypoints.
+  std::vector<GeoPoint> MovingMapDemoPath() const;
+  /// The routing graph as a road network for snapping; null without one.
+  std::shared_ptr<const IRoadNetwork> MovingMapRoads();
+  /// Stops and drops the driver of a moving map leaving the stack.
+  void DetachMovingMap(const Overlay& overlay);
+  /// The topmost moving map's driver, or null.
+  MovingMapDriver* OwnshipDriver() const;
+  /// Re-applies the follow, symbol and playback settings to every moving map.
+  /// Feeds are left running: the Options page holds only the default feed.
+  void MovingMapOptionsChanged();
+  /// Restarts `d`'s feed from its map's config, keeping a replay at the clock.
+  void RestartMovingMap(MovingMapDriver& d);
+  /// Points the ownship at the topmost moving map when that changed (or at
+  /// nothing), taking that map's last fix if it has one.
+  void SyncOwnship();
+  /// Takes `step`'s fix into the ownship state.
+  void UpdateOwnship(const MovingMapStep& step);
   /// Closes a form, table, style or fields dialog on `overlay`, which is leaving the stack.
   void DropFeatureViews(const Overlay& overlay);
   /// Logs `s` and reports it through the shell.
@@ -697,6 +804,9 @@ class Desk {
   std::unique_ptr<PackageManager> packages_;
   /// Declared before the stack so it outlives every overlay that feeds it.
   app::UndoStack undo_;
+  class OverlayHostImpl;
+  /// The services handed to HostAware overlays; outlives the stack.
+  std::unique_ptr<OverlayHostImpl> host_;
   OverlayManager overlays_;
   std::unique_ptr<app::OverlaySession> session_;
   std::unique_ptr<app::EditorManager> editors_;
@@ -754,6 +864,8 @@ class Desk {
   std::string import_summary_;  ///< a finished import's lines, shown with its rescan
   std::shared_ptr<IElevationSource> elevation_;
   std::unique_ptr<IElevationSource> pointer_elevation_;  ///< the UI thread's own cells
+  std::string elevation_dted_dir_;                ///< what OverlayHost::OpenElevation opens
+  std::vector<std::string> elevation_lidar_dirs_;
   std::string feedback_;
   // Hover feedback, by precedence: the edited overlay's action, the overlay
   // hit, the base map.
@@ -762,7 +874,15 @@ class Desk {
   app::HintText map_hint_;
   std::string tool_tip_;
   std::unique_ptr<RoutePlanner> planner_;
+  FeedReceivers feed_receivers_;  ///< before `moving_maps_`, which subscribe to it
+  std::vector<std::unique_ptr<MovingMapDriver>> moving_maps_;  ///< one per open moving map
+  OwnshipState ownship_;
+  ReplayClock replay_clock_;
+  uint64_t clock_generation_ = 0;  ///< bumped by every change to the clock or its range
+  std::shared_ptr<const IRoadNetwork> moving_map_roads_;  ///< over `moving_map_graph_`
+  const void* moving_map_graph_ = nullptr;
   std::unique_ptr<DeskSearch> search_;
+  WebLayerConnection web_;
   std::optional<std::string> planner_paths_;
   uint64_t elevation_gen_ = 0;  ///< bumped whenever `pointer_elevation_` is reopened
   bool profile_open_ = false;

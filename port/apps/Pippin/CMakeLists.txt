@@ -41,6 +41,7 @@ if(NOT FVW_IOS)
     add_executable(fv_pippin_test
       test/base_coverage_test.cpp
       test/camera_fit_test.cpp
+      test/detour_trigger_test.cpp
       test/chart_store_test.cpp
       test/enc_chart_test.cpp
       test/follow_cadence_test.cpp
@@ -67,6 +68,7 @@ if(NOT FVW_IOS)
     # where its own module keeps it rather than copied here.
     target_compile_definitions(fv_pippin_test PRIVATE
       FV_ROUTE_RULES_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/route-weights.json"
+      FV_ROUTE_CITY_RULES_FILE="${CMAKE_SOURCE_DIR}/port/Routing/rules/route-weights-city.json"
       # The staged pack, so the test reads every `.fvpoints` stage_data.py
       # WROTE rather than one it built itself. That is the only check anywhere
       # that the Python schema in the staging script and the C++ reader still
@@ -115,6 +117,9 @@ if(NOT FVW_IOS)
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_replan_notice
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_replan_notice_test.sh
+                  ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME pippin_detour_text
+          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_detour_text_test.sh
                   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME pippin_place_link
           COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/test/run_place_link_test.sh

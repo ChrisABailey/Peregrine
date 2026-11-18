@@ -58,6 +58,13 @@ class MapView {
   /// series. The ladder takes its next step from there.
   void SetProduct(const LadderProduct& p);
 
+  /// Moves the camera to `v` for something following a target (the moving
+  /// map). A change of centre or rotation at the same scale is a pan:
+  /// `Panning()` turns true and the frame drawn for the previous view stays
+  /// usable, so a renderer draws a band ahead of the motion instead of
+  /// restarting every move. Any other change is `SetViewport`.
+  void FollowTo(const Viewport& v);
+
   // MARK: Pointer
 
   /// The cursor moved (no button). Keyboard steps zoom about this point.

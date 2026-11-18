@@ -51,7 +51,28 @@
 #ifndef FVKIT_VECTOR_MARINER_H_
 #define FVKIT_VECTOR_MARINER_H_
 
+#include <string>
+
 namespace fv {
+
+/// The unit soundings are printed in. Settings and source depths stay metres;
+/// only the printed figure changes.
+enum class DepthUnit {
+  kMetres = 0,   // decimetre subscript below 31 m (S-52 SNDFRM)
+  kFeet,         // whole feet
+  kFathomsFeet,  // fathoms, with a feet subscript below 11 fathoms
+};
+
+/// A sounding as printed: the whole part and the optional subscript.
+struct SoundingFigure {
+  std::string whole;
+  std::string fraction;  // empty = none
+};
+
+/// Formats a depth in metres as a sounding figure in `unit`. A negative depth
+/// (a drying height) prints its magnitude; each unit rounds to the precision it
+/// prints, so 9.97 m reads 10.
+SoundingFigure FormatSounding(double depth_m, DepthUnit unit);
 
 struct MarinerSettings {
   // Metres. Depths are compared against these exactly as S-52 §8.4 does.
@@ -61,12 +82,14 @@ struct MarinerSettings {
   double safety_depth = 30.0;     // soundings at or below this print bold/black
   bool two_shades = false;        // two depth shades instead of four
   bool shallow_pattern = false;   // a pattern over the shallowest band
+  DepthUnit depth_unit = DepthUnit::kMetres;  // printed soundings only
 
   bool operator==(const MarinerSettings& o) const {
     return safety_contour == o.safety_contour &&
            shallow_contour == o.shallow_contour &&
            deep_contour == o.deep_contour && safety_depth == o.safety_depth &&
-           two_shades == o.two_shades && shallow_pattern == o.shallow_pattern;
+           two_shades == o.two_shades && shallow_pattern == o.shallow_pattern &&
+           depth_unit == o.depth_unit;
   }
   bool operator!=(const MarinerSettings& o) const { return !(*this == o); }
 };

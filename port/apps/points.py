@@ -51,19 +51,18 @@ POINTS_EXTENSION = overlay.PointOverlay.EXTENSION
 PointOverlay = overlay.PointOverlay
 
 
-class PointEditor:
+class PointEditor(app.OverlayEditor):
     """The point TOOL. One instance however many point sets are open, which is
     what the app layer keeps editors per type for: "I am placing points" is a
     statement about the user, not about a document.
 
-    Duck-typed, like `RouteEditor`: activate() and deactivate(), plus whichever
-    of tools(), default_cursor(), ui_constraints() and auto_enter_on_create()
-    it cares to define. It holds no editing state — the gestures, the armed
+    A pyfvw.app.OverlayEditor, like `RouteEditor`. It holds no editing state — the gestures, the armed
     mode and the undo stack are the overlay's `edit` session, which a phone
     shares while sharing none of this.
     """
 
     def __init__(self, app_window=None):
+        super().__init__()
         # The shell, so a palette button can do what a key press does, and so
         # "Edit point..." can open a dialog. None in a test.
         self.app = app_window

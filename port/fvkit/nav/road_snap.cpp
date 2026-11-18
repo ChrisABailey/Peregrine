@@ -14,6 +14,7 @@ namespace fv {
 namespace {
 
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+constexpr double kMetresPerDegree = 6371008.8 * kDegToRad;
 
 double Clamp01(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 
@@ -52,6 +53,7 @@ void RoadSnapper::SetNetwork(std::shared_ptr<const IRoadNetwork> network) {
 
 void RoadSnapper::Reset() {
   have_prev_ = false;
+  have_motion_from_ = false;
   prev_arc_ = kNoRoadArc;
   prev_from_ = 0;
   prev_to_ = 0;
@@ -69,6 +71,25 @@ SnappedFix RoadSnapper::Snap(const PositionFix& fix, double prior_heading_deg,
   if (network_ == nullptr || !fix.has_position) {
     last_ = out;
     return out;
+  }
+
+  // The direction the raw fixes moved, once they have moved far enough for it
+  // to be more than jitter. The anchor stays put until then, so slow movement
+  // and a stop followed by a U-turn are both measured from where they began.
+  bool have_motion = false;
+  double motion_deg = 0.0;
+  if (have_motion_from_) {
+    const double north = (fix.lat - motion_from_.lat) * kMetresPerDegree;
+    const double east = (fix.lon - motion_from_.lon) * kMetresPerDegree *
+                        std::cos(0.5 * (fix.lat + motion_from_.lat) * kDegToRad);
+    if (std::hypot(east, north) >= settings_.motion_min_m) {
+      have_motion = true;
+      motion_deg = NormalizeHeadingDeg(std::atan2(east, north) / kDegToRad);
+      motion_from_ = fix.position();
+    }
+  } else {
+    motion_from_ = fix.position();
+    have_motion_from_ = true;
   }
 
   // Radius from the fix's own quality (see RoadSnapSettings).
@@ -98,6 +119,11 @@ SnappedFix RoadSnapper::Snap(const PositionFix& fix, double prior_heading_deg,
   bool have_heading = false;
   if (fix.has_true_heading) {
     heading = fix.true_heading_deg;
+    have_heading = true;
+  } else if (have_motion) {
+    // The prior is often this snapper's own last road bearing; only the
+    // movement itself notices that the ship has turned round.
+    heading = motion_deg;
     have_heading = true;
   } else if (has_prior_heading) {
     heading = prior_heading_deg;
@@ -181,6 +207,12 @@ SnappedFix RoadSnapper::Snap(const PositionFix& fix, double prior_heading_deg,
   // along the road must have been resolvable.
   out.has_bearing = moving && (best.one_way || have_heading);
   out.bearing_deg = best.bearing_deg;
+  // A one-way road ridden against its direction (a bicycle contraflow, a
+  // wrong-way driver) is still the road the ship is on, but its direction of
+  // travel is the ship's. Scoring above keeps the arc's own direction, so on a
+  // divided road the carriageway pointing the ship's way still wins.
+  if (best.one_way && have_heading && AngleBetweenDeg(heading, best.bearing_deg) > 90.0)
+    out.bearing_deg = NormalizeHeadingDeg(best.bearing_deg + 180.0);
 
   // Confidence. `nearness` is 1 on the road and 0 at the rim of the search
   // radius; `sep` is how clearly the winner won. A HELD snap takes `nearness`

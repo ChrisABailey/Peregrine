@@ -142,19 +142,24 @@ std::vector<S52Instruction> ParseS52Instructions(const std::string& text) {
     // carry commas of their own.
     std::string cur;
     quoted = false;
+    bool cur_quoted = false;
     for (char c : body) {
       if (c == '\'') {
         quoted = !quoted;
+        cur_quoted = true;
         continue;  // quotes are delimiters, not content
       }
       if (c == ',' && !quoted) {
         ins.params.push_back(Trim(cur));
+        ins.quoted.push_back(cur_quoted);
         cur.clear();
+        cur_quoted = false;
       } else {
         cur.push_back(c);
       }
     }
     ins.params.push_back(Trim(cur));
+    ins.quoted.push_back(cur_quoted);
     out.push_back(std::move(ins));
   }
   return out;
@@ -483,16 +488,29 @@ struct S52PresentationLibrary::Impl {
   std::string active_table;
 
   std::vector<S52Lookup> lookups;
-  // (table, acronym) -> row indices in file order.
-  std::unordered_map<std::string, std::vector<size_t>> lookup_index;
+  // Per table, acronym -> row indices in file order while parsing; resolved to
+  // `lookup_rows` once `lookups` stops growing.
+  std::unordered_map<std::string, std::vector<size_t>>
+      lookup_index[static_cast<int>(S52LookupTable::kLookupTableCount)];
+  std::unordered_map<std::string, std::vector<const S52Lookup*>>
+      lookup_rows[static_cast<int>(S52LookupTable::kLookupTableCount)];
 
   std::unordered_map<std::string, S52SymbolDef> symbols;
   std::unordered_map<std::string, S52SymbolDef> line_styles;
   std::unordered_map<std::string, S52SymbolDef> patterns;
 
-  // Display lists, keyed "<colour table>\x1f<name>" because colours are baked
-  // into the primitives.
-  std::unordered_map<std::string, VectorSymbol> cache;
+  /** Resolved symbols for one colour table; colours are baked into them. */
+  struct TableCache {
+    std::unordered_map<std::string, VectorSymbol> symbols, line_styles, patterns;
+    std::unordered_map<std::string, SymbolPixmap> bitmaps;
+  };
+  std::unordered_map<std::string, TableCache> table_caches;
+  TableCache* active_cache = nullptr;  // table_caches[active_table]
+
+  void Activate(const std::string& table) {
+    active_table = table;
+    active_cache = &table_caches[table];
+  }
 
   // --- SAX state ---
   enum class Where { kNone, kColorTable, kLookup, kSymbol, kLineStyle, kPattern };
@@ -502,10 +520,6 @@ struct S52PresentationLibrary::Impl {
   S52Lookup lookup;
   S52SymbolDef def;
   bool parse_failed = false;
-
-  static std::string IndexKey(S52LookupTable t, const std::string& acronym) {
-    return std::to_string(static_cast<int>(t)) + "\x1f" + acronym;
-  }
 
   const S52ColorTable* Table(const std::string& name) const {
     for (const S52ColorTable& t : color_tables) {
@@ -520,8 +534,11 @@ struct S52PresentationLibrary::Impl {
 
   const VectorSymbol* Build(const std::unordered_map<std::string, S52SymbolDef>& defs,
                             char kind, const std::string& name) {
-    const std::string key = active_table + "\x1f" + kind + "\x1f" + name;
-    auto cached = cache.find(key);
+    if (active_cache == nullptr) return nullptr;
+    std::unordered_map<std::string, VectorSymbol>& cache =
+        kind == 'S' ? active_cache->symbols
+                    : kind == 'L' ? active_cache->line_styles : active_cache->patterns;
+    auto cached = cache.find(name);
     if (cached != cache.end()) return &cached->second;
 
     auto it = defs.find(name);
@@ -534,8 +551,12 @@ struct S52PresentationLibrary::Impl {
     const Status st = ParseS52Hpgl(d.hpgl, d.color_ref, *palette, d.pivot_x,
                                    d.pivot_y, &sym);
     if (!st.ok()) return nullptr;
-    if (kind == 'S' && ReanchorIfPivotIsOffTheGlyph(&sym)) ++repivoted;
-    return &(cache[key] = std::move(sym));
+    // The sounding frame symbols (drying bar, swept bracket) are offset from
+    // the sounding by design: their pivot places them around the figure.
+    const bool laid_out_by_pivot = name.compare(0, 5, "SOUND") == 0;
+    if (kind == 'S' && !laid_out_by_pivot && ReanchorIfPivotIsOffTheGlyph(&sym))
+      ++repivoted;
+    return &(cache[name] = std::move(sym));
   }
 
   // --- raster symbol sheet -------------------------------------------------
@@ -545,7 +566,6 @@ struct S52PresentationLibrary::Impl {
   // like the display lists, so a colour-scheme switch re-cuts rather than
   // recolouring — which is right, because the ink differs per sheet.
   std::unordered_map<std::string, PixelBuffer> sheets;
-  std::unordered_map<std::string, SymbolPixmap> bitmap_cache;
   std::unordered_map<std::string, std::string> sheet_errors;  // table -> why
 
   // The directory chartsymbols.xml came from; `<graphics-file>` is relative
@@ -580,8 +600,9 @@ struct S52PresentationLibrary::Impl {
   }
 
   const SymbolPixmap* Bitmap(const std::string& name) {
-    const std::string key = active_table + "\x1f" + name;
-    auto cached = bitmap_cache.find(key);
+    if (active_cache == nullptr) return nullptr;
+    std::unordered_map<std::string, SymbolPixmap>& bitmap_cache = active_cache->bitmaps;
+    auto cached = bitmap_cache.find(name);
     if (cached != bitmap_cache.end())
       return cached->second.tile.Empty() ? nullptr : &cached->second;
 
@@ -598,7 +619,7 @@ struct S52PresentationLibrary::Impl {
         sy + h > sheet->Height()) {
       // A remembered failure: an empty tile in the cache, so a tile whose
       // <graphics-location> does not fit this sheet is measured once.
-      bitmap_cache[key] = SymbolPixmap();
+      bitmap_cache[name] = SymbolPixmap();
       return nullptr;
     }
 
@@ -643,7 +664,7 @@ struct S52PresentationLibrary::Impl {
       out.pivot_x = w / 2.0;
       out.pivot_y = h / 2.0;
     }
-    return &(bitmap_cache[key] = std::move(out));
+    return &(bitmap_cache[name] = std::move(out));
   }
 
   void StartElement(const char* name, const char** atts);
@@ -784,7 +805,8 @@ void S52PresentationLibrary::Impl::EndElement(const char* name) {
       } else if (el == "comment") {
         lookup.comment = value;
       } else if (el == "lookup") {
-        lookup_index[IndexKey(lookup.table, lookup.acronym)].push_back(lookups.size());
+        lookup_index[static_cast<int>(lookup.table)][lookup.acronym].push_back(
+            lookups.size());
         lookups.push_back(std::move(lookup));
         where = Where::kNone;
       }
@@ -893,8 +915,15 @@ Status S52PresentationLibrary::Open(const std::string& path) {
   }
   // DAY_BRIGHT is S-52's day palette and the first table in the file; fall back
   // to whatever came first rather than refusing to open.
-  impl_->active_table =
-      impl_->Table("DAY_BRIGHT") != nullptr ? "DAY_BRIGHT" : impl_->color_tables.front().name;
+  for (int t = 0; t < static_cast<int>(S52LookupTable::kLookupTableCount); ++t) {
+    impl_->lookup_rows[t].clear();
+    for (const auto& kv : impl_->lookup_index[t]) {
+      std::vector<const S52Lookup*>& rows = impl_->lookup_rows[t][kv.first];
+      for (size_t i : kv.second) rows.push_back(&impl_->lookups[i]);
+    }
+  }
+  impl_->Activate(impl_->Table("DAY_BRIGHT") != nullptr ? "DAY_BRIGHT"
+                                                        : impl_->color_tables.front().name);
   impl_->open = true;
   return Status::Ok();
 }
@@ -914,7 +943,7 @@ Status S52PresentationLibrary::SetActiveColorTable(const std::string& name) {
   if (impl_->Table(name) == nullptr) {
     return Status::Error(kNotFound, "no colour table named " + name);
   }
-  impl_->active_table = name;
+  impl_->Activate(name);
   return Status::Ok();
 }
 
@@ -935,14 +964,13 @@ const std::vector<S52Lookup>& S52PresentationLibrary::lookups() const {
   return impl_->lookups;
 }
 
-std::vector<const S52Lookup*> S52PresentationLibrary::Lookups(
+const std::vector<const S52Lookup*>& S52PresentationLibrary::Lookups(
     S52LookupTable table, const std::string& acronym) const {
-  std::vector<const S52Lookup*> out;
-  auto it = impl_->lookup_index.find(Impl::IndexKey(table, acronym));
-  if (it == impl_->lookup_index.end()) return out;
-  out.reserve(it->second.size());
-  for (size_t i : it->second) out.push_back(&impl_->lookups[i]);
-  return out;
+  static const std::vector<const S52Lookup*> kNone;
+  const int t = static_cast<int>(table);
+  if (t < 0 || t >= static_cast<int>(S52LookupTable::kLookupTableCount)) return kNone;
+  auto it = impl_->lookup_rows[t].find(acronym);
+  return it == impl_->lookup_rows[t].end() ? kNone : it->second;
 }
 
 size_t S52PresentationLibrary::lookup_count(S52LookupTable table) const {

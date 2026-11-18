@@ -193,6 +193,32 @@ class Bridge : public fv::desk::PythonBridge {
     };
     return Status::Ok();
   }
+
+  Status ResolveEditor(const std::string& spec,
+                       std::function<std::unique_ptr<fv::app::OverlayEditor>()>* out) override {
+    py::gil_scoped_acquire gil;
+    py::object cls;
+    const Status s = Import(spec, &cls);
+    if (!s.ok()) return s;
+    py::object base = py::module_::import("pyfvw").attr("app").attr("OverlayEditor");
+    if (!PyType_Check(cls.ptr()) || PyObject_IsSubclass(cls.ptr(), base.ptr()) != 1) {
+      PyErr_Clear();
+      return Status::Error(fv::kNotFound, spec + " is not a pyfvw.app.OverlayEditor subclass");
+    }
+    SharedPy held = Share(std::move(cls));
+    *out = [held, spec]() -> std::unique_ptr<fv::app::OverlayEditor> {
+      py::gil_scoped_acquire gil;
+      try {
+        return pyfvw::EditorFromPython((*held)());
+      } catch (py::error_already_set& e) {
+        FV_LOG_WARNING("python: " << spec << ": " << e.what());
+      } catch (const py::builtin_exception& e) {
+        FV_LOG_WARNING("python: " << spec << ": " << e.what());
+      }
+      return nullptr;
+    };
+    return Status::Ok();
+  }
 };
 
 }  // namespace

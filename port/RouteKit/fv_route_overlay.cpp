@@ -30,6 +30,9 @@ const FvColor RouteOverlay::kClimbEasyColor{240, 200, 20, 255};
 const FvColor RouteOverlay::kClimbSteepColor{215, 30, 30, 255};
 const FvColor RouteOverlay::kDescentGentleColor{100, 200, 90, 255};
 const FvColor RouteOverlay::kDescentSteepColor{0, 115, 45, 255};
+const FvColor RouteOverlay::kTierColors[5] = {
+    {20, 150, 80, 255}, {140, 200, 60, 255}, {245, 175, 25, 255},
+    {225, 70, 50, 255}, {130, 20, 40, 255}};
 
 namespace {
 
@@ -109,7 +112,7 @@ const std::vector<app::PropertySpec>& RouteSpecs() {
       return s;
     };
     std::vector<PropertySpec> v;
-    v.push_back(spec("road_color", "Line colour", "Calculated route",
+    v.push_back(spec("road_color", "Line color", "Calculated route",
                      PropertyValue::Color(RouteOverlay::kRoadColor),
                      "A route that follows roads; an uncalculated one keeps its own colour."));
     v.push_back(spec("road_width", "Line width", "Calculated route", PropertyValue::Int(6),
@@ -119,20 +122,22 @@ const std::vector<app::PropertySpec>& RouteSpecs() {
     v.push_back(spec("road_style", "Line style", "Calculated route", PropertyValue::Choice(0),
                      "Dashed by bicycle is solid unless the route was priced for a bicycle."));
     for (const RoadStyle& r : kRoadStyles) v.back().choices.push_back(r.name);
-    v.push_back(spec("casing_color", "Casing colour", "Calculated route",
+    v.push_back(spec("casing_color", "Casing color", "Calculated route",
                      PropertyValue::Color(RouteOverlay::kCasingColor),
                      "The outline that keeps the line readable over a chart."));
     v.push_back(spec("casing_width", "Casing width", "Calculated route", PropertyValue::Int(4),
                      "Pixels beyond the line's width; 0 draws no casing."));
     v.back().min = 0;
     v.back().max = 20;
-    v.push_back(spec("beach_casing_color", "Beach casing colour", "Calculated route",
+    v.push_back(spec("beach_casing_color", "Beach casing color", "Calculated route",
                      PropertyValue::Color(RouteOverlay::kBeachCasingColor),
                      "The casing under stretches ridden on the beach."));
-    v.push_back(spec("slope_colors", "Colour by slope", "Calculated route",
-                     PropertyValue::Bool(false),
-                     "A halo around the line by grade where the road graph has elevation: green "
-                     "downhill, yellow to red uphill, the casing on the flat."));
+    v.push_back(spec("route_coloring", "Color route by", "Calculated route",
+                     PropertyValue::Choice(0),
+                     "A halo around the line. Slope: green downhill, yellow to red uphill, the "
+                     "casing on the flat, where the road graph has elevation. Path type: the map "
+                     "key's tier, green for most preferred to red for avoided."));
+    v.back().choices = {"Plain", "Slope", "Path type"};
     v.push_back(spec("show_labels", "Waypoint names", "Labels", PropertyValue::Bool(true), ""));
     v.push_back(spec("show_status", "Route status line", "Labels", PropertyValue::Bool(true),
                      "The line of text at the top left that describes the calculated route."));
@@ -199,6 +204,25 @@ std::vector<std::optional<FvColor>> SegmentSlopeColors(const RoutePlan& plan) {
     if (c.a == 0) continue;
     const size_t end = std::min<size_t>(p[i + 1].geometry_index, segments);
     for (size_t k = p[i].geometry_index; k < end; ++k) out[k] = c;
+  }
+  return out;
+}
+
+/// The path-type color of every segment of the plan's joined line, empty
+/// where the plan has no tier and on the beach, which keeps its sand casing.
+std::vector<std::optional<FvColor>> SegmentTierColors(const RoutePlan& plan) {
+  size_t segments = 0;
+  for (const std::vector<GeoPoint>& leg : plan.legs)
+    if (!leg.empty()) segments += leg.size() - 1;
+  std::vector<std::optional<FvColor>> out(segments);
+  for (const routing::RouteTierRun& run : plan.tiers) {
+    const FvColor c = RouteOverlay::TierColor(run.tier);
+    const size_t end = std::min<size_t>(run.geometry_end, segments);
+    for (size_t k = run.geometry_begin; k < end; ++k) out[k] = c;
+  }
+  for (const RouteBeachStretch& b : plan.beach) {
+    const size_t end = std::min<size_t>(b.geometry_end, segments);
+    for (size_t k = b.geometry_begin; k < end; ++k) out[k].reset();
   }
   return out;
 }
@@ -289,6 +313,7 @@ void RouteOverlay::SetSelected(std::string label) {
 
 bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
   wind_marks_.clear();
+  ClearDetour();
   if (planner_ == nullptr) {
     plan_ = RoutePlan{};
     plan_.status = "no road graph configured";
@@ -316,9 +341,15 @@ bool RouteOverlay::FollowRoads(RoutePlanOptions options) {
   return plan_.found;
 }
 
+void RouteOverlay::SetDetour(RoutePlan detour) {
+  has_detour_ = !detour.legs.empty();
+  detour_ = has_detour_ ? std::move(detour) : RoutePlan{};
+}
+
 void RouteOverlay::ClearRoads() {
   plan_ = RoutePlan{};
   has_plan_ = false;
+  ClearDetour();
   wind_marks_.clear();
   ghost_.clear();
 }
@@ -344,17 +375,22 @@ BuiltinSymbolLibrary* RouteOverlay::LibraryFor(const FvColor& c) {
   return raw;
 }
 
-Status RouteOverlay::DrawSlopeHalo(GeoDraw& draw) {
-  const std::vector<std::optional<FvColor>> slope = SegmentSlopeColors(plan_);
+FvColor RouteOverlay::TierColor(int tier) {
+  constexpr int n = static_cast<int>(sizeof(kTierColors) / sizeof(kTierColors[0]));
+  return kTierColors[std::clamp(tier, 0, n - 1)];
+}
+
+Status RouteOverlay::DrawColorHalo(GeoDraw& draw, const RoutePlan& plan,
+                                   const std::vector<std::optional<FvColor>>& colors) {
   const int halo = std::max(1, static_cast<int>(std::lround(kSlopeHaloPt * dpi_scale_)));
   const int fringe = std::max(1, static_cast<int>(std::lround(kSlopeFringePt * dpi_scale_)));
-  auto on_beach = [this](size_t k) {
-    for (const RouteBeachStretch& b : plan_.beach)
+  auto on_beach = [&plan](size_t k) {
+    for (const RouteBeachStretch& b : plan.beach)
       if (b.geometry_begin <= k && k < b.geometry_end) return true;
     return false;
   };
   // The outer pass first, everywhere, so no piece's fringe covers the halo
-  // of the piece before it. Flat ground keeps the casing colour.
+  // of the piece before it. A segment without a color keeps the casing.
   for (const bool outer : {true, false}) {
     GeoLineStyle line = SolidGeoLine(road_color_, road_width_ + 2 * (halo + (outer ? fringe : 0)));
     std::vector<GeoPoint> piece;
@@ -366,15 +402,15 @@ Status RouteOverlay::DrawSlopeHalo(GeoDraw& draw) {
       return st;
     };
     size_t offset = 0;
-    for (const std::vector<GeoPoint>& leg : plan_.legs) {
+    for (const std::vector<GeoPoint>& leg : plan.legs) {
       for (size_t j = 0; j + 1 < leg.size(); ++j) {
         const size_t k = offset + j;
         FvColor c = on_beach(k) ? beach_casing_color_ : casing_color_;
         bool ink = casing_width_ > 0;
-        if (slope[k]) {
+        if (colors[k]) {
           // The canvas blends every nib stamp, so a translucent stroke would
           // overlap itself to near-opaque: the fringe is a tint instead.
-          c = outer ? Blend(*slope[k], casing_color_, 0.5) : *slope[k];
+          c = outer ? Blend(*colors[k], casing_color_, 0.5) : *colors[k];
           ink = true;
         }
         if (!piece.empty() && (ink != inked || !SameColor(c, line.stroke.pen.color))) {
@@ -470,7 +506,16 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     s = draw.DrawGeoPolyline(leg, LineKind::kSimple, SolidGeoLine(kGhostColor, road_width_));
     if (!s.ok()) return s;
   }
+  // A detour is the line being ridden; the planned route stays as the ghost.
+  if (has_plan_ && has_detour_) {
+    for (const std::vector<GeoPoint>& leg : plan_.legs) {
+      if (leg.size() < 2) continue;
+      s = draw.DrawGeoPolyline(leg, LineKind::kSimple, SolidGeoLine(kGhostColor, road_width_));
+      if (!s.ok()) return s;
+    }
+  }
   if (has_plan_) {
+    const RoutePlan& shown = has_detour_ ? detour_ : plan_;
     // A CALCULATED route: blue over a white casing, dashed when it was priced
     // as a bicycle route. The road geometry IS the road, so kSimple — there is
     // nothing to interpolate between two points a few metres apart.
@@ -480,29 +525,34 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
     // it disappears under the map it is drawn over — Chris rode with it and
     // asked for twice the width (2026-08-19). Doubled together with the
     // casing, so the white still shows the same share of itself past the blue.
-    const bool by_slope = slope_colors_ && plan_.has_elevation && plan_.elevation.size() >= 2;
+    std::vector<std::optional<FvColor>> halo;
+    if (coloring_ == RouteColoring::kSlope && shown.has_elevation && shown.elevation.size() >= 2)
+      halo = SegmentSlopeColors(shown);
+    else if (coloring_ == RouteColoring::kPathType && !shown.tiers.empty())
+      halo = SegmentTierColors(shown);
+    const bool by_halo = !halo.empty();
     const char* preset = kRoadStyles[road_style_].preset;
-    if (preset == nullptr) preset = plan_.is_bicycle ? line_preset::kDash : line_preset::kSolid;
+    if (preset == nullptr) preset = shown.is_bicycle ? line_preset::kDash : line_preset::kSolid;
     GeoLineStyle style = PresetGeoLine(preset, road_color_, road_width_);
     GeoLineStyle sand = style;
     if (casing_width_ > 0) {
       AddCasing(&style, casing_color_, casing_width_);
       AddCasing(&sand, beach_casing_color_, casing_width_);
     }
-    if (by_slope) {
-      s = DrawSlopeHalo(draw);
+    if (by_halo) {
+      s = DrawColorHalo(draw, shown, halo);
       if (!s.ok()) return s;
       GeoLineStyle centre = PresetGeoLine(preset, road_color_, road_width_);
-      for (const std::vector<GeoPoint>& leg : plan_.legs) {
+      for (const std::vector<GeoPoint>& leg : shown.legs) {
         if (leg.size() < 2) continue;
         s = draw.DrawGeoPolyline(leg, LineKind::kSimple, centre);
         if (!s.ok()) return s;
       }
     } else {
       uint32_t offset = 0;  // index of each leg's first vertex in the joined line
-      for (const std::vector<GeoPoint>& leg : plan_.legs) {
+      for (const std::vector<GeoPoint>& leg : shown.legs) {
         if (leg.size() >= 2) {
-          for (const BeachPiece& piece : SplitAtBeach(leg, offset, plan_.beach)) {
+          for (const BeachPiece& piece : SplitAtBeach(leg, offset, shown.beach)) {
             s = draw.DrawGeoPolyline(piece.points, LineKind::kSimple,
                                      piece.on_beach ? sand : style);
             if (!s.ok()) return s;
@@ -511,10 +561,10 @@ Status RouteOverlay::OnDraw(const MapProjection& proj, ICanvas& canvas) {
         if (!leg.empty()) offset += static_cast<uint32_t>(leg.size() - 1);
       }
     }
-    if (!wind_marks_.empty()) {
+    if (!wind_marks_.empty() && !has_detour_) {
       // The stretches index the legs joined with the shared joint dropped.
       std::vector<GeoPoint> line;
-      for (const std::vector<GeoPoint>& leg : plan_.legs)
+      for (const std::vector<GeoPoint>& leg : shown.legs)
         line.insert(line.end(), leg.begin() + (line.empty() || leg.empty() ? 0 : 1), leg.end());
       s = DrawBeachWind(proj, canvas, line);
       if (!s.ok()) return s;
@@ -1063,7 +1113,7 @@ Status RouteOverlay::GetProperty(const std::string& key, app::PropertyValue* out
   else if (key == "casing_color") v = PropertyValue::Color(casing_color_);
   else if (key == "casing_width") v = PropertyValue::Int(casing_width_);
   else if (key == "beach_casing_color") v = PropertyValue::Color(beach_casing_color_);
-  else if (key == "slope_colors") v = PropertyValue::Bool(slope_colors_);
+  else if (key == "route_coloring") v = PropertyValue::Choice(static_cast<long long>(coloring_));
   else if (key == "show_labels") v = PropertyValue::Bool(show_labels_);
   else if (key == "show_status") v = PropertyValue::Bool(show_status_);
   else return Status::Error(kNotFound, "no route property '" + key + "'");
@@ -1087,7 +1137,7 @@ Status RouteOverlay::SetProperty(const std::string& key, const app::PropertyValu
   else if (key == "casing_color") casing_color_ = value.color;
   else if (key == "casing_width") casing_width_ = static_cast<int>(value.i);
   else if (key == "beach_casing_color") beach_casing_color_ = value.color;
-  else if (key == "slope_colors") slope_colors_ = value.b;
+  else if (key == "route_coloring") coloring_ = static_cast<RouteColoring>(value.i);
   else if (key == "show_labels") show_labels_ = value.b;
   else if (key == "show_status") show_status_ = value.b;
   return Status::Ok();

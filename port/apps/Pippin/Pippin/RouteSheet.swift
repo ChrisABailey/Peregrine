@@ -228,9 +228,9 @@ struct RouteSheet: View {
     let onBeachChange: (PPBeachUse) -> Void
     /// The "Avoid hills" toggle changed; handled like `onProfileChange`.
     let onHillsChange: (Bool) -> Void
-    /// The route is drawn coloured by grade; shown with "Avoid hills".
-    let slopeColors: Bool
-    let onSlopeColorsChange: (Bool) -> Void
+    /// What the route is colored by; the choice is offered with "Avoid hills".
+    let routeColoring: RouteColoringChoice
+    let onRouteColoringChange: (RouteColoringChoice) -> Void
     let onClear: () -> Void
     let onCancel: () -> Void
     /// True in the iPad side panel: the confirm button reads Apply and the
@@ -400,9 +400,12 @@ struct RouteSheet: View {
                                     guard draft.phase == .stops else { return }
                                     onHillsChange(avoidHills)
                                 }
-                            Toggle("Colour by slope", isOn: Binding(
-                                get: { slopeColors },
-                                set: { onSlopeColorsChange($0) }))
+                            Picker("Color route by", selection: Binding(
+                                get: { routeColoring },
+                                set: { onRouteColoringChange($0) })) {
+                                Text("Path type").tag(RouteColoringChoice.pathType)
+                                Text("Slope").tag(RouteColoringChoice.slope)
+                            }
                         }
 
                         if !straightLegs, adjustedCount > 0, let onOpenPreferences {
@@ -438,6 +441,7 @@ struct RouteSheet: View {
             .sheet(isPresented: $tidesShown) {
                 if let tide {
                     TideCard(tide: tide, onClose: { tidesShown = false })
+                        .chartDimmedSheet()
                 }
             }
             .toolbar {
@@ -888,6 +892,7 @@ struct LocationRow<Extra: View>: View {
             // `searchPlaces` was read in this view and captured, so nothing
             // needs to cross the sheet's environment boundary.
             .presentationDetents([.large])
+            .chartDimmedSheet()
         }
     }
 }

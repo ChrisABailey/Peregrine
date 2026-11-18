@@ -26,6 +26,8 @@ enum RideActivityPolicy {
                             then: GuidanceNoticeEvent.Turn?,
                             distanceMeters: Double,
                             road: String,
+                            roadClass: String = "",
+                            continues: Bool = false,
                             speedMetersPerSecond: Double?,
                             now: Date,
                             units: DistanceUnits) -> RideActivityContent {
@@ -38,14 +40,20 @@ enum RideActivityPolicy {
                                    thenSymbol: then.map(symbol),
                                    distance: units.countdown(distanceMeters),
                                    turnAt: turnAt,
-                                   road: turn == .arrive ? "" : road)
+                                   roadLine: turn == .arrive ? ""
+                                       : GuidanceNotice.roadLine(road: road, roadClass: roadClass,
+                                                                 continues: continues))
     }
 
-    static let offRoute = RideActivityContent(phase: .offRoute)
+    /// Content off route, with the detour button's label and symbol when one
+    /// is on offer.
+    static func offRoute(detour: String = "", detourSymbol: String = "") -> RideActivityContent {
+        RideActivityContent(phase: .offRoute, detour: detour, detourSymbol: detourSymbol)
+    }
     static let arrived = RideActivityContent(phase: .arrived, symbol: symbol(.arrive))
 
     /// Whether `next` should replace `shown`, `sinceLast` seconds after the
-    /// previous update. A new phase, turn or road goes at once; a distance or
+    /// previous update. A new phase, turn, road or detour offer goes at once; a distance or
     /// time-to-turn change waits out `minUpdateInterval`.
     static func needsUpdate(from shown: RideActivityContent?,
                             to next: RideActivityContent,
@@ -53,7 +61,8 @@ enum RideActivityPolicy {
         guard let shown else { return true }
         if shown == next { return false }
         if shown.phase != next.phase || shown.symbol != next.symbol
-            || shown.thenSymbol != next.thenSymbol || shown.road != next.road {
+            || shown.thenSymbol != next.thenSymbol || shown.roadLine != next.roadLine
+            || shown.detour != next.detour {
             return true
         }
         guard sinceLast >= minUpdateInterval else { return false }

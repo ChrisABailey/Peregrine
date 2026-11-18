@@ -72,6 +72,10 @@ struct S57Vertex {
 struct S57Geometry {
   std::vector<std::vector<S57Vertex>> parts;
   std::vector<bool> part_is_hole;
+  /// Parallel to `parts`: a non-zero entry i hides the edge from vertex i to
+  /// the next from the boundary stroke (FSPT MASK = 1, or USAG = 3 on the data
+  /// limit). Empty for a part whose every edge is drawn.
+  std::vector<std::vector<uint8_t>> unstroked_edges;
 };
 
 // FOID — the world-unique feature object identifier.

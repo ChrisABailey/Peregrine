@@ -74,6 +74,38 @@ struct LegendCost {
 /// build options; `peregrine:route_network` sets the signed-route network.
 LegendCost CostOfTags(const RouteProfile& profile, const std::vector<OsmTag>& osm_tags);
 
+/// Costs a graph arc under `profile`, as `CostOfTags` costs a specimen: the
+/// arc's own attributes in its stored direction, climb excluded.
+LegendCost CostOfArc(const RouteProfile& profile, const RoadArc& arc);
+
+/// The map-key rows that describe a road: the road-type row and the marking
+/// and route rows that apply to it.
+struct LegendRowMatch {
+  /// Index into the specimens of the row naming the road's type, or -1.
+  int type_row = -1;
+  /// Rows for what the road carries beyond its type (a painted lane, a
+  /// signed route), in specimen order.
+  std::vector<int> modifier_rows;
+};
+
+/// Matches `arc` against map-key specimens (each row's `osm` tags; an empty
+/// list is a row with no specimen). A specimen with a bike provision or a
+/// signed route is a modifier row and matches any arc carrying the same one.
+/// Every other specimen is a type row and matches an arc of its class (a link
+/// counts as its road) that has each of its extra attributes; the most
+/// specific such row wins.
+LegendRowMatch MatchLegendRows(const RoadArc& arc,
+                               const std::vector<std::vector<OsmTag>>& specimens);
+
+/// The multipliers on `arc` that change how much the profile wants it and
+/// that no matched key row names: a lane or route the key has no row for, a
+/// non-paved surface, posted speed, private access, golf, toll, ferry, beach.
+/// A way closed by its access tags gets a "closed to bikes" term with factor
+/// kAvoidExcluded. Class and pace are left out; they are the type and tier.
+std::vector<CostTerm> LegendMarkingTerms(const RouteProfile& profile, const RoadArc& arc,
+                                         const std::vector<std::vector<OsmTag>>& specimens,
+                                         const LegendRowMatch& match);
+
 /// The profile's `legend_tiers` word for `cost`, or "Never" when excluded.
 std::string LegendTierWord(const RouteProfile& profile, const LegendCost& cost);
 

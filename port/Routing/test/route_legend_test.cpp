@@ -547,3 +547,118 @@ TEST(RouteLegend, KiawahTrailsEntries) {
 }
 
 }  // namespace
+
+namespace {
+
+/// The tags of the Atlanta Streets key's rows, in key order.
+const std::vector<std::vector<OsmTag>> kAtlantaKey = {
+    {{"highway", "residential"}},                                         // 0 Quiet street
+    {{"highway", "tertiary"}},                                            // 1 Moderate road
+    {{"highway", "primary"}},                                             // 2 Arterial
+    {},                                                                   // 3 Bikes designated
+    {{"highway", "primary"}, {"bicycle", "no"}},                          // 4 No bicycles
+    {{"highway", "residential"}, {"bridge", "yes"}, {"layer", "1"}},      // 5 Bridge
+    {{"highway", "tertiary"}, {"cycleway:right", "lane"}},                // 6 Painted bike lane
+    {{"highway", "residential"}, {"cycleway", "shared_lane"}},            // 7 Shared-lane marking
+    {{"highway", "residential"}, {"peregrine:route_network", "national"}},// 8 National route
+    {{"highway", "residential"}, {"peregrine:route_network", "local"}},   // 9 Local route
+    {{"highway", "cycleway"}},                                            // 10 Paved trail
+    {{"highway", "cycleway"}, {"surface", "gravel"}},                     // 11 Unpaved trail
+};
+
+fv::routing::RoadArc ArcOf(const std::vector<OsmTag>& tags,
+                           fv::routing::BikeRoute route = fv::routing::BikeRoute::kNone) {
+  fv::routing::OsmWay way;
+  way.tags = tags;
+  fv::routing::RoadArc arc;
+  EXPECT_TRUE(fv::routing::ReadWayTags(way, fv::routing::RoadGraphBuildOptions{}, &arc));
+  arc.bike_route = route;
+  arc.length_m = 120.0f;
+  return arc;
+}
+
+}  // namespace
+
+TEST(RouteLegend, MatchesARoadToItsKeyRows) {
+  using fv::routing::BikeRoute;
+  using fv::routing::MatchLegendRows;
+
+  auto m = MatchLegendRows(ArcOf({{"highway", "residential"}}), kAtlantaKey);
+  EXPECT_EQ(m.type_row, 0);
+  EXPECT_TRUE(m.modifier_rows.empty());
+
+  m = MatchLegendRows(
+      ArcOf({{"highway", "tertiary"}, {"cycleway:right", "lane"}}, BikeRoute::kNational),
+      kAtlantaKey);
+  EXPECT_EQ(m.type_row, 1);
+  EXPECT_EQ(m.modifier_rows, (std::vector<int>{6, 8}));
+
+  // A link reads as its road; the more specific row wins over the plain one.
+  EXPECT_EQ(MatchLegendRows(ArcOf({{"highway", "primary_link"}}), kAtlantaKey).type_row, 2);
+  EXPECT_EQ(MatchLegendRows(ArcOf({{"highway", "primary"}, {"bicycle", "no"}}), kAtlantaKey)
+                .type_row,
+            4);
+  EXPECT_EQ(MatchLegendRows(ArcOf({{"highway", "cycleway"}, {"surface", "dirt"}}), kAtlantaKey)
+                .type_row,
+            11);
+  EXPECT_EQ(MatchLegendRows(ArcOf({{"highway", "residential"}, {"bridge", "yes"}}), kAtlantaKey)
+                .type_row,
+            5);
+  // A class the key has no row for.
+  EXPECT_EQ(MatchLegendRows(ArcOf({{"highway", "steps"}}), kAtlantaKey).type_row, -1);
+}
+
+/// The setting names of the marking terms for `tags` under the Atlanta key.
+std::vector<std::string> MarkingSettings(const RouteProfile& profile,
+                                         const std::vector<OsmTag>& tags,
+                                         fv::routing::BikeRoute route = fv::routing::BikeRoute::kNone) {
+  const fv::routing::RoadArc arc = ArcOf(tags, route);
+  std::vector<std::string> out;
+  for (const auto& t : fv::routing::LegendMarkingTerms(
+           profile, arc, kAtlantaKey, fv::routing::MatchLegendRows(arc, kAtlantaKey)))
+    out.push_back(t.setting);
+  return out;
+}
+
+TEST(RouteLegend, MarkingsNameEveryMultiplierTheKeyRowsDoNot) {
+  using Names = std::vector<std::string>;
+  const auto rules = LoadRules(FV_CITY_ROUTE_RULES_FILE);
+  const RouteProfile& bike = *rules->Find("bicycle");
+
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "residential"}}), Names{});
+  // Private is a multiplier with no key row.
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "residential"}, {"access", "private"}}),
+            Names{"private_penalty"});
+  // A painted lane and a national route have rows of their own.
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "tertiary"}, {"cycleway:right", "lane"}},
+                            fv::routing::BikeRoute::kNational),
+            Names{});
+  // The Unpaved trail row names the surface; a compacted one has no row.
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "cycleway"}, {"surface", "gravel"}}), Names{});
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "cycleway"}, {"surface", "compacted"}}),
+            Names{"surface_factor.compacted"});
+  // Posted speed moves the cost of an arterial.
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "primary"}, {"maxspeed", "55 mph"}}),
+            Names{"speed_factor"});
+  // The No bicycles row says why; a closed residential street has no such row.
+  EXPECT_EQ(MarkingSettings(bike, {{"highway", "primary"}, {"bicycle", "no"}}), Names{});
+  const fv::routing::RoadArc closed = ArcOf({{"highway", "residential"}, {"bicycle", "no"}});
+  const auto terms = fv::routing::LegendMarkingTerms(
+      bike, closed, kAtlantaKey, fv::routing::MatchLegendRows(closed, kAtlantaKey));
+  ASSERT_EQ(terms.size(), 1u);
+  EXPECT_EQ(terms[0].label, "closed to bikes");
+}
+
+TEST(RouteLegend, AnArcCostsWhatItsTagsCost) {
+  const auto rules = LoadRules(FV_CITY_ROUTE_RULES_FILE);
+  const RouteProfile& bike = *rules->Find("bicycle");
+  fv::routing::RoadArc arc = ArcOf(kSecondaryLane);
+  // Climb and a junction crossing do not move the key's price.
+  arc.climb_dm = 300;
+  arc.crossing = fv::routing::RoadCrossing::kPrimary;
+  const LegendCost fromArc = fv::routing::CostOfArc(bike, arc);
+  const LegendCost fromTags = CostOfTags(bike, kSecondaryLane);
+  EXPECT_DOUBLE_EQ(fromArc.factor, fromTags.factor);
+  EXPECT_EQ(LegendTermsLine(fromArc), LegendTermsLine(fromTags));
+  EXPECT_EQ(LegendTierWord(bike, fromArc), LegendTierWord(bike, fromTags));
+}

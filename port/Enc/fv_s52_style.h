@@ -13,19 +13,15 @@
 //
 //   feature type + mariner settings  ->  which of the five LOOKUP TABLES
 //   object acronym                   ->  that table's rows, in file order
-//   attribute conditions             ->  the FIRST row that matches (S-52's
-//                                        own rule; the rows are authored
-//                                        most-specific-first)
+//   attribute conditions             ->  the matching row with the most
+//                                        conditions; the unconditioned row
+//                                        only when none matches
 //   the row's INSTRUCTIONS           ->  StyleResults
 //
-// INSTRUCTIONS IMPLEMENTED: SY (point symbol), LS (simple line), AC (area
-// colour), TX/TE (text), CS (conditional symbology, below). Two are
-// APPROXIMATED and say so at the call site: LC (complex line) strokes with the
-// line-style's own pen instead of stamping the pattern along the path, and AP
-// (area pattern) fills with the pattern's ink colour at reduced alpha, exactly
-// the deviation GeoSym's stipple fills already carry. Both become exact when
-// the along-path placer lands (E3b) — that placer is shared with GeoSym's SAMI
-// lines, which is why it is not written twice here.
+// Instructions implemented: SY (point symbol), LS (simple line), LC (complex
+// line, stamped along the path by the shared placer), AC (area colour), AP
+// (area pattern, stamped on a grid over the area; vector patterns only), TX/TE
+// (text), CS (conditional symbology, below).
 //
 // CONDITIONAL SYMBOLOGY. S-52's CS procedures are the one thing in §5.1's
 // mapping table with no GeoSym equivalent: code, not table rows. They are
@@ -36,10 +32,10 @@
 // drop a feature quietly, and an invisible rock is exactly the failure a chart
 // must not have.
 //
-// Implemented in E3a, by weight over the Charleston cells: DEPARE01 (the depth
-// ramp — the single biggest visual), DEPCNT02, SLCONS03, QUAPOS01, TOPMAR01,
-// SOUNDG02. Left for E3b with placeholders: LIGHTS05, OBSTRN04, WRECKS02,
-// RESTRN01, RESARE01/02, DATCVR01.
+// Implemented: DATCVR01, DEPARE01, DEPCNT02, LIGHTS05, OBSTRN04, QUAPOS01,
+// RESARE02, RESTRN01, SLCONS03, SOUNDG02, SYMINS01, TOPMAR01, WRECKS02. Not
+// implemented, with no reach in US coastal cells: RESARE01 (its lookup row is
+// shadowed), and the inland-ENC DEPARE02 and TOPMARI1.
 //
 // UNITS: S-52 line widths are in 0.32 mm units (the same nominal pen the HPGL
 // `SWn` uses), converted to pixels here with the device DPI the renderer
@@ -138,6 +134,10 @@ class S52StyleEngine : public LookupTableStyleEngine {
   /// beacon symbol and its identify record are unaffected.
   void SetShowBeaconNames(bool on);
   bool show_beacon_names() const;
+  /// Draws the light descriptions ("Fl(2) R 6s 12m 5M"), S-52 text group 23.
+  /// On by default; the light's flare and sector arcs are unaffected.
+  void SetShowLightDescriptions(bool on);
+  bool show_light_descriptions() const;
 
   void SetPointStyle(S52PointStyle s);
   void SetAreaStyle(S52AreaStyle s);
@@ -172,12 +172,11 @@ class S52StyleEngine : public LookupTableStyleEngine {
   // The loaded library, for callers that want the tables themselves.
   const S52PresentationLibrary& library() const;
 
-  // The lookup row `f` dispatches to — the first row of its table whose
-  // attribute conditions all hold, which is the decision every StyleResult
-  // below flows from. Exposed because it is the one thing worth showing in an
-  // identify panel ("this drew as BOYLAT row 12") and the one thing a test can
-  // assert about dispatch without going through the pixels. nullptr when the
-  // engine is closed or the object class has no rows in that table.
+  /// The lookup row `f` dispatches to: among the rows whose conditions all
+  /// hold, the one with the most conditions (earliest on a tie); else the
+  /// first unconditioned row; else the last row. Exposed for identify panels
+  /// and dispatch tests. nullptr when the engine is closed or the object class
+  /// has no rows in that table.
   const S52Lookup* SelectLookup(const VectorFeature& f) const;
 
   // --- diagnostics ---------------------------------------------------------

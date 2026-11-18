@@ -133,6 +133,12 @@ if(NOT FVW_IOS)
   add_subdirectory(port/sdk/examples/rangerings-cpp)
   # The Python package example; packed only, nothing compiled.
   add_subdirectory(port/sdk/examples/rangerings-py)
+  # A larger Python package: Range & Bearing, terrain profile, viewshed.
+  add_subdirectory(port/sdk/examples/analysis-py)
+  # Packages shipped with Peregrine, staged under build/packages.
+  add_subdirectory(port/packages/osm-overlay)
+  add_subdirectory(port/packages/ais-overlay)
+  add_subdirectory(port/packages/web-features)
 endif()
 
 # Pippin, the iOS app. On iOS this builds the umbrella library the app links

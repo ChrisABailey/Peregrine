@@ -21,6 +21,12 @@
 #include "fvkit/geo.h"
 #include "fvkit/overlay/overlay.h"
 
+namespace fv {
+namespace app {
+class OverlayEditor;
+}  // namespace app
+}  // namespace fv
+
 namespace pyfvw {
 
 namespace py = pybind11;
@@ -61,5 +67,10 @@ inline std::shared_ptr<fv::Overlay> OverlayFromPython(py::object obj) {
         held = py::object();
       });
 }
+
+/// A pyfvw.app.OverlayEditor instance as a C++ OverlayEditor that forwards to
+/// it; null for None. Raises TypeError for any other object. Defined in
+/// pyfvw_app.cpp. The GIL must be held.
+std::unique_ptr<fv::app::OverlayEditor> EditorFromPython(py::object obj);
 
 }  // namespace pyfvw

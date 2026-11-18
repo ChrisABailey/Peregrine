@@ -100,6 +100,7 @@ Apple); TCP and unicast UDP need neither.
 | AIS-D5 | Open Waters token | Personal token per install, minted by the app (no pasted token, no account). Revised from anonymous-only. Chris + Open Waters developer, 2026-10-26. |
 | AIS-D6 | Contribute local receptions to Open Waters | No. Not built: there is no receiver to test with. Chris, 2026-10-26. |
 | AIS-D7 | Ownship from AIVDO | AIVDO is decoded and the table marks the record `own_ship`; the overlay does not draw it as a target and CPA skips it. Revised 2026-10-27: under "Use Receiver Position", a VDO position report is a fallback fix when the receiver has sent no RMC/GGA fix for 10 s (a transponder with no GPS sentences on the network). Chris, 2026-10-26 / 2026-10-27. |
+| AIS-D8 | Where AIS lives in Peregrine | A native package, `peregrine.ais` (`port/packages/ais-overlay`), so a user can disable it in the Overlay Manager. The package fetches the Open Waters stream itself through libcurl (the system copy on macOS, the distro's on Linux): revises AIS-D2 for the desktop only, since a plug-in cannot reach shell code and one implementation then serves mac and GTK. Osprey keeps `URLSession`. 2026-11-11. |
 
 ## Steps (easiest first)
 
@@ -308,6 +309,43 @@ unicast UDP from the Mac at the receiver's real rate (e.g. a capture saved from 
 an AIS connections dialog (local receiver, Open Waters), the details panel. mac uses
 `URLSession`; PeregrineGtk gets libcurl SSE in its own `linux/*` PR. CPA alarm (threshold
 distance and time) in both apps.
+
+*AIS6 as built (2026-11-11), mac; Linux needs only `LoadPackages` in GTK (linux-plan.md).*
+- Package `peregrine.ais` (AIS-D8): overlay `peregrine.ais.traffic` "AIS Traffic", static, display
+  order 900 (under the moving map), settings section `[traffic]`. `TrafficOverlay`
+  (`ais_traffic.{h,cpp}`) subclasses `fv::AisOverlay` and takes one recursive lock in every entry
+  point, since Peregrine draws on a worker and hovers on the UI thread. While it has a host a worker
+  steps every 250 ms: polls `NmeaReceiver`, opens or moves the Open Waters stream, ticks the table,
+  checks CPA, and calls `RequestRedraw` when anything drawn changed.
+- Options (Overlay ▸ Options, from Properties; no connections dialog): the AisOverlay pages plus
+  "Open Waters" (on), "Local Receiver" (off; TCP/UDP, address 192.168.1.1, port 10110) and
+  "Collision Alarm" (on, 0.5 nm, 10 min). Turning Open Waters off clears the table, as in Osprey.
+- Open Waters: `sse_stream.{h,cpp}`, libcurl GET with `Accept: text/event-stream`, aborted through
+  the progress callback, a minute without bytes is a dead stream. Box from the last drawn view
+  (`VmapBounds`) with `OpenWatersBox`/`OpenWatersBoxServes`; reconnect backoff 2-60 s, connects spaced
+  by `connects_per_min`, limits from `welcome`. Anonymous tier only: no token (Ed25519 needs a
+  library the desktop does not have yet; see open items).
+- Receiver position fixes are not used; Peregrine's moving map has its own Feed.
+- Collision alarm: targets that move (not base stations or AtoNs), shown, not stale; CPA within the
+  distance and TCPA between 0 and the time. Once per encounter: a target stays alarmed until it is
+  20% past either threshold or has passed. Alarmed targets get a red ring. The text goes through new
+  `OverlayHost::RaiseAlarm`; Desk queues it and `FlushOverlayRedraw` shows it with
+  `DeskShell::ShowNotice` (an NSAlert sheet on mac). Ownship from new `OverlayHost::OwnshipFix`
+  (Desk publishes its `OwnshipState` fix under a mutex; live or replay). Both are non-pure with
+  do-nothing defaults; `ManagerHost` implements them (`SetOwnship`, `TakeAlarms`); C API and pyfvw
+  not extended.
+- Details panel: the existing Get Info sheet from `AisOverlay::InfoAt` (CPA/TCPA rows when there is
+  an ownship). Status and credit lines drawn bottom-left: sources and their state, target count,
+  then each source's credit line once.
+- Verified: Peregrine `--center 32.75,-79.88,250000 --run overlay.toggle.peregrine.ais.traffic`,
+  Open Waters live, 51 then 72 targets drawn round Charleston, credits for Open Waters/AISHub/
+  aisstream. Not checked by hand: the Options window pages, a receiver, an alarm in the app.
+- Tests: `ais_traffic_test` (7): `TrafficTest.*` (alarm once and re-arm, thresholds and no ownship,
+  credits, properties, UDP receiver loopback), `AisSseSplitter.*`, `AisPackageTest.*` (loads from
+  the system directory; an alarm reaches the shell as a notice). No test reaches the internet.
+- Open: Open Waters token on the desktop (Ed25519: vendor a small implementation or use the shell's
+  crypto through a host service); alarm sound and a distinct alarm presentation in the shells; GTK
+  `LoadPackages`.
 
 **Later, not planned:** Signal K client with Bonjour discovery; ARPA radar targets (TTM/TLL);
 contributing receptions (AIS-D6, declined for now); vessel track history from `/v1/vessels/{mmsi}/track`.

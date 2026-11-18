@@ -85,8 +85,8 @@ std::vector<MenuSpec> DefaultMenuLayout() {
         S::Cmd("file.export_image"), S::Sep(), S::Cmd("app.quit")}},
       {"edit", "Edit", {S::Cmd("edit.undo"), S::Cmd("edit.redo")}},
       {"view", "View",
-       {S::Cmd("view.symbols_larger"), S::Cmd("view.symbols_smaller"),
-        S::Cmd("view.symbols_actual")}},
+       {S::Cmd("view.ownship"), S::Sep(), S::Cmd("view.symbols_larger"),
+        S::Cmd("view.symbols_smaller"), S::Cmd("view.symbols_actual")}},
       {"map", "Map",
        {S::Expand("map.group."), S::Sep(), S::Sub("Projection", {S::Expand("map.projection.")}),
         S::Cmd("map.zoom_in"), S::Cmd("map.zoom_out"), S::Cmd("map.goto"),
@@ -97,7 +97,7 @@ std::vector<MenuSpec> DefaultMenuLayout() {
       {"overlay", "Overlay",
        {S::Expand("overlay.toggle."), S::Sep(), S::Sub("Edit", {S::Expand("editor.mode.")}), S::Sep(),
         S::Expand("overlay.instance."), S::Sep(),
-        S::Cmd("overlay.layers"), S::Cmd("overlay.options")}},
+        S::Cmd("overlay.add_web_layer"), S::Sep(), S::Cmd("overlay.layers"), S::Cmd("overlay.options")}},
       {"tools", "Tools", {S::Cmd("tools.overlay_manager"), S::Sep(), S::Expand("tools.run.")}},
   };
 }
@@ -113,7 +113,8 @@ std::vector<MenuSlot> LayerContextLayout() {
   return {S::Cmd("layers.properties"), S::Sep(), S::Cmd("overlay.style"), S::Cmd("overlay.fields"),
           S::Cmd("overlay.attribute_table"), S::Cmd("layers.select_by_attributes"), S::Cmd("layers.clear_selection"),
           S::Cmd("overlay.export_selection"),
-          S::Sep(), S::Cmd("layers.rule.add"), S::Cmd("layers.import_style"), S::Cmd("layers.export_style"), S::Sep(),
+          S::Sep(), S::Cmd("layers.rule.add"), S::Cmd("layers.import_style"), S::Cmd("layers.export_style"),
+          S::Cmd("layers.reset_service_style"), S::Sep(), S::Cmd("layers.refresh"),
           S::Cmd("layers.zoom_to"), S::Sep(),
           S::Cmd("layers.close")};
 }

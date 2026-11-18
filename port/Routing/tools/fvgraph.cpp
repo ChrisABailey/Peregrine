@@ -13,7 +13,9 @@
 // The build step is the offline half of O4 (the fvpack pattern): it reads the
 // RAW extract, not the MVT pyramid, because vector tiles carry no topology.
 
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <cstdlib>
 #include <algorithm>
 #include <cstring>
@@ -48,6 +50,7 @@ int Usage() {
                "  fvgraph info  GRAPH.fvroad\n"
                "  fvgraph route GRAPH.fvroad LAT1 LON1 LAT2 LON2\n"
                "                [--via LAT LON ...] [--u-turns]\n"
+               "                [--heading DEG [--u-turn-seconds S]]\n"
                "                [--distance] [--walk] [--cycle] [--dijkstra]\n"
                "                [--ignore-turns] [--private-penalty X] [--snap M]\n"
                "                [--snap-nodes]\n"
@@ -64,6 +67,10 @@ int Usage() {
                "  at it, so signage at a stop binds and it does not turn round\n"
                "  there unless there is no other way out. --u-turns allows the\n"
                "  turn-round back.\n"
+               "  --heading gives the direction of travel at the start, degrees\n"
+               "  true; setting off more than 90 degrees from it costs\n"
+               "  --u-turn-seconds (default 45), so the route turns round only\n"
+               "  when going ahead and round costs more.\n"
                "  --avoid-toll / --avoid-ferry refuse those arcs outright, which\n"
                "  can leave a destination unreachable; --toll-penalty X and\n"
                "  --ferry-penalty X merely price them up (1.0 = no preference).\n"
@@ -459,6 +466,9 @@ int Route(int argc, char** argv) {
   // number are REFUSED instead of silently reading as "not given".
   double toll = 0.0, ferry = 0.0;
   bool have_toll = false, have_ferry = false;
+  // Same reason: kept off `options` until after SelectProfile.
+  double heading = std::numeric_limits<double>::quiet_NaN();
+  double u_turn_seconds = options.start_u_turn_seconds;
   // atof gives 0 for garbage, which is not a legal penalty either way.
   auto penalty = [](const char* text, double* out) {
     *out = std::atof(text);
@@ -475,6 +485,11 @@ int Route(int argc, char** argv) {
       vias.push_back(fv::GeoPoint{lat, lon});
     } else if (a == "--u-turns") {
       options.allow_u_turn_at_stops = true;
+    } else if (a == "--heading" && i + 1 < argc) {
+      heading = std::atof(argv[++i]);
+    } else if (a == "--u-turn-seconds" && i + 1 < argc) {
+      u_turn_seconds = std::atof(argv[++i]);
+      if (u_turn_seconds < 0.0) return Usage();
     } else if (a == "--profile" && i + 1 < argc) {
       profile = argv[++i];
     } else if (a == "--distance") {
@@ -540,6 +555,8 @@ int Route(int argc, char** argv) {
   // After the profile, deliberately — see the declaration.
   if (have_toll) options.toll_penalty = toll;
   if (have_ferry) options.ferry_penalty = ferry;
+  options.start_heading_deg = heading;
+  options.start_u_turn_seconds = u_turn_seconds;
 
   RoadGraph graph;
   Status s = RoadGraph::Load(graph_path, &graph);
@@ -574,6 +591,10 @@ int Route(int argc, char** argv) {
               options.snap_to_arcs ? " (onto the road, not the junction)" : " (onto junctions)");
   if (route.has_elevation) {
     std::printf("climb %.0f m, descent %.0f m\n", route.climb_m, route.descent_m);
+  }
+  if (std::isfinite(heading)) {
+    std::printf("sets off %s heading %.0f\n", route.start_u_turn ? "turning round from" : "with",
+                heading);
   }
   if (!vias.empty()) {
     std::printf("through %zu stops", route.stop_nodes.size());

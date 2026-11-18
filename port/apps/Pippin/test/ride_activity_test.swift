@@ -25,8 +25,10 @@ let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
 func turn(_ m: Double, speed: Double? = 8, turn: GuidanceNoticeEvent.Turn = .right,
           then: GuidanceNoticeEvent.Turn? = nil, road: String = "Flyway Dr",
+          roadClass: String = "", continues: Bool = false,
           at now: Date = t0, units: DistanceUnits = .miles) -> RideActivityContent {
     RideActivityPolicy.approaching(turn: turn, then: then, distanceMeters: m, road: road,
+                                   roadClass: roadClass, continues: continues,
                                    speedMetersPerSecond: speed, now: now, units: units)
 }
 
@@ -38,7 +40,7 @@ do {
     check(c.symbol == "arrow.turn.up.right", "right turn glyph: \(c.symbol)")
     check(c.thenSymbol == nil, "no staggered pair")
     check(c.distance == "400 yd", "distance in the app's units: \(c.distance)")
-    check(c.road == "Flyway Dr", "road carried")
+    check(c.roadLine == "Onto Flyway Dr", "road carried: \(c.roadLine)")
     let secs = c.turnAt.map { $0.timeIntervalSince(t0) } ?? -1
     check(abs(secs - 365.0 / 8) < 0.001, "turnAt is distance over speed: \(secs)")
 }
@@ -46,8 +48,12 @@ do {
 do {
     check(turn(400, units: .kilometres).distance == "400 m", "metric distance")
     check(turn(400, then: .left).thenSymbol == "arrow.turn.up.left", "staggered pair glyph")
-    check(turn(400, road: "").road == "", "unnamed way stays empty")
-    check(turn(120, turn: .arrive).road == "", "approach to the destination names no road")
+    check(turn(400, road: "").roadLine == "", "unnamed way stays empty")
+    check(turn(400, continues: true).roadLine == "To stay on Flyway Dr",
+          "a junction turn on the same road says so")
+    check(turn(400, road: "", roadClass: "cycleway", continues: true).roadLine == "On the path",
+          "an unnamed path that continues")
+    check(turn(120, turn: .arrive).roadLine == "", "approach to the destination names no road")
     check(turn(120, turn: .arrive).symbol == "flag.checkered", "destination glyph")
 }
 
@@ -61,7 +67,7 @@ do {
 }
 
 do {
-    check(RideActivityPolicy.offRoute.phase == .offRoute, "off route phase")
+    check(RideActivityPolicy.offRoute().phase == .offRoute, "off route phase")
     check(RideActivityPolicy.arrived.phase == .arrived, "arrived phase")
     check(RideActivityPolicy.arrived.symbol == "flag.checkered", "arrived glyph")
 }
@@ -79,8 +85,16 @@ do {
     check(needs(a, turn(365, turn: .left), 0.1), "a new turn goes at once")
     check(needs(a, turn(365, then: .left), 0.1), "a new staggered pair goes at once")
     check(needs(a, turn(365, road: "Governors Dr"), 0.1), "a new road goes at once")
-    check(needs(a, RideActivityPolicy.offRoute, 0.1), "off route goes at once")
-    check(needs(RideActivityPolicy.offRoute, a, 0.1), "rejoining goes at once")
+    check(needs(a, RideActivityPolicy.offRoute(), 0.1), "off route goes at once")
+    check(needs(RideActivityPolicy.offRoute(), a, 0.1), "rejoining goes at once")
+    let offer = RideActivityPolicy.offRoute(detour: "Re-route: +0.3 mi",
+                                            detourSymbol: "arrow.triangle.turn.up.right.diamond")
+    check(offer.phase == .offRoute && offer.detour == "Re-route: +0.3 mi", "off route with an offer")
+    check(needs(RideActivityPolicy.offRoute(), offer, 0.1), "an offer goes at once")
+    check(needs(offer, RideActivityPolicy.offRoute(detour: "Re-route: +0.4 mi"), 0.1),
+          "a changed offer goes at once")
+    check(needs(offer, RideActivityPolicy.offRoute(), 0.1), "a withdrawn offer goes at once")
+    check(!needs(offer, offer, 60), "the same offer is not sent again")
     check(needs(a, RideActivityPolicy.arrived, 0.1), "arrival goes at once")
 }
 

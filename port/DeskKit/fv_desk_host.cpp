@@ -22,6 +22,7 @@
 
 #include "fv_desk_base_map.h"
 #include "fv_desk_desk.h"
+#include "fv_desk_format.h"
 #include "fv_desk_enc_import.h"
 #include "fv_desk_map_options.h"
 #include "fv_desk_packages.h"
@@ -32,6 +33,7 @@
 #include "fvkit/canvas/cpu_canvas.h"
 #include "fvkit/catalog/catalog.h"
 #include "fvkit/engine.h"
+#include "fvkit/feature/feature_source.h"
 #include "fvkit/overlay/feature_overlay.h"
 #include "fvkit/style/expression.h"
 #include "fvkit/feature/value_text.h"
@@ -74,13 +76,15 @@ class HostShell : public DeskShell {
   std::atomic<bool> invalidate{false};
   bool quit = false;
 
-  std::shared_ptr<OptionsModel> options_shown[2];  // by HostOptionsKind
+  std::shared_ptr<OptionsModel> options_shown[3];  // by HostOptionsKind
   int options_requested = -1;
   bool sources_requested = false;
   bool profile_requested = false;
+  bool ownship_requested = false;
   bool layers_requested = false;
   bool layers_hide_requested = false;
   bool find_requested = false;
+  bool web_requested = false;
   bool form_requested = false;
   bool table_requested = false;
   bool style_requested = false;
@@ -169,10 +173,15 @@ class HostShell : public DeskShell {
     options_shown[kOptionsOverlay] = std::move(model);
     options_requested = kOptionsOverlay;
   }
+  void ShowFeedOptions(std::shared_ptr<OptionsModel> model) override {
+    options_shown[kOptionsFeed] = std::move(model);
+    options_requested = kOptionsFeed;
+  }
   void ShowDataSources() override { sources_requested = true; }
   bool ProvidesOverlayManager() const override { return overlay_manager; }
   void ShowOverlayManager() override { overlay_manager_requested = true; }
   void ShowRouteProfile() override { profile_requested = true; }
+  void ShowOwnship() override { ownship_requested = true; }
   void ShowLayers() override { layers_requested = true; }
   void HideLayers() override { layers_hide_requested = true; }
   void ShowFind() override { find_requested = true; }
@@ -181,6 +190,7 @@ class HostShell : public DeskShell {
   void ShowLayerStyle() override { style_requested = true; }
   void ShowLayerFields() override { fields_requested = true; }
   void ShowNewLayer() override { new_layer_requested = true; }
+  void ShowAddWebLayer() override { web_requested = true; }
   void ShowLayerProperties() override { properties_requested = true; }
   void ShowItemInfo() override { info_requested = true; }
   bool HostsPropertiesTabs() const override { return properties_tabs; }
@@ -295,32 +305,6 @@ bool FrameCovers(const view::Viewport& drawn, const view::Viewport& live, const 
   return true;
 }
 
-/// "1,234 ft", rounded to the foot, thousands separated.
-std::string FormatFeet(double feet) {
-  const long long n = std::llround(feet);
-  std::string digits = std::to_string(n < 0 ? -n : n);
-  for (int i = static_cast<int>(digits.size()) - 3; i > 0; i -= 3) digits.insert(i, ",");
-  return (n < 0 ? "-" : "") + digits + " ft";
-}
-
-/// "32°48.123' N  079°54.456' W" — degrees and decimal minutes.
-std::string FormatPosition(const GeoPoint& g) {
-  auto part = [](double v, int deg_width, char pos, char neg) {
-    const char hemi = v < 0 ? neg : pos;
-    double a = std::fabs(v);
-    int deg = static_cast<int>(a);
-    double min = (a - deg) * 60.0;
-    // Rounding to the printed precision must carry into the degrees.
-    if (min >= 59.9995) {
-      min = 0.0;
-      ++deg;
-    }
-    char buf[32];
-    std::snprintf(buf, sizeof buf, "%0*d\xC2\xB0%06.3f' %c", deg_width, deg, min, hemi);
-    return std::string(buf);
-  };
-  return part(g.lat, 2, 'N', 'S') + "  " + part(g.lon, 3, 'E', 'W');
-}
 
 }  // namespace
 
@@ -369,7 +353,8 @@ struct DeskHost::Impl {
   std::vector<LayerRow> layer_rows;  // the panel's snapshot of `Desk::layers()`
   std::vector<SourceRow> source_rows;  // `Desk::sources()` at the same time
   uint64_t layers_gen = UINT64_MAX;  // the generation `layer_rows` was taken at
-  uint64_t ticked_features_gen = 0;  // `Desk::FeatureViewsGeneration()` at the last Tick
+  uint64_t ticked_features_gen = 0;
+  uint64_t ticked_ownship_gen = 0;  // `Desk::OwnshipPanelGeneration()` at the last Tick
   int ticked_table_row = -1;         // `Desk::SelectedTableRow()` at the last Tick
   std::shared_ptr<const view::Frame> shown;
   std::string status_cache;
@@ -385,6 +370,8 @@ struct DeskHost::Impl {
   std::atomic<uint64_t> overlay_epoch{0};
   // Held by the worker for the overlay pass and by the UI thread in Execute.
   std::mutex stack_mu;
+  /// When the moving map last ticked; unset until its first tick.
+  std::optional<std::chrono::steady_clock::time_point> moving_map_ticked;
   /// The pointer press in progress went to an overlay, not the pan.
   bool pointer_on_overlay = false;
 
@@ -691,6 +678,7 @@ std::string DeskHost::Execute(const std::string& command_id) {
 }
 
 bool DeskHost::OpensAsOverlay(const std::string& path) const {
+  if (IsFeatureSourceSpec(path)) return true;
   const std::string ext = std::filesystem::path(path).extension().string();
   return impl_->desk->types().FindByExtension(ext) != nullptr;
 }
@@ -802,7 +790,7 @@ std::vector<const OptionsField*> FieldsInOrder(const OptionsPage& page) {
 }  // namespace
 
 OptionsPage* DeskHost::Impl::OptionsPageAt(int kind, int page) const {
-  if (kind != kOptionsMap && kind != kOptionsOverlay) return nullptr;
+  if (kind < kOptionsMap || kind > kOptionsFeed) return nullptr;
   const std::shared_ptr<OptionsModel>& model = shell.options_shown[kind];
   if (!model || page < 0 || page >= static_cast<int>(model->pages().size())) return nullptr;
   return model->pages()[static_cast<size_t>(page)].get();
@@ -815,7 +803,7 @@ int DeskHost::TakeOptionsRequest() {
 }
 
 bool DeskHost::OptionsOpen(int kind) const {
-  return (kind == kOptionsMap || kind == kOptionsOverlay) &&
+  return kind >= kOptionsMap && kind <= kOptionsFeed &&
          impl_->shell.options_shown[kind] != nullptr;
 }
 
@@ -935,7 +923,7 @@ void DeskHost::RevertOptions(int kind) {
 }
 
 void DeskHost::CloseOptions(int kind) {
-  if (kind == kOptionsMap || kind == kOptionsOverlay) impl_->shell.options_shown[kind].reset();
+  if (kind >= kOptionsMap && kind <= kOptionsFeed) impl_->shell.options_shown[kind].reset();
 }
 
 // MARK: Settings
@@ -1853,6 +1841,74 @@ std::string DeskHost::RevertLayerFields() {
 void DeskHost::CloseLayerFields() { impl_->desk->CloseLayerFields(); }
 
 // MARK: New layer
+
+// MARK: Add Web Layer
+
+bool DeskHost::TakeAddWebLayerRequest() {
+  const bool asked = impl_->shell.web_requested;
+  impl_->shell.web_requested = false;
+  return asked;
+}
+
+std::string DeskHost::WebConnect(const std::string& url) {
+  const Status s = impl_->desk->web_connection().Connect(url);
+  return s.ok() ? std::string() : s.message;
+}
+
+void DeskHost::WebCancel() { impl_->desk->web_connection().Cancel(); }
+
+int DeskHost::WebState() const { return static_cast<int>(impl_->desk->web_connection().state()); }
+std::string DeskHost::WebUrl() const { return impl_->desk->web_connection().url(); }
+std::string DeskHost::WebStatus() const { return impl_->desk->web_connection().StatusLine(); }
+
+namespace {
+
+const WebLayerRow* WebRow(Desk& desk, int row) {
+  const std::vector<WebLayerRow>& rows = desk.web_connection().rows();
+  return row >= 0 && row < static_cast<int>(rows.size()) ? &rows[static_cast<size_t>(row)] : nullptr;
+}
+
+}  // namespace
+
+int DeskHost::WebLayerCount() const { return static_cast<int>(impl_->desk->web_connection().rows().size()); }
+std::string DeskHost::WebLayerTitle(int row) const {
+  const WebLayerRow* r = WebRow(*impl_->desk, row);
+  return r != nullptr ? r->title : std::string();
+}
+std::string DeskHost::WebLayerId(int row) const {
+  const WebLayerRow* r = WebRow(*impl_->desk, row);
+  return r != nullptr ? r->id : std::string();
+}
+std::string DeskHost::WebLayerGeometry(int row) const {
+  const WebLayerRow* r = WebRow(*impl_->desk, row);
+  return r != nullptr ? r->geometry : std::string();
+}
+std::string DeskHost::WebLayerDescription(int row) const {
+  const WebLayerRow* r = WebRow(*impl_->desk, row);
+  return r != nullptr ? r->description : std::string();
+}
+bool DeskHost::WebLayerChosen(int row) const {
+  const WebLayerRow* r = WebRow(*impl_->desk, row);
+  return r != nullptr && r->chosen;
+}
+void DeskHost::SetWebLayerChosen(int row, bool chosen) {
+  if (row >= 0) impl_->desk->web_connection().SetChosen(static_cast<size_t>(row), chosen);
+}
+
+std::string DeskHost::AddWebLayers() {
+  Status s;
+  {
+    Impl::StackEdit edit(*impl_);
+    s = impl_->desk->AddWebLayers();
+  }
+  return s.ok() ? std::string() : s.message;
+}
+
+int DeskHost::WebRecentCount() const { return static_cast<int>(impl_->desk->RecentWebUrls().size()); }
+std::string DeskHost::WebRecentUrl(int i) const {
+  const std::vector<std::string> urls = impl_->desk->RecentWebUrls();
+  return i >= 0 && i < static_cast<int>(urls.size()) ? urls[static_cast<size_t>(i)] : std::string();
+}
 
 bool DeskHost::TakeNewLayerRequest() {
   const bool asked = impl_->shell.new_layer_requested;
@@ -3449,9 +3505,12 @@ HostTick DeskHost::Tick() {
   if (m.shell.options_requested >= 0) t.options_requested = true;
   if (m.shell.sources_requested) t.sources_requested = true;
   if (m.shell.profile_requested) t.profile_requested = true;
+  if (m.shell.ownship_requested) t.ownship_requested = true;
   if (m.shell.layers_requested) t.layers_requested = true;
   if (m.shell.layers_hide_requested) t.layers_hide_requested = true;
   if (m.shell.find_requested) t.find_requested = true;
+  if (m.shell.web_requested) t.web_requested = true;
+  if (m.desk->web_connection().Poll()) t.web_changed = true;
   if (m.RefreshLayers()) t.layers_changed = true;
   if (m.shell.form_requested) t.form_requested = true;
   if (m.shell.table_requested) t.table_requested = true;
@@ -3478,6 +3537,26 @@ HostTick DeskHost::Tick() {
     m.ticked_catalog = m.desk->catalog_path();
     t.catalog_changed = true;
   }
+  if (m.desk->moving_map_count() > 0) {
+    // The worker may be drawing the ship; skip a frame rather than interrupt
+    // its overlay pass, and carry the elapsed time to the next tick.
+    if (m.stack_depth == 0 && m.stack_mu.try_lock()) {
+      const auto now = std::chrono::steady_clock::now();
+      const double dt = m.moving_map_ticked
+                            ? std::chrono::duration<double>(now - *m.moving_map_ticked).count()
+                            : 0.0;
+      m.moving_map_ticked = now;
+      m.desk->TickMovingMap(dt);
+      m.stack_mu.unlock();
+    }
+  } else {
+    m.moving_map_ticked.reset();
+  }
+  if (m.desk->OwnshipPanelGeneration() != m.ticked_ownship_gen) {
+    m.ticked_ownship_gen = m.desk->OwnshipPanelGeneration();
+    t.ownship_changed = true;
+  }
+  m.desk->FlushOverlayRedraw();
   if (m.shell.invalidate.exchange(false)) {
     m.overlay_epoch.fetch_add(1);
     t.redraw = true;
@@ -3612,6 +3691,58 @@ std::string DeskHost::StatusScale() const { return impl_->desk->CurrentStatus().
 std::string DeskHost::StatusProduct() const { return impl_->desk->CurrentStatus().product; }
 std::string DeskHost::StatusMessage() const {
   return impl_->Message(impl_->desk->CurrentStatus());
+}
+
+bool DeskHost::TakeOwnshipRequest() {
+  const bool asked = impl_->shell.ownship_requested;
+  impl_->shell.ownship_requested = false;
+  return asked;
+}
+
+HostOwnshipPanel DeskHost::OwnshipPanel() const {
+  const desk::OwnshipPanel p = impl_->desk->ownship_panel();
+  HostOwnshipPanel o;
+  o.mode = static_cast<int>(p.mode);
+  o.status = p.status;
+  o.source = p.source;
+  o.time = p.time;
+  o.position = p.position;
+  o.altitude = p.altitude;
+  o.heading = p.heading;
+  o.heading_derived = p.heading_derived;
+  o.speed = p.speed;
+  o.clock_enabled = p.clock_enabled;
+  o.clock_s = p.clock_s;
+  o.start_s = p.start_s;
+  o.end_s = p.end_s;
+  o.clock_text = p.clock_text;
+  o.playing = p.playing;
+  o.rate_index = p.rate_index;
+  o.rate_label = PlaybackRateLabel(p.rate);
+  return o;
+}
+
+int DeskHost::OwnshipRateCount() const { return static_cast<int>(PlaybackRates().size()); }
+
+std::string DeskHost::OwnshipRateLabel(int index) const {
+  if (index < 0 || index >= OwnshipRateCount()) return std::string();
+  return PlaybackRateLabel(PlaybackRates()[index]);
+}
+
+void DeskHost::SetOwnshipRate(int index) {
+  if (index < 0 || index >= OwnshipRateCount()) return;
+  impl_->desk->SetReplayRate(PlaybackRates()[index]);
+}
+
+void DeskHost::SeekReplay(double time_s) {
+  // Placing the replay maps moves their ships, which the worker may be drawing.
+  Impl::StackEdit edit(*impl_);
+  impl_->desk->SeekReplay(time_s);
+}
+
+void DeskHost::SetReplayPlaying(bool playing) {
+  Impl::StackEdit edit(*impl_);
+  impl_->desk->SetReplayPlaying(playing);
 }
 
 std::string DeskHost::StatusPosition() const {

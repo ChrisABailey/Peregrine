@@ -98,6 +98,22 @@ void MapView::Resize(double width_pt, double height_pt, double display_scale,
 
 void MapView::SetViewport(const Viewport& v) { SetView(v); }
 
+void MapView::FollowTo(const Viewport& v) {
+  if (v == view_) return;
+  PointF at;
+  const bool camera_only =
+      v.ScaleDenom() == view_.ScaleDenom() &&
+      v.WithCamera(view_.Center(), view_.ScaleDenom(), view_.Rotation()) == view_ &&
+      view_.PointFor(v.Center(), &at);
+  if (!camera_only) {
+    SetView(v);
+    return;
+  }
+  // The content moves by the offset that brings the new centre to the middle.
+  const PointF c = view_.SurfaceCenter();
+  PanTo(v, c.x - at.x, c.y - at.y);
+}
+
 void MapView::SetProduct(const LadderProduct& p) {
   if (has_product_ && product_.series_id == p.series_id) return;
   has_product_ = true;

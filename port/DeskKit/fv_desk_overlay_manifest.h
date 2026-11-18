@@ -21,6 +21,9 @@
 ///       "file": { "extension": "rng", "filters": [["Range Rings", "*.rng"]] },
 ///       "implementation": { "builtin": "user.rangerings" } }
 ///
+/// A `python` or `library` entry may name its editor the same way,
+/// `"editor": { "python": "module:Class" }`, in the implementation's kind.
+///
 /// Optional keys: `parent_display_name`, `top_most`, `opacity` (0–100),
 /// `user_controllable`, `restore_at_startup`, and under `file`:
 /// `directory`, `save_filters` (defaults to `filters`). `kind` may be
@@ -64,8 +67,18 @@ struct OverlayManifestEntry {
   app::OverlayTypeDesc desc;        ///< factories empty
   std::string implementation_kind;  ///< "builtin", "library", "native" or "python"
   std::string implementation_name;  ///< the value under that key
+  std::string editor_kind;          ///< "python" or "library"; empty for no editor
+  std::string editor_name;          ///< the value under that key
   std::string source;               ///< the file (or name) it was read from
 };
+
+/// True when `icon` names an art file (.svg, .png or .pdf, any case) rather
+/// than a symbolic icon name.
+bool IsIconFile(const std::string& icon);
+
+/// `icon` joined to `base_dir` when it is a relative art-file path and
+/// `base_dir` is set; otherwise `icon` as written.
+std::string ResolveIconFile(const std::string& icon, const std::string& base_dir);
 
 /// Parses one manifest document. All or nothing: on error `out` is unchanged.
 /// An icon ending in .svg, .png or .pdf is a file and is resolved against

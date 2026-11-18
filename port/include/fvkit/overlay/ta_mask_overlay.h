@@ -92,6 +92,7 @@
 #include <string>
 #include <vector>
 
+#include "fvkit/app/overlay_host.h"
 #include "fvkit/app/properties.h"
 #include "fvkit/formats/source.h"
 #include "fvkit/geo/elevation_tiling.h"
@@ -134,8 +135,13 @@ struct ClearanceLevels {
 // whether a no-data post is inside coverage and worth colouring.
 ClearanceBand ClassifyClearance(float elevation_m, const ClearanceLevels& l);
 
-class TAMaskOverlay : public Overlay, public app::Properties {
+class TAMaskOverlay : public Overlay, public app::Properties, public app::HostAware {
  public:
+  app::HostAware* AsHostAware() override { return this; }
+  /// Opens its own elevation source from the host (null without one).
+  void SetHost(app::OverlayHost* host) override;
+  /// kNotFound while bound to a host whose catalog has no elevation data.
+  Status HostStatus() const override;
   TAMaskOverlay();
 
   static const char kTypeId[];  // "fv.tamask"

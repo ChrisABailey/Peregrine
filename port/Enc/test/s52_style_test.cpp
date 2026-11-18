@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include <png.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -255,6 +256,27 @@ TEST(S52Style, MostSpecificLookupRowWins) {
   EXPECT_TRUE(bare_row->attributes.empty());
 }
 
+// The delivered library puts VEGATN's catch-all row FIRST, ahead of the
+// CATVEG rows. A first-match reading drew every vegetation area with the
+// catch-all's CROSSX02 pattern.
+TEST(S52Style, ACatchAllRowAheadOfSpecificRowsDoesNotShadowThem) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  fv::VectorFeature mangrove = MakeFeature(fv::VectorGeometryType::kArea, "VEGATN");
+  SetAttr(&mangrove, "CATVEG", "14");
+  const fv::S52Lookup* row = e->SelectLookup(mangrove);
+  ASSERT_NE(row, nullptr);
+  EXPECT_FALSE(row->attributes.empty()) << "dispatched to the catch-all row";
+  EXPECT_EQ(row->instruction.find("CROSSX02"), std::string::npos);
+
+  fv::VectorFeature bare = MakeFeature(fv::VectorGeometryType::kArea, "VEGATN");
+  const fv::S52Lookup* bare_row = e->SelectLookup(bare);
+  ASSERT_NE(bare_row, nullptr);
+  EXPECT_TRUE(bare_row->attributes.empty());
+}
+
 TEST(S52Style, ListValuedAttributeConditionsMatchExactly) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
@@ -371,6 +393,32 @@ TEST(S52Style, SafetyContourIsDrawnBolderThanTheOthers) {
   EXPECT_TRUE(SameColor(thin.color, 125, 137, 140));  // DEPCN
 }
 
+// When the setting falls between two of the cell's contours, the next deeper
+// contour is the safety contour (S-52). The source attaches the next shoaler
+// contour as kEncShoalerContourAttribute; it is set by hand here.
+TEST(S52Style, SafetyContourIsTheNextDeeperContourWhenTheSettingIsBetween) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->mutable_mariner().safety_contour = 4.572;  // 15 ft; the cell has 3.6 / 5.4 / 9.1
+
+  auto pen_for = [&](const char* valdco, const char* shoaler) {
+    fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kLine, "DEPCNT");
+    SetAttr(&f, "VALDCO", valdco);
+    if (shoaler != nullptr) SetAttr(&f, fv::kEncShoalerContourAttribute, shoaler);
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+    fv::Pen pen{};
+    EXPECT_TRUE(FirstStroke(out, &pen));
+    return pen;
+  };
+  EXPECT_TRUE(SameColor(pen_for("5.4", "3.6").color, 82, 90, 92));      // DEPSC
+  EXPECT_TRUE(SameColor(pen_for("3.6", "1.8").color, 125, 137, 140));   // too shoal
+  EXPECT_TRUE(SameColor(pen_for("9.1", "5.4").color, 125, 137, 140));   // not the next
+  // The cell's shoalest contour, deeper than the setting.
+  EXPECT_TRUE(SameColor(pen_for("5.4", nullptr).color, 82, 90, 92));
+}
+
 TEST(S52Style, LabelsAreOffByDefault) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
@@ -398,6 +446,73 @@ TEST(S52Style, LabelsAreOffByDefault) {
 // at every priority there is. LNDARE's own row is the proof: `AC(LANDA);
 // TX(OBJNAM,...)` at Group 1, so the land name drew at priority 1 and every
 // band above it painted over the name. Text now goes in a band of its own.
+// OBSTRN04 on an area with no VALSOU: CATOBS 6 is a foul area (no fill of its
+// own, so the depth area beneath shows); otherwise WATLEV picks dry ground,
+// intertidal or very shallow water. FOULAR01 itself is raster-only in the
+// delivered library, so the vector path draws no pattern.
+TEST(S52Style, AnObstructionAreaWithoutADepthIsFilledByItsWaterLevel) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->viewing_groups().SetMaxCategory(fv::kDisplayOther);  // the foul-area row
+  auto fill_of = [&](const char* key, const char* value, fv::FvColor* fill,
+                     bool* stroked) {
+    fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kArea, "OBSTRN");
+    SetAttr(&f, key, value);
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+    *stroked = false;
+    for (const auto& r : out)
+      if (r.stroke.valid) *stroked = true;
+    return FirstFill(out, fill);
+  };
+  auto token = [&](const char* name) {
+    fv::FvColor c;
+    EXPECT_TRUE(e->library().Color(name, &c)) << name;
+    return c;
+  };
+  fv::FvColor fill;
+  bool stroked = false;
+  ASSERT_TRUE(fill_of("WATLEV", "4", &fill, &stroked));
+  EXPECT_TRUE(SameColor(fill, token("DEPIT").r, token("DEPIT").g, token("DEPIT").b)) << "covers and uncovers: intertidal";
+  ASSERT_TRUE(fill_of("WATLEV", "2", &fill, &stroked));
+  EXPECT_TRUE(SameColor(fill, token("CHBRN").r, token("CHBRN").g, token("CHBRN").b)) << "always dry";
+  ASSERT_TRUE(fill_of("WATLEV", "3", &fill, &stroked));
+  EXPECT_TRUE(SameColor(fill, token("DEPVS").r, token("DEPVS").g, token("DEPVS").b)) << "always under water";
+  EXPECT_FALSE(fill_of("CATOBS", "6", &fill, &stroked)) << "a foul area has no fill";
+  EXPECT_TRUE(stroked) << "a foul area keeps its dotted boundary";
+}
+
+// TE formats keep the text around the conversion: a unit after it, a prefix
+// before it.
+TEST(S52Style, TextFormatsKeepTheirUnits) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+  auto labels_of = [&](fv::VectorFeature f) {
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+    std::vector<std::string> texts;
+    for (const auto& r : out)
+      if (r.label.valid) texts.push_back(r.label.text);
+    return texts;
+  };
+  fv::VectorFeature current = MakeFeature(fv::VectorGeometryType::kPoint, "CURENT");
+  SetAttr(&current, "ORIENT", "45");
+  SetAttr(&current, "CURVEL", "1.5");
+  EXPECT_EQ(labels_of(current), std::vector<std::string>{" 1.5 kn"});
+
+  fv::VectorFeature point = MakeFeature(fv::VectorGeometryType::kPoint, "CTRPNT");
+  SetAttr(&point, "HEIGHT", "12");
+  EXPECT_EQ(labels_of(point), std::vector<std::string>{"12.0 (m)"});
+
+  fv::VectorFeature bridge = MakeFeature(fv::VectorGeometryType::kArea, "BRIDGE");
+  SetAttr(&bridge, "VERCLR", "19.5");
+  const std::vector<std::string> clr = labels_of(bridge);
+  EXPECT_NE(std::find(clr.begin(), clr.end(), "clr 19.5"), clr.end());
+}
+
 TEST(S52Style, TextDrawsAboveEveryGeometryBand) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
@@ -605,24 +720,38 @@ TEST(S52Style, UnimplementedCsProcedureIsCountedAndPlaceheld) {
   auto e = OpenEngine(enc_root);
   ASSERT_NE(e, nullptr);
 
-  // E3b implemented every procedure the Charleston cells reach, so the
-  // mechanism is exercised through a row that still asks for an unimplemented
-  // one: NEWOBJ (the mariner's own inserted object) is CS(SYMINS01) and
-  // nothing else, in every table. The remaining unimplemented procedures are
-  // all mariner-object ones — SYMINS, OWNSHP, VESSEL, PASTRK, LEGLIN, VRMEBL,
-  // CLRLIN — which no ENC cell can contain.
-  // NEWOBJ's first row is conditional on the SYMINS attribute being present,
-  // so the feature has to carry it to reach CS(SYMINS01); without it the row
-  // that matches is the plain SY(NEWOBJ01) one.
-  fv::VectorFeature inserted =
-      MakeFeature(fv::VectorGeometryType::kPoint, "NEWOBJ");
-  SetAttr(&inserted, "SYMINS", "SY(BOYSPP21)");
+  // Exercised through a procedure no US coastal cell reaches: the inland-ENC
+  // depth area, whose only instruction is CS(DEPARE02).
+  fv::VectorFeature inland = MakeFeature(fv::VectorGeometryType::kArea, "depare");
   std::vector<fv::StyleResult> out;
-  ASSERT_TRUE(e->Style(inserted, Ctx(), &out).ok());
+  ASSERT_TRUE(e->Style(inland, Ctx(), &out).ok());
   ASSERT_FALSE(out.empty());
   EXPECT_EQ(FirstSymbol(out), "QUESMRK1");
-  EXPECT_EQ(e->unhandled_cs().count("SYMINS01"), 1u);
+  EXPECT_EQ(e->unhandled_cs().count("DEPARE02"), 1u);
   EXPECT_GE(e->placeholders_drawn(), 1u);
+}
+
+// A virtual AIS aid to navigation, as Florida's cells carry them: NEWOBJ
+// draws the instructions in its own SYMINS, quoted text included.
+TEST(S52Style, NewObjectDrawsItsOwnSymbolInstructions) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+  fv::VectorFeature vais = MakeFeature(fv::VectorGeometryType::kPoint, "NEWOBJ");
+  SetAttr(&vais, "SYMINS",
+          "SY(BRTHNO01);SY(BOYLAT23);TX('V-AIS',3,2,2,'15110',2,0,CHMGD,11)");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(vais, Ctx(), &out).ok());
+  std::vector<std::string> symbols, texts;
+  for (const auto& r : out) {
+    if (r.symbol.valid) symbols.push_back(r.symbol.symbol_id);
+    if (r.label.valid) texts.push_back(r.label.text);
+  }
+  EXPECT_EQ(symbols, (std::vector<std::string>{"BRTHNO01", "BOYLAT23"}));
+  EXPECT_EQ(texts, std::vector<std::string>{"V-AIS"});
+  EXPECT_EQ(e->unhandled_cs().count("SYMINS01"), 0u);
+  EXPECT_EQ(e->placeholders_drawn(), 0u);
 }
 
 TEST(S52Style, PlaceholderIsDrawnOnlyWhenTheRowPutNoInkDown) {
@@ -773,6 +902,44 @@ TEST(S52Style, TheLightFlareLeansSouthEastInsteadOfStandingOnItsLight) {
   for (const auto& r : out)
     if (r.symbol.valid && r.symbol.symbol_id == "LIGHTS13") {
       EXPECT_DOUBLE_EQ(r.symbol.rotation_deg, -135.0);
+      // A literal angle is relative to the screen, not to north.
+      EXPECT_FALSE(r.symbol.turns_with_chart);
+      checked = true;
+    }
+  EXPECT_TRUE(checked);
+}
+
+/// On a rotated chart only attribute bearings (ORIENT) turn with the chart;
+/// a buoy stays screen-upright.
+TEST(S52Style, OnlyAttributeBearingsTurnWithTheChart) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  fv::VectorFeature buoy = MakeFeature(fv::VectorGeometryType::kPoint, "BOYLAT");
+  SetAttr(&buoy, "BOYSHP", "1");
+  SetAttr(&buoy, "COLOUR", "4");
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(buoy, Ctx(), &out).ok());
+  size_t symbols = 0;
+  for (const auto& r : out)
+    if (r.symbol.valid) {
+      ++symbols;
+      EXPECT_FALSE(r.symbol.turns_with_chart) << r.symbol.symbol_id;
+    }
+  EXPECT_GT(symbols, 0u);
+
+  fv::VectorFeature track = MakeFeature(fv::VectorGeometryType::kArea, "RECTRC");
+  SetAttr(&track, "ORIENT", "45");
+  SetAttr(&track, "CATTRK", "1");
+  SetAttr(&track, "TRAFIC", "1");
+  out.clear();
+  ASSERT_TRUE(e->Style(track, Ctx(), &out).ok());
+  bool checked = false;
+  for (const auto& r : out)
+    if (r.symbol.valid && r.symbol.symbol_id == "RECTRC58") {
+      EXPECT_DOUBLE_EQ(r.symbol.rotation_deg, -45.0);
+      EXPECT_TRUE(r.symbol.turns_with_chart);
       checked = true;
     }
   EXPECT_TRUE(checked);
@@ -812,17 +979,20 @@ TEST(S52Style, SymbolsAreSizedOnTheLibrarysOwnGridNotGeoSyms) {
   }
 }
 
-// A sounding is a ROW OF SYMBOLS, one per digit — `SOUND` + family + position
-// + digit — and the position is what puts the decimetre a half-line low. The
-// two families are the safety-depth split: SOUNDS* black for at-or-shallower,
-// SOUNDG* grey for deeper.
-std::vector<std::string> SoundingSymbols(fv::S52StyleEngine* e,
-                                         const char* depth) {
+/// The text labels a sounding of `depth` metres styles to, in order.
+std::vector<std::string> SoundingTexts(fv::S52StyleEngine* e, const char* depth,
+                                       std::vector<fv::StyleResult>* keep = nullptr) {
   fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "SOUNDG");
   SetAttr(&f, "DEPTH", depth);
   std::vector<fv::StyleResult> out;
   EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
-  return AllSymbols(out);
+  std::vector<std::string> texts;
+  for (const auto& r : out) {
+    EXPECT_FALSE(r.symbol.valid) << "a sounding digit drawn as a symbol";
+    if (r.label.valid) texts.push_back(r.label.text);
+  }
+  if (keep != nullptr) *keep = out;
+  return texts;
 }
 
 TEST(S52Style, SoundingsSplitAtTheMarinersSafetyDepth) {
@@ -831,47 +1001,101 @@ TEST(S52Style, SoundingsSplitAtTheMarinersSafetyDepth) {
   ASSERT_NE(e, nullptr);
   e->mutable_mariner().safety_depth = 10.0;
 
-  // 4.5 m is at or above the safety depth: the BLACK family.
-  EXPECT_EQ(SoundingSymbols(e.get(), "4.5"),
-            (std::vector<std::string>{"SOUNDS14", "SOUNDS55"}));
-  // 40 m is deeper: the same layout in the GREY family.
-  EXPECT_EQ(SoundingSymbols(e.get(), "40.0"),
-            (std::vector<std::string>{"SOUNDG24", "SOUNDG10"}));
+  std::vector<fv::StyleResult> shallow, deep;
+  SoundingTexts(e.get(), "4.5", &shallow);
+  SoundingTexts(e.get(), "40.0", &deep);
+  ASSERT_FALSE(shallow.empty());
+  ASSERT_FALSE(deep.empty());
+  const fv::FvColor black = shallow[0].label.style.color;
+  const fv::FvColor grey = deep[0].label.style.color;
+  EXPECT_FALSE(black.r == grey.r && black.g == grey.g && black.b == grey.b);
 
   // Moving the safety depth moves the split and nothing else.
   e->mutable_mariner().safety_depth = 50.0;
-  EXPECT_EQ(SoundingSymbols(e.get(), "40.0"),
-            (std::vector<std::string>{"SOUNDS24", "SOUNDS10"}));
+  std::vector<fv::StyleResult> now_shallow;
+  SoundingTexts(e.get(), "40.0", &now_shallow);
+  ASSERT_FALSE(now_shallow.empty());
+  EXPECT_EQ(now_shallow[0].label.style.color.r, black.r);
+  EXPECT_EQ(now_shallow[0].label.style.color.g, black.g);
+  EXPECT_EQ(now_shallow[0].label.style.color.b, black.b);
 }
 
-TEST(S52Style, SoundingDigitsCarryTheDecimetreAsASubscript) {
+TEST(S52Style, SoundingsAreTextWithTheFractionAsASubscript) {
   SKIP_WITHOUT_PRESLIB();
   auto e = OpenEngine(enc_root);
   ASSERT_NE(e, nullptr);
-  e->mutable_mariner().safety_depth = 1000.0;  // one family, so this reads as layout
 
-  // Position 1 is the units digit and position 5 is the subscript slot — the
-  // delivered BITMAP PIVOTS say so: 5 puts the tile at position 0's x with the
-  // pivot 4 px higher, i.e. the same column dropped half a line. Composing the
-  // tiles by those pivots draws "9<sub>4</sub>", which is how this was read
-  // off the data rather than out of the spec.
-  EXPECT_EQ(SoundingSymbols(e.get(), "9.4"),
-            (std::vector<std::string>{"SOUNDS19", "SOUNDS54"}));
-  // Two whole digits: position 2 is the tens, right-to-left ending at 1.
-  EXPECT_EQ(SoundingSymbols(e.get(), "12.6"),
-            (std::vector<std::string>{"SOUNDS21", "SOUNDS12", "SOUNDS56"}));
-  // 31 m and deeper is whole metres — no subscript, by S-52's own rule.
-  EXPECT_EQ(SoundingSymbols(e.get(), "31.4"),
-            (std::vector<std::string>{"SOUNDS23", "SOUNDS11"}));
-  EXPECT_EQ(SoundingSymbols(e.get(), "127.0"),
-            (std::vector<std::string>{"SOUNDS31", "SOUNDS22", "SOUNDS17"}));
-  // A whole number under 31 has nothing to subscript.
-  EXPECT_EQ(SoundingSymbols(e.get(), "5.0"),
-            (std::vector<std::string>{"SOUNDS15"}));
-  // A drying height is authored negative; its magnitude prints (the bar that
-  // says "drying" is the one piece of SNDFRM02 still missing).
-  EXPECT_EQ(SoundingSymbols(e.get(), "-1.2"),
-            (std::vector<std::string>{"SOUNDS11", "SOUNDS52"}));
+  std::vector<fv::StyleResult> out;
+  EXPECT_EQ(SoundingTexts(e.get(), "9.4", &out),
+            (std::vector<std::string>{"9", "4"}));
+  ASSERT_EQ(out.size(), 2u);
+  const fv::LabelStyle& whole = out[0].label;
+  const fv::LabelStyle& sub = out[1].label;
+  // Whole part ends at the sounding; the subscript starts right of it, lower.
+  EXPECT_EQ(whole.halign, fv::LabelHAlign::kRight);
+  EXPECT_EQ(sub.halign, fv::LabelHAlign::kLeft);
+  EXPECT_GT(sub.dx, whole.dx);
+  EXPECT_GT(sub.dy, whole.dy);
+  // Neighbouring equal depths are all drawn.
+  EXPECT_TRUE(whole.skip_repeat_filter);
+  EXPECT_TRUE(sub.skip_repeat_filter);
+
+  EXPECT_EQ(SoundingTexts(e.get(), "31.4"), (std::vector<std::string>{"31"}));
+  EXPECT_EQ(SoundingTexts(e.get(), "5.0"), (std::vector<std::string>{"5"}));
+}
+
+TEST(S52Style, SoundingFramesMarkDryingSweptAndLowAccuracySoundings) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->mutable_mariner().safety_depth = 10.0;
+  auto symbols = [&](const char* depth, const char* key, const char* value) {
+    fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "SOUNDG");
+    SetAttr(&f, "DEPTH", depth);
+    if (key != nullptr) SetAttr(&f, key, value);
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+    return AllSymbols(out);
+  };
+
+  // A drying height gets the bar and still prints its magnitude.
+  EXPECT_EQ(symbols("-1.2", nullptr, nullptr),
+            std::vector<std::string>{"SOUNDSA1"});
+  EXPECT_EQ(SoundingTexts(e.get(), "4.5").size(), 2u);
+  EXPECT_TRUE(symbols("4.5", nullptr, nullptr).empty());
+  EXPECT_EQ(symbols("4.5", "TECSOU", "6"),
+            std::vector<std::string>{"SOUNDSB1"});
+  EXPECT_EQ(symbols("40.0", "TECSOU", "6"),
+            std::vector<std::string>{"SOUNDGB1"});
+  EXPECT_EQ(symbols("4.5", "QUASOU", "9"),
+            std::vector<std::string>{"SOUNDSC2"});
+  EXPECT_TRUE(symbols("4.5", "QUASOU", "1").empty());
+
+  // The bar keeps its authored offset: below the figure (symbol space is y up),
+  // left of the sounding.
+  const fv::VectorSymbol* bar = e->Symbol("SOUNDSA1");
+  ASSERT_NE(bar, nullptr);
+  ASSERT_FALSE(bar->primitives.empty());
+  for (const fv::SymbolPrimitive& p : bar->primitives)
+    for (const fv::SymbolPoint& q : p.points) {
+      EXPECT_LT(q.y, -150);
+      EXPECT_LE(q.x, 0);
+    }
+}
+
+TEST(S52Style, SoundingsPrintInTheMarinersDepthUnit) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  const uint64_t epoch = e->style_epoch();
+  fv::S52MarinerSettings m = e->mariner();
+  m.depth_unit = fv::DepthUnit::kFeet;
+  e->SetMariner(m);
+  EXPECT_NE(e->style_epoch(), epoch) << "a unit change must restyle the scene";
+  EXPECT_EQ(SoundingTexts(e.get(), "10.0"), (std::vector<std::string>{"33"}));
+  m.depth_unit = fv::DepthUnit::kFathomsFeet;
+  e->SetMariner(m);
+  EXPECT_EQ(SoundingTexts(e.get(), "10.0"), (std::vector<std::string>{"5", "3"}));
 }
 
 TEST(S52Style, FloodAndStripLightsTakeTheirOwnSymbolNotAFlare) {
@@ -998,6 +1222,88 @@ TEST(S52Style, LightWithOneSectorLimitFallsBackToAFlare) {
   EXPECT_EQ(FirstSymbol(out), "LIGHTS12");
   EXPECT_EQ(e->sector_lights_simplified(), 1u);
   EXPECT_EQ(e->Symbol("LTSECT_bad"), nullptr);
+}
+
+TEST(S52Style, LightsCarryTheirDescription) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+  auto labels = [&](const fv::VectorFeature& f) {
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+    std::vector<fv::LabelStyle> l;
+    for (const auto& r : out)
+      if (r.label.valid) l.push_back(r.label);
+    return l;
+  };
+
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&f, "LITCHR", "2");
+  SetAttr(&f, "SIGGRP", "(2)");
+  SetAttr(&f, "COLOUR", "3");
+  SetAttr(&f, "SIGPER", "6");
+  SetAttr(&f, "HEIGHT", "12.5");
+  SetAttr(&f, "VALNMR", "5");
+  std::vector<fv::LabelStyle> l = labels(f);
+  ASSERT_EQ(l.size(), 1u);
+  EXPECT_EQ(l[0].text, "Fl(2) R 6s 12.5m 5M");
+  // To the right of the light and up, clear of the flare at 135 degrees.
+  EXPECT_EQ(l[0].halign, fv::LabelHAlign::kLeft);
+  EXPECT_GT(l[0].dx, 0);
+  EXPECT_LT(l[0].dy, 0);
+
+  // A single flash is not written as a group; a sector light's text is level.
+  fv::VectorFeature sector = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&sector, "LITCHR", "2");
+  SetAttr(&sector, "SIGGRP", "(1)");
+  SetAttr(&sector, "COLOUR", "3");
+  SetAttr(&sector, "SIGPER", "6");
+  SetAttr(&sector, "HEIGHT", "12.5");
+  SetAttr(&sector, "VALNMR", "5");
+  SetAttr(&sector, "SECTR1", "045");
+  SetAttr(&sector, "SECTR2", "135");
+  l = labels(sector);
+  ASSERT_EQ(l.size(), 1u);
+  EXPECT_EQ(l[0].text, "Fl R 6s 12.5m 5M");
+  EXPECT_EQ(l[0].dy, 0);
+
+  fv::VectorFeature morse = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&morse, "LITCHR", "12");
+  SetAttr(&morse, "SIGGRP", "(U)");
+  SetAttr(&morse, "COLOUR", "1,3");
+  l = labels(morse);
+  ASSERT_EQ(l.size(), 1u);
+  EXPECT_EQ(l[0].text, "Mo(U) WR");
+
+  // A light that states nothing has no text.
+  EXPECT_TRUE(labels(MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS")).empty());
+}
+
+TEST(S52Style, LightDescriptionsCanBeHidden) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+  e->SetDrawLabels(true);
+  fv::VectorFeature f = MakeFeature(fv::VectorGeometryType::kPoint, "LIGHTS");
+  SetAttr(&f, "LITCHR", "2");
+  SetAttr(&f, "COLOUR", "3");
+  SetAttr(&f, "SIGPER", "6");
+  auto count = [&](size_t* labels, size_t* ink) {
+    std::vector<fv::StyleResult> out;
+    EXPECT_TRUE(e->Style(f, Ctx(), &out).ok());
+    *labels = *ink = 0;
+    for (const auto& r : out) (r.label.valid ? *labels : *ink) += 1;
+  };
+  size_t labels = 0, ink = 0, ink_shown = 0;
+  count(&labels, &ink_shown);
+  EXPECT_EQ(labels, 1u);
+  const uint64_t epoch = e->style_epoch();
+  e->SetShowLightDescriptions(false);
+  EXPECT_NE(e->style_epoch(), epoch);
+  count(&labels, &ink);
+  EXPECT_EQ(labels, 0u);
+  EXPECT_EQ(ink, ink_shown);  // the flare stays
 }
 
 TEST(S52Style, ObstructionDangerFollowsTheMarinersSafetyContour) {
@@ -1177,9 +1483,43 @@ TEST(S52Style, RestrictionFamilyFollowsRestrn) {
           r.line_pattern.runs[0].symbol_id == fv::S52LineStyleId(c.line_style))
         boundary = true;
     EXPECT_TRUE(boundary) << "RESTRN " << c.restrn << " drew no " << c.line_style;
-    // ...and deliberately no centred symbol (see the procedure's comment).
-    EXPECT_FALSE(HasSymbol(out, c.line_style));
+    // ...and the family's symbol, which the renderer centres in the area.
+    bool centred = false;
+    for (const auto& r : out)
+      if (r.symbol.valid && r.symbol.symbol_id == c.line_style &&
+          r.symbol.anchor == fv::LabelAnchor::kCentre)
+        centred = true;
+    EXPECT_TRUE(centred) << "RESTRN " << c.restrn << " drew no centred "
+                         << c.line_style;
   }
+}
+
+// RESTRN01 is called from 67 lookup rows (ACHARE, cable areas, fairways, ...).
+// An object of one of those classes without RESTRN carries no restriction and
+// must not draw the undefined-restriction mark.
+TEST(S52Style, Restrn01DrawsNothingWhenRestrnIsAbsent) {
+  SKIP_WITHOUT_PRESLIB();
+  auto e = OpenEngine(enc_root);
+  ASSERT_NE(e, nullptr);
+
+  fv::VectorFeature cable = MakeFeature(fv::VectorGeometryType::kArea, "CBLARE");
+  const fv::S52Lookup* row = e->SelectLookup(cable);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(row->instruction.find("RESTRN01"), std::string::npos)
+      << "CBLARE row no longer calls RESTRN01: " << row->instruction;
+  std::vector<fv::StyleResult> out;
+  ASSERT_TRUE(e->Style(cable, Ctx(), &out).ok());
+  EXPECT_FALSE(HasSymbol(out, "RSRDEF51"));
+
+  SetAttr(&cable, "RESTRN", "1");  // anchoring prohibited
+  out.clear();
+  ASSERT_TRUE(e->Style(cable, Ctx(), &out).ok());
+  bool boundary = false;
+  for (const auto& r : out)
+    if (r.line_pattern.valid && !r.line_pattern.runs.empty() &&
+        r.line_pattern.runs[0].symbol_id == fv::S52LineStyleId("ACHRES51"))
+      boundary = true;
+  EXPECT_TRUE(boundary);
 }
 
 TEST(S52Style, AreaPatternBecomesAGridStampNotATint) {
@@ -1557,7 +1897,26 @@ TEST(S52Style, SymbolReturnsACachedDisplayList) {
 // light, one new symbol, one dashed line removed).
 // Sector lights draw legs and arc instead of a flare: 1734 px change, all at
 // the range lights (0xf4f4a09bb8902ea3 -> 0xbc8cd62c98a365f2).
-constexpr uint64_t kHashCharleston = 0x7430053c764d1145ull;
+// RESTRN01 draws nothing without RESTRN, and lookup dispatch prefers the most
+// specific matching row: 5056 px change, mostly the removed RSRDEF51 marks and
+// dashed magenta boundaries on cable areas, anchorages and fairways
+// (0x7430053c764d1145 -> 0xcc336219449996b3).
+// Area boundaries are stroked from the unclipped ring, and FSPT MASK = 1 and
+// USAG = 3 edges are filled but not stroked (0xcc336219449996b3 ->
+// 0x7e210534483a0ad2). Measured separately: the stroke change alone moves
+// 369 px, 326 of them pen removed from the canvas border; the masked edges
+// move 5567 px in 1304 clusters, the largest the cell limit at x = 156.
+// Area symbols and text are centred once per area at an interior point of the
+// unclipped outer ring, area patterns skip holes, and restricted areas carry
+// their centred family symbol (0x7e210534483a0ad2 -> 0xe6e60f92f7f59abb):
+// 9856 px change, mostly symbols and text leaving ring corners; the largest
+// new mark is MAGVAR51 centred on the magnetic-variation areas.
+// Soundings drawn as text in DejaVu Sans instead of the library's digit tiles,
+// and the canvas now has a font, so TX/TE text draws too
+// (0xe6e60f92f7f59abb -> 0xd715c0cc2a5f6edb): 49455 px.
+// Area patterns are a tiled fill clipped to the area, on whole-pixel cells
+// (0xd715c0cc2a5f6edb -> 0xc2edde81eb7e4538).
+constexpr uint64_t kHashCharleston = 0xc2edde81eb7e4538ull;
 
 TEST(S52Render, CharlestonHarborViewport) {
   SKIP_WITHOUT_PRESLIB();
@@ -1573,7 +1932,11 @@ TEST(S52Render, CharlestonHarborViewport) {
   // MapScaleUtil's latitude-dependent dpp is ever retuned (V5b's rule).
   ASSERT_TRUE(proj.SetResolution(0.0002, 0.0002).ok());
 
+  // The font is staged with Osprey's pack, which is git-ignored, so a clean clone has none.
+  if (!std::filesystem::exists(FV_TEST_FONT))
+    GTEST_SKIP() << "no " << FV_TEST_FONT << "; stage it with stage_data.py --region charleston-enc --pack port/apps/Osprey/Data";
   fv::CpuCanvas canvas(512, 512);
+  ASSERT_TRUE(canvas.SetDefaultFont(FV_TEST_FONT).ok());
   canvas.Clear(fv::FvColor{255, 255, 255, 255});
 
   fv::VectorRenderer r(source, style);
@@ -1778,6 +2141,63 @@ double PanMismatch(const std::string& enc_root, int pan_x, int pan_y,
 
 }  // namespace
 
+/** Draw time of Charleston at 1:50000 with the shallow-water pattern on,
+ *  area patterns filled from a tile, against a canvas with no tiled fill, which
+ *  gets one symbol draw per lattice site. Run with
+ *  --gtest_also_run_disabled_tests. */
+TEST(S52RenderBench, DISABLED_AreaPatternTileAgainstStamps) {
+  SKIP_WITHOUT_PRESLIB();
+  /// A CpuCanvas that reports no tiled fill.
+  struct NoTileCanvas : fv::CpuCanvas {
+    using fv::CpuCanvas::CpuCanvas;
+    fv::Status FillPolyPolygonTiled(
+        const std::vector<std::vector<fv::PixelPoint>>& rings,
+        const fv::PatternTile& tile, int ox, int oy,
+        const fv::Brush* under) override {
+      return fv::ICanvas::FillPolyPolygonTiled(rings, tile, ox, oy, under);
+    }
+  };
+  constexpr int kW = 1320, kH = 2868;
+  auto source = std::make_shared<fv::EncVectorSource>();
+  ASSERT_TRUE(source->Open(enc_root).ok());
+  auto style = std::make_shared<fv::S52StyleEngine>();
+  ASSERT_TRUE(style->Open(enc_root).ok());
+  style->mutable_mariner().shallow_pattern = true;
+  /// One display: pixel pitch in mm, device dpi and symbol scale.
+  struct Display {
+    const char* name;
+    double pixel_mm, dpi, symbol_scale;
+  };
+  for (const Display& d : {Display{"phone", 0.0554, 288.0, 3.0},
+                           Display{"desktop", 0.25, 96.0, 1.0}}) {
+    fv::MapProjection proj;
+    ASSERT_TRUE(proj.SetSurfaceSize(kW, kH).ok());
+    ASSERT_TRUE(proj.SetCenter(fv::GeoPoint{32.72, -79.93}).ok());
+    ASSERT_TRUE(proj.SetPhysicalScale(50000.0, d.pixel_mm).ok());
+
+    auto Time = [&](fv::CpuCanvas* canvas, size_t* draws) {
+      fv::VectorRenderer r(source, style);
+      r.SetDeviceDpi(d.dpi);
+      r.SetSymbolScale(d.symbol_scale);
+      double best = 1e30;
+      for (int i = 0; i < 8; ++i) {
+        EXPECT_TRUE(r.Render(proj, canvas).ok());
+        if (i > 0) best = std::min(best, r.draw_ms());
+        *draws = r.draws_emitted();
+      }
+      return best;
+    };
+    fv::CpuCanvas tiled(kW, kH);
+    NoTileCanvas stamped(kW, kH);
+    size_t tiled_draws = 0, stamped_draws = 0;
+    const double tiled_ms = Time(&tiled, &tiled_draws);
+    const double stamped_ms = Time(&stamped, &stamped_draws);
+    std::printf("Charleston 1:50000 with DIAMOND1, %dx%d, %s: tiled %.2f ms and "
+                "%zu draw calls, stamped %.2f ms and %zu draw calls (best of 7)\n",
+                kW, kH, d.name, tiled_ms, tiled_draws, stamped_ms, stamped_draws);
+  }
+}
+
 TEST(S52Render, PanMovesEveryMarkByTheSameAmountIncludingAreaPatterns) {
   SKIP_WITHOUT_PRESLIB();
   // East/west: dpp does not move, so this axis was already clean before the
@@ -1833,6 +2253,40 @@ TEST(S52Render, RenderIsDeterministic) {
     hashes[i] = Fnv1a(canvas.Buffer());
   }
   EXPECT_EQ(hashes[0], hashes[1]);
+}
+
+/** The screen cull changes no pixel: Charleston harbour turned and enlarged as
+ *  on a phone, with the scene holding a margin of off-canvas features. */
+TEST(S52Render, TheScreenCullLeavesThePictureUnchanged) {
+  SKIP_WITHOUT_PRESLIB();
+  auto source = std::make_shared<fv::EncVectorSource>();
+  ASSERT_TRUE(source->Open(enc_root).ok());
+  auto style = std::make_shared<fv::S52StyleEngine>();
+  ASSERT_TRUE(style->Open(enc_root).ok());
+  style->SetDrawLabels(true);
+  size_t culled = 0;
+  for (double rotation : {0.0, 40.0, 195.0}) {
+    fv::MapProjection proj;
+    proj.SetSurfaceSize(360, 520);
+    proj.SetCenter(fv::GeoPoint{32.78, -79.93});
+    proj.SetPhysicalScale(12000.0, 0.0554);
+    proj.SetRotation(rotation);
+    uint64_t hashes[2] = {0, 0};
+    for (int on = 0; on < 2; ++on) {
+      fv::CpuCanvas canvas(360, 520);
+      canvas.Clear(fv::FvColor{255, 255, 255, 255});
+      fv::VectorRenderer r(source, style);
+      r.SetDeviceDpi(288.0);
+      r.SetSymbolScale(3.0);
+      r.SetSceneMargin(0.25);
+      r.SetScreenCull(on == 1);
+      ASSERT_TRUE(r.Render(proj, &canvas).ok());
+      hashes[on] = Fnv1a(canvas.Buffer());
+      culled += r.parts_culled();
+    }
+    EXPECT_EQ(hashes[0], hashes[1]) << "rotation " << rotation;
+  }
+  EXPECT_GT(culled, 0u);
 }
 
 // What the chart is still owed, measured over the whole delivered data set
@@ -1927,10 +2381,11 @@ TEST(S52Render, EveryFeatureInTheCellsIsSymbolizedOrCounted) {
                   << kv.second;
   EXPECT_TRUE(e->unhandled_cs().empty());
 
-  // The named twelve must stay implemented. E3a's five plus E3b's seven.
+  // The implemented procedures stay implemented.
   for (const char* done : {"DATCVR01", "DEPARE01", "DEPCNT02", "LIGHTS05",
                            "OBSTRN04", "QUAPOS01", "RESARE02", "RESTRN01",
-                           "SLCONS03", "SOUNDG02", "TOPMAR01", "WRECKS02"})
+                           "SLCONS03", "SOUNDG02", "SYMINS01", "TOPMAR01",
+                           "WRECKS02"})
     EXPECT_EQ(e->unhandled_cs().count(done), 0u) << done << " regressed";
 
   // Every sector light in these cells states both limits.
@@ -1967,17 +2422,16 @@ TEST(S52Render, RasterOnlySymbolsAreDrawnFromTheSheet) {
   ASSERT_FALSE(features.empty());
 
   size_t vector_symbols = 0, raster_symbols = 0, question_marks = 0;
-  size_t sounding_digits = 0;
+  size_t sounding_figures = 0;
   std::vector<fv::StyleResult> out;
   for (const auto& f : features) {
     out.clear();
     ASSERT_TRUE(e->Style(f, Ctx(), &out).ok());
     for (const fv::StyleResult& r : out) {
+      if (r.label.valid && r.label.skip_repeat_filter) ++sounding_figures;
       if (!r.symbol.valid) continue;
       if (r.symbol.symbol_id == "QUESMRK1") {
         ++question_marks;
-      } else if (r.symbol.symbol_id.compare(0, 5, "SOUND") == 0) {
-        ++sounding_digits;
       } else if (e->Symbol(r.symbol.symbol_id) != nullptr) {
         ++vector_symbols;
       } else if (e->Pixmap(r.symbol.symbol_id) != nullptr) {
@@ -1988,14 +2442,13 @@ TEST(S52Render, RasterOnlySymbolsAreDrawnFromTheSheet) {
     }
   }
   // Both halves of the library are load-bearing on this chart: the buoys,
-  // beacons and daymarks are raster, most of the rest is vector. Sounding
-  // digits are raster tiles too, counted apart because they outnumber both.
+  // beacons and daymarks are raster, most of the rest is vector. Soundings
+  // are text, not the library's digit tiles.
   EXPECT_GT(raster_symbols, 50u) << "the sheet is not reaching the canvas";
   EXPECT_GT(vector_symbols, raster_symbols);
-  EXPECT_GT(sounding_digits, 5000u) << "every sounding draws its digits";
+  EXPECT_GT(sounding_figures, 2000u) << "every sounding draws its figure";
   // Nothing in these cells needs a placeholder any more: every CS procedure
   // they reach is implemented (E3b) and every symbol they name now resolves.
   EXPECT_EQ(question_marks, 0u);
   EXPECT_EQ(e->placeholders_drawn(), 0u);
 }
-

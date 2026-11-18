@@ -34,7 +34,9 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -191,6 +193,16 @@ struct RouteOptions {
   // restriction at the stop binds through the ordinary turn machinery,
   // whatever this says.
   bool allow_u_turn_at_stops = false;
+
+  /// The traveller's direction of travel at the first stop, degrees true. NaN
+  /// (the default) lets the first stop set off either way at no cost.
+  /// Intermediate stops are governed by allow_u_turn_at_stops instead.
+  double start_heading_deg = std::numeric_limits<double>::quiet_NaN();
+  /// What setting off more than 90 degrees from start_heading_deg costs, in
+  /// seconds; a distance metric prices it as the ground covered at the
+  /// profile's speed. Soft: the route turns round when going ahead and coming
+  /// back round costs more than this.
+  double start_u_turn_seconds = 45.0;
 };
 
 // One run of consecutive arcs sharing a road name — the human-readable spine
@@ -214,6 +226,15 @@ struct ElevationPoint {
   double along_m = 0.0;  ///< Distance from the route's start.
   double elev_m = 0.0;   ///< Ground elevation, metres.
   uint32_t geometry_index = 0;  ///< The same point's index in `Route::geometry`.
+};
+
+/// A run of the route's line whose arcs share one map-key tier.
+struct RouteTierRun {
+  uint32_t geometry_begin = 0;  ///< First point of the run in `Route::geometry`.
+  uint32_t geometry_end = 0;    ///< Last point of the run; the next run starts here.
+  /// Index into the profile's `legend_tiers`, cheapest first, from the arc's
+  /// cost per metre over the shortest way (as `CostOfTags`), climb excluded.
+  int tier = 0;
 };
 
 struct Route {
@@ -244,6 +265,10 @@ struct Route {
   std::vector<uint32_t> nodes;
 
   std::vector<RouteLeg> legs;
+
+  /// The line in runs of one map-key tier, in travel order. Filled only when
+  /// the query carried a rule-file profile.
+  std::vector<RouteTierRun> tiers;
 
   // Where the request was snapped onto the network. `*_offset_m` is how far
   // the caller's point was from the point it snapped to — a large value means
@@ -294,6 +319,10 @@ struct Route {
   // (see RouteOptions::allow_u_turn_at_stops). Always empty when U-turns are
   // allowed outright — then no stop "had to".
   std::vector<uint32_t> u_turn_stops;
+
+  /// The route sets off more than 90 degrees from
+  /// RouteOptions::start_heading_deg. Always false when no heading was given.
+  bool start_u_turn = false;
 
   // On `found == false`, which pair of consecutive stops has no route between
   // them: leg i runs from stop i to stop i+1. kNoLeg when the route was found
@@ -489,6 +518,12 @@ class Router {
     // from is the one this leg may not set off back toward. Simpler than the
     // junction case, and it needs no state space of its own.
     uint32_t banned_toward = kNoArc;
+
+    // The first leg only (RouteOptions::start_heading_deg): a departure more
+    // than 90 degrees from `heading_deg` costs `u_turn_cost`. NaN elsewhere.
+    double heading_deg = std::numeric_limits<double>::quiet_NaN();
+    double u_turn_cost = 0.0;
+    bool has_heading() const { return std::isfinite(heading_deg); }
   };
 
   double ArcCost(const RoadArc& arc, const RouteOptions& options) const;
@@ -508,18 +543,20 @@ class Router {
   bool SearchUnidirectional(const std::vector<Terminal>& sources,
                             const std::vector<Terminal>& targets, const RouteOptions& o,
                             const LegSeed& seed, std::vector<Step>* steps, uint32_t* source_used,
-                            uint32_t* target_used, int64_t* expanded) const;
+                            uint32_t* target_used, int64_t* expanded, double* cost) const;
   bool SearchBidirectional(const std::vector<Terminal>& sources,
                            const std::vector<Terminal>& targets, const RouteOptions& o,
                            const LegSeed& seed, std::vector<Step>* steps, uint32_t* source_used,
-                           uint32_t* target_used, int64_t* expanded) const;
+                           uint32_t* target_used, int64_t* expanded, double* cost) const;
 
   // Either search, chosen by `o.bidirectional`. `steps` comes back WITHOUT the
   // terminals' own partial traversals; the caller prepends and appends them,
   // because only it knows whether a leg's ends are shared with its neighbours.
+  // `cost` receives the search cost of the whole leg, terminals included.
   bool Search(const std::vector<Terminal>& sources, const std::vector<Terminal>& targets,
               const RouteOptions& o, const LegSeed& seed, std::vector<Step>* steps,
-              uint32_t* source_used, uint32_t* target_used, int64_t* expanded) const;
+              uint32_t* source_used, uint32_t* target_used, int64_t* expanded,
+              double* cost) const;
 
   // One leg, terminals and all: the search plus the partial traversals its two
   // ends contribute, plus the one case no search can find — both ends on the
@@ -546,6 +583,25 @@ class Router {
   // taken against.
   void ArcShapeAndLengths(uint32_t arc, std::vector<GeoPoint>* shape,
                           std::vector<double>* cum) const;
+
+  /// The bearing a step sets off along, degrees true, measured from its start
+  /// to a point up to 15 m further along the road. NaN for a
+  /// step of no length.
+  double DepartureBearing(const Step& step) const;
+
+  /// The start penalty `step` pays as a leg's first traversal: the seed's
+  /// u_turn_cost when it sets off more than 90 degrees from the seed's
+  /// heading, else 0.
+  double DeparturePenalty(const LegSeed& seed, const Step& step) const;
+
+  /// Whether `step` sets off more than 90 degrees from `heading_deg`.
+  bool DepartsBehind(double heading_deg, const Step& step) const;
+
+  /// The junctions where a U-turn on a headed first leg also pays the start
+  /// penalty: each end of the road a mid-arc start sets off along, or the far
+  /// end of each arc out of a junction start. Empty without a heading.
+  std::vector<uint32_t> FirstJunctions(const std::vector<Terminal>& sources,
+                                       const RouteOptions& o, const LegSeed& seed) const;
 
   const RoadGraph& graph_;
 };

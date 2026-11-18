@@ -61,7 +61,19 @@ struct SceneItem {
   uint32_t first_part = 0;  // into VectorScene::part_first()
   uint32_t part_count = 0;
   uint32_t style = 0;  // into VectorScene::styles()
+  /// For an area whose style anchors at LabelAnchor::kCentre: the point the
+  /// symbol and label are drawn at (AreaInteriorPoint of the source rings).
+  bool has_centre = false;
+  GeoPoint centre{};
 };
+
+/// A point inside an area, near its middle: the centroid of the outer ring
+/// (rings[0]) when that is inside the area (even-odd over every ring), else the
+/// midpoint of the widest interior span of the parallel through the centroid.
+/// Computed in degrees, so it depends only on the geometry. Returns false for
+/// an outer ring with fewer than three vertices.
+bool AreaInteriorPoint(const std::vector<std::vector<GeoPoint>>& rings,
+                       GeoPoint* out);
 
 // What a build is asked for. `ctx` is not a hint — it is exactly the context
 // the styles are baked with, and the scene refuses to serve any other.
@@ -103,6 +115,15 @@ class VectorScene {
   const std::vector<GeoPoint>& points() const { return points_; }
   const std::vector<uint32_t>& part_first() const { return part_first_; }
 
+  /// Per-vertex "edge not stroked" flags parallel to points(), or empty when
+  /// no feature in the scene hides an edge (see VectorFeature::unstroked_edges).
+  const std::vector<uint8_t>& unstroked() const { return unstroked_; }
+
+  /// Geographic bounding box of each part, parallel to the parts of
+  /// part_first(). An area's first part also holds SceneItem::centre. A box
+  /// spans the longitudes as stored and never crosses the antimeridian.
+  const std::vector<GeoRect>& part_bounds() const { return part_bounds_; }
+
   const GeoRect& area() const { return area_; }
   const StyleContext& ctx() const { return ctx_; }
   uint64_t style_epoch() const { return style_epoch_; }
@@ -119,6 +140,8 @@ class VectorScene {
   std::vector<StyleResult> styles_;
   std::vector<GeoPoint> points_;
   std::vector<uint32_t> part_first_;
+  std::vector<uint8_t> unstroked_;
+  std::vector<GeoRect> part_bounds_;
 
   GeoRect area_;
   StyleContext ctx_;

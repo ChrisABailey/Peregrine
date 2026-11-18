@@ -82,6 +82,7 @@
 #ifndef FVKIT_OVERLAY_MOVING_MAP_OVERLAY_H_
 #define FVKIT_OVERLAY_MOVING_MAP_OVERLAY_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -117,6 +118,9 @@ struct MovingMapTick {
   // shell with no road network — the whole feature off.
   SnappedFix snap;
   bool snap_applied = false;
+  /// The fix was snapped with the ship below the snapper's hold speed: its
+  /// heading is the one it had before it stopped, not derived from jitter.
+  bool stopped = false;
 
   // MM2's answer for this fix. `changed` false when the ship is still in its
   // apron; every field is meaningless when `new_fix` is false.
@@ -254,6 +258,10 @@ class MovingMapOverlay : public Overlay {
   // The map moved behind our back (a user pan, a jump to a bookmark). Cancels
   // any slew in flight and re-bases it, exactly `CameraSlew::Reset`.
   void ResetMap(const GeoPoint& center, double rotation_deg = 0.0);
+  /// Asks the next tick to place the camera on the last fix even with no new
+  /// one, as when this overlay takes over the view from another. The camera's
+  /// own rules (auto-centre, the apron) still decide whether the map moves.
+  void RecheckCamera() { recheck_camera_ = true; }
 
   // --- the tick -----------------------------------------------------------
 
@@ -306,6 +314,11 @@ class MovingMapOverlay : public Overlay {
   void SetColor(FvColor c);
   FvColor color() const { return color_; }
 
+  /// Scales the alpha of every stamp (body and edge) without changing `color()`,
+  /// which is what a workspace saves. 255 draws as set; 0 draws nothing visible.
+  void SetDrawOpacity(uint8_t alpha);
+  uint8_t draw_opacity() const { return opacity_; }
+
   // The black outline stamped one size up under the body, exactly
   // PointOverlay's badge edge and for the same reason: a coloured silhouette
   // over a chart of the same colour is not there at all.
@@ -353,6 +366,7 @@ class MovingMapOverlay : public Overlay {
   PositionFix last_fix_;
   bool has_fix_ = false;
   bool force_ = false;
+  bool recheck_camera_ = false;
   double map_rotation_deg_ = 0.0;
   double convergence_deg_ = 0.0;
 
@@ -364,6 +378,7 @@ class MovingMapOverlay : public Overlay {
   std::string symbol_id_ = builtin_symbol::kOwnship;
   double size_px_ = 24.0;
   FvColor color_{230, 30, 30, 255};
+  uint8_t opacity_ = 255;
   bool show_edge_ = true;
   bool highlighted_ = false;
   bool show_apron_ = false;

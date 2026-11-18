@@ -265,6 +265,7 @@ struct AisSettingsSheet: View {
                             Text("Other").tag(UInt16(0))
                         }
                     }
+                    .chartDimmedPicker()
                 } header: {
                     Text("Connection")
                 } footer: {

@@ -1422,3 +1422,219 @@ TEST(RouteStoreStraight, NoBeachOrHillsWithoutAGraph) {
 }
 
 }  // namespace
+
+TEST(RouteStore, TheInfoCardFindsTheRoadEvenWhenNoBikeMayUseIt) {
+  SKIP_WITHOUT_GRAPH();
+  TempDocument doc("road_info");
+  RouteStore store(graph, RulesFile(), doc.path());
+
+  const pippin::RoadInfo lane = store.DescribeRoad(kOnSawgrassLane, 30.0);
+  ASSERT_TRUE(lane.found);
+  EXPECT_EQ("Sawgrass Lane", lane.name);
+  EXPECT_LT(lane.distance_m, 5.0);
+
+  const pippin::RoadInfo cycleway = store.DescribeRoad(kOnAnUnnamedCycleway, 30.0);
+  ASSERT_TRUE(cycleway.found);
+  EXPECT_TRUE(cycleway.name.empty());
+  EXPECT_EQ("cycleway", cycleway.class_name);
+
+  // DescribePoint passes over the parkway for a bicycle; the card does not.
+  const pippin::RoadInfo parkway = store.DescribeRoad(kOnTheParkway, 30.0);
+  ASSERT_TRUE(parkway.found);
+  EXPECT_FALSE(parkway.arc.bicycle_allowed());
+
+  EXPECT_FALSE(store.DescribeRoad(kOutToSea, 30.0).found);
+}
+
+TEST(RouteStore, ASpotOnTheRouteSaysHowFarAndHowLongFromEachEnd) {
+  SKIP_WITHOUT_GRAPH();
+  TempDocument doc("route_spot");
+  RouteStore store(graph, RulesFile(), doc.path());
+  EXPECT_FALSE(store.RouteSpotNear(kRuddyTurnstone, 30.0).found);
+
+  const RouteSnapshot snap = store.SetWaypoints(TheUsualPair(), "bicycle");
+  ASSERT_TRUE(snap.calculated);
+  const std::vector<GeoPoint> path = store.RoutePath();
+  ASSERT_GT(path.size(), 4u);
+
+  const pippin::RouteSpot start = store.RouteSpotNear(path.front(), 30.0);
+  ASSERT_TRUE(start.found);
+  EXPECT_NEAR(start.along_m, 0.0, 1.0);
+  EXPECT_NEAR(start.seconds_from_start, 0.0, 1.0);
+  EXPECT_DOUBLE_EQ(start.length_m, snap.length_m);
+  EXPECT_DOUBLE_EQ(start.seconds, snap.seconds);
+
+  const pippin::RouteSpot end = store.RouteSpotNear(path.back(), 30.0);
+  ASSERT_TRUE(end.found);
+  EXPECT_NEAR(end.along_m, snap.length_m, 1.0);
+  EXPECT_NEAR(end.seconds_from_start, snap.seconds, 1.0);
+
+  const pippin::RouteSpot middle = store.RouteSpotNear(path[path.size() / 2], 30.0);
+  ASSERT_TRUE(middle.found);
+  EXPECT_GT(middle.along_m, start.along_m);
+  EXPECT_LT(middle.along_m, end.along_m);
+  EXPECT_GT(middle.seconds_from_start, 0.0);
+  EXPECT_LT(middle.seconds_from_start, snap.seconds);
+  EXPECT_LT(middle.distance_m, 0.5);
+
+  EXPECT_FALSE(store.RouteSpotNear(kOutToSea, 30.0).found);
+}
+
+TEST(RouteStore, ARouteSpotUphillHasAPositiveGrade) {
+  const std::filesystem::path atlanta =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  if (!std::filesystem::exists(atlanta)) GTEST_SKIP() << "no TestData/OSM/atlanta.fvroad";
+  TempDocument doc("route_spot_grade");
+  RouteStore store(atlanta.string(), RulesFile(), doc.path());
+  const std::vector<RouteWaypoint> ride = {
+      RouteWaypoint{"Start", fv::GeoPoint{33.8712, -84.4545}},
+      RouteWaypoint{"End", fv::GeoPoint{33.8480, -84.3732}}};
+  const RouteSnapshot snap = store.SetWaypoints(ride, "bicycle");
+  ASSERT_TRUE(snap.complete) << snap.status;
+  ASSERT_TRUE(snap.has_elevation);
+
+  // The steepest stretch of the profile, sampled at its middle.
+  size_t steep = 1;
+  double steepest = 0.0;
+  for (size_t i = 1; i < snap.elevation.size(); ++i) {
+    const double run = snap.elevation[i].along_m - snap.elevation[i - 1].along_m;
+    if (run < 60.0) continue;
+    const double g = (snap.elevation[i].elev_m - snap.elevation[i - 1].elev_m) / run;
+    if (g > steepest) {
+      steepest = g;
+      steep = i;
+    }
+  }
+  ASSERT_GT(steepest, 0.01);
+  const std::vector<GeoPoint> path = store.RoutePath();
+  const uint32_t a = snap.elevation[steep - 1].geometry_index;
+  const uint32_t b = snap.elevation[steep].geometry_index;
+  const pippin::RouteSpot spot = store.RouteSpotNear(path[(a + b) / 2], 30.0);
+  ASSERT_TRUE(spot.found);
+  ASSERT_TRUE(spot.has_elevation);
+  EXPECT_GT(spot.grade_pct, 0.0);
+
+  const pippin::RoadInfo road = store.DescribeRoad(path[(a + b) / 2], 30.0);
+  ASSERT_TRUE(road.found);
+  EXPECT_TRUE(road.has_elevation);
+}
+
+// --- Detours (re-route plan RR3) ------------------------------------------
+
+namespace {
+
+std::string AtlantaGraph() {
+  const std::filesystem::path p =
+      std::filesystem::path(TestDataDir()) / "OSM" / "atlanta.fvroad";
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) ? p.string() : std::string();
+}
+
+double MetresBetween(const fv::GeoPoint& a, const fv::GeoPoint& b) {
+  const double k = 6371008.8 * M_PI / 180.0;
+  return std::hypot((b.lon - a.lon) * k * std::cos(a.lat * M_PI / 180.0), (b.lat - a.lat) * k);
+}
+
+}  // namespace
+
+#define ATLANTA_STORE_OR_SKIP(store, doc)                                          \
+  const std::string atlanta = AtlantaGraph();                                      \
+  if (atlanta.empty()) GTEST_SKIP() << "no testdata/OSM/atlanta.fvroad";          \
+  RouteStore store(atlanta, FV_ROUTE_CITY_RULES_FILE, doc.path());                 \
+  store.SetWaypoints({{"Start", {33.78421411913466, -84.44998056736293}},          \
+                      {"End", {33.822726949999996, -84.4314115}}},                 \
+                     "bicycle", std::nullopt, true);                               \
+  ASSERT_TRUE(store.Snapshot().complete) << store.Snapshot().status
+
+// Straight on past Pine St: the reroute is offered, applying it moves the
+// guided line and turn list without touching the document, and cancelling
+// puts the planned line back.
+TEST(RouteStore, ADetourIsGuidedWithoutEditingTheDocument) {
+  TempDocument doc("detour_apply");
+  ATLANTA_STORE_OR_SKIP(store, doc);
+  const std::vector<fv::GeoPoint> planned = store.RoutePath();
+  const std::vector<fv::nav::Maneuver> planned_turns = store.RouteManeuvers();
+  const std::string saved = FileBytes(doc.path());
+  const fv::GeoPoint at{33.7970794, -84.4399671};
+
+  const pippin::DetourOffer offer = store.PlanDetour(at, 333.0, 2347.0);
+  EXPECT_EQ(offer.pick, fv::DetourPick::kReroute);
+  EXPECT_LT(offer.extra_m, 0.0);
+  EXPECT_GT(offer.length_m, 5000.0);
+  EXPECT_FALSE(store.detouring()) << "planning alone changes nothing";
+
+  ASSERT_TRUE(store.ApplyDetour());
+  EXPECT_TRUE(store.detouring());
+  EXPECT_TRUE(store.Snapshot().detouring);
+  const std::vector<fv::GeoPoint> guided = store.RoutePath();
+  ASSERT_GE(guided.size(), 2u);
+  EXPECT_LT(MetresBetween(guided.front(), at), 50.0);
+  EXPECT_LT(MetresBetween(guided.back(), planned.back()), 50.0);
+  EXPECT_FALSE(store.RouteManeuvers().empty());
+  EXPECT_NEAR(store.RouteManeuvers().back().distance_m, offer.length_m, 20.0)
+      << "the turn list measures along the detour";
+  EXPECT_EQ(FileBytes(doc.path()), saved);
+  EXPECT_FALSE(store.ApplyDetour()) << "an offer is applied once";
+
+  ASSERT_TRUE(store.CancelDetour());
+  EXPECT_FALSE(store.detouring());
+  EXPECT_EQ(store.RoutePath().size(), planned.size());
+  EXPECT_EQ(store.RouteManeuvers().size(), planned_turns.size());
+  EXPECT_FALSE(store.CancelDetour());
+}
+
+// Across the line on the unnamed path: turning round is the offer, with the
+// metres back to the line.
+TEST(RouteStore, ADetourThatStartsByTurningRoundIsOfferedAsTurnAround) {
+  TempDocument doc("detour_turn");
+  ATLANTA_STORE_OR_SKIP(store, doc);
+  const pippin::DetourOffer offer =
+      store.PlanDetour({33.8013988, -84.4428205}, 320.0, 3420.0);
+  EXPECT_EQ(offer.pick, fv::DetourPick::kTurnAround);
+  EXPECT_GT(offer.back_m, 90.0);
+  EXPECT_LT(offer.back_m, 250.0);
+}
+
+// A new plan of the document drops the detour, and an offer made before it
+// is not applied to the new route.
+TEST(RouteStore, ANewPlanEndsTheDetourAndVoidsAnOffer) {
+  TempDocument doc("detour_replan");
+  ATLANTA_STORE_OR_SKIP(store, doc);
+  store.PlanDetour({33.7970794, -84.4399671}, 333.0, 2347.0);
+  ASSERT_TRUE(store.ApplyDetour());
+  store.Replan();
+  EXPECT_FALSE(store.detouring());
+
+  store.PlanDetour({33.7970794, -84.4399671}, 333.0, 2347.0);
+  store.Replan();
+  EXPECT_FALSE(store.ApplyDetour());
+  EXPECT_FALSE(store.detouring());
+}
+
+// Off the detour too: the next offer is planned against the detour's line,
+// and its stops end at the destination.
+TEST(RouteStore, ADetourFromADetourKeepsTheDestination) {
+  TempDocument doc("detour_again");
+  ATLANTA_STORE_OR_SKIP(store, doc);
+  const fv::GeoPoint end = store.RoutePath().back();
+  store.PlanDetour({33.7970794, -84.4399671}, 333.0, 2347.0);
+  ASSERT_TRUE(store.ApplyDetour());
+  const std::vector<fv::GeoPoint> first = store.RoutePath();
+  // 600 m along the detour, with no heading.
+  double along = 0.0;
+  size_t i = 1;
+  for (; i < first.size() && along < 600.0; ++i) along += MetresBetween(first[i - 1], first[i]);
+  const pippin::DetourOffer again =
+      store.PlanDetour(first[i - 1], std::numeric_limits<double>::quiet_NaN(), along);
+  EXPECT_EQ(again.pick, fv::DetourPick::kReroute);
+  ASSERT_TRUE(store.ApplyDetour());
+  EXPECT_LT(MetresBetween(store.RoutePath().back(), end), 50.0);
+}
+
+// Nothing planned, nothing offered.
+TEST(RouteStore, NoRoadPlanNoDetour) {
+  RouteStore store("/nonexistent/kiawah.fvroad", RulesFile(), "");
+  store.SetWaypoints(TheUsualPair(), "bicycle");
+  EXPECT_EQ(store.PlanDetour({32.6, -80.1}, 0.0, 0.0).pick, fv::DetourPick::kNone);
+  EXPECT_FALSE(store.ApplyDetour());
+}

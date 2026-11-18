@@ -8,7 +8,7 @@
 #include <cmath>
 
 #include "fvkit/app/pick.h"
-#include "fvkit/overlay/manager.h"
+#include "fvkit/app/overlay_host.h"
 
 namespace fv {
 
@@ -123,10 +123,10 @@ EditPosition PointEditSession::ResolvePixel(PixelPoint p) const {
 
   // The snap comes first, because it is the exact answer and the un-projection
   // is the approximate one.
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr && snap_tolerance_px_ > 0.0) {
+  app::OverlayHost* host = overlay_.host();
+  if (host != nullptr && snap_tolerance_px_ > 0.0) {
     const std::vector<app::SnapToItem> candidates =
-        app::SnapCandidates(*manager, proj, p, snap_tolerance_px_);
+        host->SnapCandidates(proj, p, snap_tolerance_px_);
     for (const app::SnapToItem& c : candidates) {
       // The overlay excludes itself, and without this line no drag can move:
       // `SnapToPoint` answers out of what it DREW, so the point under the
@@ -180,11 +180,9 @@ bool PointEditSession::BeginDrag(int64_t id, PixelPoint at) {
   drag_.threshold_px = std::max(HalfWidthPx(*found), kMinDragThresholdPx);
   drag_.was_dirty = overlay_.is_dirty();
 
-  // Capture is phase 0 of the manager's routing: once the press is taken every
-  // move belongs to this overlay, wherever the cursor wanders. A null manager
-  // is legal — the gesture still works, it is just interruptible.
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr) manager->CaptureMouse(&overlay_);
+  // Once the press is taken every move belongs to this overlay, wherever the
+  // cursor wanders. Without a host the gesture still works, uncaptured.
+  if (app::OverlayHost* host = overlay_.host()) host->CaptureMouse(overlay_);
   return true;
 }
 
@@ -212,8 +210,7 @@ bool PointEditSession::EndDrag(PixelPoint at) {
   if (!drag_.active) return false;
   if (drag_.moved) DragTo(at);  // commit the release position
   drag_ = Drag{};
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr) manager->ReleaseMouse();
+  if (app::OverlayHost* host = overlay_.host()) host->ReleaseMouse(overlay_);
   return true;
 }
 
@@ -221,8 +218,7 @@ bool PointEditSession::CancelDrag() {
   if (!drag_.active) return false;
   const Drag d = drag_;
   drag_ = Drag{};
-  OverlayManager* manager = overlay_.manager();
-  if (manager != nullptr) manager->ReleaseMouse();
+  if (app::OverlayHost* host = overlay_.host()) host->ReleaseMouse(overlay_);
 
   if (!d.moved) return true;  // nothing happened; nothing to undo
   if (!undo_.empty()) {

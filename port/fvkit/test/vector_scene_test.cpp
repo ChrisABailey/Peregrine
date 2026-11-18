@@ -192,6 +192,15 @@ TEST(VectorScene, BuildFlattensGeometryAndKeepsPartOffsets) {
   EXPECT_EQ(pf[it.first_part + 1] - pf[it.first_part], 3u);
   EXPECT_EQ(pf[it.first_part + 2] - pf[it.first_part + 1], 2u);
   EXPECT_DOUBLE_EQ(scene.points()[pf[it.first_part + 1]].lat, 3.0);
+
+  // One box per part.
+  ASSERT_EQ(scene.part_bounds().size(), 2u);
+  const fv::GeoRect& b0 = scene.part_bounds()[it.first_part];
+  const fv::GeoRect& b1 = scene.part_bounds()[it.first_part + 1];
+  EXPECT_DOUBLE_EQ(b0.ll.lat, 0.0);
+  EXPECT_DOUBLE_EQ(b0.ur.lon, 2.0);
+  EXPECT_DOUBLE_EQ(b1.ll.lon, 3.0);
+  EXPECT_DOUBLE_EQ(b1.ur.lat, 4.0);
 }
 
 TEST(VectorScene, ItemsComeOutInDrawOrderAcrossFeatures) {

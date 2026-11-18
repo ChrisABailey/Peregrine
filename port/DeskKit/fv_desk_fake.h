@@ -46,6 +46,7 @@ class FakeDeskShell : public DeskShell {
   std::string editor_mode;
   std::shared_ptr<OptionsModel> options_shown;      ///< the last overlay options dialog
   std::shared_ptr<OptionsModel> map_options_shown;  ///< the last map options dialog
+  std::shared_ptr<OptionsModel> feed_shown;         ///< the last Feed dialog
   std::vector<std::string> list_rows;           ///< what the last list offered
   std::vector<std::vector<std::string>> lists;  ///< every list offered, in order
   std::vector<std::string> notices;
@@ -53,6 +54,7 @@ class FakeDeskShell : public DeskShell {
   bool provides_overlay_manager = false;
   int overlay_manager_shown = 0;
   int route_profile_shown = 0;
+  int ownship_shown = 0;
   int layers_shown = 0;
   int layers_hidden = 0;
   int find_shown = 0;
@@ -62,6 +64,7 @@ class FakeDeskShell : public DeskShell {
   int layer_style_shown = 0;
   int layer_fields_shown = 0;
   int new_layer_shown = 0;
+  int add_web_layer_shown = 0;
   int layer_properties_shown = 0;
   int select_by_attributes_shown = 0;
   int add_rule_shown = 0;
@@ -89,10 +92,14 @@ class FakeDeskShell : public DeskShell {
   void ShowMapOptions(std::shared_ptr<OptionsModel> model) override {
     map_options_shown = std::move(model);
   }
+  void ShowFeedOptions(std::shared_ptr<OptionsModel> model) override {
+    feed_shown = std::move(model);
+  }
   void ShowDataSources() override { ++data_sources_shown; }
   bool ProvidesOverlayManager() const override { return provides_overlay_manager; }
   void ShowOverlayManager() override { ++overlay_manager_shown; }
   void ShowRouteProfile() override { ++route_profile_shown; }
+  void ShowOwnship() override { ++ownship_shown; }
   void ShowLayers() override { ++layers_shown; }
   void HideLayers() override { ++layers_hidden; }
   void ShowFind() override { ++find_shown; }
@@ -102,6 +109,7 @@ class FakeDeskShell : public DeskShell {
   void ShowLayerStyle() override { ++layer_style_shown; }
   void ShowLayerFields() override { ++layer_fields_shown; }
   void ShowNewLayer() override { ++new_layer_shown; }
+  void ShowAddWebLayer() override { ++add_web_layer_shown; }
   void ShowLayerProperties() override { ++layer_properties_shown; }
   bool HostsPropertiesTabs() const override { return properties_tabs; }
   void ShowSelectByAttributes() override { ++select_by_attributes_shown; }

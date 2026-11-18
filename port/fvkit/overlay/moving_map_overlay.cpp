@@ -107,9 +107,23 @@ void MovingMapOverlay::ResetMap(const GeoPoint& center, double rotation_deg) {
   map_rotation_deg_ = rotation_deg;
 }
 
+namespace {
+/// `c` with its alpha scaled by `opacity` / 255.
+FvColor WithOpacity(FvColor c, uint8_t opacity) {
+  c.a = static_cast<uint8_t>((static_cast<unsigned>(c.a) * opacity + 127) / 255);
+  return c;
+}
+}  // namespace
+
 void MovingMapOverlay::SetColor(FvColor c) {
   color_ = c;
-  body_.SetColor(c);
+  body_.SetColor(WithOpacity(c, opacity_));
+}
+
+void MovingMapOverlay::SetDrawOpacity(uint8_t alpha) {
+  opacity_ = alpha;
+  body_.SetColor(WithOpacity(color_, alpha));
+  edge_.SetColor(WithOpacity(FvColor{0, 0, 0, 255}, alpha));
 }
 
 double MovingMapOverlay::screen_angle_deg() const {
@@ -209,9 +223,15 @@ MovingMapTick MovingMapOverlay::Tick(const MapProjection& proj, double dt_s) {
     const bool apply = snap.snapped && snap.confidence >= snap_min_confidence_;
     const PositionFix f = apply ? snap.Applied() : raw;
 
-    out.heading = heading_.Update(f);
+    // A stopped ship's snapped point moves only with receiver jitter along the
+    // road; a heading derived from it can point backwards, and as the next
+    // snap's prior it would then pick the road's opposite direction.
+    const bool stopped = apply && !f.has_true_heading && f.has_speed &&
+                         f.speed_mps < snapper_.settings().hold_speed_mps && prior.known;
+    out.heading = stopped ? prior : heading_.Update(f);
     out.snap = snap;
     out.snap_applied = apply;
+    out.stopped = stopped;
     if (f.has_position) {
       last_fix_ = f;
       has_fix_ = true;
@@ -228,10 +248,11 @@ MovingMapTick MovingMapOverlay::Tick(const MapProjection& proj, double dt_s) {
   if (proj.Ready() && !slew_.started())
     slew_.Reset(proj.Center(), map_rotation_deg_);
 
-  if (proj.Ready() && out.new_fix) {
+  if (proj.Ready() && (out.new_fix || (recheck_camera_ && has_fix_))) {
     out.target = camera_.Update(proj, last_fix_.position(), out.heading.degrees,
                                 map_rotation_deg_, convergence_deg_, force_);
     force_ = false;
+    recheck_camera_ = false;
     slew_.Retarget(proj, out.target);
   }
 

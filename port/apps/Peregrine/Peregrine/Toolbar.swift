@@ -101,9 +101,36 @@ final class CommandToolbarItem: NSToolbarItem {
         button.state = host.IsChecked(std.string(command)) ? .on : .off
     }
 
-    /// The SF Symbol for a DeskKit icon name; nil when there is none, so the
-    /// button shows its label instead.
+    /// Package art already read, by path; nil records a file that would not load.
+    private static var fileImages: [String: NSImage?] = [:]
+
+    /// The art for a DeskKit icon: a package's .svg/.png/.pdf when `icon` is
+    /// an absolute path, otherwise the SF Symbol for the name. nil when there
+    /// is none, so the button shows its label instead.
     static func image(for icon: String, label: String) -> NSImage? {
+        if icon.hasPrefix("/") { return fileImage(at: icon, label: label) }
+        return symbolImage(for: icon, label: label)
+    }
+
+    /// Loads package art once, sized to a toolbar symbol.
+    private static func fileImage(at path: String, label: String) -> NSImage? {
+        if let cached = fileImages[path] { return cached }
+        let ext = (path as NSString).pathExtension.lowercased()
+        var image: NSImage?
+        if ["svg", "png", "pdf"].contains(ext), let loaded = NSImage(contentsOfFile: path) {
+            let aspect = loaded.size.height > 0 ? loaded.size.width / loaded.size.height : 1
+            loaded.size = NSSize(width: 18 * aspect, height: 18)
+            loaded.accessibilityDescription = label
+            // Vector art is drawn as a template so it follows the toolbar's
+            // light and dark appearance, as the SF Symbols do; PNG keeps its colours.
+            loaded.isTemplate = ext != "png"
+            image = loaded
+        }
+        fileImages[path] = image
+        return image
+    }
+
+    private static func symbolImage(for icon: String, label: String) -> NSImage? {
         let symbols = [
             "zoom_in": "plus.magnifyingglass",
             "zoom_out": "minus.magnifyingglass",
@@ -115,6 +142,13 @@ final class CommandToolbarItem: NSToolbarItem {
             "tamask": "exclamationmark.triangle",
             "scalebar": "ruler",
             "movingmap": "location.north.line",
+            "course_up": "location.north.circle",
+            "continuous": "scope",
+            "snap_to_road": "road.lanes",
+            "trail_dots": "point.3.connected.trianglepath.dotted",
+            "listen": "antenna.radiowaves.left.and.right",
+            "feed": "slider.horizontal.3",
+            "ownship": "gauge.with.dots.needle.33percent",
             "route": "point.topleft.down.to.point.bottomright.curvepath",
             "pencil": "pencil",
             "add_point": "plus.circle",

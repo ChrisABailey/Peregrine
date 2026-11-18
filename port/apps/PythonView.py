@@ -730,6 +730,8 @@ class PythonView(pyfvw.app.AppShell):
         self.canvas = None
         self._make_canvas()
         self.mgr = pyfvw.overlay.OverlayManager()
+        # Mouse capture and the snap walk for the route and point overlays.
+        self.host = pyfvw.overlay.ManagerHost(self.mgr)
 
         # --- the app layer (A6) ---------------------------------------------
         # THE REGISTRY IS THE APPLICATION'S INVENTORY: what can be opened, what
@@ -845,13 +847,11 @@ class PythonView(pyfvw.app.AppShell):
         which is exactly why an OverlayTypeDesc takes a callable and not a
         class.
 
-        The manager is handed over for two things and nothing else: mouse
-        CAPTURE, so a drag that wanders off the waypoint keeps feeding this
-        overlay, and the SNAP walk, which is a question about the whole stack
-        that only the stack can answer."""
+        The host gives it mouse capture, so a drag that wanders off the
+        waypoint keeps feeding this overlay, and the snap walk over the stack."""
         ov = pyfvw.route.RouteOverlay("Route")
         ov.set_planner(self.route_planner)
-        ov.set_manager(self.mgr)
+        self.host.bind(ov)
         ov.profile = self.route_profile
         # The pick tolerance the rest of this shell uses. §2c's standing note
         # applies — the core has no business knowing a finger is wider than a
@@ -867,7 +867,7 @@ class PythonView(pyfvw.app.AppShell):
 
         BINDING IS PART OF IT because the point type is fvkit's own: its
         factory makes a bare `PointOverlay` and knows nothing about this
-        window, so the manager (mouse capture and the snap walk) and the
+        window, so the host (mouse capture and the snap walk) and the
         tolerances are attached here, where a set first turns up in the stack.
         A set opened from File > Open goes through exactly this path.
 
@@ -882,7 +882,7 @@ class PythonView(pyfvw.app.AppShell):
         for ov in self.mgr.overlays:
             if not isinstance(ov, pyfvw.overlay.PointOverlay):
                 continue
-            ov.set_manager(self.mgr)
+            self.host.bind(ov)
             ov.edit.pick_tolerance_px = self.pick.tolerance_px
             ov.edit.snap_tolerance_px = self.pick.tolerance_px
             dim = bool(editing and ov is not edited)

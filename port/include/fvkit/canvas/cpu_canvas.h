@@ -29,6 +29,10 @@ class CpuCanvas : public ICanvas {
   Status DrawLines(const std::vector<PixelPoint>& pts, const Pen& pen) override;
   Status DrawPolyPolygon(const std::vector<std::vector<PixelPoint>>& rings,
                          const Brush* fill, const Pen* outline) override;
+  Status FillPolyPolygonTiled(const std::vector<std::vector<PixelPoint>>& rings,
+                              const PatternTile& tile, int origin_x,
+                              int origin_y,
+                              const Brush* under = nullptr) override;
   Status DrawRectangle(const PixelRect& r, const Brush* fill,
                        const Pen* outline) override;
   Status DrawEllipse(const PixelRect& bbox, const Brush* fill,
@@ -55,6 +59,10 @@ class CpuCanvas : public ICanvas {
   // BlendPixel over a clamped horizontal run of an already-resolved row.
   void BlendSpan(unsigned char* row, int x0, int x1, const FvColor& c);
   void Stamp(int x, int y, const Pen& pen);
+  /// Calls span(y, x0, x1) for each run of pixels inside `rings` by the
+  /// even-odd rule, clamped to the canvas, top row first.
+  template <class Span>
+  void ScanSpans(const std::vector<std::vector<PixelPoint>>& rings, Span span);
   void FillScanlines(const std::vector<std::vector<PixelPoint>>& rings,
                      const FvColor& c);
   FontEntry* LoadFont(const std::string& path, Status* status);

@@ -6,7 +6,7 @@
 #import "PPAis+Internal.h"
 #import "PPFix+Internal.h"
 
-#include "fvkit/ais/receiver.h"
+#include "fvkit/nav/nmea_receiver.h"
 
 #include <string>
 #include <string_view>
@@ -150,13 +150,13 @@ NSData* PPOpenWatersMintBody(NSString* pubkey, int64_t timestamp, NSString* sign
 
 namespace {
 
-PPAisReceiverState StateFrom(fv::ais::ReceiverState s) {
+PPAisReceiverState StateFrom(fv::ReceiverState s) {
   switch (s) {
-    case fv::ais::ReceiverState::kOff: return PPAisReceiverStateOff;
-    case fv::ais::ReceiverState::kConnecting: return PPAisReceiverStateConnecting;
-    case fv::ais::ReceiverState::kLive: return PPAisReceiverStateLive;
-    case fv::ais::ReceiverState::kSilent: return PPAisReceiverStateSilent;
-    case fv::ais::ReceiverState::kRetrying: return PPAisReceiverStateRetrying;
+    case fv::ReceiverState::kOff: return PPAisReceiverStateOff;
+    case fv::ReceiverState::kConnecting: return PPAisReceiverStateConnecting;
+    case fv::ReceiverState::kLive: return PPAisReceiverStateLive;
+    case fv::ReceiverState::kSilent: return PPAisReceiverStateSilent;
+    case fv::ReceiverState::kRetrying: return PPAisReceiverStateRetrying;
   }
   return PPAisReceiverStateOff;
 }
@@ -210,7 +210,7 @@ PPLocationSample SampleFrom(const fv::PositionFix& f, double now_s) {
 @end
 
 @implementation PPAisReceiver {
-  std::unique_ptr<fv::ais::NmeaReceiver> _receiver;
+  std::unique_ptr<fv::NmeaReceiver> _receiver;
 }
 
 - (instancetype)initWithProtocol:(PPAisReceiverProtocol)protocol
@@ -218,12 +218,12 @@ PPLocationSample SampleFrom(const fv::PositionFix& f, double now_s) {
                             port:(uint16_t)port {
   self = [super init];
   if (self != nil) {
-    fv::ais::ReceiverConfig config;
-    config.protocol = protocol == PPAisReceiverProtocolUDP ? fv::ais::ReceiverProtocol::kUdp
-                                                           : fv::ais::ReceiverProtocol::kTcp;
+    fv::ReceiverConfig config;
+    config.protocol = protocol == PPAisReceiverProtocolUDP ? fv::ReceiverProtocol::kUdp
+                                                           : fv::ReceiverProtocol::kTcp;
     config.host = host.UTF8String ?: "";
     config.port = port;
-    _receiver = std::make_unique<fv::ais::NmeaReceiver>(fv::ais::NmeaReceiver::FactoryFor(config));
+    _receiver = std::make_unique<fv::NmeaReceiver>(fv::NmeaReceiver::FactoryFor(config));
   }
   return self;
 }
@@ -232,7 +232,7 @@ PPLocationSample SampleFrom(const fv::PositionFix& f, double now_s) {
 - (void)stop { _receiver->Stop(); }
 
 - (PPAisReceiverBatch*)pollAt:(NSTimeInterval)now {
-  fv::ais::ReceiverBatch batch;
+  fv::ReceiverBatch batch;
   _receiver->Poll(now, &batch);
   NSMutableArray<NSString*>* lines = [NSMutableArray arrayWithCapacity:batch.ais_lines.size()];
   for (const std::string& l : batch.ais_lines) [lines addObject:NSStr(l)];

@@ -3,12 +3,12 @@
  * Part of Peregrine, a cross-platform port of FalconView(tm).
  * See COPYING.LESSER and NOTICE.md for the full licensing picture. */
 
-/** A plugin that claims a future major API version; the host must refuse it. */
+/** A plugin built for API 1, which this host no longer accepts. */
 #include "peregrine/fv_plugin.h"
 
 FV_PLUGIN_EXPORT int fv_plugin_entry(const fv_host_api* host, fv_plugin_api* out) {
   (void)host;
-  out->api_major = 2;
+  out->api_major = 1;
   out->api_minor = 0;
   return FV_OK;
 }
